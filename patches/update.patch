@@ -1,44 +1,36 @@
+diff --git a/src/assembleur_tk.py b/src/assembleur_tk.py
 --- a/src/assembleur_tk.py
 +++ b/src/assembleur_tk.py
-@@ -250,7 +250,8 @@
--    def _draw_triangle_screen(self, P, outline="black", width=2, labels=None, inset=0.35):
-+    def _draw_triangle_screen(self, P, outline="black", width=2, labels=None, inset=0.35):
-         """
-         P : dict {'O','B','L'} en coordonnées monde (np.array 2D)
-         labels : liste de 3 strings pour O,B,L (facultatif)
-         inset : 0..1, fraction du chemin du sommet vers le barycentre pour placer le texte
-         """
-         # 1) coords monde -> écran
-         pts_world = [P["O"], P["B"], P["L"]]
-         coords = []
-         for pt in pts_world:
-             sx, sy = self._world_to_screen(pt)
-             coords += [sx, sy]
-         # 2) tracé
-         self.canvas.create_polygon(*coords, outline=outline, fill="", width=width)
-+        # 2b) marqueurs colorés par type de bord
-+        # O = Ouverture (noir), B = Base (bleu), L = Lumière (jaune)
-+        marker_px = 6  # rayon en pixels (indépendant du zoom)
-+        def _dot(x, y, fill, outline="black"):
-+            r = marker_px
-+            self.canvas.create_oval(x - r, y - r, x + r, y + r, fill=fill, outline=outline, width=1)
-+        # Ouv/O (noir)
-+        Ox, Oy = self._world_to_screen(P["O"])
-+        _dot(Ox, Oy, fill="#000000", outline="#000000")
-+        # Base/B (bleu)
-+        Bx, By = self._world_to_screen(P["B"])
-+        _dot(Bx, By, fill="#0000FF", outline="#000000")
-+        # Lumière/L (jaune)
-+        Lx, Ly = self._world_to_screen(P["L"])
-+        _dot(Lx, Ly, fill="#FFD700", outline="#000000")
- 
-         # 3) barycentre (monde)
-         cx = (P["O"][0] + P["B"][0] + P["L"][0]) / 3.0
-         cy = (P["O"][1] + P["B"][1] + P["L"][1]) / 3.0
-         # 4) labels
-         if labels:
-             for pt, txt in zip(pts_world, labels):
-                 lx = (1.0 - inset) * pt[0] + inset * cx
-                 ly = (1.0 - inset) * pt[1] + inset * cy
-                 sx, sy = self._world_to_screen((lx, ly))
-                 self.canvas.create_text(sx, sy, text=txt, anchor="center", font=("Arial", 8))
+@@
+-    # 4) labels
+-    if labels:
+-        for pt, txt in zip(pts_world, labels):
+-            lx = (1.0 - inset) * pt[0] + inset * cx
+-            ly = (1.0 - inset) * pt[1] + inset * cy
+-            sx, sy = self._world_to_screen((lx, ly))
+-            self.canvas.create_text(sx, sy, text=txt, anchor="center", font=("Arial", 8))
++    # 4) labels (sans "O:" et sans préfixes "B:" / "L:")
++    if labels:
++        for pt, txt in zip(pts_world, labels):
++            # Supprimer les préfixes "O:", "B:", "L:" si présents
++            if ":" in txt:
++                prefix, value = txt.split(":", 1)
++            else:
++                prefix, value = "", txt
++            prefix = prefix.strip().lower()
++            value  = value.strip()
++
++            # Ne rien afficher pour l'ouverture (on a le point noir)
++            if prefix in ("o", "ouverture", "ouv"):
++                continue
++
++            # Pour Base/Lumière, n'afficher que la valeur (sans codes/lettres)
++            display = value
++            if not display:
++                continue
++
++            lx = (1.0 - inset) * pt[0] + inset * cx
++            ly = (1.0 - inset) * pt[1] + inset * cy
++            sx, sy = self._world_to_screen((lx, ly))
++            self.canvas.create_text(sx, sy, text=display, anchor="center", font=("Arial", 8))
+

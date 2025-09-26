@@ -1,6 +1,7 @@
 
 import os
 import math
+import re
 import numpy as np
 import pandas as pd
 import tkinter as tk
@@ -46,6 +47,12 @@ class TriangleViewerManual(tk.Tk):
         self.offset = np.array([400.0, 350.0], dtype=float)
         self._drag = None             # état de drag & drop depuis la liste
         self._drag_preview_id = None  # id du polygone "fantôme" sur le canvas
+        self._sel = None              # sélection sur canvas: {'mode': 'move'|'vertex', 'idx': int}
+        self._hit_px = 12             # tolérance de hit (pixels) pour les sommets
+        self._marker_px = 6           # rayon des marqueurs (cercles) dessinés aux sommets
+        self._ctx_target_idx = None   # index du triangle visé par clic droit (menu contextuel)
+        self._placed_ids = set()      # ids déjà posés (retirés de la liste)
+        self._ctx_last_rclick = None  # dernière position écran du clic droit (pour pivoter)
 
         # état IHM
         self.triangle_file = tk.StringVar(value="")
@@ -57,6 +64,8 @@ class TriangleViewerManual(tk.Tk):
         self._last_drawn = []   # liste d'items: (labels, P_world)
 
         self._build_ui()
+        # Bind pour annuler avec ESC (drag ou sélection)
+        self.bind("<Escape>", self._on_escape_key)
 
         # auto-load si présent (facultatif)
         default = "../data/triangle.xlsx"
@@ -114,17 +123,24 @@ class TriangleViewerManual(tk.Tk):
         self.canvas.bind("<Button-4>", self._on_mousewheel)
         self.canvas.bind("<Button-5>", self._on_mousewheel)
 
-        # Pan avec clic milieu (préserve le clic gauche pour le drop)
+        # Pan avec clic milieu (garde le clic gauche pour sélectionner/déplacer)
         self.canvas.bind("<ButtonPress-2>", self._on_pan_start)
         self.canvas.bind("<B2-Motion>", self._on_pan_move)
         self.canvas.bind("<ButtonRelease-2>", self._on_pan_end)
-        # Compat : si pas en drag, on autorise le pan au clic gauche
-        self.canvas.bind("<ButtonPress-1>", self._on_left_press_canvas)
-        self.canvas.bind("<B1-Motion>", self._on_left_motion_canvas)
-        self.canvas.bind("<ButtonRelease-1>", self._on_left_release_canvas)
-        # Suivi du fantôme pendant un drag
+        # Sélection/déplacement au clic gauche
+        self.canvas.bind("<ButtonPress-1>", self._on_canvas_left_down)
+        self.canvas.bind("<B1-Motion>", self._on_canvas_left_move)
+        self.canvas.bind("<ButtonRelease-1>", self._on_canvas_left_up)
+        # Suivi souris : drag fantôme OU rotation
         self.canvas.bind("<Motion>", self._on_canvas_motion_update_drag)
+        # Clic droit : menu contextuel
+        self.canvas.bind("<Button-3>", self._on_canvas_right_click)
 
+        # Menu contextuel
+        self._ctx_menu = tk.Menu(self, tearoff=0)
+        self._ctx_menu.add_command(label="Supprimer", command=self._ctx_delete_selected)
+        self._ctx_menu.add_command(label="Pivoter", command=self._ctx_rotate_selected)
+        self._ctx_menu.add_command(label="OL=0°", command=self._ctx_orient_OL_north)
 
     # ---------- Chargement Excel ----------
     def open_excel(self):
@@ -201,19 +217,48 @@ class TriangleViewerManual(tk.Tk):
             P = _build_local_triangle(float(r["len_OB"]), float(r["len_OL"]), float(r["len_BL"]))
             out.append({
                 "labels": ( "Bourges", str(r["B"]), str(r["L"]) ),  # O,B,L
-                "pts": P
+                "pts": P,
+                "id": int(r["id"])
             })
         return out
 
     # ---------- Mise en page simple (aperçu brut) ----------
     def _triangle_from_index(self, idx):
-        """Construit un triangle 'local' (coord locales) depuis l'index visuel de la listbox."""
+        """Construit un triangle 'local' depuis l’élément sélectionné de la listbox.
+        IMPORTANT: on parse l'ID affiché (NN.) au lieu d'utiliser df.iloc[idx],
+        car la listbox peut avoir des éléments retirés → indices décalés.
+        """
         if getattr(self, "df", None) is None or self.df.empty:
             raise RuntimeError("Pas de données — ouvre d'abord l’Excel.")
-        r = self.df.iloc[idx]
-        P = _build_local_triangle(float(r["len_OB"]), float(r["len_OL"]), float(r["len_BL"]))
-        return {"labels": ("Bourges", str(r["B"]), str(r["L"])), "pts": P}
+        # Récupérer le texte de la listbox et extraire l'id (NN. ...)
+        lb_txt = ""
+        try:
+            if 0 <= idx < self.listbox.size():
+                lb_txt = self.listbox.get(idx)
+        except Exception:
+            pass
+        tri_id = None
+        m = re.match(r"\s*(\d+)\.", str(lb_txt))
+        if m:
+            tri_id = int(m.group(1))
+            row = self.df[self.df["id"] == tri_id]
+            if not row.empty:
+                r = row.iloc[0]
+            else:
+                # secours si pas trouvé (ne devrait pas arriver)
+                r = self.df.iloc[min(max(idx, 0), len(self.df)-1)]
+                tri_id = int(r["id"])
+        else:
+            # si le libellé n'est pas conforme, on retombe sur l'index
+            r = self.df.iloc[min(max(idx, 0), len(self.df)-1)]
+            tri_id = int(r["id"])
 
+        P = _build_local_triangle(float(r["len_OB"]), float(r["len_OL"]), float(r["len_BL"]))
+        return {
+            "labels": ("Bourges", str(r["B"]), str(r["L"])),
+            "pts": P,
+            "id": tri_id,
+        }
 
     def _layout_tris_horizontal(self, tris, gap=0.5, wrap_width=None):
         """
@@ -253,7 +298,7 @@ class TriangleViewerManual(tk.Tk):
                 "B": np.array([P["B"][0] + dx, P["B"][1] + dy]),
                 "L": np.array([P["L"][0] + dx, P["L"][1] + dy]),
             }
-            placed.append({"labels": t["labels"], "pts": Pw})
+            placed.append({"labels": t["labels"], "pts": Pw, "id": t.get("id")})
 
             x_cursor += w + gap
             line_height = max(line_height, h)
@@ -276,10 +321,15 @@ class TriangleViewerManual(tk.Tk):
         # Dessin
         self.canvas.delete("all")
         self._last_drawn = placed
-        for t in placed:
+        for idx, t in enumerate(placed):
             labels = t["labels"]
             P = t["pts"]
-            self._draw_triangle_screen(P, labels=[f"O:{labels[0]}", f"B:{labels[1]}", f"L:{labels[2]}"])
+            tri_id = t.get("id", int(self.df.iloc[start + idx]["id"]))
+            self._draw_triangle_screen(
+                P,
+                labels=[f"O:{labels[0]}", f"B:{labels[1]}", f"L:{labels[2]}"],
+                tri_id=tri_id
+            )
 
         # Fit à l'écran
         self._fit_to_view(placed)
@@ -328,9 +378,14 @@ class TriangleViewerManual(tk.Tk):
         for t in placed:
             labels = t["labels"]
             P = t["pts"]
-            self._draw_triangle_screen(P, labels=[f"O:{labels[0]}", f"B:{labels[1]}", f"L:{labels[2]}"])
+            tri_id = t.get("id")
+            self._draw_triangle_screen(
+                P,
+                labels=[f"O:{labels[0]}", f"B:{labels[1]}", f"L:{labels[2]}"],
+                tri_id=tri_id
+            )
 
-    def _draw_triangle_screen(self, P, outline="black", width=2, labels=None, inset=0.35):
+    def _draw_triangle_screen(self, P, outline="black", width=2, labels=None, inset=0.35, tri_id=None):
         """
         P : dict {'O','B','L'} en coordonnées monde (np.array 2D)
         labels : liste de 3 strings pour O,B,L (facultatif)
@@ -342,18 +397,67 @@ class TriangleViewerManual(tk.Tk):
         for pt in pts_world:
             sx, sy = self._world_to_screen(pt)
             coords += [sx, sy]
-        # 2) tracé
+
+        # 2) tracé du triangle
         self.canvas.create_polygon(*coords, outline=outline, fill="", width=width)
+
+        # 2b) marqueurs colorés par type de bord
+        # O = Ouverture (noir), B = Base (bleu), L = Lumière (jaune)
+        marker_px = 6  # rayon en pixels (indépendant du zoom)
+        def _dot(x, y, fill, outline="black"):
+            r = marker_px
+            self.canvas.create_oval(x - r, y - r, x + r, y + r, fill=fill, outline=outline, width=1)
+
+        # Ouverture / O (noir)
+        Ox, Oy = self._world_to_screen(P["O"])
+        _dot(Ox, Oy, fill="#000000", outline="#000000")
+        # Base / B (bleu)
+        Bx, By = self._world_to_screen(P["B"])
+        _dot(Bx, By, fill="#0000FF", outline="#000000")
+        # Lumière / L (jaune)
+        Lx, Ly = self._world_to_screen(P["L"])
+        _dot(Lx, Ly, fill="#FFD700", outline="#000000")
+
         # 3) barycentre (monde)
         cx = (P["O"][0] + P["B"][0] + P["L"][0]) / 3.0
         cy = (P["O"][1] + P["B"][1] + P["L"][1]) / 3.0
-        # 4) labels
+
+        # numéro du triangle au centre (toujours au-dessus)
+        if tri_id is not None:
+            sx, sy = self._world_to_screen((cx, cy))
+            self.canvas.create_text(
+                sx, sy, text=str(tri_id),
+                anchor="center", font=("Arial", 10, "bold"),
+                fill="red", tags="tri_num"
+            )
+            # amener les numéros en avant-plan
+            self.canvas.tag_raise("tri_num")
+
+        # 4) labels (sans "O:" et sans préfixes "B:" / "L:")
         if labels:
             for pt, txt in zip(pts_world, labels):
+                # Supprimer les préfixes "O:", "B:", "L:" si présents
+                if ":" in txt:
+                    prefix, value = txt.split(":", 1)
+                else:
+                    prefix, value = "", txt
+                prefix = prefix.strip().lower()
+                value  = value.strip()
+
+                # Ne rien afficher pour l'ouverture (on a le point noir)
+                if prefix in ("o", "ouverture", "ouv"):
+                    continue
+
+                # Pour Base/Lumière, n'afficher que la valeur (sans codes/lettres)
+                display = value
+                if not display:
+                    continue
+
                 lx = (1.0 - inset) * pt[0] + inset * cx
                 ly = (1.0 - inset) * pt[1] + inset * cy
                 sx, sy = self._world_to_screen((lx, ly))
-                self.canvas.create_text(sx, sy, text=txt, anchor="center", font=("Arial", 8))
+                self.canvas.create_text(sx, sy, text=display, anchor="center", font=("Arial", 8))
+
 
     # ---------- Mouse navigation ----------
     # Drag depuis la liste
@@ -369,7 +473,8 @@ class TriangleViewerManual(tk.Tk):
         except Exception as e:
             self.status.config(text=f"Erreur: {e}")
             return
-        self._drag = {"triangle": tri}
+        # on mémorise aussi l'index dans la listbox pour retirer l'entrée au dépôt
+        self._drag = {"triangle": tri, "list_index": i}
         # créer un fantôme minimal dès le départ (sera positionné au mouvement)
         if self._drag_preview_id is not None:
             self.canvas.delete(self._drag_preview_id)
@@ -379,30 +484,46 @@ class TriangleViewerManual(tk.Tk):
         self.status.config(text="Glissez le triangle sur le canvas puis relâchez pour le déposer.")
 
     def _on_canvas_motion_update_drag(self, event):
-        if not self._drag:
+        # 1) Drag & drop depuis la liste → fantôme
+        if self._drag:
+            wx = (event.x - self.offset[0]) / self.zoom
+            wy = (self.offset[1] - event.y) / self.zoom
+            tri = self._drag["triangle"]
+            P = tri["pts"]
+            dx = wx - float(P["O"][0])
+            dy = wy - float(P["O"][1])
+            O = np.array([P["O"][0] + dx, P["O"][1] + dy])
+            B = np.array([P["B"][0] + dx, P["B"][1] + dy])
+            L = np.array([P["L"][0] + dx, P["L"][1] + dy])
+            self._drag["world_pts"] = {"O": O, "B": B, "L": L}
+            coords = []
+            for pt in (O, B, L):
+                sx, sy = self._world_to_screen(pt)
+                coords += [sx, sy]
+            if self._drag_preview_id is None:
+                self._drag_preview_id = self.canvas.create_polygon(*coords, outline="gray50", dash=(4,2), fill="", width=2)
+            else:
+                self.canvas.coords(self._drag_preview_id, *coords)
             return
-        # Position monde sous curseur
-        wx = (event.x - self.offset[0]) / self.zoom
-        wy = (self.offset[1] - event.y) / self.zoom
-        tri = self._drag["triangle"]
-        P = tri["pts"]
-        # Translate: placer O sur le curseur
-        dx = wx - float(P["O"][0])
-        dy = wy - float(P["O"][1])
-        O = np.array([P["O"][0] + dx, P["O"][1] + dy])
-        B = np.array([P["B"][0] + dx, P["B"][1] + dy])
-        L = np.array([P["L"][0] + dx, P["L"][1] + dy])
-        # Enregistrer la version monde courante (pré-drop)
-        self._drag["world_pts"] = {"O": O, "B": B, "L": L}
-        # Dessin du fantôme
-        coords = []
-        for pt in (O, B, L):
-            sx, sy = self._world_to_screen(pt)
-            coords += [sx, sy]
-        if self._drag_preview_id is None:
-            self._drag_preview_id = self.canvas.create_polygon(*coords, outline="gray50", dash=(4,2), fill="", width=2)
-        else:
-            self.canvas.coords(self._drag_preview_id, *coords)
+
+        # 2) Mode rotation : suivre la souris sans bouton appuyé
+        if self._sel and self._sel.get("mode") == "rotate":
+            idx = self._sel["idx"]
+            sel = self._sel
+            pivot = sel["pivot"]
+            wx = (event.x - self.offset[0]) / self.zoom
+            wy = (self.offset[1] - event.y) / self.zoom
+            cur_angle = math.atan2(wy - pivot[1], wx - pivot[0])
+            dtheta = cur_angle - sel["start_angle"]
+            c, s = math.cos(dtheta), math.sin(dtheta)
+            R = np.array([[c, -s], [s, c]], dtype=float)
+            P = self._last_drawn[idx]["pts"]
+            for k in ("O", "B", "L"):
+                v = sel["orig_pts"][k] - pivot
+                P[k] = (R @ v) + pivot
+            self._redraw_from(self._last_drawn)
+            self._sel["last_angle"] = cur_angle
+            return
 
     def _place_dragged_triangle(self):
         if not self._drag or "world_pts" not in self._drag:
@@ -410,9 +531,19 @@ class TriangleViewerManual(tk.Tk):
         tri = self._drag["triangle"]
         Pw = self._drag["world_pts"]
         # Ajouter au "document courant"
-        self._last_drawn.append({"labels": tri["labels"], "pts": Pw})
+        self._last_drawn.append({"labels": tri["labels"], "pts": Pw, "id": tri.get("id")})
         self._redraw_from(self._last_drawn)
         self.status.config(text="Triangle déposé.")
+        # Retirer l'élément correspondant de la liste (s'il vient de la listbox)
+        li = self._drag.get("list_index")
+        if isinstance(li, int):
+            try:
+                self.listbox.delete(li)
+            except Exception:
+                pass
+        # Marquer l'id comme posé (évite réinsertion multiple)
+        if tri.get("id") is not None:
+            self._placed_ids.add(int(tri["id"]))
 
     def _cancel_drag(self):
         self._drag = None
@@ -420,26 +551,295 @@ class TriangleViewerManual(tk.Tk):
             self.canvas.delete(self._drag_preview_id)
             self._drag_preview_id = None
 
-    # Compat pan au clic gauche si pas en drag
-    def _on_left_press_canvas(self, event):
+    def _on_escape_key(self, event):
+        """Annuler un drag&drop (liste) ou un déplacement/selection de triangle (avec rollback)."""
         if self._drag:
-            # on ne démarre pas de pan si on est en drag
+            self._cancel_drag()
+            self.status.config(text="Drag annulé (ESC).")
             return
-        self._on_pan_start(event)
+        if self._sel:
+            # rollback si snapshot disponible
+            idx = self._sel.get("idx")
+            orig = self._sel.get("orig_pts")
+            if idx is not None and orig is not None and 0 <= idx < len(self._last_drawn):
+                self._last_drawn[idx]["pts"] = {k: np.array(orig[k].copy()) for k in ("O","B","L")}
+                self._redraw_from(self._last_drawn)
+            self._sel = None
+            self.status.config(text="Action annulée (rollback).")
+#
+# ---------- Sélection / déplacement sur canvas ----------
+    def _tri_centroid(self, P):
+        return np.array([
+            (P["O"][0] + P["B"][0] + P["L"][0]) / 3.0,
+            (P["O"][1] + P["B"][1] + P["L"][1]) / 3.0
+        ], dtype=float)
 
-    def _on_left_motion_canvas(self, event):
-        if self._drag:
-            # en drag : le mouvement est géré par _on_canvas_motion_update_drag
+    def _hit_test(self, x, y):
+        """Retourne ('center'|'vertex'|None, idx) selon la zone cliquée.
+        - 'vertex' si clic dans un disque autour d'un sommet
+        - 'center' si clic à l'intérieur du triangle (hors disques sommets)
+        """
+        if not self._last_drawn:
+            return (None, None)
+        tol2 = float(self._hit_px) ** 2
+        # conversion écran -> monde pour le test d'intérieur
+        wx = (x - self.offset[0]) / self.zoom
+        wy = (self.offset[1] - y) / self.zoom
+        Pw = np.array([wx, wy], dtype=float)        
+
+        # prioriser visuellement le dessus
+        for idx in reversed(range(len(self._last_drawn))):
+            t = self._last_drawn[idx]
+            P = t["pts"]
+
+            # sommets
+            for k in ("O", "B", "L"):
+                sx, sy = self._world_to_screen(P[k])
+                if (sx - x) ** 2 + (sy - y) ** 2 <= tol2:
+                    return ("vertex", idx)
+            # intérieur du triangle (hors disques sommets)
+            if self._point_in_triangle_world(Pw, P["O"], P["B"], P["L"]):
+                # Exclure une zone autour des sommets (rayon des marqueurs)
+                excl_r = (self._marker_px + 2.0) ** 2  # léger coussin
+                for k in ("O", "B", "L"):
+                    vx, vy = self._world_to_screen(P[k])
+                    if (vx - x) ** 2 + (vy - y) ** 2 <= excl_r:
+                        break
+                else:
+                    return ("center", idx)        
+        return (None, None)
+
+
+    @staticmethod
+    def _point_in_triangle_world(P, A, B, C):
+        """Test barycentrique en coordonnées monde : P à l'intérieur de triangle ABC ?"""
+        v0 = np.array([C[0]-A[0], C[1]-A[1]], dtype=float)
+        v1 = np.array([B[0]-A[0], B[1]-A[1]], dtype=float)
+        v2 = np.array([P[0]-A[0], P[1]-A[1]], dtype=float)
+        # Matrice 2x2 inverse via produits scalaires
+        dot00 = v0.dot(v0)
+        dot01 = v0.dot(v1)
+        dot02 = v0.dot(v2)
+        dot11 = v1.dot(v1)
+        dot12 = v1.dot(v2)
+        denom = (dot00 * dot11 - dot01 * dot01)
+        if abs(denom) < 1e-12:
+            return False
+        inv = 1.0 / denom
+        u = (dot11 * dot02 - dot01 * dot12) * inv
+        v = (dot00 * dot12 - dot01 * dot02) * inv
+        return (u >= 0.0) and (v >= 0.0) and (u + v <= 1.0)
+
+    # ---------- Gestion liste déroulante : retrait / réinsertion ----------
+    def _reinsert_triangle_to_list(self, tri):
+        """Réinsère un triangle supprimé du canvas dans la listbox, trié par id."""
+        tri_id = tri.get("id")
+        if tri_id is None:
             return
-        self._on_pan_move(event)
+        # Construire le libellé comme au chargement
+        labels = tri.get("labels", ("", "", ""))
+        b_val = labels[1] if len(labels) > 1 else ""
+        l_val = labels[2] if len(labels) > 2 else ""
+        entry = f"{int(tri_id):02d}. B:{b_val}  L:{l_val}"
 
-    def _on_left_release_canvas(self, event):
+        # Éviter les doublons si déjà présent
+        for idx in range(self.listbox.size()):
+            try:
+                existing = self.listbox.get(idx)
+                # on parse l'id au début (2 chiffres)
+                ex_id = int(str(existing)[:2])
+                if ex_id == int(tri_id):
+                    break
+            except Exception:
+                continue
+        else:
+            # Trouver la position triée par id
+            insert_at = self.listbox.size()
+            for idx in range(self.listbox.size()):
+                try:
+                    ex = self.listbox.get(idx)
+                    ex_id = int(str(ex)[:2])
+                    if int(tri_id) < ex_id:
+                        insert_at = idx
+                        break
+                except Exception:
+                    continue
+            self.listbox.insert(insert_at, entry)
+        # Dé-marquer l'id comme posé
+        if tri_id in self._placed_ids:
+            self._placed_ids.discard(int(tri_id))
+
+    # ---------- Clic droit / menu contextuel ----------
+    def _on_canvas_right_click(self, event):
+        """Affiche le menu contextuel si un triangle est cliqué (intérieur ou sommet)."""
+        # Pas de menu si on est en train de drag depuis la liste
         if self._drag:
-            # Fin de drag: déposer si curseur sur le canvas
+            return
+        mode, idx = self._hit_test(event.x, event.y)
+        if idx is None:
+            return
+        # On ne propose Supprimer que si on est sur un triangle
+        if mode in ("center", "vertex"):
+            self._ctx_target_idx = idx
+            self._ctx_last_rclick = (event.x, event.y)
+
+            try:
+                self._ctx_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                self._ctx_menu.grab_release()
+
+    def _ctx_delete_selected(self):
+        """Supprime le triangle ciblé par le menu contextuel."""
+        idx = self._ctx_target_idx
+        self._ctx_target_idx = None
+        if idx is None:
+            return
+        if 0 <= idx < len(self._last_drawn):
+            # Annule une éventuelle sélection en cours liée à ce triangle
+            if self._sel and self._sel.get("idx") == idx:
+                self._sel = None
+            # Supprime et redessine
+            removed = self._last_drawn.pop(idx)
+            self._redraw_from(self._last_drawn)
+            self.status.config(text=f"Triangle supprimé (id={removed.get('id','?')}).")
+            # Réinsérer dans la liste déroulante au bon endroit
+            self._reinsert_triangle_to_list(removed)
+
+    def _ctx_rotate_selected(self):
+        """Passe en mode rotation autour du barycentre pour le triangle ciblé."""
+        idx = self._ctx_target_idx
+        self._ctx_target_idx = None
+        if idx is None or not (0 <= idx < len(self._last_drawn)):
+            return
+        P = self._last_drawn[idx]["pts"]
+        pivot = self._tri_centroid(P)
+        # snapshot pour rollback
+        orig_pts = {k: np.array(P[k].copy()) for k in ("O","B","L")}
+        # angle de départ = angle (pivot -> curseur au clic droit)
+        if self._ctx_last_rclick:
+            sx, sy = self._ctx_last_rclick
+        else:
+            sx, sy = self._world_to_screen(pivot)
+        wx = (sx - self.offset[0]) / self.zoom
+        wy = (self.offset[1] - sy) / self.zoom
+        start_angle = math.atan2(wy - pivot[1], wx - pivot[0])
+        self._sel = {
+            "mode": "rotate",
+            "idx": idx,
+            "orig_pts": orig_pts,
+            "pivot": np.array(pivot, dtype=float),
+            "start_angle": start_angle,
+        }
+        self.status.config(text="Mode pivoter : bouge la souris pour tourner, clic gauche pour valider, ESC pour annuler.")
+
+    def _ctx_orient_OL_north(self):
+        """
+        Oriente automatiquement le triangle pour que l'azimut du segment
+        Ouverture->Lumière soit 0° = vers le Nord (axe +Y en coords monde).
+        Rotation autour du barycentre (comme le mode Pivoter).
+        """
+        idx = self._ctx_target_idx
+        self._ctx_target_idx = None
+        if idx is None or not (0 <= idx < len(self._last_drawn)):
+            return
+        P = self._last_drawn[idx]["pts"]
+        # vecteur O->L en monde
+        v = np.array([P["L"][0] - P["O"][0], P["L"][1] - P["O"][1]], dtype=float)
+        if float(np.hypot(v[0], v[1])) < 1e-12:
+            return  # triangle dégénéré, rien à faire
+        cur = math.atan2(v[1], v[0])     # angle standard (x->y)
+        target = math.pi / 2.0           # Nord = +Y
+        dtheta = target - cur
+        c, s = math.cos(dtheta), math.sin(dtheta)
+        R = np.array([[c, -s], [s, c]], dtype=float)
+        # pivot : barycentre (cohérent avec le mode Pivoter)
+        pivot = self._tri_centroid(P)
+        for k in ("O", "B", "L"):
+            pt = np.array(P[k], dtype=float)
+            P[k] = (R @ (pt - pivot)) + pivot
+        self._redraw_from(self._last_drawn)
+        self.status.config(text="Orientation appliquée : O→L au Nord (0°).")
+
+    def _on_canvas_left_down(self, event):
+        # priorité au drag & drop depuis la liste
+        if self._drag:
+            return
+        mode, idx = self._hit_test(event.x, event.y)
+        if mode == "center":
+            P = self._last_drawn[idx]["pts"]
+            Cw = self._tri_centroid(P)
+            wx = (event.x - self.offset[0]) / self.zoom
+            wy = (self.offset[1] - event.y) / self.zoom
+            # snapshot pour rollback
+            orig_pts = {k: np.array(P[k].copy()) for k in ("O","B","L")}
+            self._sel = {
+                "mode": "move",
+                "idx": idx,
+                "grab_offset": np.array([wx, wy]) - Cw,
+                "orig_pts": orig_pts,
+            }            
+            self.status.config(text=f"Déplacement du triangle #{self._last_drawn[idx].get('id','?')}")
+        elif mode == "vertex":
+            P = self._last_drawn[idx]["pts"]
+            orig_pts = {k: np.array(P[k].copy()) for k in ("O","B","L")}
+            self._sel = {"mode": "vertex", "idx": idx, "orig_pts": orig_pts}
+            self.status.config(text="Mode sommet (à implémenter).")
+        else:
+            # clic ailleurs : pan au clic gauche
+            self._on_pan_start(event)
+
+    def _on_canvas_left_move(self, event):
+        if self._drag:
+            return  # le drag liste gère déjà le mouvement
+        if not self._sel:
+            self._on_pan_move(event)
+            return
+        if self._sel["mode"] == "move":
+            idx = self._sel["idx"]
+            P = self._last_drawn[idx]["pts"]
+            wx = (event.x - self.offset[0]) / self.zoom
+            wy = (self.offset[1] - event.y) / self.zoom
+            target_c = np.array([wx, wy]) - self._sel["grab_offset"]
+            cur_c = self._tri_centroid(P)
+            d = target_c - cur_c
+            for k in ("O", "B", "L"):
+                P[k] = np.array([P[k][0] + d[0], P[k][1] + d[1]])
+            self._redraw_from(self._last_drawn)
+        elif self._sel["mode"] == "vertex":
+            # futur : déplacement/rotation/contraintes au sommet
+            pass
+        elif self._sel["mode"] == "rotate":
+            # désormais la rotation est gérée dans <Motion> (pas besoin de maintenir le clic)
+            pass
+
+    def _on_canvas_left_up(self, event):
+        if self._drag:
+            # Si aucun mouvement n'a été reçu, on calcule la position de dépôt maintenant
+            if "world_pts" not in self._drag:
+                tri = self._drag["triangle"]
+                P = tri["pts"]
+                wx = (event.x - self.offset[0]) / self.zoom
+                wy = (self.offset[1] - event.y) / self.zoom
+                dx = wx - float(P["O"][0])
+                dy = wy - float(P["O"][1])
+                O = np.array([P["O"][0] + dx, P["O"][1] + dy])
+                B = np.array([P["B"][0] + dx, P["B"][1] + dy])
+                L = np.array([P["L"][0] + dx, P["L"][1] + dy])
+                self._drag["world_pts"] = {"O": O, "B": B, "L": L}
+            # Déposer puis nettoyer l'état de drag
             self._place_dragged_triangle()
             self._cancel_drag()
             return
-        self._on_pan_end(event)
+        if self._sel:
+            if self._sel.get("mode") == "rotate":
+                # validation de la rotation au clic gauche
+                self._sel = None
+                self.status.config(text="Rotation validée.")
+            else:
+                self._sel = None
+                self.status.config(text="Sélection terminée.")
+        else:
+            self._on_pan_end(event)
 
     def _on_mousewheel(self, event):
         # Normalize wheel delta across platforms
