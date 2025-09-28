@@ -53,7 +53,10 @@ class TriangleViewerManual(tk.Tk):
         self._ctx_target_idx = None   # index du triangle visé par clic droit (menu contextuel)
         self._placed_ids = set()      # ids déjà posés (retirés de la liste)
         self._ctx_last_rclick = None  # dernière position écran du clic droit (pour pivoter)
-
+        self._nearest_line_id = None  # trait d'aide "sommet le plus proche"
+        self._edge_highlight_ids = [] # surlignage des 2 arêtes (mobile/cible)
+        self._edge_choice = None      # (i_mob, key_mob, edge_m, i_tgt, key_tgt, edge_t)
+        
         # état IHM
         self.triangle_file = tk.StringVar(value="")
         self.start_index = tk.IntVar(value=1)
@@ -140,6 +143,7 @@ class TriangleViewerManual(tk.Tk):
         self._ctx_menu = tk.Menu(self, tearoff=0)
         self._ctx_menu.add_command(label="Supprimer", command=self._ctx_delete_selected)
         self._ctx_menu.add_command(label="Pivoter", command=self._ctx_rotate_selected)
+        self._ctx_menu.add_command(label="Inverser", command=self._ctx_flip_selected)
         self._ctx_menu.add_command(label="OL=0°", command=self._ctx_orient_OL_north)
 
     # ---------- Chargement Excel ----------
@@ -218,7 +222,8 @@ class TriangleViewerManual(tk.Tk):
             out.append({
                 "labels": ( "Bourges", str(r["B"]), str(r["L"]) ),  # O,B,L
                 "pts": P,
-                "id": int(r["id"])
+                "id": int(r["id"]),
+                "mirrored": False,
             })
         return out
 
@@ -258,6 +263,7 @@ class TriangleViewerManual(tk.Tk):
             "labels": ("Bourges", str(r["B"]), str(r["L"])),
             "pts": P,
             "id": tri_id,
+            "mirrored": False,   # <— toujours présent dès la création
         }
 
     def _layout_tris_horizontal(self, tris, gap=0.5, wrap_width=None):
@@ -298,7 +304,7 @@ class TriangleViewerManual(tk.Tk):
                 "B": np.array([P["B"][0] + dx, P["B"][1] + dy]),
                 "L": np.array([P["L"][0] + dx, P["L"][1] + dy]),
             }
-            placed.append({"labels": t["labels"], "pts": Pw, "id": t.get("id")})
+            placed.append({"labels": t["labels"], "pts": Pw, "id": t.get("id"), "mirrored": t.get("mirrored", False)})
 
             x_cursor += w + gap
             line_height = max(line_height, h)
@@ -328,7 +334,8 @@ class TriangleViewerManual(tk.Tk):
             self._draw_triangle_screen(
                 P,
                 labels=[f"O:{labels[0]}", f"B:{labels[1]}", f"L:{labels[2]}"],
-                tri_id=tri_id
+                tri_id=tri_id,
+                tri_mirrored=t.get("mirrored", False),
             )
 
         # Fit à l'écran
@@ -338,6 +345,11 @@ class TriangleViewerManual(tk.Tk):
     def clear_canvas(self):
         self.canvas.delete("all")
         self._last_drawn = []
+        # aussi remettre à zéro l'aide "sommet le plus proche"
+        self._nearest_line_id = None
+        self._clear_edge_highlights()
+        # Par défaut : aucun choix mémorisé
+        self._edge_choice = None        
         self.status.config(text="Canvas effacé")
 
     def _world_to_screen(self, p):
@@ -375,6 +387,9 @@ class TriangleViewerManual(tk.Tk):
 
     def _redraw_from(self, placed):
         self.canvas.delete("all")
+        # l'ID de la ligne n'est plus valide après delete("all")
+        self._nearest_line_id = None
+        self._clear_edge_highlights()
         for t in placed:
             labels = t["labels"]
             P = t["pts"]
@@ -382,10 +397,11 @@ class TriangleViewerManual(tk.Tk):
             self._draw_triangle_screen(
                 P,
                 labels=[f"O:{labels[0]}", f"B:{labels[1]}", f"L:{labels[2]}"],
-                tri_id=tri_id
+                tri_id=tri_id,
+                tri_mirrored=t.get("mirrored", False)                
             )
 
-    def _draw_triangle_screen(self, P, outline="black", width=2, labels=None, inset=0.35, tri_id=None):
+    def _draw_triangle_screen(self, P, outline="black", width=2, labels=None, inset=0.35, tri_id=None, tri_mirrored=False):
         """
         P : dict {'O','B','L'} en coordonnées monde (np.array 2D)
         labels : liste de 3 strings pour O,B,L (facultatif)
@@ -425,8 +441,9 @@ class TriangleViewerManual(tk.Tk):
         # numéro du triangle au centre (toujours au-dessus)
         if tri_id is not None:
             sx, sy = self._world_to_screen((cx, cy))
+            num_txt = f"{tri_id}{'S' if tri_mirrored else ''}"
             self.canvas.create_text(
-                sx, sy, text=str(tri_id),
+                sx, sy, text=num_txt,
                 anchor="center", font=("Arial", 10, "bold"),
                 fill="red", tags="tri_num"
             )
@@ -456,8 +473,18 @@ class TriangleViewerManual(tk.Tk):
                 lx = (1.0 - inset) * pt[0] + inset * cx
                 ly = (1.0 - inset) * pt[1] + inset * cy
                 sx, sy = self._world_to_screen((lx, ly))
-                self.canvas.create_text(sx, sy, text=display, anchor="center", font=("Arial", 8))
+                self.canvas.create_text(sx, sy, text=display, anchor="center", font=("Arial", 8), tags="tri_label")
 
+        # 5) numéro du triangle (toujours affiché après les labels, en avant-plan)
+        if tri_id is not None:
+            sx, sy = self._world_to_screen((cx, cy))
+            num_txt = f"{tri_id}{'S' if tri_mirrored else ''}"
+            self.canvas.create_text(
+                sx, sy, text=num_txt,
+                anchor="center", font=("Arial", 10, "bold"),
+                fill="red", tags="tri_num"
+            )
+            self.canvas.tag_raise("tri_num")
 
     # ---------- Mouse navigation ----------
     # Drag depuis la liste
@@ -525,13 +552,169 @@ class TriangleViewerManual(tk.Tk):
             self._sel["last_angle"] = cur_angle
             return
 
+    # ---------- Lien + surlignage faces candidates ----------
+    def _find_nearest_vertex(self, v_world, exclude_idx=None):
+        """Retourne (idx_triangle, key('O'|'B'|'L'), pos_world) du sommet d'un AUTRE triangle le plus proche."""
+        best = None
+        best_d2 = None
+        for j, t in enumerate(self._last_drawn):
+            if j == exclude_idx:
+                continue
+            P = t["pts"]
+            for k in ("O","B","L"):
+                w = np.array(P[k], dtype=float)
+                d2 = float((w[0]-v_world[0])**2 + (w[1]-v_world[1])**2)
+                if (best_d2 is None) or (d2 < best_d2):
+                    best_d2 = d2
+                    best = (j, k, w)
+        return best
+
+    def _update_nearest_line(self, v_world, exclude_idx=None):
+        """Dessine (ou MAJ) un trait fin entre v_world et le sommet le plus proche d'un AUTRE triangle."""
+        found = self._find_nearest_vertex(v_world, exclude_idx=exclude_idx)
+        if found is None:
+            self._clear_nearest_line()
+            return
+        _, _, best = found
+        # tracer/mettre à jour
+        x1, y1 = self._world_to_screen(v_world)
+        x2, y2 = self._world_to_screen(best)
+        if self._nearest_line_id is None:
+            self._nearest_line_id = self.canvas.create_line(x1, y1, x2, y2, fill="#888888", width=1)
+        else:
+            self.canvas.coords(self._nearest_line_id, x1, y1, x2, y2)
+
+    def _clear_nearest_line(self):
+        if self._nearest_line_id is not None:
+            try:
+                self.canvas.delete(self._nearest_line_id)
+            except Exception:
+                pass
+            self._nearest_line_id = None
+
+    def _update_edge_highlights(self, i_mob, key_mob, i_tgt, key_tgt):
+        """
+        Surligne les DEUX arêtes candidates à coller.
+        Règle retenue :
+          1) azimuts sur [0, 2π) (pas de +π).
+          2) on choisit le couple au Δ d’azimut minimal (distance circulaire).
+          3) filtre anti-chevauchement très simple basé sur le SIGNE :
+             si au mobile, l'autre arête (depuis le même sommet) est à +δ (sens anti-horaire)
+             par rapport à l'arête choisie, alors au triangle cible l'autre arête doit être à −δ
+             (sens horaire) — i.e. signes opposés.
+        """
+        self._clear_edge_highlights()
+
+        def incident_edges(vkey):
+            if vkey == "O":   return [("O","B"), ("O","L")]
+            if vkey == "B":   return [("B","O"), ("B","L")]
+            else:             return [("L","O"), ("L","B")]
+
+        def dir_angle_2pi(P, a, b):
+            """Angle orienté de l’arête (a->b) sur [0, 2π)."""
+            vx = float(P[b][0] - P[a][0]); vy = float(P[b][1] - P[a][1])
+            ang = math.atan2(vy, vx)
+            return ang + (2*math.pi if ang < 0 else 0.0)
+
+        def ang_diff_2pi(a, b):
+            """Distance angulaire circulaire min(|a-b|, 2π-|a-b|)."""
+            d = abs(a - b)
+            return (2*math.pi - d) if d > math.pi else d
+
+        def wrap_pi(a):
+            """Normalise un angle en (-π, π]."""
+            while a <= -math.pi: a += 2*math.pi
+            while a >   math.pi: a -= 2*math.pi
+            return a
+
+        def incident_edges(vkey):
+            if vkey == "O":   return [("O","B"), ("O","L")]
+            if vkey == "B":   return [("B","O"), ("B","L")]
+            else:             return [("L","O"), ("L","B")]
+
+        def other_endpoint_key(vkey, chosen):
+            """Retourne la clé du 2e voisin depuis vkey, autre que chosen[1]."""
+            if vkey == "O":
+                return "L" if chosen == ("O","B") else "B"
+            if vkey == "B":
+                return "L" if chosen == ("B","O") else "O"
+            # vkey == "L"
+            return "B" if chosen == ("L","O") else "O"
+
+        Pm = self._last_drawn[i_mob]["pts"]
+        Pt = self._last_drawn[i_tgt]["pts"]
+        Vm = np.array(Pm[key_mob], dtype=float)
+        Vt = np.array(Pt[key_tgt], dtype=float)
+
+        cand_m = incident_edges(key_mob)
+        cand_t = incident_edges(key_tgt)
+
+        # Recherche du couple (am->bm) / (at->bt) au Δ d’azimut minimal (mod 2π),
+        # avec filtre signe opposé sur l'angle vers "l'autre" arête autour du sommet.
+        best_m, best_t, best_delta = None, None, 1e9
+        for am, bm in cand_m:
+            am_ang = dir_angle_2pi(Pm, am, bm)
+            # angle signé vers l'autre arête au MOBILE
+            mob_other_key = other_endpoint_key(key_mob, (am, bm))
+            am_other_ang  = dir_angle_2pi(Pm, key_mob, mob_other_key)
+            mob_signed    = wrap_pi(am_other_ang - am_ang)  # >0: l'autre est à gauche (CCW)
+            for at, bt in cand_t:
+                at_ang = dir_angle_2pi(Pt, at, bt)
+                # angle signé vers l'autre arête au CIBLE
+                tgt_other_key = other_endpoint_key(key_tgt, (at, bt))
+                at_other_ang  = dir_angle_2pi(Pt, key_tgt, tgt_other_key)
+                tgt_signed    = wrap_pi(at_other_ang - at_ang)
+
+                # filtre "signe opposé" : on veut mob_signed * tgt_signed < 0
+                # (si l'un est +δ, l'autre doit être −δ).
+                if mob_signed == 0 or tgt_signed == 0:
+                    # cas très rare (arêtes colinéaires) — on n'exclut pas, mais on peut
+                    # ignorer ce filtre; sinon, imposer strictement <0 :
+                    pass
+                else:
+                    if mob_signed * tgt_signed >= 0:
+                        continue
+
+                d = ang_diff_2pi(am_ang, at_ang)
+                if d < best_delta:
+                    best_delta = d
+                    best_m = (am, bm)
+                    best_t = (at, bt)
+
+        # Dessin (couleur orange, un peu plus épais)
+        def draw_edge(P, a, b, color="#FF7F0E"):
+            x1,y1 = self._world_to_screen(P[a]); x2,y2 = self._world_to_screen(P[b])
+            return self.canvas.create_line(x1,y1,x2,y2, fill=color, width=3)
+
+        if best_m and best_t:
+            self._edge_highlight_ids.append(draw_edge(Pm, *best_m, color="#FF7F0E"))
+            self._edge_highlight_ids.append(draw_edge(Pt, *best_t, color="#FF7F0E"))
+            for _id in self._edge_highlight_ids:
+                try: self.canvas.tag_raise(_id)
+                except Exception: pass
+            # Mémoriser le couple retenu (servira au "collage" à la fin du drag)
+            self._edge_choice = (i_mob, key_mob, best_m, i_tgt, key_tgt, best_t)
+
+    def _clear_edge_highlights(self):
+        if self._edge_highlight_ids:
+            for _id in self._edge_highlight_ids:
+                try: self.canvas.delete(_id)
+                except Exception: pass
+        self._edge_highlight_ids = []
+        self._edge_choice = None
+
     def _place_dragged_triangle(self):
         if not self._drag or "world_pts" not in self._drag:
             return
         tri = self._drag["triangle"]
         Pw = self._drag["world_pts"]
         # Ajouter au "document courant"
-        self._last_drawn.append({"labels": tri["labels"], "pts": Pw, "id": tri.get("id")})
+        self._last_drawn.append({
+            "labels": tri["labels"],
+            "pts": Pw,
+            "id": tri.get("id"),
+            "mirrored": tri.get("mirrored", False)  # <— on conserve l’état
+        })
         self._redraw_from(self._last_drawn)
         self.status.config(text="Triangle déposé.")
         # Retirer l'élément correspondant de la liste (s'il vient de la listbox)
@@ -566,6 +749,8 @@ class TriangleViewerManual(tk.Tk):
                 self._redraw_from(self._last_drawn)
             self._sel = None
             self.status.config(text="Action annulée (rollback).")
+            self._clear_nearest_line()         
+            self._clear_edge_highlights()               
 #
 # ---------- Sélection / déplacement sur canvas ----------
     def _tri_centroid(self, P):
@@ -575,12 +760,12 @@ class TriangleViewerManual(tk.Tk):
         ], dtype=float)
 
     def _hit_test(self, x, y):
-        """Retourne ('center'|'vertex'|None, idx) selon la zone cliquée.
+        """Retourne ('center'|'vertex'|None, idx, extra) selon la zone cliquée.
         - 'vertex' si clic dans un disque autour d'un sommet
         - 'center' si clic à l'intérieur du triangle (hors disques sommets)
         """
         if not self._last_drawn:
-            return (None, None)
+            return (None, None, None)
         tol2 = float(self._hit_px) ** 2
         # conversion écran -> monde pour le test d'intérieur
         wx = (x - self.offset[0]) / self.zoom
@@ -596,7 +781,7 @@ class TriangleViewerManual(tk.Tk):
             for k in ("O", "B", "L"):
                 sx, sy = self._world_to_screen(P[k])
                 if (sx - x) ** 2 + (sy - y) ** 2 <= tol2:
-                    return ("vertex", idx)
+                    return ("vertex", idx, k)
             # intérieur du triangle (hors disques sommets)
             if self._point_in_triangle_world(Pw, P["O"], P["B"], P["L"]):
                 # Exclure une zone autour des sommets (rayon des marqueurs)
@@ -606,8 +791,8 @@ class TriangleViewerManual(tk.Tk):
                     if (vx - x) ** 2 + (vy - y) ** 2 <= excl_r:
                         break
                 else:
-                    return ("center", idx)        
-        return (None, None)
+                    return ("center", idx, None)
+        return (None, None, None)
 
 
     @staticmethod
@@ -675,7 +860,7 @@ class TriangleViewerManual(tk.Tk):
         # Pas de menu si on est en train de drag depuis la liste
         if self._drag:
             return
-        mode, idx = self._hit_test(event.x, event.y)
+        mode, idx, extra = self._hit_test(event.x, event.y)
         if idx is None:
             return
         # On ne propose Supprimer que si on est sur un triangle
@@ -760,11 +945,41 @@ class TriangleViewerManual(tk.Tk):
         self._redraw_from(self._last_drawn)
         self.status.config(text="Orientation appliquée : O→L au Nord (0°).")
 
+    def _ctx_flip_selected(self):
+        """
+        Inverse le triangle par symétrie axiale autour de la droite (O→L) passant par le barycentre.
+        Ajoute 'S' après le numéro tant que le triangle est inversé.
+        """
+        idx = self._ctx_target_idx
+        self._ctx_target_idx = None
+        if idx is None or not (0 <= idx < len(self._last_drawn)):
+            return
+        t = self._last_drawn[idx]
+        P = t["pts"]
+        # axe = direction O->L ; pivot = barycentre
+        axis = np.array([P["L"][0] - P["O"][0], P["L"][1] - P["O"][1]], dtype=float)
+        nrm = float(np.hypot(axis[0], axis[1]))
+        if nrm < 1e-12:
+            return
+        u = axis / nrm
+        pivot = self._tri_centroid(P)
+        # matrice de réflexion : R = 2 uu^T - I
+        R = np.array([[2*u[0]*u[0] - 1, 2*u[0]*u[1]],
+                      [2*u[0]*u[1],     2*u[1]*u[1] - 1]], dtype=float)
+        for k in ("O", "B", "L"):
+            v = np.array([P[k][0] - pivot[0], P[k][1] - pivot[1]], dtype=float)
+            Pv = (R @ v) + pivot
+            P[k] = Pv
+        # toggle du flag 'mirrored'
+        t["mirrored"] = not t.get("mirrored", False)
+        self._redraw_from(self._last_drawn)
+        self.status.config(text=f"Inversion appliquée (id={t.get('id','?')}{'S' if t['mirrored'] else ''}).")
+
     def _on_canvas_left_down(self, event):
         # priorité au drag & drop depuis la liste
         if self._drag:
             return
-        mode, idx = self._hit_test(event.x, event.y)
+        mode, idx, extra = self._hit_test(event.x, event.y)
         if mode == "center":
             P = self._last_drawn[idx]["pts"]
             Cw = self._tri_centroid(P)
@@ -780,10 +995,27 @@ class TriangleViewerManual(tk.Tk):
             }            
             self.status.config(text=f"Déplacement du triangle #{self._last_drawn[idx].get('id','?')}")
         elif mode == "vertex":
+            # déplacement par sommet (translation comme 'center', mais calée sur le sommet choisi)
+            vkey = extra or "O"
             P = self._last_drawn[idx]["pts"]
+            wx = (event.x - self.offset[0]) / self.zoom
+            wy = (self.offset[1] - event.y) / self.zoom
             orig_pts = {k: np.array(P[k].copy()) for k in ("O","B","L")}
-            self._sel = {"mode": "vertex", "idx": idx, "orig_pts": orig_pts}
-            self.status.config(text="Mode sommet (à implémenter).")
+            self._sel = {
+                "mode": "vertex",
+                "idx": idx,
+                "vkey": vkey,
+                "grab_offset": np.array([wx, wy]) - np.array(P[vkey], dtype=float),
+                "orig_pts": orig_pts,
+            }
+            # Affiche immédiatement la liaison + surlignage des arêtes candidates
+            v_world = np.array(P[vkey], dtype=float)
+            tgt = self._find_nearest_vertex(v_world, exclude_idx=idx)
+            if tgt is not None:
+                (j, tgt_key, w) = tgt
+                self._update_nearest_line(v_world, exclude_idx=idx)
+                self._update_edge_highlights(idx, vkey, j, tgt_key)
+            self.status.config(text=f"Déplacement par sommet {vkey}.")
         else:
             # clic ailleurs : pan au clic gauche
             self._on_pan_start(event)
@@ -806,8 +1038,25 @@ class TriangleViewerManual(tk.Tk):
                 P[k] = np.array([P[k][0] + d[0], P[k][1] + d[1]])
             self._redraw_from(self._last_drawn)
         elif self._sel["mode"] == "vertex":
-            # futur : déplacement/rotation/contraintes au sommet
-            pass
+            # translation calée sur un sommet précis
+            idx = self._sel["idx"]
+            vkey = self._sel["vkey"]
+            wx = (event.x - self.offset[0]) / self.zoom
+            wy = (self.offset[1] - event.y) / self.zoom
+            target_v = np.array([wx, wy]) - self._sel["grab_offset"]
+            P = self._last_drawn[idx]["pts"]
+            cur_v = np.array(P[vkey], dtype=float)
+            d = target_v - cur_v
+            for k in ("O", "B", "L"):
+                P[k] = np.array([P[k][0] + d[0], P[k][1] + d[1]])
+            # Redessine d'abord les triangles (efface tout), puis recrée le trait d'aide
+            self._redraw_from(self._last_drawn)
+            v_world = np.array(P[vkey], dtype=float)
+            tgt = self._find_nearest_vertex(v_world, exclude_idx=idx)
+            if tgt is not None:
+                (j, tgt_key, w) = tgt
+                self._update_nearest_line(v_world, exclude_idx=idx)
+                self._update_edge_highlights(idx, vkey, j, tgt_key)
         elif self._sel["mode"] == "rotate":
             # désormais la rotation est gérée dans <Motion> (pas besoin de maintenir le clic)
             pass
@@ -835,9 +1084,58 @@ class TriangleViewerManual(tk.Tk):
                 # validation de la rotation au clic gauche
                 self._sel = None
                 self.status.config(text="Rotation validée.")
+            elif self._sel.get("mode") == "vertex":
+                # --- COLLAGE EFFECTIF SI ON A UN COUPLE D'ARÊTES CHOISI ---
+                try:
+                    choice = self._edge_choice
+                    idx   = self._sel.get("idx")
+                    vkey  = self._sel.get("vkey")
+                    if choice and idx is not None and choice[0] == idx and choice[1] == vkey:
+                        i_mob, key_mob, edge_m, i_tgt, key_tgt, edge_t = choice
+                        Pm = self._last_drawn[i_mob]["pts"]
+                        Pt = self._last_drawn[i_tgt]["pts"]
+                        # 1) Translation : faire coïncider les sommets reliés (key_mob -> key_tgt)
+                        vm = np.array(Pm[key_mob], dtype=float)
+                        vt = np.array(Pt[key_tgt], dtype=float)
+                        T  = vt - vm
+                        for k in ("O","B","L"):
+                            Pm[k] = np.array(Pm[k], dtype=float) + T
+                        # 2) Rotation autour du sommet commun pour coller les arêtes (opposées)
+                        #    mobile : key_mob -> other_m, cible : key_tgt -> other_t
+                        other_m = edge_m[1]
+                        other_t = edge_t[1]
+                        vm = np.array(Pm[key_mob], dtype=float)      # (mis à jour après translation)
+                        bm = np.array(Pm[other_m], dtype=float)
+                        vt = np.array(Pt[key_tgt], dtype=float)
+                        bt = np.array(Pt[other_t], dtype=float)
+                        v_m = bm - vm
+                        v_t = bt - vt
+                        ang_m = math.atan2(float(v_m[1]), float(v_m[0]))
+                        ang_t = math.atan2(float(v_t[1]), float(v_t[0]))
+                        # on veut que v_m s'aligne sur v_t en SENS OPPOSÉ (partage d'arête)
+                        dtheta = (ang_t - ang_m)
+
+                        # (optionnel) normaliser dans (-π, π] pour éviter une grande rotation
+                        while dtheta <= -math.pi: dtheta += 2*math.pi
+                        while dtheta >   math.pi: dtheta -= 2*math.pi
+                        c, s = math.cos(dtheta), math.sin(dtheta)
+                        R = np.array([[c, -s],[s, c]], dtype=float)
+                        for k in ("O","B","L"):
+                            p = np.array(Pm[k], dtype=float)
+                            Pm[k] = (R @ (p - vm)) + vm
+                        # Redessin + message
+                        self._redraw_from(self._last_drawn)
+                        self.status.config(text="Triangles collés (sommets et arêtes alignés).")
+                except Exception:
+                    # en cas de souci, on termine simplement la sélection
+                    pass
+                self._sel = None
             else:
                 self._sel = None
                 self.status.config(text="Sélection terminée.")
+            # effacer le trait de proximité s'il existe
+            self._clear_nearest_line()
+            self._clear_edge_highlights()
         else:
             self._on_pan_end(event)
 
