@@ -13,46 +13,20 @@ from tkinter import filedialog, messagebox
 from typing import Optional, List, Dict, Tuple
 
 # ---------- Utils géométrie ----------
-def _poly_from_tris(tris):
-    """Construit la forme solide (Polygon/MultiPolygon) d'une liste de triangles."""
-    polys = []
-    for tri in tris:
-        # tri peut être {"p": {"O":..,"B":..,"L":..}} ou directement {"O":..,"B":..,"L":..}
-        p = tri.get("p", tri)
-        poly = _ShPoly([tuple(p["O"]), tuple(p["B"]), tuple(p["L"])])
-        if poly.is_valid and poly.area > 0:
-            polys.append(poly)
-    if not polys:
-        return None
-    # union + buffer(0) pour "nettoyer" les micro-fentes
-    return _sh_union(polys).buffer(0)
-
-def _groups_overlap_solid(mob_pose, tgt_group_tris, mob_group_tris=None, eps=1e-9, debug_label=None):
+def _overlap_shrink(S_m, S_t, stroke_px: float, zoom: float) -> bool:
     """
-    Retourne True s'il y a recouvrement d’aire entre :
-      - la source (triangle posé ou groupe posé)
-      - le groupe cible
+    Anti-chevauchement unique et partagé : SHRINK-ONLY sur les deux solides.
+    - Rétrécit S_m et S_t de 2× (stroke_px / zoom) en unités monde,
+      puis teste l'intersection des solides réduits.
+    - Retourne True si chevauchement détecté, False sinon.
     """
-    # Si la source est un seul triangle, on fabrique un "groupe" d'un seul tri
-    if mob_group_tris is None:
-        mob_group_tris = [{"p": mob_pose}]
-
-    mob_poly = _poly_from_tris(mob_group_tris)
-    tgt_poly = _poly_from_tris(tgt_group_tris)
-    if (mob_poly is None) or (tgt_poly is None):
+    shrink_world = 2.0 * (float(stroke_px) / max(zoom, 1e-9))
+    S_t_shrunk = S_t.buffer(-shrink_world).buffer(0)
+    S_m_shrunk = S_m.buffer(-shrink_world).buffer(0)
+    if S_t_shrunk.is_empty or S_m_shrunk.is_empty:
         return False
+    return S_m_shrunk.intersects(S_t_shrunk)
 
-    # INTÉRIEURS STRICTS : on ne compte pas les bords collés
-    # (un seul shrink ici — évite les faux négatifs si triangles fins)
-    mob_in = mob_poly.buffer(-eps).buffer(0)
-    tgt_in = tgt_poly.buffer(-eps).buffer(0)
-    if mob_in.is_empty or tgt_in.is_empty:
-        return False
-
-    inter = mob_in.intersection(tgt_in)
-    if debug_label:
-        print(f"[DBG] Solid-overlap {debug_label}: area={getattr(inter,'area',0.0):.6g}")
-    return (not inter.is_empty) and (getattr(inter, "area", 0.0) > 0.0)
 
 def _tri_shape(P: Dict[str, np.ndarray]):
     """Triangle → Polygon (brut, sans rétrécissement)."""
@@ -75,9 +49,6 @@ def _group_shape_from_nodes(nodes, last_drawn):
     # nettoie et unionne
     return unary_union([p.buffer(0) for p in polys])
 
-def _unit(v: np.ndarray) -> np.ndarray:
-    n = float(np.hypot(v[0], v[1]))
-    return v / (n if n else 1.0)
 
 def _build_local_triangle(OB: float, OL: float, BL: float) -> dict:
     """
@@ -134,24 +105,6 @@ def _point_in_triangle_strict(P, A, B, C, eps=1e-9) -> bool:
     poly_shrunk = poly.buffer(-eps)
     return poly_shrunk.contains(pt)
 
-def _edge_overlaps_group(edge_a: Tuple[np.ndarray,np.ndarray],
-                         group_tris: List[Dict],
-                         exclude: Optional[Tuple[int,Tuple[str,str]]] = None,
-                         eps: float = 1e-9) -> bool:
-    """
-    Vrai si l'arête 'edge_a' coupe une des arêtes des triangles du groupe.
-    - group_tris: liste de dicts {'idx': int, 'P': pts monde}
-    - exclude: (idx, ("A","B")) pour ignorer une arête précise du groupe.
-    """
-    A1, A2 = edge_a
-    for tri in group_tris:
-        tid = tri["idx"]; P = tri["P"]
-        for (B1, B2, keys) in _segments_from_pts(P):
-            if exclude and exclude[0] == tid and exclude[1] == keys:
-                continue
-            if _seg_intersect_strict(A1, A2, B1, B2, eps=eps):
-                return True
-    return False
 
 # --- Égalité géométrique (avec tolérance) ---
 def _same_point(p: np.ndarray, q: np.ndarray, eps: float = 1e-6) -> bool:
@@ -165,11 +118,6 @@ def _point_on_segment(C: np.ndarray, A: np.ndarray, B: np.ndarray, eps: float = 
     dot = (AC[0]*AB[0] + AC[1]*AB[1]); ab2 = (AB[0]*AB[0] + AB[1]*AB[1])
     return -eps <= dot <= ab2 + eps
 
-def _same_segment(a1: np.ndarray, a2: np.ndarray,
-                  b1: np.ndarray, b2: np.ndarray, eps: float = 1e-6) -> bool:
-    """Vrai si (a1,a2) et (b1,b2) représentent la même arête (orientation ignorée)."""
-    return (_same_point(a1, b1, eps) and _same_point(a2, b2, eps)) or \
-           (_same_point(a1, b2, eps) and _same_point(a2, b1, eps))
 
 # --- Simulation d'une pose (pour filtrer le chevauchement après collage) ---
 def _apply_R_T_on_P(P: Dict[str,np.ndarray], R: np.ndarray, T: np.ndarray, pivot: np.ndarray) -> Dict[str,np.ndarray]:
@@ -194,198 +142,6 @@ def _pose_params(Pm: Dict[str,np.ndarray], am: str, bm: str, Vm: np.ndarray,
     Vm_rot = (R @ (np.array(Pm[am], float) - pivot)) + pivot
     T = np.array(Vt, float) - Vm_rot
     return R, T, pivot
-
-def _mobile_shape_after_pose(mob_idx: int, vkey_m: str, mob_neighbor_key: str,
-                             tgt_idx: int, tgt_vkey: str, tgt_other_key: str,
-                             viewer):
-    """
-    Construit la SHAPE (Polygon/MultiPolygon) du *mobile* après pose :
-    - si le mobile n’a pas de group_id → triangle seul posé,
-    - sinon → union des triangles du groupe, tous posés avec la même (R,T).
-    """
-    tri_m = viewer._last_drawn[mob_idx]
-    tri_t = viewer._last_drawn[tgt_idx]
-    Pm, Pt = tri_m["pts"], tri_t["pts"]
-
-    # 1) paramètres de pose (mêmes pour tous les triangles du groupe mobile)
-    R, T, pivot = _pose_params(Pm, vkey_m, mob_neighbor_key, Pm[vkey_m],
-                               Pt, tgt_vkey, tgt_other_key, Pt[tgt_vkey])
-
-    def _pose_pts(P):
-        out = {}
-        for k in ("O","B","L"):
-            v = np.array(P[k], float)
-            out[k] = (R @ (v - pivot)) + pivot + T
-        return out
-
-    gid_m = tri_m.get("group_id")
-    if gid_m is None:
-        # triangle seul
-        Pm_pose = _pose_pts(Pm)
-        return _tri_shape(Pm_pose)
-    else:
-        # groupe mobile → union des triangles posés
-        polys = []
-        for nd in viewer._group_nodes(gid_m):
-            tid = nd.get("tid")
-            if tid is None or not (0 <= tid < len(viewer._last_drawn)):
-                continue
-            P = viewer._last_drawn[tid]["pts"]
-            P_pose = _pose_pts(P)
-            polys.append(_tri_shape(P_pose))
-        if not polys:
-            return None
-        return unary_union([p.buffer(0) for p in polys])
-
-def _simulate_pose(Pm: Dict[str,np.ndarray], am: str, bm: str, Vm: np.ndarray,
-                   Pt: Dict[str,np.ndarray], at: str, bt: str, Vt: np.ndarray) -> Dict[str,np.ndarray]:
-    """
-    Calcule le triangle mobile posé lorsque (am->bm) est alignée sur (at->bt)
-    et le sommet 'Vm' est soudé sur 'Vt'.
-    """
-    vm_dir = np.array(Pm[bm], dtype=float) - np.array(Pm[am], dtype=float)
-    vt_dir = np.array(Pt[bt], dtype=float) - np.array(Pt[at], dtype=float)
-    ang_m = math.atan2(vm_dir[1], vm_dir[0])
-    ang_t = math.atan2(vt_dir[1], vt_dir[0])
-    dtheta = ang_t - ang_m
-    c, s = math.cos(dtheta), math.sin(dtheta)
-    R = np.array([[c, -s],[s, c]], dtype=float)
-    # rotation autour du sommet mobile cliqué, puis translation pour coller sur le sommet cible
-    Pm_rot = _apply_R_T_on_P(Pm, R, T=np.zeros(2), pivot=np.array(Vm, dtype=float))
-    Vm_rot = np.array(Pm_rot[am], dtype=float)  # 'am' après rotation
-    T = np.array(Vt, dtype=float) - Vm_rot
-    return _apply_R_T_on_P(Pm_rot, np.eye(2), T, pivot=np.array(Vm_rot, dtype=float))
-
-def _tri_overlaps_group(Ptri: Dict[str,np.ndarray],
-                        group_tris: List[Dict[str, np.ndarray]],
-                        exclude_edge: Optional[Tuple[int,Tuple[str,str]]] = None,
-                        shared_vertex: Optional[np.ndarray] = None,
-                        allowed_shared_segment: Optional[Tuple[np.ndarray, np.ndarray]] = None,
-                        # NEW: arête mobile utilisée pour le collage (à ignorer dans les tests)
-                        exclude_m_edge: Optional[Tuple[str,str]] = None,
-                        debug_label: Optional[str] = None) -> bool:
-    """
-    Vrai s'il y a un chevauchement géométrique entre le triangle 'Ptri'
-    et au moins un triangle de 'group_tris' :
-      - arêtes qui se coupent (croisement ou recouvrement colinéaire),
-      - OU inclusion stricte (un triangle entièrement dans l'autre).
-    - exclude_edge : (tid, (A,B)) pour ignorer l'arête partagée.
-    - shared_vertex : sommet commun à ignorer pour un simple contact.
-    """
-    # 1) test intersections d'arêtes
-    # Log d'en-tête pour cette évaluation
-    if debug_label:
-        try:
-            print(f"[DBG] Test de chevauchement ({debug_label})")
-        except Exception:
-            pass
-
-    # petit helper pour libeller les arêtes "O-B", "B-L", "L-O"
-    def _lab(keys): 
-        try:    return f"{keys[0]}-{keys[1]}"
-        except: return "?"
-
-    # entête : rappeler l’arête de collage autorisée (si connue)
-    if debug_label:
-        try:
-            if exclude_edge:
-                ex_tid, ex_keys = exclude_edge
-                print(f"[DBG]   arête de collage cible: t#{ex_tid} {_lab(ex_keys)}")
-        except Exception:
-            pass
-
-    for (A1, A2, k_m) in _segments_from_pts(Ptri):
-        # NEW: ne pas tester l’arête mobile qui sert au collage
-        if exclude_m_edge is not None and k_m == exclude_m_edge:
-            continue
-        for tri in group_tris:
-            tid = tri["idx"]; P = tri["P"]
-            for (B1, B2, keys) in _segments_from_pts(P):
-                if exclude_edge and exclude_edge[0] == tid and exclude_edge[1] == keys:
-                    continue
-                if shared_vertex is not None:
-                    if (np.allclose(A1, shared_vertex) and (np.allclose(B1, shared_vertex) or np.allclose(B2, shared_vertex))) or \
-                       (np.allclose(A2, shared_vertex) and (np.allclose(B1, shared_vertex) or np.allclose(B2, shared_vertex))):
-                        # simple contact au sommet commun -> on l'ignore
-                        continue
-                # --- test avec Shapely, en tolérant l'arête de collage ---
-                Lm = _ShLine([tuple(map(float, A1)), tuple(map(float, A2))])
-                Lg = _ShLine([tuple(map(float, B1)), tuple(map(float, B2))])
-                # ignorer un simple contact au sommet commun (robuste)
-                if shared_vertex is not None:
-                    sv = _ShPoint(tuple(map(float, shared_vertex)))
-                    inter = Lm.intersection(Lg)
-                    # on tolère si l'intersection est exactement le sommet partagé
-                    if inter.geom_type == "Point":
-                        # accepte si l'un OU l'autre segment passe par sv
-                        if (Lm.distance(sv) < 1e-9 or Lg.distance(sv) < 1e-9):
-                            # (Shapely peut ne pas faire equals(sv) à 1e-16 près, on tolère)
-                            if inter.distance(sv) < 1e-9:
-                                continue
-                # croisement propre -> interdit
-                if Lm.crosses(Lg):
-                    if debug_label:
-                        try:
-                            print(f"[DBG]  -> CROISEMENT (X)  mobile[{_lab(k_m)}]  ×  groupe[t#{tid} {_lab(keys)}]")
-                            # optionnel: suffixe court avec coords
-                            print(f"[DBG]     mob {tuple(map(lambda p:(round(p[0],2),round(p[1],2)), Lm.coords))}  /  grp {tuple(map(lambda p:(round(p[0],2),round(p[1],2)), Lg.coords))}")
-                        except Exception:
-                            pass
-                    return True
-                # recouvrement colinéaire ?
-                if Lm.overlaps(Lg):
-                    if allowed_shared_segment is not None:
-                        SA = tuple(map(float, allowed_shared_segment[0]))
-                        SB = tuple(map(float, allowed_shared_segment[1]))
-                        L_ok = _ShLine((SA, SB))
-                        inter = Lm.intersection(Lg)
-                        # On autorise si le recouvrement est contenu (à eps près) dans l'arête de collage
-                        inter_snapped = _sh_snap(inter, L_ok, 1e-9)
-                        if inter_snapped.within(L_ok) and inter.length > 0.0:
-                            # Snap pour absorber de petites erreurs numériques
-                            if debug_label:
-                                try:
-                                    print(f"[DBG]  -> RECOUVREMENT colinéaire **AUTORISÉ** mobile[{_lab(k_m)}] ~ groupe[t#{tid} {_lab(keys)}] (sur l'arête de collage)")
-                                except Exception:
-                                    pass
-                            continue
-                    # sinon, recouvrement ailleurs -> interdit
-                    if debug_label:
-                        try:
-                            ln = float(getattr(Lm.intersection(Lg), "length", 0.0)) if hasattr(Lm.intersection(Lg),'length') else 0.0
-                            print(f"[DBG]  -> RECOUVREMENT COLINÉAIRE (≈{ln:.6f}) mobile[{_lab(k_m)}]  //  groupe[t#{tid} {_lab(keys)}]  **INTERDIT**")
-                        except Exception:
-                            pass
-                    return True
-    # 2) test inclusion stricte (sans croisement)
-    #    (a) un sommet de Ptri à l'intérieur d'un triangle du groupe
-    A, B, C = np.array(Ptri["O"],float), np.array(Ptri["B"],float), np.array(Ptri["L"],float)
-    for tri in group_tris:
-        P = tri["P"]
-        tA, tB, tC = np.array(P["O"],float), np.array(P["B"],float), np.array(P["L"],float)
-        for V in (A, B, C):
-            if _point_in_triangle_strict(V, tA, tB, tC):
-                if debug_label:
-                    try:
-                        print(f"[DBG]  -> INCLUSION stricte: sommet mobile {tuple(map(float,V))} à l'intérieur du triangle cible #{tri['idx']}")
-                    except Exception:
-                        pass                
-                return True
-        #    (b) un sommet du groupe à l'intérieur de Ptri
-        for V in (tA, tB, tC):
-            if _point_in_triangle_strict(V, A, B, C):
-                if debug_label:
-                    try:
-                        print(f"[DBG]  -> INCLUSION stricte: sommet du groupe {tuple(map(float,V))} à l'intérieur du triangle mobile posé")
-                    except Exception:
-                        pass                
-                return True
-    if debug_label:
-        try:
-            print(f"[DBG]  -> pas de chevauchement")
-        except Exception:
-            pass
-    return False
 
 
 # ---------- Application (MANUEL — sans algorithmes) ----------
@@ -419,8 +175,14 @@ class TriangleViewerManual(tk.Tk):
         self._edge_choice = None      # (i_mob, key_mob, edge_m, i_tgt, key_tgt, edge_t)
         self._edge_highlights = None  # données brutes des aides (candidates + best)
 
+        # Épaisseur de trait (px) — utilisée pour le test de chevauchement "shrink seul"
+        self.stroke_px = 2
+
         # mode "déconnexion" activé par CTRL
         self._ctrl_down = False        
+
+        # --- DEBUG: permettre de SKIP le test de chevauchement durant le highlight (F9) ---
+        self.debug_skip_overlap_highlight = False
 
         # === Groupes (Étape A) ===
         self.groups: Dict[int, Dict] = {}
@@ -444,6 +206,15 @@ class TriangleViewerManual(tk.Tk):
         if os.path.exists(default):
             self.load_excel(default)
 
+    # ---------- DEBUG: toggle du filtre d'intersection au highlight ----------
+    def _toggle_skip_overlap_highlight(self, event=None):
+        self.debug_skip_overlap_highlight = not self.debug_skip_overlap_highlight
+        state = "IGNORE" if self.debug_skip_overlap_highlight else "APPLIQUE"
+        try:
+            self.status.config(text=f"[DEBUG] Chevauchement (highlight): {state} — F9 pour basculer")
+        except Exception:
+            pass
+
     # ---------- UI ----------
     def _build_ui(self):
         top = tk.Frame(self); top.pack(side=tk.TOP, fill=tk.X)
@@ -457,45 +228,6 @@ class TriangleViewerManual(tk.Tk):
 
         self.status = tk.Label(self, text="Prêt", bd=1, relief=tk.SUNKEN, anchor="w")
         self.status.pack(side=tk.BOTTOM, fill=tk.X)
-
-    # ---------- DEBUG ----------
-    def _debug(self, *args):
-        try:
-            print(*args, flush=True)
-        except Exception:
-            pass
-
-    def _debug_dump_group(self, gid: int, title: str = ""):
-        g = self.groups.get(gid)
-        if not g:
-            self._debug("[DBG] group", gid, "inexistant.")
-            return
-        if title:
-            self._debug(f"[DBG] {title}")
-        self._debug(f"[DBG]  gid={gid}, nodes={len(g['nodes'])}")
-        for i, nd in enumerate(g["nodes"]):
-            tid = nd.get("tid")
-            vin = nd.get("vkey_in"); vout = nd.get("vkey_out")
-            lab = None
-            try:
-                lab = self._last_drawn[tid].get("id")
-            except Exception:
-                pass
-            self._debug(f"       [{i}] tid={tid} (id={lab})  vkey_in={vin}  vkey_out={vout}")
-        # mini vérif géométrique du sommet commun pour chaque paire consécutive
-        eps = 1e-6
-        for i in range(max(0, len(g["nodes"]) - 1)):
-            a = g["nodes"][i]; b = g["nodes"][i+1]
-            Pa = self._last_drawn[a["tid"]]["pts"]
-            Pb = self._last_drawn[b["tid"]]["pts"]
-            found = None
-            for ka in ("O","B","L"):
-                for kb in ("O","B","L"):
-                    va = Pa[ka]; vb = Pb[kb]
-                    if (abs(float(va[0]-vb[0])) <= eps) and (abs(float(va[1]-vb[1])) <= eps):
-                        found = (ka, kb); break
-                if found: break
-            self._debug(f"       géométrie[{i}->{i+1}] sommet commun = {found}")
 
     def _build_left_pane(self, parent):
         left = tk.Frame(parent, width=260); left.pack(side=tk.LEFT, fill=tk.Y); left.pack_propagate(False)
@@ -554,10 +286,14 @@ class TriangleViewerManual(tk.Tk):
 
         # Menu contextuel
         self._ctx_menu = tk.Menu(self, tearoff=0)
-        self._ctx_menu.add_command(label="Supprimer", command=self._ctx_delete_selected)
+        self._ctx_menu.add_command(label="Supprimer", command=self._ctx_delete_group)
         self._ctx_menu.add_command(label="Pivoter", command=self._ctx_rotate_selected)
         self._ctx_menu.add_command(label="Inverser", command=self._ctx_flip_selected)
         self._ctx_menu.add_command(label="OL=0°", command=self._ctx_orient_OL_north)
+
+        # DEBUG: F9 pour activer/désactiver le filtrage de chevauchement au highlight
+        # (bind_all pour capter même si le focus clavier n'est pas explicitement sur le canvas)
+        self.bind_all("<F9>", self._toggle_skip_overlap_highlight)
 
     # ---------- Chargement Excel ----------
     def open_excel(self):
@@ -724,6 +460,122 @@ class TriangleViewerManual(tk.Tk):
 
         return placed
 
+    # ====== FRONTIER GRAPH HELPERS (factorisation) ===============================================
+    def _edge_dir(self, a, b):
+        return (float(b[0]) - float(a[0]), float(b[1]) - float(a[1]))
+
+    def _ang_wrap(self, x):
+        import math
+        # wrap sur [-pi, pi]
+        x = (x + math.pi) % (2*math.pi) - math.pi
+        return x
+
+    def _ang_of_vec(self, vx, vy):
+        import math
+        return math.atan2(vy, vx)
+
+    def _ang_diff(self, a, b):
+        # plus petit écart absolu d’angle
+        return abs(self._ang_wrap(a - b))
+
+    def _pt_key_eps(self, p, eps=1e-9):
+        return (round(float(p[0])/eps)*eps, round(float(p[1])/eps)*eps)
+
+    def _build_boundary_graph(self, outline):
+        """
+        Construire un graphe de frontière léger (half-edges) à partir de 'outline'
+        outline: liste de segments [(a,b), ...]
+        Retour: dict {
+            "adj": {key(point)-> [point_voisin,...]},
+            "pts": {key(point)-> point_float_tuple}
+        }
+        """
+        adj = {}
+        pts = {}
+        for a,b in (outline or []):
+            a = (float(a[0]), float(a[1])); b = (float(b[0]), float(b[1]))
+            ka, kb = self._pt_key_eps(a), self._pt_key_eps(b)
+            pts.setdefault(ka, a); pts.setdefault(kb, b)
+            adj.setdefault(ka, []).append(b)
+            adj.setdefault(kb, []).append(a)
+        return {"adj": adj, "pts": pts}
+
+    def _incident_half_edges_at_vertex(self, graph, v, eps=1e-6):
+        """
+        Renvoie les deux demi-arêtes (si existantes) qui partent de 'v' le long de la frontière.
+        Retour: liste de 0..2 éléments, chaque élément est ((ax,ay),(bx,by))
+        """
+        key = self._pt_key_eps(v)
+        neighs = graph["adj"].get(key, [])
+        out = []
+        for w in neighs:
+            out.append(( (float(v[0]),float(v[1])), (float(w[0]),float(w[1])) ))
+        # garder au maximum 2 (enveloppe standard) ; si plus, on trie par angle autour de v et on prend 2 extrêmes
+        if len(out) > 2:
+            import math
+            def ang(e):
+                (a,b)=e; vx,vy=self._edge_dir(a,b); return math.atan2(vy,vx)
+            out = sorted(out, key=ang)
+            # choisir deux qui maximisent l'écart angulaire (les bords de l'enveloppe)
+            # heuristique simple: prendre le premier et celui qui maximise |Δ|
+            a0 = out[0]; ang0 = ang(a0)
+            a1 = max(out[1:], key=lambda e: self._ang_diff(ang(e), ang0))
+            out = [a0,a1]
+        return out
+
+    def _normalize_to_outline_granularity(self, outline, edges, eps=1e-6):
+        """
+        Décompose chaque segment incident en chaîne de micro-segments collés à l'outline (granularité identique),
+        en s'appuyant sur l'adjacence du graphe de frontière. Retourne une liste de segments.
+        """
+        g = self._build_boundary_graph(outline)
+        def almost(p,q):
+            return abs(p[0]-q[0])<=eps and abs(p[1]-q[1])<=eps
+        def dir_forward(u,v,w):
+            uvx,uvy = v[0]-u[0], v[1]-u[1]
+            uwx,uwy = w[0]-u[0], w[1]-u[1]
+            cross = abs(uvx*uwy - uvy*uwx)
+            dot   = (uvx*uwx + uvy*uwy)
+            return cross <= 1e-9 and dot > 0.0
+        out=[]
+        for (a,b) in (edges or []):
+            a=(float(a[0]),float(a[1])); b=(float(b[0]),float(b[1]))
+            cur=a; guard=0; chain=[]
+            while not almost(cur,b) and guard<2048:
+                neigh = g["adj"].get(self._pt_key_eps(cur), [])
+                nxt=None
+                for w in neigh:
+                    if dir_forward(cur,b,w):
+                        nxt=w; break
+                if nxt is None: break
+                chain.append((cur,nxt))
+                cur=nxt; guard+=1
+            if chain and almost(cur,b):
+                out.extend(chain)
+            else:
+                # fallback: garder le segment brut si pas décomposable finement
+                out.append((a,b))
+        return out
+
+
+
+    # ------------------------------
+    # Géométrie / utils divers
+    # ------------------------------
+    def _angle_from(self, p0, p1):
+        """Azimut de p0->p1 en radians dans [0, 2π)."""
+        import math
+        a = math.atan2(p1[1]-p0[1], p1[0]-p0[0])
+        if a < 0: 
+            a += 2*math.pi
+        return a
+
+    def _wrap_delta_angle(self, a, b):
+        """Distance angulaire minimale entre a et b, résultat dans [0, π]."""
+        import math
+        d = abs(a - b) % (2*math.pi)
+        return d if d <= math.pi else (2*math.pi - d)
+
     # ---------- Dessin / vue ----------
     def show_raw_selection(self):
         try:
@@ -740,6 +592,18 @@ class TriangleViewerManual(tk.Tk):
         # Dessin
         self.canvas.delete("all")
         self._last_drawn = placed
+        # === Invariance: tout item appartient à un groupe (singleton possible) ===
+        self.groups = {}
+        self._next_group_id = 1
+        for i, t in enumerate(self._last_drawn):
+            gid = self._next_group_id; self._next_group_id += 1
+            self.groups[gid] = {"nodes": [{"tid": i, "vkey_in": None, "vkey_out": None}]}
+            t["group_id"] = gid
+            t["group_pos"] = 0
+            try:
+                self._recompute_group_bbox(gid)
+            except Exception:
+                pass
         for idx, t in enumerate(placed):
             labels = t["labels"]
             P = t["pts"]
@@ -1141,11 +1005,20 @@ class TriangleViewerManual(tk.Tk):
         # 3) prendre toutes les arêtes des triangles, les découper,
         #    puis NE GARDER que les sous-segments dont le **milieu** est sur la frontière
         outline = []
+        # Frontière Shapely du solide de groupe
+        boundary = poly.boundary if hasattr(poly, "boundary") else _ShLine([])
+        # Tolérance en unités "monde" (liée à l'épaisseur d'affichage)
+        tol = max(1e-9, float(getattr(self, "stroke_px", 2)) / max(getattr(self, "zoom", 1.0), 1e-9))
+        bmask = boundary.buffer(tol) if (not boundary.is_empty) else boundary
         def _push(P):
             for a, b in ((P["O"], P["B"]), (P["B"], P["L"]), (P["L"], P["O"])):
                 for s in _split_by_vertices(a, b):
-                    m = (s[0] + s[1]) * 0.5
-                    if boundary.distance(_ShPoint(m)) <= eps:   # ← le filtre clé
+                    seg = _ShLine([
+                        (float(s[0][0]), float(s[0][1])),
+                        (float(s[1][0]), float(s[1][1]))
+                    ])
+                    # Garder uniquement les sous-segments véritablement sur le périmètre
+                    if (not seg.is_empty) and seg.within(bmask):
                         outline.append(s)
 
         for nd in nodes:
@@ -1155,285 +1028,161 @@ class TriangleViewerManual(tk.Tk):
 
         return outline
 
+    # --- util: segments d'enveloppe (groupe ou triangle seul) ---
+    def _outline_for_item(self, idx: int):
+        """
+        Retourne les segments (p1,p2) de l'enveloppe **du groupe** auquel appartient idx.
+        Hypothèse d'architecture : tout item a un group_id (singleton possible).
+        """
+        gid = self._last_drawn[idx].get("group_id")
+        assert gid is not None, "Invariant brisé: item sans group_id"
+        try:
+            return self._group_outline_segments(gid, eps=1e-6)
+        except Exception:
+            return []
+
 
     # --- helper : triangle propriétaire d’un sous-segment le long d’une arête d’un groupe ---
-    def _owner_triangle_for_segment_at_vertex(self, i_tgt: int, key_tgt: str,
-                                              seg_world: Tuple[np.ndarray, np.ndarray],
-                                              eps: float = 1e-6) -> Tuple[int, str, Optional[str]]:
-        """
-        Quand la cible est un GROUPE et qu’on a choisi un SOUS-SEGMENT 'virtuel'
-        sur l’enveloppe, il faut lier le mobile à un TRIANGLE précis.
-        Retourne un triplet (owner_tid, at_owner, bt_owner) où :
-          - owner_tid : index du triangle du groupe qui porte ‘seg_world’ au voisinage de vt,
-          - at_owner  : clé O/B/L du **sommet de ce triangle** qui coïncide géométriquement avec vt,
-          - bt_owner  : la clé voisine telle que le sous-segment suive [vt → voisin].
-        Fallback : (i_tgt, at_key=clé trouvée sur i_tgt, bt_key meilleur voisin par direction).
-        """
-        A, B = seg_world
-        # triangles qui partagent le sommet (dans le même groupe que i_tgt)
-        gid = self._last_drawn[i_tgt].get("group_id")
-        if gid is None:
-            # cible = triangle seul
-            P = self._last_drawn[i_tgt]["pts"]
-            # at_owner: trouver la clé qui coïncide avec vt
-            vt = np.array(self._last_drawn[i_tgt]["pts"][key_tgt], float)
-            at_owner = None
-            for k in ("O","B","L"):
-                if _same_point(np.array(P[k], float), vt, eps):
-                    at_owner = k; break
-            # bt_owner : voisin de at_owner le plus aligné avec le sous-segment
-            bt_owner = None
-            if at_owner is not None:
-                best = None
-                az_seg = math.atan2(*(B - A)[::-1])  # atan2(dy, dx)
-                for nb in {"O":("B","L"), "B":("O","L"), "L":("O","B")}[at_owner]:
-                    az_nb = math.atan2(*(np.array(P[nb],float) - vt)[::-1])
-                    d = abs(((az_nb - az_seg + math.pi) % (2*math.pi)) - math.pi)
-                    if (best is None) or (d < best[0]):
-                        best = (d, nb)
-                bt_owner = best[1] if best else None
-            return i_tgt, at_owner or key_tgt, bt_owner
-        g = self.groups.get(gid) or {}
-        nodes = g.get("nodes", [])
-        # vt = point géométrique du sommet cible
-        vt = np.array(self._last_drawn[i_tgt]["pts"][key_tgt], float)
-        # on cherche un triangle dont UN DE SES SOMMETS coïncide avec vt (peu importe son nom),
-        # puis une arête incidente à ce sommet qui supporte (au mieux) le sous-segment [A,B].
-        best_owner = None  # (score, tid, at_key, bt_key)
-        for nd in nodes:
-            tid = nd.get("tid")
-            if tid is None or not (0 <= tid < len(self._last_drawn)):
-                continue
-            P = self._last_drawn[tid]["pts"]
-            # trouver la clé du sommet de CE triangle qui coïncide avec vt
-            at_key = None
-            for k in ("O","B","L"):
-                if _same_point(np.array(P[k],float), vt, eps):
-                    at_key = k; break
-            if at_key is None:
-                continue
-            # évaluer les deux arêtes incidentes (at_key->voisin)
-            for nb in {"O":("B","L"), "B":("O","L"), "L":("O","B")}[at_key]:
-                S1 = np.array(P[at_key], float); S2 = np.array(P[nb], float)
-                # 1) si (B) est sur [S1,S2] (ou proche) — test principal
-                on_seg = _point_on_segment(B, S1, S2, eps) or _point_on_segment(A, S1, S2, eps)
-                # 2) score angulaire (plus c’est proche de la direction [A->B], mieux c’est)
-                vseg = B - A; vtri = S2 - S1
-                az_seg = math.atan2(vseg[1], vseg[0]); az_tri = math.atan2(vtri[1], vtri[0])
-                d = abs(((az_tri - az_seg + math.pi) % (2*math.pi)) - math.pi)
-                score = (0.0 if on_seg else 1.0) + d  # favorise on_seg, puis petite diff d’angle
-                if (best_owner is None) or (score < best_owner[0]):
-                    best_owner = (score, tid, at_key, nb)
-        if best_owner is not None:
-            _, tid, at_key, nb = best_owner
-            return tid, at_key, nb
-        # fallback : rester sur i_tgt avec appariement directionnel
-        P = self._last_drawn[i_tgt]["pts"]
-        at_owner = None
-        for k in ("O","B","L"):
-            if _same_point(np.array(P[k],float), vt, eps):
-                at_owner = k; break
-        bt_owner = None
-        if at_owner is not None:
-            az_seg = math.atan2((B-A)[1], (B-A)[0])
-            best = None
-            for nb in {"O":("B","L"), "B":("O","L"), "L":("O","B")}[at_owner]:
-                az_nb = math.atan2((np.array(P[nb],float)-vt)[1], (np.array(P[nb],float)-vt)[0])
-                d = abs(((az_nb - az_seg + math.pi) % (2*math.pi)) - math.pi)
-                if (best is None) or (d < best[0]):
-                    best = (d, nb)
-            bt_owner = best[1] if best else None
-        return i_tgt, (at_owner or key_tgt), bt_owner
+    def _build_outline_adjacency(self, outline):
+        """Construire l'adjacence {point->liste de voisins} à partir d'un outline (liste de segments)."""
+        def _pt_key(p, eps=1e-9):
+            return (round(float(p[0])/eps)*eps, round(float(p[1])/eps)*eps)
+        adj = {}
+        for a,b in (outline or []):
+            a = (float(a[0]), float(a[1])); b = (float(b[0]), float(b[1]))
+            ka, kb = _pt_key(a), _pt_key(b)
+            adj.setdefault(ka, []).append(b)
+            adj.setdefault(kb, []).append(a)
+        return adj
+
 
     def _update_edge_highlights(self, mob_idx: int, vkey_m: str, tgt_idx: int, tgt_vkey: str):
+        """Version factorisée 'graphe de frontière' (symétrique) :
+        1) On récupère l'outline des deux groupes
+        2) On construit un graphe de frontière (half-edges) côté mobile & cible
+        3) Au sommet cliqué de chaque côté, on prend **les 2 demi-arêtes incidentes**
+        4) On sélectionne la paire (mobile×cible) qui **minimise globalement** Δ-angle
+        5) Affichage : toujours bleues (incidentes), rouge pour la paire choisie
         """
-        Met à jour l'aide visuelle :
-        - calcule toutes les arêtes *extérieures* et/ou *découpées* du groupe cible,
-            incidentes au sommet cible (tgt_idx, tgt_vkey),
-        - choisit la meilleure par *delta d'azimut* vis-à-vis de l’arête du triangle mobile
-            passant par (mob_idx, vkey_m),
-        - stocke le choix dans self._edge_choice et les segments gris/orange
-            dans self._edge_highlights pour le rendu.
-        Règle : seule l’orientation (azimut) compte. La longueur n’entre jamais dans le score.
-        """
+
         import numpy as np
         from math import atan2, pi
 
-        def _to_np(p): 
-            return np.array([float(p[0]), float(p[1])], dtype=float)
-
+        def _to_np(p): return np.array([float(p[0]), float(p[1])], dtype=float)
         def _azim(a, b):
-            v = b - a
-            return atan2(v[1], v[0])
+            # tuple-safe: accepte tuples ou np.array
+            from math import atan2
+            return atan2(float(b[1]) - float(a[1]), float(b[0]) - float(a[0]))
+        def _ang_dist(a, b):
+             from math import pi
+             d = abs(a - b) % (2*pi)
+             return d if d <= pi else (2*pi - d)
+        def _almost_eq(a,b,eps=1e-6): return abs(a[0]-b[0])<=eps and abs(a[1]-b[1])<=eps
 
-        def _ang_dist(a1, a2):
-            d = (a1 - a2 + pi) % (2 * pi) - pi
-            return abs(d)
+        # Sommets & groupes
+        tri_m = self._last_drawn[mob_idx];  Pm = tri_m["pts"]; vm = _to_np(Pm[vkey_m])
+        tri_t = self._last_drawn[tgt_idx];  Pt = tri_t["pts"]; vt = _to_np(Pt[tgt_vkey])
+        gid_m = tri_m.get("group_id"); gid_t = tri_t.get("group_id")
+        if gid_m is None or gid_t is None:
+            self._clear_edge_highlights(); self._edge_choice = None; return
+        
+        # Tolérance (utile à d'autres endroits si besoin)
+        tol_world = max(1e-9, float(getattr(self, "stroke_px", 2)) / max(getattr(self, "zoom", 1.0), 1e-9))
 
-        def _almost_eq(a, b, eps=1e-6):
-            return abs(a[0]-b[0]) <= eps and abs(a[1]-b[1]) <= eps
+        # === FRONTIER GRAPH des deux groupes ===
+        mob_outline = self._outline_for_item(mob_idx) or []
+        tgt_outline = self._outline_for_item(tgt_idx) or []
+        g_m = self._build_boundary_graph(mob_outline)
+        g_t = self._build_boundary_graph(tgt_outline)
 
-        # --- Récupère le(s) sommets et arêtes du triangle mobile au niveau de vkey_m
-        tri_m = self._last_drawn[mob_idx]
-        Pm = tri_m["pts"]  # dict {"O":(x,y), "B":(x,y), "L":(x,y)}
-        vm = _to_np(Pm[vkey_m])
+        # === Demi-arêtes incidentes aux sommets cliqués (strictement sur la frontière) ===
+        m_inc_raw = self._incident_half_edges_at_vertex(g_m, vm)
+        t_inc_raw = self._incident_half_edges_at_vertex(g_t, vt)
+        if not t_inc_raw:
+            self._clear_edge_highlights(); self._edge_choice = None; return
 
-        # Les deux arêtes incidentes au sommet mobile
-        neighs_m = {"O":("B","L"), "B":("O","L"), "L":("O","B")}[vkey_m]
-        m_edges = []
-        for nk in neighs_m:
-            m_edges.append((vm, _to_np(Pm[nk])))
+        # Normalisation à la granularité de l'outline (lisible à l’écran)
+        m_inc = self._normalize_to_outline_granularity(mob_outline, m_inc_raw, eps=1e-6)
+        t_inc = self._normalize_to_outline_granularity(tgt_outline, t_inc_raw, eps=1e-6)
 
+        # === Collecte via graphe de frontière puis argmin global (Δ-angle) ===
+        # 1) outlines des deux groupes
+        mob_outline = self._outline_for_item(mob_idx) or []
+        tgt_outline = self._outline_for_item(tgt_idx) or []
+        # 2) half-edges incidentes au sommet cliqué, côté mobile et côté cible
+        g_m = self._build_boundary_graph(mob_outline)
+        g_t = self._build_boundary_graph(tgt_outline)
+        m_inc_raw = self._incident_half_edges_at_vertex(g_m, vm)
+        t_inc_raw = self._incident_half_edges_at_vertex(g_t, vt)
+        # 3) normalisation (granularité identique à l’outline) pour l’affichage
+        m_inc = self._normalize_to_outline_granularity(mob_outline, m_inc_raw, eps=1e-6)
+        t_inc = self._normalize_to_outline_granularity(tgt_outline, t_inc_raw, eps=1e-6)
 
-        # Sommet cible (point attaché)
-        tri_t = self._last_drawn[tgt_idx]
-        Pt = tri_t["pts"]
-        vt = _to_np(Pt[tgt_vkey])
-
-        # --- Collecte des segments candidats autour du sommet cible (UNIQUEMENT l’enveloppe) ---
-        # Cas 1 : la cible est un triangle simple → on prend ses 2 arêtes incidentes au sommet.
-        # Cas 2 : la cible est un groupe → on prend les sous-segments EXTERIEURS retournés
-        #         par group_outline_segments(gid) et on ne garde que ceux incident au sommet cible.
-        cand_edges = []
-        tgt_gid = tri_t.get("group_id")
-        if tgt_gid is None:
-            neighs_t = {"O":("B","L"), "B":("O","L"), "L":("O","B")}[tgt_vkey]
-            for nk in neighs_t:
-                cand_edges.append((_to_np(Pt[tgt_vkey]), _to_np(Pt[nk])))
-        else:
+        # 4) sélection globale : minimiser l’écart d’azimut + anti-chevauchement
+        best = None  # (score, m_edge, t_edge)
+        # Unions géométriques brutes des groupes (avant pose)
+        S_t = _group_shape_from_nodes(self._group_nodes(gid_t), self._last_drawn)
+        S_m_base = _group_shape_from_nodes(self._group_nodes(gid_m), self._last_drawn)
+        # Helper de pose rigide (vm->vt, alignement (vm→mB) // (vt→tB))
+        from math import atan2, pi
+        def _place_union_on_pair(S_base, vm_pt, mB_pt, vt_pt, tB_pt):
             try:
-                outline = self._group_outline_segments(tgt_gid, eps=1e-6)
+                from shapely.affinity import translate, rotate
             except Exception:
-                outline = []
-            # ne retenir que les sous-segments de l’enveloppe incident au point cible
-            for (Q0, Q1) in outline:
-                A = _to_np(Q0); B = _to_np(Q1)
-                if _almost_eq(A, vt) or _almost_eq(B, vt):
-                    # on mémorise brut, l’orientation sera forcée plus bas (vt -> autre)
-                    cand_edges.append((A, B))
- 
-        # Si rien d’incident (rare), on tente au moins les 2 arêtes du triangle cible autour de tgt_vkey
-        if not cand_edges:
-            neighs_t = {"O":("B","L"), "B":("O","L"), "L":("O","B")}[tgt_vkey]
-            for nk in neighs_t:
-                cand_edges.append((_to_np(Pt[tgt_vkey]), _to_np(Pt[nk])))
-
-        # --- Réduction pour les GROUPES : garder AU PLUS 2 directions autour de vt ---
-        if tri_t.get("group_id") is not None and len(cand_edges) > 2:
-            # 1) forcer l’orientation vt -> autre et calculer l’azimut + longueur
-            oriented = []
-            for (A, B) in cand_edges:
-                if _almost_eq(A, vt):
-                    ta, tb = A, B
-                elif _almost_eq(B, vt):
-                    ta, tb = B, A
-                else:
-                    # sécurité: ignorer un candidat qui ne touche pas vt (ne devrait pas arriver)
-                    continue
-                az = _azim(ta, tb)
-                L  = float(np.hypot(*(tb - ta)))
-                oriented.append((ta, tb, az, L))
-
-            # 2) regrouper par azimut (tolérance 1e-3 rad) et garder le plus long par groupe
-            ang_tol = 1e-3
-            buckets = {}  # key=int -> (ta,tb,az,L)
-            for (ta, tb, az, L) in oriented:
-                key = int(round(az / ang_tol))
-                cur = buckets.get(key)
-                if (cur is None) or (L > cur[3]):
-                    buckets[key] = (ta, tb, az, L)
-
-            # 3) si >2 groupes (rare), garder les deux plus longs
-            reps = list(buckets.values())
-            reps.sort(key=lambda x: x[3], reverse=True)  # par longueur décroissante
-            reps = reps[:2]
-
-            # 4) reconstruire cand_edges (toujours orienté vt -> autre)
-            cand_edges = [(ta, tb) for (ta, tb, _, _) in reps]
-
-
-        # --- Choix par delta d’azimut UNIQUEMENT + filtre anti-chevauchement
-        # Prépare les triangles du groupe cible pour le test d'intersections
-        tgt_gid = tri_t.get("group_id")
-        if tgt_gid is None:
-            group_tris = [{"idx": tgt_idx, "P": Pt}]
-        else:
-            group_tris = []
-            for node in self._group_nodes(tgt_gid):
-                tid = node["tid"]
-                if 0 <= tid < len(self._last_drawn):
-                    group_tris.append({"idx": tid, "P": self._last_drawn[tid]["pts"]})
-
-        best = None   # (score, m_edge, t_edge)
-        # pour retrouver la clé voisine côté mobile à partir de la position m_b
-        def _neighbor_key_for_point(P, vkey, point):
-            for nk in {"O":("B","L"), "B":("O","L"), "L":("O","B")}[vkey]:
-                if _almost_eq(_to_np(P[nk]), point):
-                    return nk
-            return None
-
-        for (m_a, m_b) in m_edges:
-            az_m = _azim(m_a, m_b)
-            mob_neighbor_key = _neighbor_key_for_point(Pm, vkey_m, m_b)
-            for (t_a, t_b) in cand_edges:
-                # oriente toujours l’arête cible depuis vt vers l’autre extrémité
-                if _almost_eq(t_a, vt):
-                    t_edge = (t_a, t_b)
-                    t_other_point = t_b
-                else:
-                    t_edge = (t_b, t_a)
-                    t_other_point = t_a
-                az_t = _azim(t_edge[0], t_edge[1])
-                score = _ang_dist(az_m, az_t)     # comparaison modulo 2π (pas d’équivalence à +π)
-
-                # --- Filtre anti-chevauchement (formes solides) ---
-                # Sous-segment t_edge → triangle propriétaire + clés (at_owner, bt_owner)
-                owner_tid, at_owner, bt_owner = self._owner_triangle_for_segment_at_vertex(
-                    tgt_idx, tgt_vkey, t_edge, eps=1e-6
-                )
-
-                # shape CIBLE (intérieur strict) : triangle seul ou union du groupe
-                if tgt_gid is None:
-                    S_t = _tri_shape(Pt)
-                else:
-                    S_t = _group_shape_from_nodes(self._group_nodes(tgt_gid), self._last_drawn)
-
-                # shape MOBILE après pose, en se basant sur le triangle propriétaire (owner_tid)
-                # et la paire (at_owner, bt_owner) cohérente avec t_edge
-                S_m = _mobile_shape_after_pose(
-                        mob_idx, vkey_m, mob_neighbor_key,
-                        owner_tid, at_owner, bt_owner, self)
-
-                # 3) tolérer l’arête de collage en perçant **exactement** le sous-segment choisi (t_edge)
-                eps_shape = 1e-6
-                L_ok = _ShLine([
-                    (float(t_edge[0][0]), float(t_edge[0][1])),
-                    (float(t_edge[1][0]), float(t_edge[1][1]))
-                ]).buffer(eps_shape)
-                S_t_cut = S_t.difference(L_ok)
-                S_m_cut = S_m.difference(L_ok)
-                # 4) intersection d’intérieurs → on rejette ce candidat
-                if S_m_cut.intersects(S_t_cut):
-                    continue
-
-                # --- Mémorise le meilleur score restant ---
+                return None  # si Shapely indispo → on ne filtre pas
+            vmx, vmy = float(vm_pt[0]), float(vm_pt[1])
+            mBx, mBy = float(mB_pt[0]), float(mB_pt[1])
+            vtx, vty = float(vt_pt[0]), float(vt_pt[1])
+            tBx, tBy = float(tB_pt[0]), float(tB_pt[1])
+            ang_m = atan2(mBy - vmy, mBx - vmx)
+            ang_t = atan2(tBy - vty, tBx - vtx)
+            dtheta = (ang_t - ang_m + pi) % (2*pi) - pi  # wrap [-pi,pi]
+            # T =  translate(vt) ∘ rotate(dtheta around (0,0)) ∘ translate(-vm)
+            S = translate(S_base, xoff=-vmx, yoff=-vmy)
+            S = rotate(S, dtheta * 180.0 / pi, origin=(0.0, 0.0), use_radians=False)
+            S = translate(S, xoff=vtx, yoff=vty)
+            return S
+        m_oriented = [ (a,b) if _almost_eq(a, vm) else (b,a) for (a,b) in (m_inc_raw or []) ]
+        t_oriented = [ (a,b) if _almost_eq(a, vt) else (b,a) for (a,b) in (t_inc_raw or []) ]
+        for me in m_oriented:
+            azm = _azim(*me)
+            for te in t_oriented:
+                azt = _azim(*te)
+                score = _ang_dist(azm, azt)
+                # --- Anti-chevauchement (shrink-only) remis en service ---
+                if not getattr(self, "debug_skip_overlap_highlight", False):
+                    S_m_pose = _place_union_on_pair(S_m_base, me[0], me[1], te[0], te[1])
+                    if S_m_pose is not None:
+                        if _overlap_shrink(S_m_pose, S_t,
+                                           getattr(self, "stroke_px", 2),
+                                           max(getattr(self, "zoom", 1.0), 1e-9)):
+                            continue  # paire rejetée pour chevauchement
+                # argmin global (parmi les paires admissibles)
                 if (best is None) or (score < best[0]):
-                    best = (score, (m_a, m_b), t_edge)
-
-        # Aide visuelle : segments gris (toutes les candidates) + orange (choix)
+                    best = (score, me, te)
+        # 5) sorties visuelles
+        mo = [(tuple(a), tuple(b)) for (a, b) in (mob_outline or [])]
         self._edge_highlights = {
-            "all": [(tuple(a), tuple(b)) for (a, b) in cand_edges],
-            "best": (tuple(best[1][0]), tuple(best[1][1]), tuple(best[2][0]), tuple(best[2][1])) if best else None,
+            "all":        [(tuple(a), tuple(b)) for (a, b) in (t_inc or [])],
+            "mob_inc":    [(tuple(a), tuple(b)) for (a, b) in (m_inc or [])],
+            "tgt_inc":    [(tuple(a), tuple(b)) for (a, b) in (t_inc or [])],
+            "best":       (tuple(best[1][0]), tuple(best[1][1]),
+                           tuple(best[2][0]), tuple(best[2][1])) if best else None,
+            "mob_outline": mo,
+            "tgt_outline": [(tuple(a), tuple(b)) for (a, b) in (tgt_outline or [])],
         }
-        # Mémorise le choix pour l’étape "mouse up"
-        if best:
-            # self._edge_choice = (idx_m, vkey_m, idx_t, vkey_t, (m_a, m_b, t_a, t_b))
-            (m_a, m_b), (t_a, t_b) = best[1], best[2]
-            self._edge_choice = (mob_idx, vkey_m, tgt_idx, tgt_vkey, (tuple(m_a), tuple(m_b), tuple(t_a), tuple(t_b)))
-        else:
-            self._edge_choice = None
 
-        # Dessine/MAJ les aides sans supprimer les triangles
+        self._edge_choice = None
+        if best:
+            (mA, mB), (tA, tB) = best[1], best[2]
+            self._edge_choice = (mob_idx, vkey_m, tgt_idx, tgt_vkey, (tuple(mA), tuple(mB), tuple(tA), tuple(tB)))
+
+        # Ajout des contours pour le debug (bleu)
+        try:  mob_outline = [(tuple(a), tuple(b)) for (a,b) in self._outline_for_item(mob_idx)]
+        except Exception: mob_outline = []
+        try:  tgt_outline = [(tuple(a), tuple(b)) for (a,b) in self._outline_for_item(tgt_idx)]
+        except Exception: tgt_outline = []
+        self._redraw_edge_highlights()
         self._redraw_edge_highlights()
 
 
@@ -1450,59 +1199,82 @@ class TriangleViewerManual(tk.Tk):
 
     def _redraw_edge_highlights(self):
         """Redessine les aides à partir de self._edge_highlights :
-        - candidates en GRIS,
-        - meilleure arête en ORANGE côté CIBLE **et** côté MOBILE (manquait auparavant)."""
+        - tout le périmètre (segments EXTÉRIEURS) des 2 groupes en BLEU (fin),
+        - uniquement les segments INCIDENTS (candidats possibles) en BLEU **épais**,
+        - meilleure paire (mobile & cible) en **ROUGE** par-dessus."""
         self._clear_edge_highlights()
         data = getattr(self, "_edge_highlights", None)
         if not data:
             return
-        # Candidates (gris)
+        # 0) Contours (bleu, fin)
+        blue = "#0B3D91"
+        for key in ("mob_outline", "tgt_outline"):
+            for (a, b) in data.get(key, []):
+                _id = self._draw_temp_edge_world(np.array(a, float), np.array(b, float), color=blue, width=2)
+                if _id:
+                    self._edge_highlight_ids.append(_id)
+        # 1) Segments INCIDENTS (candidats possibles connectés au sommet) — plus épais
+        for key in ("mob_inc", "tgt_inc"):
+            for (a, b) in data.get(key, []):
+                _id = self._draw_temp_edge_world(np.array(a, float), np.array(b, float), color=blue, width=4)
+                if _id:
+                    self._edge_highlight_ids.append(_id)
+        # 2) (optionnel) autres candidates calculées — en gris fin si présentes
         for (a, b) in data.get("all", []):
             _id = self._draw_temp_edge_world(np.array(a, float), np.array(b, float), color="#BBBBBB", width=1)
             if _id:
                 self._edge_highlight_ids.append(_id)
-        # Meilleure (orange, cible + mobile)
+        # 3) Meilleure (ROUGE, cible + mobile) — toujours par-dessus
         best = data.get("best")
         if best:
             # best = (m_a, m_b, t_a, t_b)
             m_a, m_b, t_a, t_b = best
-            # côté cible (épais)
-            _id = self._draw_temp_edge_world(np.array(t_a, float), np.array(t_b, float), color="#FF9900", width=3)
+            # Côté cible (épais)
+            _id = self._draw_temp_edge_world(np.array(t_a, float), np.array(t_b, float), color="#FF0000", width=4)
             if _id:
                 self._edge_highlight_ids.append(_id)
-            # côté mobile (fin) — ajout pour visualiser l'arête du groupe d'origine
-            _id2 = self._draw_temp_edge_world(np.array(m_a, float), np.array(m_b, float), color="#FF9900", width=2)
+            # Côté mobile (épais également)
+            _id = self._draw_temp_edge_world(np.array(m_a, float), np.array(m_b, float), color="#FF0000", width=4)
+            if _id:
+                self._edge_highlight_ids.append(_id)
+
+            # côté mobile (fin) — l'arête entrée en contact
+            _id2 = self._draw_temp_edge_world(np.array(m_a, float), np.array(m_b, float), color="#FF0000", width=3)
             if _id2:
                 self._edge_highlight_ids.append(_id2)
 
     def _place_dragged_triangle(self):
+        """Dépose un triangle ET crée immédiatement un groupe singleton cohérent."""
         if not self._drag or "world_pts" not in self._drag:
             return
         tri = self._drag["triangle"]
         Pw = self._drag["world_pts"]
-        # Ajouter au "document courant"
+        # 1) Ajout de l'item dans le document
         self._last_drawn.append({
             "labels": tri["labels"],
             "pts": Pw,
             "id": tri.get("id"),
-            "mirrored": tri.get("mirrored", False)  # <— on conserve l’état
+            "mirrored": tri.get("mirrored", False),
         })
-        # ensure group fields
-        try:
-            self._ensure_group_fields(self._last_drawn[-1])
-        except Exception:
-            pass
-
+        new_tid = len(self._last_drawn) - 1
+        # 2) Création d'un groupe singleton
+        self._ensure_group_fields(self._last_drawn[new_tid])
+        gid = self._new_group_id()
+        self.groups[gid] = {
+            "id": gid,
+            "nodes": [ {"tid": new_tid, "vkey_in": None, "vkey_out": None} ],
+            "bbox": None,
+        }
+        self._last_drawn[new_tid]["group_id"]  = gid
+        self._last_drawn[new_tid]["group_pos"] = 0
+        self._recompute_group_bbox(gid)
+        # 3) UI
         self._redraw_from(self._last_drawn)
-        self.status.config(text="Triangle déposé.")
-        # Retirer l'élément correspondant de la liste (s'il vient de la listbox)
+        self.status.config(text=f"Triangle déposé → Groupe #{gid} créé.")
         li = self._drag.get("list_index")
         if isinstance(li, int):
-            try:
-                self.listbox.delete(li)
-            except Exception:
-                pass
-        # Marquer l'id comme posé (évite réinsertion multiple)
+            try: self.listbox.delete(li)
+            except Exception: pass
         if tri.get("id") is not None:
             self._placed_ids.add(int(tri["id"]))
 
@@ -1544,25 +1316,6 @@ class TriangleViewerManual(tk.Tk):
         g["bbox"] = (xmin, ymin, xmax, ymax)
         return g["bbox"]
 
-    def _apply_transform_to_group(self, gid: int, T=None, R=None, pivot=None) -> None:
-        import numpy as np
-        g = self.groups.get(gid)
-        if not g: return
-        if T is None and R is None: return
-        if R is not None and pivot is None:
-            pivot = np.zeros(2, dtype=float)
-        for node in g["nodes"]:
-            tid = node["tid"]
-            P = self._last_drawn[tid]["pts"]
-            for k in ("O", "B", "L"):
-                v = P[k]
-                if R is not None:
-                    v = (R @ (v - pivot)) + pivot
-                if T is not None:
-                    v = v + T
-                P[k] = v
-        self._recompute_group_bbox(gid)
-
     def _group_centroid(self, gid: int) -> Optional[np.ndarray]:
         """Barycentre de tous les sommets (O,B,L) du groupe gid."""
         g = self.groups.get(gid)
@@ -1589,7 +1342,6 @@ class TriangleViewerManual(tk.Tk):
         Sinon retourne (None, None, None).
         """
         gid = self._get_group_of_triangle(idx)
-        self._debug(f"[DBG] _find_group_link_for_vertex(idx={idx}, vkey={vkey}) -> gid={gid}")
         if not gid:
             return (None, None, None)
         nodes = self._group_nodes(gid)
@@ -1602,15 +1354,11 @@ class TriangleViewerManual(tk.Tk):
             return (None, None, None)
 
         nd = nodes[pos]
-        self._debug(f"[DBG]   node pos={pos} vkey_in={nd.get('vkey_in')} vkey_out={nd.get('vkey_out')}")
 
         if nd.get("vkey_in") == vkey and pos > 0:
-            self._debug(f"[DBG]   MATCH: link_type='in' (vers pos {pos-1})")
             return (gid, pos, "in")   # lien avec le précédent
         if nd.get("vkey_out") == vkey and pos < len(nodes)-1:
-            self._debug(f"[DBG]   MATCH: link_type='out' (vers pos {pos+1})")
             return (gid, pos, "out")  # lien avec le suivant
-        self._debug("[DBG]   NO LINK on this vertex (métadonnées)")
         return (None, None, None)
 
     def _apply_group_meta_after_split_(self, gid: int):
@@ -1624,32 +1372,15 @@ class TriangleViewerManual(tk.Tk):
                 self._last_drawn[tid]["group_id"]  = gid
                 self._last_drawn[tid]["group_pos"] = i
         self._recompute_group_bbox(gid)
-        self._debug_dump_group(gid, "après _apply_group_meta_after_split_")
 
-    def _dissolve_singletons_(self, gid: int):
-        """
-        Si le groupe gid ne contient qu'1 triangle, on supprime le groupe et
-        on remet ce triangle à l'état isolé (group_id=None).
-        """
-        g = self.groups.get(gid)
-        if not g:
-            return None
-        if len(g["nodes"]) == 1:
-            tid = g["nodes"][0]["tid"]
-            if 0 <= tid < len(self._last_drawn):
-                self._last_drawn[tid]["group_id"]  = None
-                self._last_drawn[tid]["group_pos"] = None
-            del self.groups[gid]
-            return None
-        return gid
 
     def _split_group_at(self, gid: int, split_after_pos: int):
         """
         Scinde le groupe 'gid' ENTRE split_after_pos et split_after_pos+1.
-        Retourne (left_gid_or_None, right_gid_or_None).
-        - Le groupe de gauche réutilise 'gid' si sa taille >=2, sinon dissout.
-        - Le groupe de droite reçoit un nouveau gid si sa taille >=2, sinon dissout.
-        - Les triangles isolés (taille==1) deviennent group_id=None.
+        Retourne (left_gid, right_gid).
+        Simplification : on conserve l'invariant « tout triangle appartient à un groupe ».
+        - Le groupe de gauche réutilise 'gid' (même singleton).
+        - Le groupe de droite reçoit toujours un nouveau gid (même singleton).
         """
         g = self.groups.get(gid)
         if not g:
@@ -1669,37 +1400,21 @@ class TriangleViewerManual(tk.Tk):
             right_nodes[0]["vkey_in"] = None
             right_nodes[-1]["vkey_out"] = None
 
-        # Appliquer côté gauche (réutilise gid si >=2 sinon dissout)
+        # Appliquer côté gauche : réutilise gid (même singleton)
         left_gid = None
-        if len(left_nodes) >= 2:
+        if left_nodes:
             self.groups[gid] = {"id": gid, "nodes": left_nodes, "bbox": None}
             self._apply_group_meta_after_split_(gid)
             left_gid = gid
-        elif len(left_nodes) == 1:
-            tid = left_nodes[0]["tid"]
-            if 0 <= tid < len(self._last_drawn):
-                self._last_drawn[tid]["group_id"]  = None
-                self._last_drawn[tid]["group_pos"] = None
-            # on supprimera 'gid' si la droite crée un nouveau
 
-        # Appliquer côté droit (nouveau gid si >=2)
+        # Appliquer côté droit : nouveau gid (même singleton)
         right_gid = None
-        if len(right_nodes) >= 2:
+        if right_nodes:
             new_gid = self._new_group_id()
             self.groups[new_gid] = {"id": new_gid, "nodes": right_nodes, "bbox": None}
             self._apply_group_meta_after_split_(new_gid)
             right_gid = new_gid
-        elif len(right_nodes) == 1:
-            tid = right_nodes[0]["tid"]
-            if 0 <= tid < len(self._last_drawn):
-                self._last_drawn[tid]["group_id"]  = None
-                self._last_drawn[tid]["group_pos"] = None
 
-        # S'il ne reste rien à gauche (singleton), supprimer l'ancien gid
-        if left_gid is None and gid in self.groups:
-            del self.groups[gid]
-        if left_gid:  self._debug_dump_group(left_gid,  "après split: LEFT")
-        if right_gid: self._debug_dump_group(right_gid, "après split: RIGHT")
         return (left_gid, right_gid)
 
     def _link_triangles_into_group(self, idx_mob: int, vkey_mob: str, idx_tgt: int, vkey_tgt: str) -> None:
@@ -1720,7 +1435,6 @@ class TriangleViewerManual(tk.Tk):
         tri_m["group_id"] = gid; tri_m["group_pos"] = 0
         tri_t["group_id"] = gid; tri_t["group_pos"] = 1
         self._recompute_group_bbox(gid)
-        self._debug_dump_group(gid, "GROUPE CRÉÉ (étape 2)")
         self.status.config(text=f"Groupe #{gid} créé : "
                                 f"t0=tid{nodes[0]['tid']}({nodes[0]['vkey_out']}) "
                                 f"→ t1=tid{nodes[1]['tid']}({nodes[1]['vkey_in']})")
@@ -1770,48 +1484,7 @@ class TriangleViewerManual(tk.Tk):
                 self._last_drawn[tid]["group_id"]  = gid
                 self._last_drawn[tid]["group_pos"] = i
         self._recompute_group_bbox(gid)
-        self._debug_dump_group(gid, "APRES EXTENSION tri→groupe")
         self.status.config(text=f"Triangle ajouté au groupe #{gid}.")
-
-    def record_group_after_last_snap(self, idx_mob: int, key_mob: str,
-                                     idx_tgt: int, key_tgt: str) -> None:
-        """
-        Appelée après un collage effectif par sommet.
-        Cas gérés :
-          1) tri isolé ↔ tri isolé  -> création d'un groupe à 2.
-          2) tri isolé ↔ groupe      -> extension du groupe par une extrémité.
-        (Les fusions groupe↔groupe et les insertions au milieu viendront plus tard.)
-        """
-        # états actuels
-        gm = self._get_group_of_triangle(idx_mob)
-        gt = self._get_group_of_triangle(idx_tgt)
-
-        # 1) deux triangles isolés -> créer un nouveau groupe
-        if gm is None and gt is None:
-            self._link_triangles_into_group(idx_mob, key_mob, idx_tgt, key_tgt)
-            return
-
-        # 2) tri isolé (mobile) -> triangle d'un groupe (cible) : extension extrémité
-        if gm is None and gt is not None:
-            nodes = self._group_nodes(gt)
-            # trouver la position du triangle cible dans son groupe
-            pos_tgt = None
-            for i, nd in enumerate(nodes):
-                if nd.get("tid") == idx_tgt:
-                    pos_tgt = i
-                    break
-            if pos_tgt is None:
-                return
-            # vérifier qu'il s'agit d'une EXTRÉMITÉ
-            if pos_tgt == 0 or pos_tgt == len(nodes) - 1:
-                self._append_triangle_to_group(gt, pos_tgt, idx_mob, key_mob, key_tgt)
-            # sinon : insertion au milieu non gérée pour l'instant
-            return
-
-        # 3) groupe (mobile) -> tri isolé (cible) : non géré ici
-        # 4) groupe ↔ groupe : non géré ici
-        # (on laisse la géométrie telle quelle; pas de modification de groupes)
-        return
 
     def _cancel_drag(self):
         self._drag = None
@@ -1903,26 +1576,6 @@ class TriangleViewerManual(tk.Tk):
                 return ("center", i, None)
         return (None, None, None)
 
-    @staticmethod
-    def _point_in_triangle_world(P, A, B, C):
-        """Test barycentrique en coordonnées monde : P à l'intérieur de triangle ABC ?"""
-        v0 = np.array([C[0]-A[0], C[1]-A[1]], dtype=float)
-        v1 = np.array([B[0]-A[0], B[1]-A[1]], dtype=float)
-        v2 = np.array([P[0]-A[0], P[1]-A[1]], dtype=float)
-        # Matrice 2x2 inverse via produits scalaires
-        dot00 = v0.dot(v0)
-        dot01 = v0.dot(v1)
-        dot02 = v0.dot(v2)
-        dot11 = v1.dot(v1)
-        dot12 = v1.dot(v2)
-        denom = (dot00 * dot11 - dot01 * dot01)
-        if abs(denom) < 1e-12:
-            return False
-        inv = 1.0 / denom
-        u = (dot11 * dot02 - dot01 * dot12) * inv
-        v = (dot00 * dot12 - dot01 * dot02) * inv
-        return (u >= 0.0) and (v >= 0.0) and (u + v <= 1.0)
-
     # ---------- Gestion liste déroulante : retrait / réinsertion ----------
     def _reinsert_triangle_to_list(self, tri):
         """Réinsère un triangle supprimé du canvas dans la listbox, trié par id."""
@@ -1981,22 +1634,62 @@ class TriangleViewerManual(tk.Tk):
             finally:
                 self._ctx_menu.grab_release()
 
-    def _ctx_delete_selected(self):
-        """Supprime le triangle ciblé par le menu contextuel."""
+    def _ctx_delete_group(self):
+        """Supprime **tout le groupe** du triangle ciblé, réinsère les triangles dans la liste,
+        remappe les tids restants et recalcule les bbox de chaque groupe."""
         idx = self._ctx_target_idx
         self._ctx_target_idx = None
-        if idx is None:
+        if idx is None or not (0 <= idx < len(self._last_drawn)):
             return
-        if 0 <= idx < len(self._last_drawn):
-            # Annule une éventuelle sélection en cours liée à ce triangle
-            if self._sel and self._sel.get("idx") == idx:
-                self._sel = None
-            # Supprime et redessine
-            removed = self._last_drawn.pop(idx)
-            self._redraw_from(self._last_drawn)
-            self.status.config(text=f"Triangle supprimé (id={removed.get('id','?')}).")
-            # Réinsérer dans la liste déroulante au bon endroit
-            self._reinsert_triangle_to_list(removed)
+        gid = self._get_group_of_triangle(idx)
+        if not gid:
+            return
+        g = self.groups.get(gid)
+        if not g or not g.get("nodes"):
+            return
+        # 1) Réinsertion listbox (avant de modifier _last_drawn)
+        removed_tids = sorted({nd["tid"] for nd in g["nodes"] if "tid" in nd}, reverse=True)
+        removed_set  = set(removed_tids)
+        for tid in removed_tids:
+            if 0 <= tid < len(self._last_drawn):
+                self._reinsert_triangle_to_list(self._last_drawn[tid])
+        # 2) Reconstruire _last_drawn et table de remap old->new
+        keep, old2new = [], {}
+        for old_i, tri in enumerate(self._last_drawn):
+            if old_i in removed_set:
+                continue
+            new_i = len(keep)
+            old2new[old_i] = new_i
+            keep.append(tri)
+        self._last_drawn = keep
+        # 3) Supprimer le groupe et remapper les autres
+        if gid in self.groups:
+            del self.groups[gid]
+        for g2 in list(self.groups.values()):
+            new_nodes = []
+            for nd in g2.get("nodes", []):
+                otid = nd.get("tid")
+                if otid in removed_set:
+                    continue
+                nd2 = dict(nd)
+                nd2["tid"] = old2new.get(otid, otid)
+                new_nodes.append(nd2)
+            g2["nodes"] = new_nodes
+            # Reposer group_id/group_pos cohérents
+            for i, nd in enumerate(g2["nodes"]):
+                tid = nd["tid"]
+                if 0 <= tid < len(self._last_drawn):
+                    self._last_drawn[tid]["group_id"]  = g2["id"]
+                    self._last_drawn[tid]["group_pos"] = i
+            self._recompute_group_bbox(g2["id"])
+        # 4) Fin : purge sélection/assist et redraw
+        self._sel = None
+        self._reset_assist()
+        self._redraw_from(self._last_drawn)
+        try:
+            self.status.config(text=f"Groupe supprimé (gid={gid}, {len(removed_tids)} triangle(s)).")
+        except Exception:
+            pass
 
     def _ctx_rotate_selected(self):
         """Passe en mode rotation autour du barycentre pour le triangle ciblé."""
@@ -2123,47 +1816,29 @@ class TriangleViewerManual(tk.Tk):
             P = self._last_drawn[idx]["pts"]
             wx = (event.x - self.offset[0]) / self.zoom
             wy = (self.offset[1] - event.y) / self.zoom
-            # Si le triangle appartient à un groupe -> déplacement de groupe
+            # Groupe obligatoire : on démarre toujours un move_group
             gid = self._get_group_of_triangle(idx)
-            if gid:
-                Gc = self._group_centroid(gid)
-                if Gc is None:
-                    # fallback: déplacer le triangle seul si souci de centroid
-                    Cw = self._tri_centroid(P)
-                    orig_pts = {k: np.array(P[k].copy()) for k in ("O","B","L")}
-                    self._sel = {
-                        "mode": "move",
-                        "idx": idx,
-                        "grab_offset": np.array([wx, wy]) - Cw,
-                        "orig_pts": orig_pts,
-                    }
-                    self.status.config(text=f"Déplacement du triangle #{self._last_drawn[idx].get('id','?')} (fallback)")
-                    return
-                # snapshot complet du groupe pour rollback
-                orig_group_pts = {}
-                for node in self._group_nodes(gid):
-                    tid = node["tid"]
-                    if 0 <= tid < len(self._last_drawn):
-                        Pt = self._last_drawn[tid]["pts"]
-                        orig_group_pts[tid] = {k: np.array(Pt[k].copy()) for k in ("O","B","L")}
-                self._sel = {
-                    "mode": "move_group",
-                    "gid": gid,
-                    "grab_offset": np.array([wx, wy]) - Gc,
-                    "orig_group_pts": orig_group_pts,
-                }
-                self.status.config(text=f"Déplacement du groupe #{gid} (clic sur tri {self._last_drawn[idx].get('id','?')})")
-            else:
-                # déplacement triangle isolé (comportement existant)
-                Cw = self._tri_centroid(P)
-                orig_pts = {k: np.array(P[k].copy()) for k in ("O","B","L")}
-                self._sel = {
-                    "mode": "move",
-                    "idx": idx,
-                    "grab_offset": np.array([wx, wy]) - Cw,
-                    "orig_pts": orig_pts,
-                }
-                self.status.config(text=f"Déplacement du triangle #{self._last_drawn[idx].get('id','?')}")
+            # En théorie, gid existe toujours (même un triangle seul est un groupe).
+            # Si jamais non (état inattendu), on refuse de créer un mode 'move' triangle.
+            if not gid:
+                return
+            Gc = self._group_centroid(gid)
+            if Gc is None:
+                return
+            # snapshot complet du groupe pour rollback
+            orig_group_pts = {}
+            for node in self._group_nodes(gid):
+                tid = node["tid"]
+                if 0 <= tid < len(self._last_drawn):
+                    Pt = self._last_drawn[tid]["pts"]
+                    orig_group_pts[tid] = {k: np.array(Pt[k].copy()) for k in ("O","B","L")}
+            self._sel = {
+                "mode": "move_group",
+                "gid": gid,
+                "grab_offset": np.array([wx, wy]) - Gc,
+                "orig_group_pts": orig_group_pts,
+            }
+            self.status.config(text=f"Déplacement du groupe #{gid} (clic sur tri {self._last_drawn[idx].get('id','?')})")
         elif mode == "vertex":
             # déplacement par sommet (translation comme 'center', mais calée sur le sommet choisi)
             vkey = extra or "O"
@@ -2175,13 +1850,9 @@ class TriangleViewerManual(tk.Tk):
             # ----- DEBUG étape 3 : clic sur sommet -----
             gid0 = self._get_group_of_triangle(idx)
             tri_id = self._last_drawn[idx].get("id","?")
-            self._debug(f"[DBG] CLICK vertex: tri_idx={idx} (id={tri_id}), vkey={vkey}, gid={gid0}")
-            if gid0:
-                self._debug_dump_group(gid0, "groupe du triangle cliqué (avant test lien)")
 
             # si ce sommet est un LIEN -> on DECONNECTE et on démarre un move_group par sommet ---
             gid_link, pos, link_type = self._find_group_link_for_vertex(idx, vkey)
-            self._debug(f"[DBG] RESULT lien: gid_link={gid_link}, pos={pos}, link_type={link_type}")
             if gid_link and self._ctrl_down:
                 # Déterminer où couper :
                 # - si click sur vkey_in (lien vers le précédent), on coupe AVANT 'pos' -> le morceau MOBILE = suffixe [pos..]
@@ -2198,7 +1869,6 @@ class TriangleViewerManual(tk.Tk):
 
                 # Quel groupe contient le triangle cliqué après split ?
                 mobile_gid = None
-                self._debug(f"[DBG] split -> left_gid={left_gid}, right_gid={right_gid}, cut_after={cut_after}, pos={pos}")
                 # si pos <= cut_after : le tri cliqué est dans la PARTIE GAUCHE
                 if pos <= cut_after and left_gid:
                     mobile_gid = left_gid
@@ -2206,22 +1876,30 @@ class TriangleViewerManual(tk.Tk):
                 elif pos > cut_after and right_gid:
                     mobile_gid = right_gid
 
-                # Si la partie qui contient le triangle cliqué est redevenue singleton -> pas de group, on retombe sur move triangle
+                # Invariant "100% groupes" : même singleton => on force le move_group (assist OFF)
                 if mobile_gid is None:
-                    # comportement de fallback: on bouge le TRIANGLE SEUL par le sommet
-                    orig_pts = {k: np.array(P[k].copy()) for k in ("O","B","L")}
-                    self._sel = {
-                        "mode": "vertex",
-                        "idx": idx,
-                        "vkey": vkey,
-                        "grab_offset": np.array([wx, wy]) - np.array(P[vkey], dtype=float),
-                        "orig_pts": orig_pts,
-                        "suppress_assist": True,
-                    }
-                    # on purge tout résidu d’aide visuelle
-                    self._clear_nearest_line(); self._clear_edge_highlights()
-                    self.status.config(text=f"Lien cassé. Déplacement du triangle #{self._last_drawn[idx].get('id','?')} par sommet.")
-                    return
+                    mobile_gid = gid_link
+                # --- Démarre un déplacement de GROUPE par le SOMMET cliqué ---
+                orig_group_pts = {}
+                for node in self._group_nodes(mobile_gid):
+                    tid = node["tid"]
+                    if 0 <= tid < len(self._last_drawn):
+                        Pt = self._last_drawn[tid]["pts"]
+                        orig_group_pts[tid] = {k: np.array(Pt[k].copy()) for k in ("O","B","L")}
+                anchor_world = np.array(P[vkey], dtype=float)
+                self._sel = {
+                    "mode": "move_group",
+                    "gid": mobile_gid,
+                    "orig_group_pts": orig_group_pts,
+                    "anchor": {"type": "vertex", "tid": idx, "vkey": vkey},
+                    "grab_offset": np.array([wx, wy]) - anchor_world,
+                    "suppress_assist": True,
+                }
+                self.status.config(text=f"Lien cassé. Déplacement du groupe #{mobile_gid} par sommet {vkey}.")
+                self._clear_nearest_line()
+                self._clear_edge_highlights()
+                self._redraw_from(self._last_drawn)
+                return
 
                 # --- Démarre un déplacement de GROUPE par le SOMMET cliqué ---
                 # Snapshot du groupe mobile pour rollback
@@ -2242,7 +1920,6 @@ class TriangleViewerManual(tk.Tk):
                     "grab_offset": np.array([wx, wy]) - anchor_world,
                     "suppress_assist": True,
                 }
-                self._debug(f"[DBG] move_group(ANCHOR vertex) gid={mobile_gid}")
                 self.status.config(text=f"Lien cassé. Déplacement du groupe #{mobile_gid} par sommet {vkey}.")
                 # purge immédiate de toute aide existante
                 self._clear_nearest_line()
@@ -2250,8 +1927,38 @@ class TriangleViewerManual(tk.Tk):
                 self._redraw_from(self._last_drawn)
                 return
 
-            # --- NOUVEAU : si le triangle appartient à un groupe et qu'on NE tient PAS CTRL,
-            #               on déplace le **groupe entier** ancré sur ce sommet.
+            # --- NOUVEAU (CTRL sans lien) : si CTRL est enfoncé mais que le sommet cliqué n'est PAS un lien,
+            #                                on déplace le GROUPE entier ancré sur ce sommet, SANS assist.
+            if self._ctrl_down:
+                gid0 = self._get_group_of_triangle(idx)
+                if gid0:
+                    # snapshot du groupe (rollback sûr pendant le drag)
+                    orig_group_pts = {}
+                    for nd in self._group_nodes(gid0):
+                        tid = nd["tid"]
+                        if 0 <= tid < len(self._last_drawn):
+                            Pt = self._last_drawn[tid]["pts"]
+                            orig_group_pts[tid] = {k: np.array(Pt[k].copy()) for k in ("O", "B", "L")}
+
+                    anchor_world = np.array(P[vkey], dtype=float)
+                    self._sel = {
+                        "mode": "move_group",
+                        "gid": gid0,
+                        "orig_group_pts": orig_group_pts,
+                        "anchor": {"type": "vertex", "tid": idx, "vkey": vkey},
+                        "grab_offset": np.array([wx, wy]) - anchor_world,
+                        "suppress_assist": True,  # pas d'aides visuelles en CTRL
+                    }
+                    # nettoyer toute aide existante
+                    self._reset_assist()
+                    try:
+                        self.status.config(text=f"CTRL sans lien : déplacement du groupe #{gid0} par sommet {vkey}.")
+                    except Exception:
+                        pass
+                    self._redraw_from(self._last_drawn)
+                    return
+
+            # --- NOUVEAU : si le triangle appartient à un groupe et qu'on NE tient PAS CTRL,            #               on déplace le **groupe entier** ancré sur ce sommet.
             gid0 = self._get_group_of_triangle(idx)
             if gid0 and not self._ctrl_down:
                 # snapshot du groupe (rollback sûr pendant le drag)
@@ -2311,84 +2018,59 @@ class TriangleViewerManual(tk.Tk):
 
     def _record_group_after_last_snap(self, idx_m: int, vkey_m: str, idx_t: int, vkey_t: str):
         """
-        Après un collage tri->tri (ou tri->groupe), met à jour la structure des groupes.
-        Règles :
-        - si aucun des deux triangles n’est groupé : création d’un groupe à 2 nœuds.
-        - si l’un est dans un groupe et l’autre non : ajout en tête/queue si le collage touche l’extrémité,
-            sinon (cas insertion au milieu) on laisse pour plus tard.
-        - si les deux sont dans des groupes : tentative de fusion extrémité<->extrémité (sinon on laisse pour plus tard).
-        NB : on reste volontairement conservateur pour ne pas casser ton flux actuel.
+        Version simplifiée : on ne gère que des **GROUPES** (les triangles sont
+        toujours en groupe singleton). On fusionne **gid_m** et **gid_t** UNIQUEMENT
+        en extrémité↔extrémité :
+          - tail(m) → head(t) : tail_m.vkey_out = vkey_m ; head_t.vkey_in = vkey_t
+          - head(m) → tail(t) : head_m.vkey_in = vkey_m ; tail_t.vkey_out = vkey_t
+        Invariants :
+          head.vkey_in is None ; tail.vkey_out is None ; liens internes complets.
         """
         tri_m = self._last_drawn[idx_m]
         tri_t = self._last_drawn[idx_t]
         gid_m = tri_m.get("group_id")
         gid_t = tri_t.get("group_id")
 
-        # --- Cas 1 : aucun groupe -> crée un groupe à 2
-        if gid_m is None and gid_t is None:
-            gid = self._new_group_id()
-            self.groups[gid] = {"id": gid, "nodes": []}
-            # m devient tête, t devient queue (ou l’inverse ; important seulement pour vkey_in/out)
-            self.groups[gid]["nodes"] = [
-                {"tid": idx_m, "vkey_in": None,  "vkey_out": vkey_m},
-                {"tid": idx_t, "vkey_in": vkey_t, "vkey_out": None},
-            ]
-            tri_m["group_id"] = gid; tri_m["group_pos"] = 0
-            tri_t["group_id"] = gid; tri_t["group_pos"] = 1
-            self.status.config(text=f"Groupe #{gid} créé : t0=tid{idx_m}({vkey_m}) → t1=tid{idx_t}({vkey_t})")
+        # Rien à faire si mêmes groupes (collage interne non géré ici)
+        if not gid_m or not gid_t or gid_m == gid_t:
             return
 
-        # --- Cas 2 : mobile dans un groupe, cible non -> ajout en extrémité si possible
-        if gid_m is not None and gid_t is None:
-            nodes = self.groups[gid_m]["nodes"]
-            head = nodes[0]; tail = nodes[-1]
-            if tri_m["group_pos"] == 0:
-                # ajout avant la tête
-                nodes.insert(0, {"tid": idx_t, "vkey_in": None, "vkey_out": vkey_t})
-                head["vkey_in"] = vkey_m
-                # renumérotation pos
-                for i, n in enumerate(nodes):
-                    self._last_drawn[n["tid"]]["group_pos"] = i
-                tri_t["group_id"] = gid_m; tri_t["group_pos"] = 0
-                self.status.config(text=f"Triangle ajouté en tête du groupe #{gid_m}.")
-                return
-            elif tri_m["group_pos"] == len(nodes)-1:
-                # ajout après la queue
-                nodes.append({"tid": idx_t, "vkey_in": vkey_t, "vkey_out": None})
-                nodes[-2]["vkey_out"] = vkey_m
-                for i, n in enumerate(nodes):
-                    self._last_drawn[n["tid"]]["group_pos"] = i
-                tri_t["group_id"] = gid_m; tri_t["group_pos"] = len(nodes)-1
-                self.status.config(text=f"Triangle ajouté en queue du groupe #{gid_m}.")
-                return
-            # insertion au milieu -> on ne touche pas (hors scope), laisse les triangles collés mais sans groupe
+        nodes_m = self.groups[gid_m]["nodes"]
+        nodes_t = self.groups[gid_t]["nodes"]
+        head_m, tail_m = nodes_m[0], nodes_m[-1]
+        head_t, tail_t = nodes_t[0], nodes_t[-1]
+
+        # Cas A : queue(m) -> tête(t)
+        if tri_m["group_pos"] == len(nodes_m) - 1 and tri_t["group_pos"] == 0:
+            tail_m["vkey_out"] = vkey_m
+            head_t["vkey_in"]  = vkey_t
+            # concat t à la suite de m
+            nodes_m.extend(nodes_t)
+            for i, nd in enumerate(nodes_m):
+                tid = nd["tid"]
+                self._last_drawn[tid]["group_id"]  = gid_m
+                self._last_drawn[tid]["group_pos"] = i
+            # supprimer l'ancien groupe t
+            del self.groups[gid_t]
+            self._recompute_group_bbox(gid_m)
             return
 
-        # --- Cas 3 : cible dans un groupe, mobile non -> symétrique
-        if gid_m is None and gid_t is not None:
-            nodes = self.groups[gid_t]["nodes"]
-            head = nodes[0]; tail = nodes[-1]
-            # si on épouse la tête -> ajout avant
-            if tri_t["group_pos"] == 0:
-                nodes.insert(0, {"tid": idx_m, "vkey_in": None, "vkey_out": vkey_m})
-                head["vkey_in"] = vkey_t
-                for i, n in enumerate(nodes):
-                    self._last_drawn[n["tid"]]["group_pos"] = i
-                tri_m["group_id"] = gid_t; tri_m["group_pos"] = 0
-                self.status.config(text=f"Triangle ajouté en tête du groupe #{gid_t}.")
-                return
-            elif tri_t["group_pos"] == len(nodes)-1:
-                nodes.append({"tid": idx_m, "vkey_in": vkey_m, "vkey_out": None})
-                nodes[-2]["vkey_out"] = vkey_t
-                for i, n in enumerate(nodes):
-                    self._last_drawn[n["tid"]]["group_pos"] = i
-                tri_m["group_id"] = gid_t; tri_m["group_pos"] = len(nodes)-1
-                self.status.config(text=f"Triangle ajouté en queue du groupe #{gid_t}.")
-                return
+        # Cas B : tête(m) -> queue(t)
+        if tri_m["group_pos"] == 0 and tri_t["group_pos"] == len(nodes_t) - 1:
+            head_m["vkey_in"]   = vkey_m
+            tail_t["vkey_out"]  = vkey_t
+            # concat m après t
+            nodes_t.extend(nodes_m)
+            for i, nd in enumerate(nodes_t):
+                tid = nd["tid"]
+                self._last_drawn[tid]["group_id"]  = gid_t
+                self._last_drawn[tid]["group_pos"] = i
+            del self.groups[gid_m]
+            self._recompute_group_bbox(gid_t)
             return
 
-        # --- Cas 4 : les deux sont déjà groupés -> on tentera une fusion extrémité<->extrémité plus tard
-        # (on ne modifie pas ici si ce n’est pas une jonction d’extrémités)
+        # Autres combinaisons (tête↔tête, queue↔queue, insertion interne) non gérées
+        # dans cette version simplifiée. On ne modifie rien.
         return
 
     def _on_canvas_left_move(self, event):
@@ -2667,42 +2349,69 @@ class TriangleViewerManual(tk.Tk):
                                 P[k][0] = float(p_fin[0])
                                 P[k][1] = float(p_fin[1])
 
-                # ====== NOUVEAU : FUSION DE GROUPE APRÈS COLLAGE ======
-                # cible : triangle ou groupe ?
+                # ====== FUSION DE GROUPE APRÈS COLLAGE (groupe ↔ groupe uniquement) ======
                 tgt_gid = self._last_drawn[idx_t].get("group_id", None)
                 mob_gid = gid
-                if mob_gid is not None:
-                    if tgt_gid is None:
-                        # 1) CIBLE = TRIANGLE SEUL → l'ajouter au groupe mobile
-                        self._last_drawn[idx_t]["group_id"] = mob_gid
-                        # vkeys: on met None pour l’instant (orientation fine à gérer ultérieurement)
-                        self.groups[mob_gid]["nodes"].append({"tid": idx_t, "vkey_in": None, "vkey_out": None})
-                        # bbox
-                        self._recompute_group_bbox(mob_gid)
-                        self.status.config(text=f"Groupe fusionné : triangle {idx_t} ajouté au groupe #{mob_gid}.")
-                    elif tgt_gid != mob_gid:
-                        # 2) CIBLE = AUTRE GROUPE → fusionner tgt_gid → mob_gid
+                if mob_gid is not None and tgt_gid is not None:
+                    if tgt_gid != mob_gid:
+                        # Fusionner tgt_gid → mob_gid AVEC LIEN EXPLICITE
                         g_src = self.groups.get(mob_gid)
                         g_tgt = self.groups.get(tgt_gid)
-                        if g_src and g_tgt:
-                            # rattacher tous les triangles du groupe cible au groupe mobile
-                            for nd in g_tgt.get("nodes", []):
-                                tid2 = nd.get("tid")
-                                if tid2 is None:
-                                    continue
-                                self._last_drawn[tid2]["group_id"] = mob_gid
-                                # on pousse tels quels (vkeys conservées si présentes)
-                                g_src["nodes"].append({"tid": tid2,
-                                                       "vkey_in": nd.get("vkey_in"),
-                                                       "vkey_out": nd.get("vkey_out")})
-                            # supprimer l'ancien groupe cible
-                            try:
-                                del self.groups[tgt_gid]
-                            except Exception:
-                                pass
-                            # bbox finale
+                        anchor = self._sel.get("anchor")  # {"type":"vertex","tid":...,"vkey":...}
+                        choice = getattr(self, "_edge_choice", None)  # (... idx_t, vkey_t, ...)
+                        if g_src and g_tgt and anchor and choice:
+                            # 2.1 Localiser ancre (dans src) et cible (dans tgt)
+                            anchor_tid = anchor.get("tid"); anchor_vkey = anchor.get("vkey")
+                            (_, _, idx_t, vkey_t, _) = choice
+                            nodes_src = g_src["nodes"]; nodes_tgt = g_tgt["nodes"]
+                            pos_anchor = next((i for i, nd in enumerate(nodes_src) if nd.get("tid")==anchor_tid), None)
+                            pos_target = next((i for i, nd in enumerate(nodes_tgt) if nd.get("tid")==idx_t), None)
+                            if pos_anchor is None or pos_target is None:
+                                # fallback: conserver l’ancien comportement (append brut)
+                                for nd in nodes_tgt:
+                                    tid2 = nd.get("tid"); 
+                                    if tid2 is None: continue
+                                    self._last_drawn[tid2]["group_id"] = mob_gid
+                                    nodes_src.append({"tid": tid2,
+                                                      "vkey_in": nd.get("vkey_in"),
+                                                      "vkey_out": nd.get("vkey_out")})
+                            else:
+                                # 2.2 Construire une vue pivotée de tgt pour que idx_t soit AU BORD collé
+                                def rotate(L, k): 
+                                    k = k % len(L); 
+                                    return L[k:]+L[:k]
+                                # On privilégie "coller APRES l'ancre": ancre --(out)-> [tgt...]
+                                insert_after = True
+                                tgt_rot = rotate(list(nodes_tgt), pos_target)  # idx_t devient tgt_rot[0]
+                                # Poser les marqueurs de lien complémentaires :
+                                nd_anchor = nodes_src[pos_anchor]
+                                if insert_after:
+                                    # ancre sort → cible entre par vkey_in
+                                    nd_anchor["vkey_out"] = anchor_vkey
+                                    tgt_rot[0] = {"tid": tgt_rot[0]["tid"], "vkey_in": vkey_t, "vkey_out": tgt_rot[0].get("vkey_out")}
+                                    # insérer juste après l’ancre
+                                    nodes_src[pos_anchor+1:pos_anchor+1] = tgt_rot
+                                else:
+                                    # ancre entre par vkey_in ← cible sort
+                                    nd_anchor["vkey_in"] = anchor_vkey
+                                    tgt_rot[-1] = {"tid": tgt_rot[-1]["tid"], "vkey_in": tgt_rot[-1].get("vkey_in"), "vkey_out": vkey_t}
+                                    # insérer juste avant l’ancre
+                                    nodes_src[pos_anchor:pos_anchor] = tgt_rot
+                                # MAJ group_id sur tout le bloc inséré
+                                for nd in tgt_rot:
+                                    tid2 = nd["tid"]
+                                    if 0 <= tid2 < len(self._last_drawn):
+                                        self._last_drawn[tid2]["group_id"] = mob_gid
+                            # 2.3 Supprimer l'ancien groupe cible et reindexer pos/bbox
+                            try: del self.groups[tgt_gid]
+                            except Exception: pass
+                            for i, nd in enumerate(nodes_src):
+                                tid2 = nd["tid"]
+                                if 0 <= tid2 < len(self._last_drawn):
+                                    self._last_drawn[tid2]["group_id"]  = mob_gid
+                                    self._last_drawn[tid2]["group_pos"] = i
                             self._recompute_group_bbox(mob_gid)
-                            self.status.config(text=f"Groupes fusionnés : #{mob_gid} ← #{tgt_gid}.")
+                            self.status.config(text=f"Groupes fusionnés avec lien: #{tgt_gid} → #{mob_gid}.")
                     else:
                         # cible déjà dans le même groupe → rien à faire côté structure
                         self.status.config(text=f"Groupe collé (même groupe #{mob_gid}).")
@@ -2764,11 +2473,6 @@ class TriangleViewerManual(tk.Tk):
         self._pan_anchor = None
 
     # ---------- Impression PDF (A4) ----------
-    def _bbox_of_triangle(self, P):
-        xs = [float(P["O"][0]), float(P["B"][0]), float(P["L"][0])]
-        ys = [float(P["O"][1]), float(P["B"][1]), float(P["L"][1])]
-        return min(xs), min(ys), max(xs), max(ys)
-
     def _export_triangles_pdf(
         self, path, triangles, scale_mm=1.5,
         page_margin_mm=12, cell_pad_mm=6,
