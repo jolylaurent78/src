@@ -6,11 +6,13 @@ import numpy as np
 from shapely.geometry import Polygon as _ShPoly, LineString as _ShLine, Point as _ShPoint
 from shapely.ops import unary_union as _sh_union
 from shapely.ops import unary_union
-from shapely.affinity import rotate as _sh_rotate, translate as _sh_translate
+from shapely.affinity import rotate, translate 
 import pandas as pd
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from typing import Optional, List, Dict, Tuple
+
+EPS_WORLD = 1e-6
 
 # ---------- Utils géométrie ----------
 def _overlap_shrink(S_m, S_t, stroke_px: float, zoom: float) -> bool:
@@ -62,62 +64,6 @@ def _build_local_triangle(OB: float, OL: float, BL: float) -> dict:
         "B": np.array([float(OB), 0.0], dtype=float),
         "L": np.array([float(x),  float(y)], dtype=float),
     }
-
-# --- Segments utilitaires ---
-def _segments_from_pts(P: Dict[str, np.ndarray]) -> List[Tuple[np.ndarray, np.ndarray, Tuple[str,str]]]:
-    """Retourne les 3 segments d'un triangle (points monde) avec leurs clés (a,b)."""
-    return [
-        (np.array(P["O"], dtype=float), np.array(P["B"], dtype=float), ("O","B")),
-        (np.array(P["B"], dtype=float), np.array(P["L"], dtype=float), ("B","L")),
-        (np.array(P["L"], dtype=float), np.array(P["O"], dtype=float), ("L","O")),
-    ]
-
-def _seg_intersect_strict(a1, a2, b1, b2, eps: float = 1e-9) -> bool:
-    """
-    Vrai si [a1,a2] et [b1,b2] s'intersectent de façon "gênante" :
-      - croisement propre (en X)  → LineString.crosses
-      - OU recouvrement colinéaire de longueur > eps → LineString.overlaps + length
-    Toucher par extrémité (simple contact) n’est pas considéré gênant.
-    """
-    L1 = _ShLine([tuple(map(float, a1)), tuple(map(float, a2))])
-    L2 = _ShLine([tuple(map(float, b1)), tuple(map(float, b2))])
-    # Croisement propre (intersections des intérieurs)
-    if L1.crosses(L2):
-        return True
-    # Recouvrement colinéaire (les intérieurs se chevauchent sans se contenir)
-    if L1.overlaps(L2):
-        return L1.intersection(L2).length > eps
-    return False
-
-def _point_in_triangle_strict(P, A, B, C, eps=1e-9) -> bool:
-    poly = _ShPoly([tuple(map(float, A)),
-                    tuple(map(float, B)),
-                    tuple(map(float, C))])
-    if not poly.is_valid:
-        return False
-    pt = _ShPoint(tuple(map(float, P)))
-
-    # si le point est sur un bord → pas "strict"
-    if poly.touches(pt):
-        return False
-
-    # petit "shrink" pour éviter qu’un point quasi-sur-bord soit vu comme inside
-    poly_shrunk = poly.buffer(-eps)
-    return poly_shrunk.contains(pt)
-
-
-# --- Égalité géométrique (avec tolérance) ---
-def _same_point(p: np.ndarray, q: np.ndarray, eps: float = 1e-6) -> bool:
-    return np.allclose(p, q, atol=eps, rtol=0.0)
-
-def _point_on_segment(C: np.ndarray, A: np.ndarray, B: np.ndarray, eps: float = 1e-6) -> bool:
-    """C est-il sur le segment [A,B] (colinéarité + dans l'intervalle) ?"""
-    AB = B - A; AC = C - A
-    cross = abs(AB[0]*AC[1] - AB[1]*AC[0])
-    if cross > eps: return False
-    dot = (AC[0]*AB[0] + AC[1]*AB[1]); ab2 = (AB[0]*AB[0] + AB[1]*AB[1])
-    return -eps <= dot <= ab2 + eps
-
 
 # --- Simulation d'une pose (pour filtrer le chevauchement après collage) ---
 def _apply_R_T_on_P(P: Dict[str,np.ndarray], R: np.ndarray, T: np.ndarray, pivot: np.ndarray) -> Dict[str,np.ndarray]:
@@ -500,7 +446,7 @@ class TriangleViewerManual(tk.Tk):
             adj.setdefault(kb, []).append(a)
         return {"adj": adj, "pts": pts}
 
-    def _incident_half_edges_at_vertex(self, graph, v, eps=1e-6):
+    def _incident_half_edges_at_vertex(self, graph, v, eps=EPS_WORLD):
         """
         Renvoie les deux demi-arêtes (si existantes) qui partent de 'v' le long de la frontière.
         Retour: liste de 0..2 éléments, chaque élément est ((ax,ay),(bx,by))
@@ -523,7 +469,7 @@ class TriangleViewerManual(tk.Tk):
             out = [a0,a1]
         return out
 
-    def _normalize_to_outline_granularity(self, outline, edges, eps=1e-6):
+    def _normalize_to_outline_granularity(self, outline, edges, eps=EPS_WORLD):
         """
         Décompose chaque segment incident en chaîne de micro-segments collés à l'outline (granularité identique),
         en s'appuyant sur l'adjacence du graphe de frontière. Retourne une liste de segments.
@@ -562,19 +508,14 @@ class TriangleViewerManual(tk.Tk):
     # ------------------------------
     # Géométrie / utils divers
     # ------------------------------
-    def _angle_from(self, p0, p1):
-        """Azimut de p0->p1 en radians dans [0, 2π)."""
+    def _ang_of_vec(self, vx, vy):
         import math
-        a = math.atan2(p1[1]-p0[1], p1[0]-p0[0])
-        if a < 0: 
-            a += 2*math.pi
-        return a
-
-    def _wrap_delta_angle(self, a, b):
-        """Distance angulaire minimale entre a et b, résultat dans [0, π]."""
-        import math
-        d = abs(a - b) % (2*math.pi)
-        return d if d <= math.pi else (2*math.pi - d)
+        return math.atan2(vy, vx)
+ 
+    def _ang_diff(self, a, b):
+        # plus petit écart absolu d’angle
+        return abs(self._ang_wrap(a - b))
+         
 
     # ---------- Dessin / vue ----------
     def show_raw_selection(self):
@@ -945,7 +886,7 @@ class TriangleViewerManual(tk.Tk):
         return _id
 
     # ---------- utilitaires contour de groupe ----------
-    def _group_outline_segments(self, gid: int, eps: float = 1e-6):
+    def _group_outline_segments(self, gid: int, eps: float = EPS_WORLD):
         """
         Retourne une liste de sous-segments (P1,P2) qui appartiennent au
         **contour extérieur** de l’union des triangles du groupe `gid`.
@@ -1037,23 +978,9 @@ class TriangleViewerManual(tk.Tk):
         gid = self._last_drawn[idx].get("group_id")
         assert gid is not None, "Invariant brisé: item sans group_id"
         try:
-            return self._group_outline_segments(gid, eps=1e-6)
+            return self._group_outline_segments(gid, eps=EPS_WORLD)
         except Exception:
             return []
-
-
-    # --- helper : triangle propriétaire d’un sous-segment le long d’une arête d’un groupe ---
-    def _build_outline_adjacency(self, outline):
-        """Construire l'adjacence {point->liste de voisins} à partir d'un outline (liste de segments)."""
-        def _pt_key(p, eps=1e-9):
-            return (round(float(p[0])/eps)*eps, round(float(p[1])/eps)*eps)
-        adj = {}
-        for a,b in (outline or []):
-            a = (float(a[0]), float(a[1])); b = (float(b[0]), float(b[1]))
-            ka, kb = _pt_key(a), _pt_key(b)
-            adj.setdefault(ka, []).append(b)
-            adj.setdefault(kb, []).append(a)
-        return adj
 
 
     def _update_edge_highlights(self, mob_idx: int, vkey_m: str, tgt_idx: int, tgt_vkey: str):
@@ -1077,7 +1004,7 @@ class TriangleViewerManual(tk.Tk):
              from math import pi
              d = abs(a - b) % (2*pi)
              return d if d <= pi else (2*pi - d)
-        def _almost_eq(a,b,eps=1e-6): return abs(a[0]-b[0])<=eps and abs(a[1]-b[1])<=eps
+        def _almost_eq(a,b,eps=EPS_WORLD): return abs(a[0]-b[0])<=eps and abs(a[1]-b[1])<=eps
 
         # Sommets & groupes
         tri_m = self._last_drawn[mob_idx];  Pm = tri_m["pts"]; vm = _to_np(Pm[vkey_m])
@@ -1089,22 +1016,6 @@ class TriangleViewerManual(tk.Tk):
         # Tolérance (utile à d'autres endroits si besoin)
         tol_world = max(1e-9, float(getattr(self, "stroke_px", 2)) / max(getattr(self, "zoom", 1.0), 1e-9))
 
-        # === FRONTIER GRAPH des deux groupes ===
-        mob_outline = self._outline_for_item(mob_idx) or []
-        tgt_outline = self._outline_for_item(tgt_idx) or []
-        g_m = self._build_boundary_graph(mob_outline)
-        g_t = self._build_boundary_graph(tgt_outline)
-
-        # === Demi-arêtes incidentes aux sommets cliqués (strictement sur la frontière) ===
-        m_inc_raw = self._incident_half_edges_at_vertex(g_m, vm)
-        t_inc_raw = self._incident_half_edges_at_vertex(g_t, vt)
-        if not t_inc_raw:
-            self._clear_edge_highlights(); self._edge_choice = None; return
-
-        # Normalisation à la granularité de l'outline (lisible à l’écran)
-        m_inc = self._normalize_to_outline_granularity(mob_outline, m_inc_raw, eps=1e-6)
-        t_inc = self._normalize_to_outline_granularity(tgt_outline, t_inc_raw, eps=1e-6)
-
         # === Collecte via graphe de frontière puis argmin global (Δ-angle) ===
         # 1) outlines des deux groupes
         mob_outline = self._outline_for_item(mob_idx) or []
@@ -1115,8 +1026,8 @@ class TriangleViewerManual(tk.Tk):
         m_inc_raw = self._incident_half_edges_at_vertex(g_m, vm)
         t_inc_raw = self._incident_half_edges_at_vertex(g_t, vt)
         # 3) normalisation (granularité identique à l’outline) pour l’affichage
-        m_inc = self._normalize_to_outline_granularity(mob_outline, m_inc_raw, eps=1e-6)
-        t_inc = self._normalize_to_outline_granularity(tgt_outline, t_inc_raw, eps=1e-6)
+        m_inc = self._normalize_to_outline_granularity(mob_outline, m_inc_raw, eps=EPS_WORLD)
+        t_inc = self._normalize_to_outline_granularity(tgt_outline, t_inc_raw, eps=EPS_WORLD)
 
         # 4) sélection globale : minimiser l’écart d’azimut + anti-chevauchement
         best = None  # (score, m_edge, t_edge)
@@ -1182,7 +1093,6 @@ class TriangleViewerManual(tk.Tk):
         except Exception: mob_outline = []
         try:  tgt_outline = [(tuple(a), tuple(b)) for (a,b) in self._outline_for_item(tgt_idx)]
         except Exception: tgt_outline = []
-        self._redraw_edge_highlights()
         self._redraw_edge_highlights()
 
 
@@ -2255,12 +2165,9 @@ class TriangleViewerManual(tk.Tk):
             U = np.array(t_a, dtype=float)  # cible: point où coller
             V = np.array(t_b, dtype=float)  # cible: deuxième point de l'arête
 
-            def _ang(p, q):
-                v = q - p
-                return atan2(v[1], v[0])
-
-            ang_m = _ang(A, B)
-            ang_t = _ang(U, V)
+            # azimuts via helper unifié
+            ang_m = self._ang_of_vec(B[0] - A[0], B[1] - A[1])
+            ang_t = self._ang_of_vec(V[0] - U[0], V[1] - U[1])
             dtheta = ang_t - ang_m
 
             R = np.array([[np.cos(dtheta), -np.sin(dtheta)],
@@ -2319,13 +2226,9 @@ class TriangleViewerManual(tk.Tk):
                 U = np.array(t_a, dtype=float)  # cible: point d'accroche
                 V = np.array(t_b, dtype=float)  # cible: second point arête
 
-                def _ang(p, q):
-                    v = q - p
-                    return atan2(v[1], v[0])
-
-                # Angle mobile/cible et rotation à appliquer
-                ang_m = _ang(A, B)
-                ang_t = _ang(U, V)
+                # Angle mobile/cible et rotation à appliquer (helpers unifiés)
+                ang_m = self._ang_of_vec(B[0] - A[0], B[1] - A[1])
+                ang_t = self._ang_of_vec(V[0] - U[0], V[1] - U[1])
                 dtheta = ang_t - ang_m
                 R = np.array([[np.cos(dtheta), -np.sin(dtheta)],
                               [np.sin(dtheta),  np.cos(dtheta)]], dtype=float)
