@@ -236,6 +236,8 @@ class TriangleViewerManual(tk.Tk):
         self._ctx_menu.add_command(label="Pivoter", command=self._ctx_rotate_selected)
         self._ctx_menu.add_command(label="Inverser", command=self._ctx_flip_selected)
         self._ctx_menu.add_command(label="OL=0°", command=self._ctx_orient_OL_north)
+        # Mémoriser l'index de l'entrée "OL=0°" pour pouvoir la (dés)activer au vol
+        self._ctx_idx_ol0 = self._ctx_menu.index("end")
 
         # DEBUG: F9 pour activer/désactiver le filtrage de chevauchement au highlight
         # (bind_all pour capter même si le focus clavier n'est pas explicitement sur le canvas)
@@ -1539,6 +1541,21 @@ class TriangleViewerManual(tk.Tk):
             self._ctx_target_idx = idx
             self._ctx_last_rclick = (event.x, event.y)
 
+            # Activer "OL=0°" seulement si le groupe est un singleton
+            try:
+                gid = self._get_group_of_triangle(idx)
+                n_nodes = len(self._group_nodes(gid)) if gid else 0
+                state = (tk.NORMAL if n_nodes == 1 else tk.DISABLED)
+                # sécurité: si l'index n'existe pas, ne rien faire
+                if hasattr(self, "_ctx_idx_ol0") and self._ctx_idx_ol0 is not None:
+                    self._ctx_menu.entryconfig(self._ctx_idx_ol0, state=state)
+            except Exception:
+                # en cas d'erreur inattendue, mieux vaut désactiver
+                try:
+                    if hasattr(self, "_ctx_idx_ol0") and self._ctx_idx_ol0 is not None:
+                        self._ctx_menu.entryconfig(self._ctx_idx_ol0, state=tk.DISABLED)
+                except Exception:
+                    pass
             try:
                 self._ctx_menu.tk_popup(event.x_root, event.y_root)
             finally:
@@ -1557,12 +1574,27 @@ class TriangleViewerManual(tk.Tk):
         g = self.groups.get(gid)
         if not g or not g.get("nodes"):
             return
+
+        # --- Confirmation si le groupe comporte au moins 2 triangles ---
+        try:
+            n_nodes = len(g.get("nodes", []))
+        except Exception:
+            n_nodes = 0
+        if n_nodes >= 2:
+            confirm = messagebox.askyesno(
+                "Supprimer le groupe",
+                "Voulez-vous supprimer le groupe ?"
+            )
+            if not confirm:
+                return
+
         # 1) Réinsertion listbox (avant de modifier _last_drawn)
         removed_tids = sorted({nd["tid"] for nd in g["nodes"] if "tid" in nd}, reverse=True)
         removed_set  = set(removed_tids)
         for tid in removed_tids:
             if 0 <= tid < len(self._last_drawn):
                 self._reinsert_triangle_to_list(self._last_drawn[tid])
+
         # 2) Reconstruire _last_drawn et table de remap old->new
         keep, old2new = [], {}
         for old_i, tri in enumerate(self._last_drawn):
@@ -1572,6 +1604,7 @@ class TriangleViewerManual(tk.Tk):
             old2new[old_i] = new_i
             keep.append(tri)
         self._last_drawn = keep
+
         # 3) Supprimer le groupe et remapper les autres
         if gid in self.groups:
             del self.groups[gid]
@@ -1592,6 +1625,7 @@ class TriangleViewerManual(tk.Tk):
                     self._last_drawn[tid]["group_id"]  = g2["id"]
                     self._last_drawn[tid]["group_pos"] = i
             self._recompute_group_bbox(g2["id"])
+
         # 4) Fin : purge sélection/assist et redraw
         self._sel = None
         self._reset_assist()
@@ -1687,33 +1721,60 @@ class TriangleViewerManual(tk.Tk):
 
     def _ctx_flip_selected(self):
         """
-        Inverse le triangle par symétrie axiale autour de la droite (O→L) passant par le barycentre.
-        Ajoute 'S' après le numéro tant que le triangle est inversé.
+        Inverse **tout le GROUPE** par symétrie axiale rigide.
+        Axe = direction (O→L) du triangle ciblé ; la droite passe par le **barycentre du groupe**.
+        Chaque triangle du groupe garde sa forme; on bascule le flag 'mirrored' de tous.
         """
         idx = self._ctx_target_idx
         self._ctx_target_idx = None
         if idx is None or not (0 <= idx < len(self._last_drawn)):
             return
-        t = self._last_drawn[idx]
-        P = t["pts"]
-        # axe = direction O->L ; pivot = barycentre
-        axis = np.array([P["L"][0] - P["O"][0], P["L"][1] - P["O"][1]], dtype=float)
+        # --- Étendue : GROUPE du triangle ciblé ---
+        gid = self._get_group_of_triangle(idx)
+        if not gid:
+            return
+        nodes = self._group_nodes(gid)  # liste des triangles du groupe
+        if not nodes:
+            return
+
+        # Axe = O→L du triangle ciblé (en monde)
+        t0 = self._last_drawn[idx]
+        P0 = t0["pts"]
+        axis = np.array([P0["L"][0] - P0["O"][0], P0["L"][1] - P0["O"][1]], dtype=float)
         nrm = float(np.hypot(axis[0], axis[1]))
         if nrm < 1e-12:
-            return
+            return  # triangle dégénéré
         u = axis / nrm
-        pivot = self._tri_centroid(P)
-        # matrice de réflexion : R = 2 uu^T - I
+
+        # Pivot = barycentre du GROUPE (rigide pour tous les triangles)
+        pivot = self._group_centroid(gid)
+        if pivot is None:
+            # secours : barycentre du triangle ciblé
+            pivot = self._tri_centroid(P0)
+
+        # Matrice de réflexion autour de la droite passant par 'pivot' et dirigée par u
         R = np.array([[2*u[0]*u[0] - 1, 2*u[0]*u[1]],
                       [2*u[0]*u[1],     2*u[1]*u[1] - 1]], dtype=float)
-        for k in ("O", "B", "L"):
-            v = np.array([P[k][0] - pivot[0], P[k][1] - pivot[1]], dtype=float)
-            Pv = (R @ v) + pivot
-            P[k] = Pv
-        # toggle du flag 'mirrored'
-        t["mirrored"] = not t.get("mirrored", False)
+
+        # Appliquer la réflexion à TOUS les triangles du groupe
+        for nd in nodes:
+            tid = nd.get("tid")
+            if tid is None or not (0 <= tid < len(self._last_drawn)):
+                continue
+            Pt = self._last_drawn[tid]["pts"]
+            for k in ("O", "B", "L"):
+                v = np.array([Pt[k][0] - pivot[0], Pt[k][1] - pivot[1]], dtype=float)
+                Pt[k] = (R @ v) + pivot
+            # Toggle du flag 'mirrored' pour l'affichage "S"
+            self._last_drawn[tid]["mirrored"] = not self._last_drawn[tid].get("mirrored", False)
+
+        # BBox groupe puis redraw
+        try:
+            self._recompute_group_bbox(gid)
+        except Exception:
+            pass
         self._redraw_from(self._last_drawn)
-        self.status.config(text=f"Inversion appliquée (id={t.get('id','?')}{'S' if t['mirrored'] else ''}).")
+        self.status.config(text=f"Inversion appliquée au groupe #{gid}.")
 
     def _on_canvas_left_down(self, event):
         # Nouveau clic gauche : purge l'éventuelle aide précédente (évite les fantômes)
