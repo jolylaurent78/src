@@ -120,6 +120,11 @@ class TriangleViewerManual(tk.Tk):
         self._edge_highlight_ids = [] # surlignage des 2 arêtes (mobile/cible)
         self._edge_choice = None      # (i_mob, key_mob, edge_m, i_tgt, key_tgt, edge_t)
         self._edge_highlights = None  # données brutes des aides (candidates + best)
+        self._tooltip = None          # tk.Toplevel
+        self._tooltip_label = None    # tk.Label
+
+        # distance écran supplémentaire pour l'ancrage du tooltip (px)
+        self._tooltip_cushion_px = 14
 
         # Épaisseur de trait (px) — utilisée pour le test de chevauchement "shrink seul"
         self.stroke_px = 2
@@ -242,6 +247,54 @@ class TriangleViewerManual(tk.Tk):
         # DEBUG: F9 pour activer/désactiver le filtrage de chevauchement au highlight
         # (bind_all pour capter même si le focus clavier n'est pas explicitement sur le canvas)
         self.bind_all("<F9>", self._toggle_skip_overlap_highlight)
+
+    # ---------- Tooltip helpers ----------
+    def _show_tooltip_at_center(self, text: str, cx_canvas: float, cy_canvas: float):
+        """Affiche/MAJ le tooltip en le **centrant** sur (cx_canvas, cy_canvas) (coords CANVAS)."""
+        if not text:
+            self._hide_tooltip(); return
+        if self._tooltip is None or not self._tooltip.winfo_exists():
+            self._tooltip = tk.Toplevel(self)
+            self._tooltip.wm_overrideredirect(True)
+            try:
+                self._tooltip.attributes("-topmost", True)
+            except Exception:
+                pass
+            self._tooltip_label = tk.Label(self._tooltip, text=text, bg="#ffffe0",
+                                           relief="solid", borderwidth=1, font=("Arial", 9),
+                                           justify="left", anchor="w")
+            self._tooltip_label.pack(ipadx=4, ipady=2)
+        else:
+            self._tooltip_label.config(text=text, justify="left", anchor="w")
+        # Mesurer la taille réelle du tooltip
+        self._tooltip.update_idletasks()
+        tw = max(1, int(self._tooltip.winfo_width()))
+        th = max(1, int(self._tooltip.winfo_height()))
+        # Convertir coords CANVAS -> écran et centrer
+        base_x = self.canvas.winfo_rootx()
+        base_y = self.canvas.winfo_rooty()
+        x = int(base_x + cx_canvas - tw/2)
+        y = int(base_y + cy_canvas - th/2)
+        c_w = int(self.canvas.winfo_width())
+        c_h = int(self.canvas.winfo_height())
+        min_x = base_x
+        max_x = base_x + c_w - tw
+        min_y = base_y
+        max_y = base_y + c_h - th
+        if max_x < min_x:
+            max_x = min_x
+        if max_y < min_y:
+            max_y = min_y
+        x = max(min_x, min(x, max_x))
+        y = max(min_y, min(y, max_y))
+        self._tooltip.wm_geometry(f"+{x}+{y}")
+
+    def _hide_tooltip(self):
+        if self._tooltip is not None and self._tooltip.winfo_exists():
+            try: self._tooltip.destroy()
+            except Exception: pass
+        self._tooltip = None
+        self._tooltip_label = None
 
     # ---------- Chargement Excel ----------
     def open_excel(self):
@@ -572,6 +625,7 @@ class TriangleViewerManual(tk.Tk):
         self._edge_choice = None
         self._edge_highlights = None     
         self.status.config(text="Canvas effacé")
+        self._hide_tooltip()
 
     def _world_to_screen(self, p):
         x = self.offset[0] + float(p[0]) * self.zoom
@@ -717,6 +771,8 @@ class TriangleViewerManual(tk.Tk):
     def _on_ctrl_down(self, event=None):
         if not self._ctrl_down:
             self._ctrl_down = True
+            # Masquer tout tooltip en mode déconnexion
+            self._hide_tooltip()
             try:
                 self.canvas.configure(cursor="X_cursor")
             except tk.TclError:
@@ -753,6 +809,121 @@ class TriangleViewerManual(tk.Tk):
         # Forcer focus sur le canvas pour recevoir les motions
         self.canvas.focus_set()
         self.status.config(text="Glissez le triangle sur le canvas puis relâchez pour le déposer.")
+
+    # ---------- Neighbours for tooltip ----------
+    def _point_on_segment(self, P, A, B, eps):
+        """Vrai si P appartient au segment [A,B] (colinéarité + projection dans [0,1])."""
+        Ax,Ay = float(A[0]), float(A[1]); Bx,By = float(B[0]), float(B[1])
+        Px,Py = float(P[0]), float(P[1])
+        ABx, ABy = Bx-Ax, By-Ay
+        APx, APy = Px-Ax, Py-Ay
+        cross = abs(ABx*APy - ABy*APx)
+        if cross > eps: 
+            return False
+        dot  = ABx*APx + ABy*APy
+        ab2  = ABx*ABx + ABy*ABy
+        if ab2 <= eps: 
+            return False
+        t = dot/ab2
+        return -eps <= t <= 1.0+eps
+
+    def _display_name(self, key, labels_tuple):
+        """Retourne le libellé affiché (sans préfixe) pour O/B/L."""
+        try:
+            if   key == "O": raw = labels_tuple[0]
+            elif key == "B": raw = labels_tuple[1]
+            else:            raw = labels_tuple[2]
+        except Exception:
+            raw = ""
+        s = str(raw or "").strip()
+        return s
+ 
+    # --- Azimut Nord->horaire (repère monde: Y vers le haut).
+    #     Horloge : 360° = 12h et 360° = 60' (minutes d'horloge)
+    def _azimutDegEtMinute(self, pSrc, pDst):
+        """
+        Renvoie (degInt, minFloat, hourFloat) pour le vecteur pSrc->pDst :
+          - degInt    : angle depuis le Nord (sens horaire) en degrés entiers 0..359
+          - minFloat  : minutes d’horloge au dixième (0.0 .. ≤60.0)   [360° = 60' → 1' = 6°]
+          - hourFloat : heures d’horloge au dixième (0.0 .. ≤12.0)    [360° = 12h → 1h = 30°]
+        """
+        import math
+        x1, y1 = float(pSrc[0]), float(pSrc[1])
+        x2, y2 = float(pDst[0]), float(pDst[1])
+        dx, dy = (x2 - x1), (y2 - y1)
+        if abs(dx) < 1e-12 and abs(dy) < 1e-12:
+            return None
+        # Mesure depuis l'axe +Y (Nord) en tournant horaire
+        angRad = math.atan2(dx, dy)
+        angDeg = (math.degrees(angRad) + 360.0) % 360.0
+        degInt   = int(round(angDeg)) % 360
+        # Heures: 360° = 12h → 1h = 30° ; Minutes: 360° = 60' → 1' = 6°
+        hourFloat = round(angDeg / 30.0, 1)        # h = deg / 30
+        minFloat  = round(angDeg / 6.0, 1)         # ' = deg / 6  (0..60)
+        return (degInt, minFloat, hourFloat)
+
+    def _connected_vertices_from(self, v_world, gid, eps):
+        """
+        Depuis un sommet (ou un point tombant sur une arête), trouver toutes les
+        extrémités connectées à ce point dans le GROUPE `gid`.
+         Déduplique par direction et garde, sur une même direction, le point le plus éloigné.
+         Retourne une liste d'objets { "name": str, "pt": (x, y) }.
+        """
+        nodes = self._group_nodes(gid) if gid else []
+        out_candidates = []   # [(name, dx, dy, dist, neigh_xy)]
+        for nd in nodes:
+            tid = nd.get("tid")
+            if tid is None or not (0 <= tid < len(self._last_drawn)):
+                continue
+            tri = self._last_drawn[tid]
+            Pt  = tri["pts"]
+            lab = tri.get("labels", ("Bourges","",""))
+            # 3 arêtes du triangle
+            edges = (("O","B"), ("B","L"), ("L","O"))
+            for a,b in edges:
+                A, B = Pt[a], Pt[b]
+                # 1) si v_world == A ➜ connecté à B ; si v_world == B ➜ connecté à A
+                if (abs(v_world[0]-A[0]) <= eps and abs(v_world[1]-A[1]) <= eps):
+                    name = self._display_name(b, lab)
+                    dx, dy = float(B[0]-v_world[0]), float(B[1]-v_world[1])
+                    dist = (dx*dx+dy*dy)**0.5
+                    if name:
+                        out_candidates.append((name, dx, dy, dist, (float(B[0]), float(B[1]))))
+                    continue
+                if (abs(v_world[0]-B[0]) <= eps and abs(v_world[1]-B[1]) <= eps):
+                    name = self._display_name(a, lab)
+                    dx, dy = float(A[0]-v_world[0]), float(A[1]-v_world[1])
+                    dist = (dx*dx+dy*dy)**0.5
+                    if name:
+                        out_candidates.append((name, dx, dy, dist, (float(A[0]), float(A[1]))))
+                    continue
+                # 2) sinon : le point est-il sur le SEGMENT [A,B] ? ➜ connecté aux deux extrémités
+                if self._point_on_segment(v_world, A, B, eps):
+                    name_a = self._display_name(a, lab)
+                    name_b = self._display_name(b, lab)
+                    dx, dy = float(A[0]-v_world[0]), float(A[1]-v_world[1])
+                    dist = (dx*dx+dy*dy)**0.5
+                    if name_a:
+                        out_candidates.append((name_a, dx, dy, dist, (float(A[0]), float(A[1]))))
+                    dx, dy = float(B[0]-v_world[0]), float(B[1]-v_world[1])
+                    dist = (dx*dx+dy*dy)**0.5
+                    if name_b:
+                        out_candidates.append((name_b, dx, dy, dist, (float(B[0]), float(B[1]))))
+        if not out_candidates:
+            return []
+        # Déduplication UNIQUE par (nom + position voisine quantifiée)
+        by_key = {}  # key = (name, qx, qy) -> (dist, pt)
+        def q(p):
+            return (round(neigh_xy[0]/eps)*eps, round(neigh_xy[1]/eps)*eps)
+        for (name, dx, dy, dist, neigh_xy) in out_candidates:
+            key = (name, *q(neigh_xy))
+            if (key not in by_key) or (dist > by_key[key][0]):
+                by_key[key] = (dist, neigh_xy)
+        # Restituer [{name, pt}] triés par distance décroissante (optionnel)
+        out = []
+        for (name, qx, qy), (dist, pt) in sorted(by_key.items(), key=lambda kv: -kv[1][0]):
+            out.append({"name": name, "pt": (float(pt[0]), float(pt[1]))})
+        return out
 
     def _on_canvas_motion_update_drag(self, event):
         # 1) Drag & drop depuis la liste → fantôme
@@ -822,6 +993,133 @@ class TriangleViewerManual(tk.Tk):
             self._redraw_from(self._last_drawn)
             self._sel["last_angle"] = cur_angle
             return
+
+        # 3) Pas de drag/rotation : gestion du TOOLTIP (survol de sommet)
+        try:
+            mode, idx, extra = self._hit_test(event.x, event.y)
+        except Exception:
+            mode, idx, extra = (None, None, None)
+        # En mode déconnexion (CTRL), ne pas afficher de tooltip
+        if getattr(self, "_ctrl_down", False):
+            self._hide_tooltip()
+            return
+
+        if mode == "vertex" and idx is not None:
+            vkey = extra if isinstance(extra, str) else None
+            # position monde du sommet visé
+            try:
+                P0 = self._last_drawn[idx]["pts"]
+                v_world = np.array(P0[vkey], dtype=float) if vkey in ("O","B","L") else None
+            except Exception:
+                v_world = None
+            lines = []
+            if v_world is not None:
+                # tolérance monde proportionnelle à l'affichage (hit_px/zoom)
+                tol_world = max(1e-9, float(getattr(self, "_hit_px", 12)) / max(self.zoom, 1e-9))
+                def same_pos(a, b):
+                    return (abs(float(a[0]) - float(b[0])) <= tol_world) and \
+                           (abs(float(a[1]) - float(b[1])) <= tol_world)
+                # parcourir le GROUPE uniquement
+                gid = self._get_group_of_triangle(idx)
+                nodes = self._group_nodes(gid) if gid else []
+                seen = set()  # éviter doublons texte
+                for nd in nodes:
+                    tid = nd.get("tid")
+                    if tid is None or not (0 <= tid < len(self._last_drawn)):
+                        continue
+                    tri = self._last_drawn[tid]
+                    Pt = tri["pts"]
+                    labels = tri.get("labels", ("Bourges","",""))
+                    # Préfixes comme dans la liste : O:..., B:..., L:...
+                    for key, lbl in (("O", labels[0] if len(labels) > 0 else ""),
+                                     ("B", labels[1] if len(labels) > 1 else ""),
+                                     ("L", labels[2] if len(labels) > 2 else "")):
+                        try:
+                            if same_pos(Pt[key], v_world):
+                                txt = f"{key}:{str(lbl).strip()}"
+                                if txt and txt not in seen:
+                                    lines.append(txt); seen.add(txt)
+                        except Exception:
+                            continue
+                # ---- LIGNE(S) DU DESSOUS : arêtes connectées ----
+                try:
+                    connected = self._connected_vertices_from(v_world, gid, tol_world)
+                except Exception:
+                    connected = []
+                if connected:
+                    # séparateur visuel entre “sommet(s)” et “connectés”
+                    lines.append("")  # ligne vide
+                    # chaque voisin: "-> Nom — ddd° / mm.m' / h.h"
+                    for item in connected:
+                        try:
+                            name = item.get("name", "")
+                            pt   = item.get("pt", None)
+                        except Exception:
+                            name, pt = (str(item), None)
+                        if not name:
+                            continue
+                        if pt is None:
+                            lines.append(f"-> {name}")
+                            continue
+                        az = self._azimutDegEtMinute(v_world, pt)
+                        if az is None:
+                            lines.append(f"-> {name} — azimut indéterminé")
+                        else:
+                            degInt, minFloat, hourFloat = az
+                            # Alignements lisibles: degrés sur 3, minutes & heures avec 1 décimale
+                            lines.append(f"-> {name} — {degInt:03d}° / {minFloat:04.1f}' / {hourFloat:0.1f}h")
+            tooltip_txt = "\n".join(lines)
+            if tooltip_txt:
+                # === Placement robuste par CENTRE du tooltip ===
+                # 1) Coordonnées CANVAS du sommet et du barycentre
+                sx_v, sy_v = self._world_to_screen(v_world)
+                try:
+                    Cx = (P0["O"][0] + P0["B"][0] + P0["L"][0]) / 3.0
+                    Cy = (P0["O"][1] + P0["B"][1] + P0["L"][1]) / 3.0
+                except Exception:
+                    Cx, Cy = float(v_world[0]), float(v_world[1])
+                sx_c, sy_c = self._world_to_screen((Cx, Cy))
+                # 2) Direction (centroïde -> sommet) en PIXELS CANVAS
+                vx = float(sx_v) - float(sx_c)
+                vy = float(sy_v) - float(sy_c)
+                n  = (vx*vx + vy*vy) ** 0.5
+                if n <= 1e-6:
+                    # secours : pousser vers le haut écran
+                    ux, uy = 0.0, -1.0
+                else:
+                    ux, uy = (vx / n), (vy / n)
+
+                # 3) Mesurer le tooltip pour connaître sa diagonale
+                #    (on l'affiche/MAJ en mémoire, sans se soucier de la position pour l'instant)
+                if self._tooltip is None or not self._tooltip.winfo_exists():
+                    # créer/mesurer via helper centre, posé provisoirement au sommet
+                    self._show_tooltip_at_center(tooltip_txt, sx_v, sy_v)
+                else:
+                    self._tooltip_label.config(text=tooltip_txt)
+                    self._tooltip.update_idletasks()
+                tw = max(1, int(self._tooltip.winfo_width()))
+                th = max(1, int(self._tooltip.winfo_height()))
+
+                # 4) Distance à partir du SOMMET jusqu'au CENTRE du tooltip
+                #    Utiliser le support d'un rectangle axis-aligné : r(θ)=|rx·cosθ|+|ry·sinθ|
+                #    pour projeter la demi-taille du tooltip le long de (centroïde→sommet).
+                rx = 0.5 * tw
+                ry = 0.5 * th
+                ang = math.atan2(uy, ux)
+                r_eff = abs(rx * math.cos(ang)) + abs(ry * math.sin(ang))
+                cushion_px  = float(getattr(self, "_tooltip_cushion_px", 14))
+                dist = r_eff + cushion_px
+                cx_tip = sx_v + ux * dist
+                cy_tip = sy_v + uy * dist
+    
+                # 5) Placement centré (convertit canvas->écran en interne)
+                self._show_tooltip_at_center(tooltip_txt, cx_tip, cy_tip)
+            else:
+                self._hide_tooltip()
+        else:
+            # pas de sommet → masquer tooltip
+            self._hide_tooltip()
+
 
     # ---------- Lien + surlignage faces candidates ----------
     def _find_nearest_vertex(self, v_world, exclude_idx=None, exclude_gid=None):
@@ -1778,6 +2076,8 @@ class TriangleViewerManual(tk.Tk):
 
     def _on_canvas_left_down(self, event):
         # Nouveau clic gauche : purge l'éventuelle aide précédente (évite les fantômes)
+        # et masque le tooltip s'il est visible.
+        self._hide_tooltip()
         self._reset_assist()
         # priorité au drag & drop depuis la liste
         if self._drag:
