@@ -11,6 +11,10 @@ import pandas as pd
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from typing import Optional, List, Dict, Tuple
+from tksheet import Sheet
+
+# --- Dictionnaire (chargement livre.txt) ---
+from src.DictionnaireEnigmes import DictionnaireEnigmes
 
 EPS_WORLD = 1e-6
 
@@ -129,6 +133,9 @@ class TriangleViewerManual(tk.Tk):
         # Épaisseur de trait (px) — utilisée pour le test de chevauchement "shrink seul"
         self.stroke_px = 2
 
+        # Hauteur fixe du panneau "Dico" (en pixels) sous le canvas
+        self.dico_panel_height = 290
+
         # mode "déconnexion" activé par CTRL
         self._ctrl_down = False        
 
@@ -145,17 +152,290 @@ class TriangleViewerManual(tk.Tk):
         self.num_triangles = tk.IntVar(value=8)
 
         self.excel_path = None
+        # Répertoire des fichiers Triangle (par défaut ../data)
+        self.data_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "data"))
         self.df = None
         self._last_drawn = []   # liste d'items: (labels, P_world)
+
+        # --- Horloge (overlay fixe) : état par défaut ---
+        self._clock_state = {"hour": 5, "minute": 9, "label": "Trouver — (5h, 9')"}
+        # Position & état de drag de l'horloge (coords CANVAS)
+        self._clock_cx = None
+        self._clock_cy = None
+        self._clock_R  = 69    # rayon px (mis à jour dans le draw)
+        self._clock_dragging = False
+        self._clock_drag_dx = 0
+        self._clock_drag_dy = 0
 
         self._build_ui()
         # Bind pour annuler avec ESC (drag ou sélection)
         self.bind("<Escape>", self._on_escape_key)
 
+        # === Dictionnaire : chargement automatique de ../data/livre.txt ===
+        self.dico = None
+        self._init_dictionary()
+        self._build_dico_grid()
+
         # auto-load si présent (facultatif)
         default = "../data/triangle.xlsx"
         if os.path.exists(default):
             self.load_excel(default)
+
+
+    # ---------- Dictionnaire : init ----------
+    def _init_dictionary(self):
+        """Construit le dictionnaire en lisant ../data/livre.txt (si présent)."""
+        try:
+            if DictionnaireEnigmes is None:
+                raise ImportError("Module DictionnaireEnigmes introuvable")
+            livre_path = os.path.join(self.data_dir, "livre.txt")
+            if not os.path.isfile(livre_path):
+                self.status.config(text="Dico: fichier 'livre.txt' non trouvé dans ../data")
+                return
+            self.dico = DictionnaireEnigmes(livre_path)  # charge tout le livre
+            nb_lignes = len(self.dico)
+            self.status.config(text=f"Dico chargé: {nb_lignes} lignes depuis {livre_path}")
+        except Exception as e:
+            try:
+                self.status.config(text=f"Dico: échec de chargement — {e}")
+            except Exception:
+                pass
+
+    # ---------- Dictionnaire : affichage dans le panneau bas ----------
+    def _build_dico_grid(self):
+        """
+        Construit/affiche la grille tksheet du dictionnaire dans self.dicoPanel.
+        N’opère que si self.dico est chargé et tksheet disponible.
+        """
+        # Le panneau bas doit exister (créé dans _build_canvas)
+        if not hasattr(self, "dicoPanel"):
+            return
+        # Nettoyer le contenu existant (placeholder, ancienne grille…)
+        for child in list(self.dicoPanel.children.values()):
+            try:
+                child.destroy()
+            except Exception:
+                pass
+        # Vérifs
+        if self.dico is None:
+            tk.Label(self.dicoPanel, text="Dictionnaire non chargé",
+                     bg="#f3f3f3", anchor="w").pack(fill="x", padx=8, pady=6)
+            return
+
+        # --- Layout du panneau bas : [sidebar catégories] | [grille] ---
+        from tkinter import ttk
+        container = tk.Frame(self.dicoPanel, bg="#f3f3f3")
+        container.pack(fill="both", expand=True)
+        # colonne gauche (catégories + liste)
+        left = tk.Frame(container, width=180, bg="#f3f3f3", bd=1, relief=tk.GROOVE)
+        left.pack(side="left", fill="y")
+        left.pack_propagate(False)
+        # colonne droite (grille)
+        right = tk.Frame(container, bg="#f3f3f3")
+        right.pack(side="left", fill="both", expand=True)
+
+        # ===== Barre "catégories" =====
+        tk.Label(left, text="Catégorie :", anchor="w", bg="#f3f3f3").pack(anchor="w", padx=8, pady=(8,2))
+        cats = []
+        try:
+            cats = list(self.dico.getCategories())
+        except Exception:
+            cats = []
+        self._dico_cat_var = tk.StringVar(value=cats[0] if cats else "")
+        self._dico_cat_combo = ttk.Combobox(left, state="readonly", values=cats, textvariable=self._dico_cat_var)
+        self._dico_cat_combo.pack(fill="x", padx=8, pady=(0,6))
+
+        # Liste des mots de la catégorie sélectionnée
+        lb_frame = tk.Frame(left, bg="#f3f3f3"); lb_frame.pack(fill="both", expand=True, padx=6, pady=(0,8))
+        self._dico_cat_list = tk.Listbox(lb_frame, exportselection=False)
+        self._dico_cat_list.pack(side="left", fill="both", expand=True)
+        sb = tk.Scrollbar(lb_frame, orient="vertical", command=self._dico_cat_list.yview)
+        sb.pack(side="right", fill="y")
+        self._dico_cat_list.configure(yscrollcommand=sb.set)
+
+        # Remplissage initial + binding de la combo
+        self._dico_cat_items = []
+        def _refresh_cat_list(*_):
+            cat = self._dico_cat_var.get()
+            self._dico_cat_list.delete(0, tk.END)
+            if not cat:
+                return
+            try:
+                # getListeCategorie -> [(mot, enigme, indexMot), ...]
+                items = self.dico.getListeCategorie(cat)
+            except Exception:
+                items = []
+            # mémoriser pour la synchro avec la grille
+            self._dico_cat_items = list(items)
+            # Afficher: "mot — (e, m)"
+            for mot, e, m in items:
+                self._dico_cat_list.insert(tk.END, f"{mot} — ({e}, {m})")
+        self._dico_cat_combo.bind("<<ComboboxSelected>>", _refresh_cat_list)
+        _refresh_cat_list()
+
+
+        # Synchronisation: clic/double-clic dans la liste -> centrer/sélectionner le mot dans la grille
+        def _goto_selected_word(event=None):
+            if not getattr(self, "dicoSheet", None):
+                return
+            try:
+                sel = self._dico_cat_list.curselection()
+                if not sel:
+                    return
+                i = int(sel[0])
+                mot, enigme, indexMot = self._dico_cat_items[i]
+            except Exception:
+                return
+            # convertir indexMot [-N..N) -> colonne [0..2N)
+            try:
+                nb_mots_max = self._dico_nb_mots_max if hasattr(self, "_dico_nb_mots_max") else self.dico.nbMotMax()
+            except Exception:
+                nb_mots_max = 50
+            col = int(indexMot) + int(nb_mots_max)
+            row = int(enigme)
+            # sélectionner et faire voir la cellule ; see() centre autant que possible
+            try:
+                self.dicoSheet.select_cell(row, col, redraw=False)
+            except Exception:
+                pass
+            try:
+                self.dicoSheet.see(row=row, column=col)
+            except Exception:
+                pass
+            # MAJ horloge (sélection indirecte via la liste)
+            try:
+                self._update_clock_from_cell(row, col)
+            except Exception:
+                pass
+
+        # Clic et double-clic compatibles
+        self._dico_cat_list.bind("<<ListboxSelect>>", _goto_selected_word)
+        self._dico_cat_list.bind("<Double-Button-1>", _goto_selected_word)
+
+        # ===== Grille (tksheet) =====
+        # Construire la matrice
+        try:
+            nb_mots_max = self.dico.nbMotMax()
+        except Exception:
+            # fallback conservateur
+            nb_mots_max = 50
+        # mémoriser pour conversions (colonne → minute)
+        self._dico_nb_mots_max = int(nb_mots_max)
+        headers = list(range(-nb_mots_max, nb_mots_max))
+        data = []
+        for i in range(len(self.dico)):
+            try:
+                row = [self.dico[i][j] for j in range(-nb_mots_max, nb_mots_max)]
+            except Exception:
+                # en cas de dépassement, remplir de chaînes vides
+                row = ["" for _ in range(2 * nb_mots_max)]
+            data.append(row)
+        try:
+            row_index = self.dico.getTitres()
+        except Exception:
+            row_index = [str(i) for i in range(len(self.dico))]
+        # mémoriser les titres (ligne → "530", "780", …)
+        self._dico_row_index = list(row_index)
+
+        # Créer la grille
+        self.dicoSheet = Sheet(
+            right,
+            data=data,
+            headers=headers,
+            row_index=row_index,
+            show_row_index=True,
+            height=max(120, getattr(self, "dico_panel_height", 220) - 10),
+            empty_vertical=0,
+        )
+        self.dicoSheet.enable_bindings((
+            "single_select","row_select","column_select",
+            "arrowkeys","copy","rc_select","right_click_popup_menu"
+        ))
+        self.dicoSheet.align_columns(columns="all", align="center")
+        self.dicoSheet.set_options(cell_align="center")
+        self.dicoSheet.pack(expand=True, fill="both")
+
+        # --- MAJ horloge sur sélection de cellule (événement unique & propre) ---
+        def _on_dico_cell_select(event=None):
+            # Source unique de vérité : cellule actuellement sélectionnée
+            sel = self.dicoSheet.get_selected_cells()
+            r = c = None
+            if sel:
+                # tksheet peut renvoyer un set({(r,c), ...}) ou une liste([(r,c), ...])
+                if isinstance(sel, set):
+                    r, c = next(iter(sel))
+                elif isinstance(sel, (list, tuple)):
+                    r, c = sel[0]
+            if r is None or c is None:
+                # Secours léger : cellule "courante" si aucune sélection renvoyée
+                cur = self.dicoSheet.get_currently_selected()
+                if isinstance(cur, tuple) and len(cur) == 2 and cur[0] == "cell":
+                    r, c = cur[1]
+            if r is None or c is None:
+                return
+            self._update_clock_from_cell(int(r), int(c))
+
+        # Un seul binding tksheet, propre : "cell_select"
+        self.dicoSheet.extra_bindings([("cell_select", _on_dico_cell_select)])
+
+        # --- Centrer l’affichage par défaut sur la colonne 0 ---
+        try:
+            zero_col = int(nb_mots_max)              # colonne "0" du dico
+            self.dicoSheet.select_cell(0, zero_col, redraw=False)
+            self.dicoSheet.see(row=0, column=zero_col)  # amène la colonne 0 dans la vue (le plus centré possible)
+        except Exception:
+            pass
+
+        try:
+            self.status.config(text="Dico affiché dans le panneau bas")
+        except Exception:
+            pass
+
+
+    # ---------- DICO → Horloge ----------
+    def _update_clock_from_cell(self, row: int, col: int):
+        """
+        Met à jour l'horloge à partir d'une cellule de la grille Dico.
+          - Heure : dérivée du titre de ligne (ex: '530' -> 5h).
+          - Minute : distance à la colonne 0 (col absolue) -> abs(col - nb_mots_max).
+          - Libellé : contenu texte de la cellule.
+        """
+        if not getattr(self, "dicoSheet", None):
+            return
+        # Sécurités
+        nbm = int(getattr(self, "_dico_nb_mots_max", 50))
+        row_titles = getattr(self, "_dico_row_index", [])
+        # Mot (texte de cellule)
+        try:
+            word = str(self.dicoSheet.get_cell_data(row, col)).strip()
+        except Exception:
+            word = ""
+        # Heure -> prendre les centaines (530 -> 5)
+        try:
+            titre = str(row_titles[row]) if row_titles and 0 <= row < len(row_titles) else ""
+            hour = int(str(int(titre))[:1]) if titre and titre.isdigit() else (int(titre)//100)
+        except Exception:
+            # fallback: si pas de titre exploitable, approx à partir de l'index
+            hour = max(0, int(row) % 12)
+        # Normaliser heure 0..11 (affichage 0h..11h ; si tu veux 12h remapper 0->12 à l'affichage)
+        try:
+            hour = int(hour) % 12
+        except Exception:
+            hour = 0
+        # Minute -> distance à la colonne centrale (colonne 0)
+        try:
+            minute = abs(int(col) - nbm)
+        except Exception:
+            minute = 0
+        # Libellé
+        label = word if word else ""
+        if label:
+            label = f"{label} — ({hour}h, {minute}')"
+        else:
+            label = f"({hour}h, {minute}')"
+        # Appliquer et redessiner
+        self._clock_state.update({"hour": hour, "minute": minute, "label": label})
+        self._redraw_overlay_only()
 
     # ---------- DEBUG: toggle du filtre d'intersection au highlight ----------
     def _toggle_skip_overlap_highlight(self, event=None):
@@ -168,10 +448,34 @@ class TriangleViewerManual(tk.Tk):
 
     # ---------- UI ----------
     def _build_ui(self):
-        top = tk.Frame(self); top.pack(side=tk.TOP, fill=tk.X)
-        tk.Button(top, text="Ouvrir Excel...", command=self.open_excel).pack(side=tk.LEFT, padx=5, pady=5)
-        tk.Label(top, textvariable=self.triangle_file).pack(side=tk.LEFT, padx=5)
-        tk.Button(top, text="Imprimer…", command=self.print_triangles_dialog).pack(side=tk.RIGHT, padx=5, pady=5)
+        # --- Barre de menus ---
+        menubar = tk.Menu(self)
+        self.config(menu=menubar)
+        self.menu_triangle = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Triangle", menu=self.menu_triangle)
+        # --- Menu Visualisation ---
+        self.menu_visual = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Visualisation", menu=self.menu_visual)
+        self.menu_visual.add_command(
+            label="Fit à l'écran",
+            command=lambda: self._fit_to_view(self._last_drawn)
+        )
+        # Effacer l'affichage depuis le menu
+        self.menu_visual.add_command(
+            label="Effacer l'affichage…",
+            command=self.clear_canvas
+        )
+        # Items fixes
+        self.menu_triangle.add_command(label="Ouvrir un fichier Triangle…", command=self.open_excel)
+        self.menu_triangle.add_separator()
+        # Espace réservé: liste de fichiers du répertoire data (reconstruite dynamiquement)
+        # On pose un placeholder que l'on remplace juste après.
+        self._menu_triangle_files_start_index = self.menu_triangle.index("end") + 1 if self.menu_triangle.index("end") is not None else 2
+        self.menu_triangle.add_command(label="(scan en cours)")
+        self.menu_triangle.add_separator()
+        self.menu_triangle.add_command(label="Imprimer", command=self.print_triangles_dialog)
+        # Construit la liste de fichiers disponibles
+        self._rebuild_triangle_file_list_menu()
 
         main = tk.Frame(self); main.pack(fill=tk.BOTH, expand=True)
         self._build_left_pane(main)
@@ -180,14 +484,52 @@ class TriangleViewerManual(tk.Tk):
         self.status = tk.Label(self, text="Prêt", bd=1, relief=tk.SUNKEN, anchor="w")
         self.status.pack(side=tk.BOTTOM, fill=tk.X)
 
+    def _rebuild_triangle_file_list_menu(self):
+        """
+        Reconstruit la portion du menu 'Triangle' listant les fichiers disponibles
+        dans self.data_dir. Charge direct au clic.
+        """
+        m = self.menu_triangle
+        # Supprimer les anciens items listés entre la 1re séparatrice et la 2e.
+        # Organisation actuelle: [Ouvrir][sep][FICHIERS...][sep][Imprimer]
+        # On repère la 2e séparatrice en partant de la fin.
+        last_index = m.index("end")
+        if last_index is None:
+            return
+        # Trouver l'index de la 2ème séparatrice (celle avant "Imprimer")
+        # Simplification: on sait que l’avant-dernier item est une séparatrice.
+        second_sep_index = last_index - 1
+        # On efface tous les items entre la 1re séparatrice (index 1) exclue et second_sep_index exclu
+        # Indices actuels: 0:"Ouvrir", 1:"sep", [2..n-2]=fichiers, n-1:"sep", n:"Imprimer"
+        # On retire de n-2 jusqu’à 2 pour éviter le décalage pendant la suppression
+        for i in range(second_sep_index - 1, 1, -1):
+            try:
+                m.delete(i)
+            except Exception:
+                pass
+        # Repeupler
+        try:
+            files = [f for f in os.listdir(self.data_dir) if f.lower().endswith(".xlsx")]
+        except Exception:
+            files = []
+        if not files:
+            m.insert_command(2, label="(aucun fichier trouvé dans data)", state="disabled")
+        else:
+            # Trier par nom lisible
+            files.sort(key=lambda s: s.lower())
+            for idx, fname in enumerate(files):
+                full = os.path.join(self.data_dir, fname)
+                # Insérer à partir de l’index 2 (après la 1re séparatrice)
+                m.insert_command(2 + idx, label=fname, command=lambda p=full: self.load_excel(p))
+
     def _build_left_pane(self, parent):
         left = tk.Frame(parent, width=260); left.pack(side=tk.LEFT, fill=tk.Y); left.pack_propagate(False)
 
         tk.Label(left, text="Triangles (ordre)").pack(anchor="w", padx=6, pady=(6,0))
-        # Frame pour Listbox + Scrollbar verticale
+        # Frame pour Listbox + Scrollbar verticale (prend toute la hauteur)
         lb_frame = tk.Frame(left)
-        lb_frame.pack(fill=tk.X, padx=6)
-        self.listbox = tk.Listbox(lb_frame, width=34, height=16, exportselection=False)
+        lb_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0,6))
+        self.listbox = tk.Listbox(lb_frame, width=34, exportselection=False)
         self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         lb_scroll = tk.Scrollbar(lb_frame, orient="vertical", command=self.listbox.yview)
         lb_scroll.pack(side=tk.RIGHT, fill=tk.Y)
@@ -195,21 +537,27 @@ class TriangleViewerManual(tk.Tk):
         # Démarrer le drag dès qu'on clique sur un item
         self.listbox.bind("<ButtonPress-1>", self._on_list_mouse_down)
 
-        opts = tk.LabelFrame(left, text="Affichage"); opts.pack(fill=tk.X, padx=6, pady=6)
-        row = tk.Frame(opts); row.pack(fill=tk.X, padx=4, pady=2)
-        tk.Label(row, text="Début").pack(side=tk.LEFT)
-        tk.Entry(row, textvariable=self.start_index, width=6).pack(side=tk.LEFT, padx=(4,10))
-        tk.Label(row, text="Nombre N").pack(side=tk.LEFT)
-        tk.Entry(row, textvariable=self.num_triangles, width=6).pack(side=tk.LEFT, padx=4)
-
-        btns = tk.Frame(left); btns.pack(fill=tk.X, padx=6, pady=(0,6))
-        tk.Button(btns, text="Afficher (brut)", command=self.show_raw_selection).pack(side=tk.LEFT)
-        tk.Button(btns, text="Fit à l'écran", command=lambda: self._fit_to_view(self._last_drawn)).pack(side=tk.LEFT, padx=6)
-        tk.Button(btns, text="Effacer", command=self.clear_canvas).pack(side=tk.LEFT)
-
     def _build_canvas(self, parent):
-        self.canvas = tk.Canvas(parent, bg="white")
-        self.canvas.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        # Conteneur de droite : canvas (haut, expansible) + panel dico (bas, hauteur fixe)
+        self.rightPane = tk.Frame(parent)
+        self.rightPane.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+
+        # Canvas d’affichage des triangles
+        self.canvas = tk.Canvas(self.rightPane, bg="white")
+        self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        # Redessiner l'overlay si la taille du canvas change
+        self.canvas.bind("<Configure>", lambda e: self._redraw_overlay_only())
+
+        # Panel dico (placeholder à hauteur fixe, prêt pour intégrer la grille)
+        self.dicoPanel = tk.Frame(self.rightPane, height=self.dico_panel_height,
+                                  bd=1, relief=tk.SUNKEN, bg="#f3f3f3")
+        # empêcher le panel de rétrécir sur le contenu
+        self.dicoPanel.pack_propagate(False)
+        self.dicoPanel.pack(side=tk.BOTTOM, fill=tk.X)
+        # Placeholder visuel
+        tk.Label(self.dicoPanel, text="Dictionnaire — (grille à intégrer)",
+                 bg="#f3f3f3", anchor="w").pack(fill=tk.X, padx=8, pady=4)
 
         # Mouse wheel zoom (Windows/macOS)
         self.canvas.bind("<MouseWheel>", self._on_mousewheel)
@@ -247,6 +595,17 @@ class TriangleViewerManual(tk.Tk):
         # DEBUG: F9 pour activer/désactiver le filtrage de chevauchement au highlight
         # (bind_all pour capter même si le focus clavier n'est pas explicitement sur le canvas)
         self.bind_all("<F9>", self._toggle_skip_overlap_highlight)
+        # Premier rendu de l'horloge (overlay)
+        self._draw_clock_overlay()
+
+    # ---------- Horloge : test de hit ----------
+    def _is_in_clock(self, x, y, pad=10):
+        """Vrai si (x,y) (coords canvas) est à l'intérieur du disque de l'horloge (+marge)."""
+        if self._clock_cx is None or self._clock_cy is None:
+            return False
+        dx = x - self._clock_cx
+        dy = y - self._clock_cy
+        return (dx*dx + dy*dy) <= (self._clock_R + pad) ** 2
 
     # ---------- Tooltip helpers ----------
     def _show_tooltip_at_center(self, text: str, cx_canvas: float, cy_canvas: float):
@@ -350,6 +709,8 @@ class TriangleViewerManual(tk.Tk):
         self.df = self._build_df(df)
         self.excel_path = path
         self.triangle_file.set(os.path.basename(path))
+        # MAJ du menu fichiers si un nouveau fichier arrive dans data
+        self._rebuild_triangle_file_list_menu()
 
         self.listbox.delete(0, tk.END)
         for _, r in self.df.iterrows():
@@ -572,60 +933,139 @@ class TriangleViewerManual(tk.Tk):
         return abs(self._ang_wrap(a - b))
          
 
-    # ---------- Dessin / vue ----------
-    def show_raw_selection(self):
+    def _refresh_listbox_from_df(self):
+        """Recharge la listbox des triangles depuis self.df (sans filtrage)."""
         try:
-            start = max(0, int(self.start_index.get()) - 1)
-            n = max(1, int(self.num_triangles.get()))
-            tris = self._triangles_local(start, n)
-        except Exception as e:
-            messagebox.showerror("Afficher", str(e))
-            return
-
-        # Mise en page simple pour aperçu
-        placed = self._layout_tris_horizontal(tris, gap=0.8, wrap_width=30.0)
-
-        # Dessin
-        self.canvas.delete("all")
-        self._last_drawn = placed
-        # === Invariance: tout item appartient à un groupe (singleton possible) ===
-        self.groups = {}
-        self._next_group_id = 1
-        for i, t in enumerate(self._last_drawn):
-            gid = self._next_group_id; self._next_group_id += 1
-            self.groups[gid] = {"nodes": [{"tid": i, "vkey_in": None, "vkey_out": None}]}
-            t["group_id"] = gid
-            t["group_pos"] = 0
-            try:
-                self._recompute_group_bbox(gid)
-            except Exception:
-                pass
-        for idx, t in enumerate(placed):
-            labels = t["labels"]
-            P = t["pts"]
-            tri_id = t.get("id", int(self.df.iloc[start + idx]["id"]))
-            self._draw_triangle_screen(
-                P,
-                labels=[f"O:{labels[0]}", f"B:{labels[1]}", f"L:{labels[2]}"],
-                tri_id=tri_id,
-                tri_mirrored=t.get("mirrored", False),
-            )
-
-        # Fit à l'écran
-        self._fit_to_view(placed)
-        self.status.config(text=f"{len(placed)} triangle(s) affiché(s) — aperçu brut (sans assemblage)")
+            self.listbox.delete(0, tk.END)
+            if getattr(self, "df", None) is not None and not self.df.empty:
+                for _, r in self.df.iterrows():
+                    self.listbox.insert(tk.END, f"{int(r['id']):02d}. B:{r['B']}  L:{r['L']}")
+        except Exception:
+            pass
 
     def clear_canvas(self):
-        self.canvas.delete("all")
+        """Efface l'affichage après confirmation, et remet à jour la liste des triangles."""
+        if not messagebox.askyesno(
+            "Effacer l'affichage",
+            "Voulez-vous effacer l'affichage et réinitialiser la liste des triangles ?"
+        ):
+            return
+        try:
+            self.canvas.delete("all")
+        except Exception:
+            pass
+        # Réinitialiser l'état d'affichage
         self._last_drawn = []
-        # aussi remettre à zéro l'aide "sommet le plus proche"
         self._nearest_line_id = None
         self._clear_edge_highlights()
-        # Par défaut : aucun choix mémorisé / pas d'aides persistantes
         self._edge_choice = None
-        self._edge_highlights = None     
-        self.status.config(text="Canvas effacé")
+        self._edge_highlights = None
+        # Rafraîchir la listbox complète à partir du DF chargé
+        self._refresh_listbox_from_df()
+        self.status.config(text="Affichage effacé")
         self._hide_tooltip()
+
+        # L’horloge reste visible (overlay)
+        self._draw_clock_overlay()
+
+    # ---------- Overlay Horloge (indépendant du zoom/pan) ----------
+    def _redraw_overlay_only(self):
+        """Efface/redessine uniquement l'overlay (horloge)."""
+        try:
+            self.canvas.delete("clock_overlay")
+        except Exception:
+            pass
+        self._draw_clock_overlay()
+
+    def _draw_clock_overlay(self):
+        """
+        Dessine une horloge en haut-gauche du canvas, à taille FIXE (px),
+        indépendante du zoom/pan (coordonnées canvas).
+        Utilise self._clock_state = {'hour':h, 'minute':m, 'label':str}.
+        """
+        if not getattr(self, "canvas", None):
+            return
+        # Nettoyer l'ancien overlay
+        try:
+            self.canvas.delete("clock_overlay")
+        except Exception:
+            pass
+        # Paramètres d'aspect
+        margin = 12              # marge par rapport aux bords du canvas (px)
+        R      = 69              # rayon (px) — +50% (46 -> 69)
+        # Si première fois, placer en haut-gauche ; sinon garder la position utilisateur
+        if self._clock_cx is None or self._clock_cy is None:
+            cx = margin + R
+            cy = margin + R
+            self._clock_cx, self._clock_cy = cx, cy
+        else:
+            cx, cy = float(self._clock_cx), float(self._clock_cy)
+        self._clock_R = R
+        # Couleurs
+        col_circle = "#b0b0b0"   # gris cercle
+        col_ticks  = "#707070"
+        col_hour   = "#0b3d91"   # bleue (petite aiguille)
+        col_min    = "#000000"   # noire  (grande aiguille)
+        # Données
+        h = int(self._clock_state.get("hour", 5)) % 12
+        m = int(self._clock_state.get("minute", 9)) % 60
+        label = str(self._clock_state.get("label", ""))
+        # Cercle
+        self.canvas.create_oval(cx-R, cy-R, cx+R, cy+R,
+                                outline=col_circle, width=2, tags="clock_overlay")
+        # Graduations heures (12 traits) : quarts plus longs/épais
+        for hmark in range(12):
+            ang = math.radians(hmark * 30.0)  # 360/12
+            # longueur du trait
+            if hmark % 3 == 0:     # 12/3/6/9
+                inner = R - 14
+                w = 2
+            else:
+                inner = R - 8
+                w = 1
+            outer = R
+            x1 = cx + inner * math.sin(ang)
+            y1 = cy - inner * math.cos(ang)
+            x2 = cx + outer * math.sin(ang)
+            y2 = cy - outer * math.cos(ang)
+            self.canvas.create_line(x1, y1, x2, y2, width=w, fill=col_ticks, tags="clock_overlay")
+
+        # Repères 12/3/6/9
+        font_marks = ("Arial", 11, "bold")
+        self.canvas.create_text(cx,     cy-R+14, text="12", font=font_marks,
+                                fill=col_ticks, tags="clock_overlay")
+        self.canvas.create_text(cx+R-14, cy,     text="3",  font=font_marks,
+                                fill=col_ticks, tags="clock_overlay")
+        self.canvas.create_text(cx,     cy+R-14, text="6",  font=font_marks,
+                                fill=col_ticks, tags="clock_overlay")
+        self.canvas.create_text(cx-R+14, cy,     text="9",  font=font_marks,
+                                fill=col_ticks, tags="clock_overlay")
+        # Aiguilles
+        # Convention : angle 0° = 12h, sens horaire ; conversion vers coords canvas:
+        #   x = cx + R * sin(theta), y = cy - R * cos(theta)
+        def _end_point(angle_deg, length):
+            import math
+            a = math.radians(angle_deg)
+            return (cx + length * math.sin(a), cy - length * math.cos(a))
+        # Minutes -> 6° par minute
+        ang_min = m * 6.0
+        # Heures -> 30° par heure + 0,5° par minute
+        ang_hour = (h % 12) * 30.0 + (m * 0.5)
+        # Longueurs des aiguilles
+        L_min  = R * 0.86
+        L_hour = R * 0.58
+        x2m, y2m = _end_point(ang_min,  L_min)
+        x2h, y2h = _end_point(ang_hour, L_hour)
+        # traits
+        self.canvas.create_line(cx, cy, x2h, y2h, width=3, fill=col_hour, tags="clock_overlay")
+        self.canvas.create_line(cx, cy, x2m, y2m, width=2, fill=col_min,  tags="clock_overlay")
+        # axe central
+        self.canvas.create_oval(cx-3, cy-3, cx+3, cy+3, fill=col_min, outline=col_min, tags="clock_overlay")
+        # Libellé sous l'horloge
+        if label:
+            self.canvas.create_text(cx, cy + R + 20, text=label,
+                                    font=("Arial", 11), fill="#000000",
+                                    anchor="n", tags="clock_overlay")
 
     def _world_to_screen(self, p):
         x = self.offset[0] + float(p[0]) * self.zoom
@@ -693,6 +1133,8 @@ class TriangleViewerManual(tk.Tk):
                 self._edge_choice = None
         except Exception:
             pass
+        # Redessiner l'horloge (overlay indépendant)
+        self._draw_clock_overlay()
 
     def _draw_triangle_screen(self, P, outline="black", width=2, labels=None, inset=0.35, tri_id=None, tri_mirrored=False):
         """
@@ -2075,6 +2517,17 @@ class TriangleViewerManual(tk.Tk):
         self.status.config(text=f"Inversion appliquée au groupe #{gid}.")
 
     def _on_canvas_left_down(self, event):
+        # Horloge : démarrer drag si clic dans le disque (marge 10px)
+        if self._is_in_clock(event.x, event.y):
+            # ne pas intercepter si un drag de triangle est en cours
+            if not getattr(self, "_drag", None):
+                self._clock_dragging = True
+                self._clock_drag_dx = event.x - (self._clock_cx or event.x)
+                self._clock_drag_dy = event.y - (self._clock_cy or event.y)
+                try: self.canvas.configure(cursor="fleur")
+                except Exception: pass
+                return "break"  # on court-circuite la logique des triangles
+
         # Nouveau clic gauche : purge l'éventuelle aide précédente (évite les fantômes)
         # et masque le tooltip s'il est visible.
         self._hide_tooltip()
@@ -2345,6 +2798,12 @@ class TriangleViewerManual(tk.Tk):
         return
 
     def _on_canvas_left_move(self, event):
+        # Horloge : drag en cours -> on déplace le centre et on redessine l’overlay
+        if getattr(self, "_clock_dragging", False):
+            self._clock_cx = event.x - self._clock_drag_dx
+            self._clock_cy = event.y - self._clock_drag_dy
+            self._redraw_overlay_only()
+            return "break"
         if self._drag:
             return  # le drag liste gère déjà le mouvement
         if not self._sel:
@@ -2462,6 +2921,13 @@ class TriangleViewerManual(tk.Tk):
             pass
 
     def _on_canvas_left_up(self, event):
+        # Horloge : fin de drag
+        if getattr(self, "_clock_dragging", False):
+            self._clock_dragging = False
+            try: self.canvas.configure(cursor="")
+            except Exception: pass
+            return "break"
+
         """Fin du drag au clic gauche : dépôt de triangle (drag liste) OU fin d'une édition."""
         import numpy as np
         from math import atan2

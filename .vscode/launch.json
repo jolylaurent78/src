@@ -1,0 +1,32 @@
+{
+  // .vscode/launch.json
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Triangle",
+      "type": "python",
+      "request": "launch",
+      // 2 options équivalentes — garde UNE seule ligne :
+      // "program": "${workspaceFolder}/src/assembleur_tk.py",
+      "module": "src.assembleur_tk",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",           // racine: src et data sont accessibles
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src" // import DictionnaireEnigmes, etc.
+      },
+      "justMyCode": true
+    },
+    {
+      "name": "Exécuter fichier courant dans src/",
+      "type": "python",
+      "request": "launch",
+      "program": "${file}",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+      },
+      "justMyCode": true
+    }
+  ]
+}
