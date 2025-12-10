@@ -1,17 +1,22 @@
 
 import os
+import datetime as _dt
 import math
 import re
 import numpy as np
+import pandas as pd
+from typing import Optional, List, Dict, Tuple
+
+from tkinter import filedialog, messagebox
+import tkinter as tk
+from tksheet import Sheet
+
 from shapely.geometry import Polygon as _ShPoly, LineString as _ShLine, Point as _ShPoint
 from shapely.ops import unary_union as _sh_union
 from shapely.ops import unary_union
 from shapely.affinity import rotate, translate 
-import pandas as pd
-import tkinter as tk
-from tkinter import filedialog, messagebox
-from typing import Optional, List, Dict, Tuple
-from tksheet import Sheet
+
+import xml.etree.ElementTree as ET
 
 # --- Dictionnaire (chargement livre.txt) ---
 from src.DictionnaireEnigmes import DictionnaireEnigmes
@@ -127,6 +132,15 @@ class TriangleViewerManual(tk.Tk):
         self._tooltip = None          # tk.Toplevel
         self._tooltip_label = None    # tk.Label
 
+        # --- cache pick (écran) régénéré après load / zoom / pan ---
+        self._pick_cache_valid = False
+        # chaque item de self._last_drawn recevra:
+        #   t["_pick_poly"] : liste de points écran [(x,y),...]
+        #   t["_pick_pts"]  : dict {'O':(x,y), 'B':(x,y), 'L':(x,y)}
+
+        # Association triangle -> mot du dictionnaire: { tri_id: {"word": str, "row": int, "col": int} }
+        self._tri_words: Dict[int, Dict[str, int | str]] = {}
+
         # distance écran supplémentaire pour l'ancrage du tooltip (px)
         self._tooltip_cushion_px = 14
 
@@ -152,8 +166,10 @@ class TriangleViewerManual(tk.Tk):
         self.num_triangles = tk.IntVar(value=8)
 
         self.excel_path = None
-        # Répertoire des fichiers Triangle (par défaut ../data)
+        # Répertoires par défaut
         self.data_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "data"))
+        self.scenario_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "scenario"))
+        os.makedirs(self.scenario_dir, exist_ok=True)
         self.df = None
         self._last_drawn = []   # liste d'items: (labels, P_world)
 
@@ -168,6 +184,9 @@ class TriangleViewerManual(tk.Tk):
         self._clock_drag_dy = 0
 
         self._build_ui()
+        # Centraliser / garantir les bindings (création initiale)
+        self._bind_canvas_handlers()      
+
         # Bind pour annuler avec ESC (drag ou sélection)
         self.bind("<Escape>", self._on_escape_key)
 
@@ -437,6 +456,98 @@ class TriangleViewerManual(tk.Tk):
         self._clock_state.update({"hour": hour, "minute": minute, "label": label})
         self._redraw_overlay_only()
 
+
+    # ---------- DICO : lecture de la sélection courante ----------
+    def _get_selected_dico_word(self) -> Optional[Tuple[str, int, int]]:
+        """
+        Retourne (word, row, col) depuis la sélection de tksheet, ou None si rien.
+        """
+        if not getattr(self, "dicoSheet", None):
+            return None
+        sel = self.dicoSheet.get_selected_cells()
+        r = c = None
+        if sel:
+            if isinstance(sel, set):
+                r, c = next(iter(sel))
+            elif isinstance(sel, (list, tuple)):
+                r, c = sel[0]
+        if r is None or c is None:
+            cur = self.dicoSheet.get_currently_selected()
+            if isinstance(cur, tuple) and len(cur) == 2 and cur[0] == "cell":
+                r, c = cur[1]
+        if r is None or c is None:
+            return None
+        try:
+            word = str(self.dicoSheet.get_cell_data(int(r), int(c))).strip()
+        except Exception:
+            word = ""
+        if not word:
+            return None
+        return (word, int(r), int(c))
+
+    # ---------- Contexte : actions mot <-> triangle ----------
+    def _ctx_add_or_replace_word(self):
+        """Ajoute/remplace le mot sélectionné du dico sur le triangle ciblé."""
+        if self._ctx_target_idx is None or not (0 <= self._ctx_target_idx < len(self._last_drawn)):
+            return
+        tri = self._last_drawn[self._ctx_target_idx]
+        tri_id = int(tri.get("id"))
+        sel = self._get_selected_dico_word()
+        if not sel:
+            messagebox.showinfo("Association mot", "Aucun mot sélectionné dans le dictionnaire.")
+            return
+        word, row, col = sel
+        self._tri_words[tri_id] = {"word": word, "row": row, "col": col}
+        self._redraw_from(self._last_drawn)
+
+    def _ctx_clear_word(self):
+        """Efface l'association de mot du triangle ciblé, si présente."""
+        if self._ctx_target_idx is None or not (0 <= self._ctx_target_idx < len(self._last_drawn)):
+            return
+        tri = self._last_drawn[self._ctx_target_idx]
+        tri_id = int(tri.get("id"))
+        if tri_id in self._tri_words:
+            del self._tri_words[tri_id]
+            self._redraw_from(self._last_drawn)
+
+    def _rebuild_ctx_word_entries(self):
+        """Reconstruit la partie 'mot' du menu contextuel en fonction du triangle visé + sélection dico."""
+        # Nettoyer les deux entrées dynamiques existantes
+        try:
+            # On supprime depuis la fin pour conserver l'index d'ancrage
+            end = self._ctx_menu.index("end")
+            while end > self._ctx_idx_words_start:
+                self._ctx_menu.delete(end)
+                end = self._ctx_menu.index("end")
+        except Exception:
+            pass
+        # Recréer deux entrées selon contexte
+        label_add = "Ajouter…"
+        cmd_add = None
+        sel = self._get_selected_dico_word()
+        if sel:
+            label_add = f"Ajouter « {sel[0]} »"
+            cmd_add = self._ctx_add_or_replace_word
+        # Triangle ciblé ?
+        has_target = (self._ctx_target_idx is not None) and (0 <= self._ctx_target_idx < len(self._last_drawn))
+        exists = False
+        label_del = "Effacer…"
+        if has_target:
+            tri = self._last_drawn[self._ctx_target_idx]
+            tri_id = int(tri.get("id"))
+            if tri_id in self._tri_words:
+                exists = True
+                cur_word = self._tri_words[tri_id]["word"]
+                # si on a aussi une sélection, on préfère le verbe "Remplacer"
+                if sel:
+                    label_add = f"Remplacer par « {sel[0]} »"
+                label_del = f"Effacer « {cur_word} »"
+        # Ajouter les entrées (activées/désactivées selon contexte)
+        self._ctx_menu.add_command(label=label_add, command=cmd_add, state=("normal" if cmd_add and has_target else "disabled"))
+        self._ctx_menu.add_command(label=label_del, command=(self._ctx_clear_word if exists else None),
+                                   state=("normal" if exists else "disabled"))
+
+
     # ---------- DEBUG: toggle du filtre d'intersection au highlight ----------
     def _toggle_skip_overlap_highlight(self, event=None):
         self.debug_skip_overlap_highlight = not self.debug_skip_overlap_highlight
@@ -451,8 +562,22 @@ class TriangleViewerManual(tk.Tk):
         # --- Barre de menus ---
         menubar = tk.Menu(self)
         self.config(menu=menubar)
+
+        # --- Menu Scénario (save/load XML) ---
+        self.menu_scenario = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Scénario", menu=self.menu_scenario)
+        self.menu_scenario.add_command(label="Charger un scénario…", command=self._scenario_load_dialog)
+        self.menu_scenario.add_command(label="Enregistrer le scénario…", command=self._scenario_save_dialog)
+        self.menu_scenario.add_separator()
+        # placeholder pour la liste des .xml du dossier 'scenario'
+        self._menu_scenario_files_anchor = self.menu_scenario.index("end")
+        self.menu_scenario.add_command(label="(scan des scénarios…)", state="disabled")
+        self._rebuild_scenario_file_list_menu()
+
+        # --- Menu Triangle (save/load XML) ---
         self.menu_triangle = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Triangle", menu=self.menu_triangle)
+
         # --- Menu Visualisation ---
         self.menu_visual = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Visualisation", menu=self.menu_visual)
@@ -547,7 +672,7 @@ class TriangleViewerManual(tk.Tk):
         self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
         # Redessiner l'overlay si la taille du canvas change
-        self.canvas.bind("<Configure>", lambda e: self._redraw_overlay_only())
+        self.canvas.bind("<Configure>", lambda e: (self._redraw_overlay_only(), self._invalidate_pick_cache()))
 
         # Panel dico (placeholder à hauteur fixe, prêt pour intégrer la grille)
         self.dicoPanel = tk.Frame(self.rightPane, height=self.dico_panel_height,
@@ -559,44 +684,473 @@ class TriangleViewerManual(tk.Tk):
         tk.Label(self.dicoPanel, text="Dictionnaire — (grille à intégrer)",
                  bg="#f3f3f3", anchor="w").pack(fill=tk.X, padx=8, pady=4)
 
-        # Mouse wheel zoom (Windows/macOS)
-        self.canvas.bind("<MouseWheel>", self._on_mousewheel)
-        # Mouse wheel zoom (Linux)
-        self.canvas.bind("<Button-4>", self._on_mousewheel)
-        self.canvas.bind("<Button-5>", self._on_mousewheel)
-
-        # Pan avec clic milieu (garde le clic gauche pour sélectionner/déplacer)
-        self.canvas.bind("<ButtonPress-2>", self._on_pan_start)
-        self.canvas.bind("<B2-Motion>", self._on_pan_move)
-        self.canvas.bind("<ButtonRelease-2>", self._on_pan_end)
-        # Sélection/déplacement au clic gauche
-        self.canvas.bind("<ButtonPress-1>", self._on_canvas_left_down)
-        self.canvas.bind("<B1-Motion>", self._on_canvas_left_move)
-        self.canvas.bind("<ButtonRelease-1>", self._on_canvas_left_up)
-        # — activer le mode "déconnexion" quand CTRL est enfoncé (et MAJ curseur)
-        self.bind_all("<KeyPress-Control_L>", self._on_ctrl_down)
-        self.bind_all("<KeyPress-Control_R>", self._on_ctrl_down)
-        self.bind_all("<KeyRelease-Control_L>", self._on_ctrl_up)
-        self.bind_all("<KeyRelease-Control_R>", self._on_ctrl_up)
-        # Suivi souris : drag fantôme OU rotation
-        self.canvas.bind("<Motion>", self._on_canvas_motion_update_drag)
-        # Clic droit : menu contextuel
-        self.canvas.bind("<Button-3>", self._on_canvas_right_click)
-
         # Menu contextuel
         self._ctx_menu = tk.Menu(self, tearoff=0)
         self._ctx_menu.add_command(label="Supprimer", command=self._ctx_delete_group)
         self._ctx_menu.add_command(label="Pivoter", command=self._ctx_rotate_selected)
         self._ctx_menu.add_command(label="Inverser", command=self._ctx_flip_selected)
         self._ctx_menu.add_command(label="OL=0°", command=self._ctx_orient_OL_north)
+
         # Mémoriser l'index de l'entrée "OL=0°" pour pouvoir la (dés)activer au vol
         self._ctx_idx_ol0 = self._ctx_menu.index("end")
+
+        # Séparateur et zone dynamique pour les actions "mot"
+        self._ctx_menu.add_separator()
+        self._ctx_idx_words_start = self._ctx_menu.index("end")  # point d'ancrage
+        # entrées placeholders (seront remplacées dynamiquement)
+        self._ctx_menu.add_command(label="Ajouter …", state="disabled")
+        self._ctx_menu.add_command(label="Effacer …", state="disabled")
 
         # DEBUG: F9 pour activer/désactiver le filtrage de chevauchement au highlight
         # (bind_all pour capter même si le focus clavier n'est pas explicitement sur le canvas)
         self.bind_all("<F9>", self._toggle_skip_overlap_highlight)
         # Premier rendu de l'horloge (overlay)
         self._draw_clock_overlay()
+
+    # -- pick cache helpers ---------------------------------------------------
+    def _invalidate_pick_cache(self):
+        """À appeler dès que zoom/offset ou _last_drawn peuvent changer."""
+        self._pick_cache_valid = False
+
+    def _ensure_pick_cache(self):
+        """Reconstruit le pick-cache si nécessaire (appel paresseux côté input)."""
+        if not getattr(self, "_pick_cache_valid", False):
+            self._rebuild_pick_cache()
+
+    def _rebuild_pick_cache(self):
+        """Reconstruit les polygones écran utilisés pour le hit-test."""
+        if not self._last_drawn:
+            self._pick_cache_valid = True
+            return
+        Z = float(getattr(self, "zoom", 1.0))
+        Ox, Oy = (float(self.offset[0]), float(self.offset[1]))
+        def W2S(p):
+            # monde -> écran (canvas)
+            return (Ox + p[0] * Z, Oy - p[1] * Z)
+        for t in self._last_drawn:
+            P = t.get("pts", {})
+            O = P.get("O"); B = P.get("B"); L = P.get("L")
+            if O is None or B is None or L is None:
+                t["_pick_poly"] = None
+                t["_pick_pts"] = {}
+                continue
+            Os = W2S(O); Bs = W2S(B); Ls = W2S(L)
+            t["_pick_pts"]  = {"O": Os, "B": Bs, "L": Ls}
+            t["_pick_poly"] = [Os, Bs, Ls]
+        self._pick_cache_valid = True
+
+
+    # centralisation des bindings canvas/clavier --
+    def _bind_canvas_handlers(self):
+        """(Ré)applique tous les bindings nécessaires au canvas et au clavier.
+        À appeler après création du canvas ET après un chargement de scénario."""
+        if not getattr(self, "canvas", None):
+            return
+        # Purge défensive pour éviter les doublons (Tk ignore les doublons, mais on nettoie)
+        self.canvas.unbind("<MouseWheel>")
+        self.canvas.unbind("<Button-4>")
+        self.canvas.unbind("<Button-5>")
+        self.canvas.unbind("<ButtonPress-2>")
+        self.canvas.unbind("<B2-Motion>")
+        self.canvas.unbind("<ButtonRelease-2>")
+        self.canvas.unbind("<ButtonPress-1>")
+        self.canvas.unbind("<B1-Motion>")
+        self.canvas.unbind("<ButtonRelease-1>")
+        self.canvas.unbind("<Motion>")
+        self.canvas.unbind("<Button-3>")
+
+        # Zoom (wheel)
+        self.canvas.bind("<MouseWheel>", self._on_mousewheel)
+        self.canvas.bind("<Button-4>", self._on_mousewheel)   # Linux
+        self.canvas.bind("<Button-5>", self._on_mousewheel)   # Linux
+        # Pan (middle)
+        self.canvas.bind("<ButtonPress-2>", self._on_pan_start)
+        self.canvas.bind("<B2-Motion>", self._on_pan_move)
+        self.canvas.bind("<ButtonRelease-2>", self._on_pan_end)
+        # Drag/Move (left)
+        self.canvas.bind("<ButtonPress-1>", self._on_canvas_left_down)
+        self.canvas.bind("<B1-Motion>", self._on_canvas_left_move)
+        self.canvas.bind("<ButtonRelease-1>", self._on_canvas_left_up)
+        # Suivi hover / drag preview
+        self.canvas.bind("<Motion>", self._on_canvas_motion_update_drag)
+        # Menu contextuel
+        self.canvas.bind("<Button-3>", self._on_canvas_right_click)
+
+        # Clavier (CTRL pour déconnexion ; F9 pour debug)
+        self.bind_all("<KeyPress-Control_L>", self._on_ctrl_down)
+        self.bind_all("<KeyPress-Control_R>", self._on_ctrl_down)
+        self.bind_all("<KeyRelease-Control_L>", self._on_ctrl_up)
+        self.bind_all("<KeyRelease-Control_R>", self._on_ctrl_up)
+        self.bind_all("<F9>", self._toggle_skip_overlap_highlight)
+
+    # --- conversions utilitaires (utilisées par le pick) ---
+    def _screen_to_world(self, x, y):
+        Z = float(getattr(self, "zoom", 1.0))
+        Ox, Oy = (float(self.offset[0]), float(self.offset[1]))
+        return ((x - Ox) / Z, (Oy - y) / Z)
+
+
+    # =========================
+    #  SCENARIO: SAVE / LOAD
+    # =========================
+    def _scenario_save_dialog(self):
+        """Boîte de dialogue pour enregistrer un scénario en XML."""
+        # nom par défaut daté dans le dossier 'scenario'
+        ts = _dt.datetime.now().strftime("scenario-%Y%m%d-%H%M.xml")
+        initial = os.path.join(self.scenario_dir, ts)
+        path = filedialog.asksaveasfilename(
+            title="Enregistrer le scénario",
+            defaultextension=".xml",
+            initialfile=os.path.basename(initial),
+            initialdir=self.scenario_dir,
+            filetypes=[("Scenario XML", "*.xml"), ("Tous les fichiers", "*.*")]
+        )
+        if not path:
+            return
+        try:
+            self.save_scenario_xml(path)
+            self.status.config(text=f"Scénario enregistré dans {path}")
+        except Exception as e:
+            messagebox.showerror("Enregistrer le scénario", str(e))
+
+    def _scenario_load_dialog(self):
+        """Boîte de dialogue pour charger un scénario XML."""
+        path = filedialog.askopenfilename(
+            title="Charger un scénario",
+            initialdir=self.scenario_dir,
+            filetypes=[("Scenario XML", "*.xml"), ("Tous les fichiers", "*.*")]
+        )
+        if not path:
+            return
+        try:
+            self.load_scenario_xml(path)
+            self.status.config(text=f"Scénario chargé depuis {path}")
+        except Exception as e:
+            messagebox.showerror("Charger le scénario", str(e))
+    
+    def _rebuild_scenario_file_list_menu(self):
+        """Recrée la liste des scénarios (XML) disponibles dans le menu Scénario."""
+        m = self.menu_scenario
+        if m is None:
+            return
+        # supprimer tout ce qui suit l’ancre
+        end = m.index("end")
+        while end is not None and end > self._menu_scenario_files_anchor:
+            m.delete(end)
+            end = m.index("end")
+        # re-remplir
+        try:
+            files = [f for f in os.listdir(self.scenario_dir) if f.lower().endswith(".xml")]
+        except Exception:
+            files = []
+        if not files:
+            m.add_command(label="(aucun scénario dans 'scenario')", state="disabled")
+            return
+        files.sort(key=str.lower)
+        for fname in files:
+            full = os.path.join(self.scenario_dir, fname)
+            m.add_command(label=fname, command=lambda p=full: self.load_scenario_xml(p))
+
+    def _pt_to_xml(self, p):
+        return f"{float(p[0]):.9g},{float(p[1]):.9g}"
+
+    def _xml_to_pt(self, s):
+        x, y = str(s).split(",")
+        return np.array([float(x), float(y)], dtype=float)
+
+    def save_scenario_xml(self, path: str):
+        """
+        Sauvegarde 'robuste' (v1) :
+          - source excel, view (zoom/offset), clock (pos + hm),
+          - ids restants (listbox),
+          - triangles affichés (id, mirrored, points monde O/B/L, group),
+          - groupes (membres best-effort),
+          - associations triangle→mot (word,row,col).
+        """
+        root = ET.Element("scenario", {
+            "version": "1",
+            "saved_at": _dt.datetime.now().isoformat(timespec="seconds")
+        })
+        # source
+        ET.SubElement(root, "source", {
+            "excel": os.path.abspath(self.excel_path) if getattr(self, "excel_path", None) else ""
+        })
+        # view
+        view = ET.SubElement(root, "view", {
+            "zoom": f"{float(getattr(self, 'zoom', 1.0)):.6g}",
+            "offset_x": f"{float(self.offset[0]) if hasattr(self,'offset') else 0.0:.6g}",
+            "offset_y": f"{float(self.offset[1]) if hasattr(self,'offset') else 0.0:.6g}",
+        })
+        # clock
+        ET.SubElement(root, "clock", {
+            "x": f"{float(self._clock_cx) if self._clock_cx is not None else 0.0:.6g}",
+            "y": f"{float(self._clock_cy) if self._clock_cy is not None else 0.0:.6g}",
+            "hour": f"{int(self._clock_state.get('hour', 0))}",
+            "minute": f"{int(self._clock_state.get('minute', 0))}",
+            "label": str(self._clock_state.get("label","")),
+        })
+        # listbox: ids restants
+        lb = ET.SubElement(root, "listbox")
+        try:
+            for i in range(self.listbox.size()):
+                txt = self.listbox.get(i)
+                m = re.match(r"\s*(\d+)\.", str(txt))
+                if m:
+                    ET.SubElement(lb, "tri", {"id": m.group(1)})
+        except Exception:
+            pass
+        # groupes (best-effort)
+        groups_xml = ET.SubElement(root, "groups")
+        try:
+            for gid, gdata in (self.groups or {}).items():
+                g_el = ET.SubElement(groups_xml, "group", {"id": str(gid)})
+                # si une API _group_nodes existe, on l’utilise
+                members = []
+                try:
+                    members = [nd.get("tid") for nd in self._group_nodes(gid) if nd.get("tid") is not None]
+                except Exception:
+                    # fallback: scanner _last_drawn via le champ runtime correct 'group_id'
+                    for idx, t in enumerate(self._last_drawn or []):
+                        if int(t.get("group_id", 0)) == int(gid):
+                            members.append(idx)
+                for tid in members:
+                    if tid is None:
+                        continue
+                    ET.SubElement(g_el, "member", {"tid": str(tid)})
+        except Exception:
+            pass
+        # triangles posés
+        tris_xml = ET.SubElement(root, "triangles")
+        for t in (self._last_drawn or []):
+            tri_el = ET.SubElement(tris_xml, "triangle", {
+                "id": str(t.get("id", "")),
+                "mirrored": "1" if t.get("mirrored", False) else "0",
+                # on sérialise la valeur runtime correcte
+                "group": str(t.get("group_id", 0)),
+            })
+            P = t.get("pts", {})
+            for key in ("O","B","L"):
+                if key in P:
+                    ET.SubElement(tri_el, key).text = self._pt_to_xml(P[key])
+        # mots associés
+        words_xml = ET.SubElement(root, "words")
+        for tri_id, info in (self._tri_words or {}).items():
+            ET.SubElement(words_xml, "w", {
+                "tri_id": str(tri_id),
+                "row": str(info.get("row","")),
+                "col": str(info.get("col","")),
+                "text": str(info.get("word","")),
+            })
+        # écrire
+        tree = ET.ElementTree(root)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tree.write(path, encoding="utf-8", xml_declaration=True)
+
+    def load_scenario_xml(self, path: str):
+        """
+        Recharge un scénario v1 :
+          - tente de recharger le fichier Excel source,
+          - restaure vue, horloge, listbox, triangles posés (+mots), groupes (best-effort),
+          - redessine.
+        """
+        tree = ET.parse(path)
+        root = tree.getroot()
+        if root.tag != "scenario":
+            raise ValueError("Fichier scénario invalide (balise racine).")
+        # 1) Excel source
+        src = root.find("source")
+        excel = src.get("excel") if src is not None else ""
+        if excel and os.path.isfile(excel):
+            self.load_excel(excel)
+        # 2) vue (restaurer AVANT toute reconstruction pour que les conversions monde<->écran soient cohérentes)
+        view = root.find("view")
+        if view is not None:
+            try:
+                self.zoom = float(view.get("zoom", self.zoom))
+            except Exception: pass
+            try:
+                ox = float(view.get("offset_x", self.offset[0] if hasattr(self,"offset") else 0.0))
+                oy = float(view.get("offset_y", self.offset[1] if hasattr(self,"offset") else 0.0))
+                self.offset = np.array([ox, oy], dtype=float)
+            except Exception:
+                pass
+        # État d’interaction propre (purge complète UI)
+        self._sel = {"mode": None}
+        self._clear_nearest_line()
+        self._clear_edge_highlights()
+        self._hide_tooltip()
+        self._ctx_target_idx = None
+        self._edge_choice = None
+        self._drag_preview_id = None
+        self.canvas.delete("preview")
+
+        # 3) horloge
+        clock = root.find("clock")
+        if clock is not None:
+            try: self._clock_cx = float(clock.get("x", "0"))
+            except Exception: pass
+            try: self._clock_cy = float(clock.get("y", "0"))
+            except Exception: pass
+            try:
+                h = int(clock.get("hour", "0")); m = int(clock.get("minute", "0"))
+                lbl = clock.get("label","")
+                self._clock_state.update({"hour": h, "minute": m, "label": lbl})
+            except Exception:
+                pass
+        # 4) listbox (ids restants)
+        lb = root.find("listbox")
+        if lb is not None:
+            try:
+                self.listbox.delete(0, tk.END)
+                remain_ids = [int(e.get("id")) for e in lb.findall("tri") if e.get("id")]
+                # reconstruire la liste depuis df en conservant l'ordre original
+                if getattr(self, "df", None) is not None and not self.df.empty:
+                    for _, r in self.df.iterrows():
+                        tid = int(r["id"])
+                        if tid in remain_ids:
+                            self.listbox.insert(tk.END, f"{tid:02d}. B:{r['B']}  L:{r['L']}")
+            except Exception:
+                pass
+        # 5) triangles posés (monde)
+        self._last_drawn = []
+        tris_xml = root.find("triangles")
+        if tris_xml is not None:
+            for t_el in tris_xml.findall("triangle"):
+                try:
+                    tid = int(t_el.get("id"))
+                except Exception:
+                    continue
+                mirrored = (t_el.get("mirrored","0") == "1")
+                group_id = int(t_el.get("group","0"))
+                P = {}
+                for k in ("O","B","L"):
+                    n = t_el.find(k)
+                    if n is not None and n.text:
+                        P[k] = self._xml_to_pt(n.text)
+                # Ne plus écrire 'group' (inconnu du runtime) ; initialiser les champs officiels
+                item = {"id": tid, "pts": P, "mirrored": mirrored}
+                item["group_id"] = None
+                item["group_pos"] = None
+                self._last_drawn.append(item)
+
+        # 5bis) compléter les 'labels' manquants (compat v1: non stockés dans le XML)
+        try:
+            if getattr(self, "df", None) is not None and not self.df.empty:
+                # dictionnaire id -> (B, L) sous forme de chaînes
+                _by_id = {int(r["id"]): (str(r["B"]), str(r["L"])) for _, r in self.df.iterrows()}
+                for t in self._last_drawn:
+                    if "labels" not in t or not t["labels"]:
+                        b, l = _by_id.get(int(t.get("id", -1)), ("", ""))
+                        t["labels"] = ("Bourges", b, l)
+            else:
+                # DF absent : fallback neutre
+                for t in self._last_drawn:
+                    if "labels" not in t or not t["labels"]:
+                        t["labels"] = ("Bourges", "", "")
+        except Exception:
+            # sécurité : ne jamais laisser 'labels' absent
+            for t in self._last_drawn:
+                if "labels" not in t or not t["labels"]:
+                    t["labels"] = ("Bourges", "", "")
+
+        # 5ter) tenir à jour les ids déjà posés (pour cohérence listbox / drag)
+        try:
+            self._placed_ids = {int(t["id"]) for t in self._last_drawn}
+        except Exception:
+            self._placed_ids = set()
+
+        # 6) mots associés
+        self._tri_words = {}
+        words_xml = root.find("words")
+        if words_xml is not None:
+            for w in words_xml.findall("w"):
+                try:
+                    tid = int(w.get("tri_id"))
+                except Exception:
+                    continue
+                self._tri_words[tid] = {
+                    "word": w.get("text",""),
+                    "row": int(w.get("row","0")) if w.get("row") else 0,
+                    "col": int(w.get("col","0")) if w.get("col") else 0,
+                }
+
+        # 7) groupes (reconstruction complète: nodes + bboxes)
+        self.groups = {}
+        groups_xml = root.find("groups")
+        if groups_xml is not None:
+            for g_el in groups_xml.findall("group"):
+                try:
+                    gid = int(g_el.get("id"))
+                except Exception:
+                    continue
+                nodes = []
+                for mem in g_el.findall("member"):
+                    # compat: on accepte 'tid' (index dans _last_drawn) OU 'id' (id triangle)
+                    tidx = None
+                    if mem.get("tid") is not None:
+                        try:
+                            tidx = int(mem.get("tid"))
+                        except Exception:
+                            tidx = None
+                    elif mem.get("id") is not None:
+                        # recherche de l’index correspondant à l’id
+                        try:
+                            tri_id = int(mem.get("id"))
+                            for k, t in enumerate(self._last_drawn):
+                                if int(t.get("id")) == tri_id:
+                                    tidx = k
+                                    break
+                        except Exception:
+                            tidx = None
+                    if tidx is None or not (0 <= tidx < len(self._last_drawn)):
+                        continue
+                    # Nodes au format runtime + marquage triangle: group_id/group_pos
+                    nodes.append({"tid": tidx, "vkey_in": None, "vkey_out": None})
+                    self._last_drawn[tidx]["group_id"]  = gid
+                    self._last_drawn[tidx]["group_pos"] = len(nodes) - 1
+                    # Hygiène: supprimer l’ancien champ 'group' s’il subsiste
+                    if "group" in self._last_drawn[tidx]:
+                        del self._last_drawn[tidx]["group"]
+                self.groups[gid] = {"id": gid, "nodes": nodes, "bbox": None}
+                self._recompute_group_bbox(gid)
+
+        # Nettoyage global de compatibilité : purger toute trace résiduelle de 'group'
+        for _t in self._last_drawn:
+            if "group" in _t:
+                del _t["group"]
+        # sécurité: prochain id de groupe
+        try:
+            self._next_group_id = (max(self.groups.keys()) + 1) if self.groups else 1
+        except Exception:
+            self._next_group_id = 1
+
+        # 8) sélection et aides reset
+        self._sel = {"mode": None}
+        self._clear_nearest_line()
+        self._clear_edge_highlights()
+
+        # 9) réappliquer les bindings (utile si le canvas a été recréé ou si Tk a perdu des liaisons)
+        self._bind_canvas_handlers()
+
+        # 10) redraw complet avec la vue restaurée + overlay
+        self._redraw_from(self._last_drawn)
+        self._redraw_overlay_only()
+        # [H6] reconstruire le pick-cache avec la vue effectivement restaurée
+        try:
+            self._rebuild_pick_cache()
+            self._pick_cache_valid = True
+        except Exception:
+            self._pick_cache_valid = False
+
+        # focus + rebind défensif (tooltips/drag)
+        self.canvas.focus_set()
+        self._bind_canvas_handlers()
+
+        # DEBUG D1 — vérifier les champs de groupe après load
+        for i, t in enumerate(self._last_drawn):
+            gid = t.get("group_id", None)
+            g   = t.get("group", None)
+            print(f"[D1] tid={i} id={t.get('id')} group_id={gid} group={g}")
 
     # ---------- Horloge : test de hit ----------
     def _is_in_clock(self, x, y, pad=10):
@@ -686,6 +1240,7 @@ class TriangleViewerManual(tk.Tk):
         col_OB = cmap.get("ouverturebase")
         col_OL = cmap.get("ouverturelumiere")
         col_BL = cmap.get("lumierebase")
+        col_OR = cmap.get("orientation")  # colonne Orientation (CCW/CW/COL)  
         missing = [n for n,c in {
             "Base":col_B, "Lumière":col_L, "Ouverture-Base":col_OB,
             "Ouverture-Lumière":col_OL, "Lumière-Base":col_BL
@@ -699,6 +1254,11 @@ class TriangleViewerManual(tk.Tk):
             "len_OB": pd.to_numeric(df[col_OB], errors="coerce"),
             "len_OL": pd.to_numeric(df[col_OL], errors="coerce"),
             "len_BL": pd.to_numeric(df[col_BL], errors="coerce"),
+            # Orientation normalisée (par défaut CCW si absent)
+            "orient": (
+                df[col_OR].astype(str).str.upper().str.strip()
+                if col_OR else pd.Series(["CCW"] * len(df))
+            ),
         }).dropna(subset=["len_OB","len_OL","len_BL"]).sort_values("id")
         return out.reset_index(drop=True)
 
@@ -730,11 +1290,20 @@ class TriangleViewerManual(tk.Tk):
         out = []
         for _, r in sub.iterrows():
             P = _build_local_triangle(float(r["len_OB"]), float(r["len_OL"]), float(r["len_BL"]))
+            # Si orientation = CW, on applique une symétrie verticale (y -> -y)
+            try:
+                ori = str(r.get("orient", "CCW")).upper()
+            except Exception:
+                ori = "CCW"
+            if ori == "CW":
+                P = {"O": np.array([P["O"][0], -P["O"][1]]),
+                     "B": np.array([P["B"][0], -P["B"][1]]),
+                     "L": np.array([P["L"][0], -P["L"][1]])}
             out.append({
                 "labels": ( "Bourges", str(r["B"]), str(r["L"]) ),  # O,B,L
                 "pts": P,
                 "id": int(r["id"]),
-                "mirrored": False,
+                "mirrored": (ori == "CW"),
             })
         return out
 
@@ -770,11 +1339,20 @@ class TriangleViewerManual(tk.Tk):
             tri_id = int(r["id"])
 
         P = _build_local_triangle(float(r["len_OB"]), float(r["len_OL"]), float(r["len_BL"]))
+        # Normalisation de l’orientation
+        try:
+            ori = str(r.get("orient", "CCW")).upper()
+        except Exception:
+            ori = "CCW"
+        if ori == "CW":
+            P = {"O": np.array([P["O"][0], -P["O"][1]]),
+                 "B": np.array([P["B"][0], -P["B"][1]]),
+                 "L": np.array([P["L"][0], -P["L"][1]])}
         return {
             "labels": ("Bourges", str(r["B"]), str(r["L"])),
             "pts": P,
             "id": tri_id,
-            "mirrored": False,   # <— toujours présent dès la création
+            "mirrored": (ori == "CW"),   # reflet initial si orientation horaire
         }
 
     def _layout_tris_horizontal(self, tris, gap=0.5, wrap_width=None):
@@ -1135,6 +1713,8 @@ class TriangleViewerManual(tk.Tk):
             pass
         # Redessiner l'horloge (overlay indépendant)
         self._draw_clock_overlay()
+        # Après tout redraw, le cache de pick n'est plus valide
+        self._invalidate_pick_cache()
 
     def _draw_triangle_screen(self, P, outline="black", width=2, labels=None, inset=0.35, tri_id=None, tri_mirrored=False):
         """
@@ -1149,8 +1729,14 @@ class TriangleViewerManual(tk.Tk):
             sx, sy = self._world_to_screen(pt)
             coords += [sx, sy]
 
-        # 2) tracé du triangle
-        self.canvas.create_polygon(*coords, outline=outline, fill="", width=width)
+        # 2) tracé du triangle (arêtes colorées selon les sommets)
+        #    - Lumière (L) -> Ouverture (O) : noir
+        #    - Lumière (L) -> Base (B)      : bleu foncé
+        #    - Base (B) -> Ouverture (O)    : gris
+        Ox, Oy, Bx, By, Lx, Ly = coords
+        self.canvas.create_line(Ox, Oy, Lx, Ly, fill="#000000", width=width)
+        self.canvas.create_line(Bx, By, Lx, Ly, fill="#00008B", width=width)
+        self.canvas.create_line(Bx, By, Ox, Oy, fill="#808080", width=width)
 
         # 2b) marqueurs colorés par type de bord
         # O = Ouverture (noir), B = Base (bleu), L = Lumière (jaune)
@@ -1202,12 +1788,26 @@ class TriangleViewerManual(tk.Tk):
         if tri_id is not None:
             sx, sy = self._world_to_screen((cx, cy))
             num_txt = f"{tri_id}{'S' if tri_mirrored else ''}"
+            # Bloc ID + mot recentré verticalement autour de sy, avec un écart réduit
+            gap = 8  # écart vertical (px) entre ID et mot
+            id_y   = sy - (gap // 2)
+            word_y = sy + (gap - gap // 2)
+
             self.canvas.create_text(
-                sx, sy, text=num_txt,
+                sx, id_y, text=num_txt,
                 anchor="center", font=("Arial", 10, "bold"),
                 fill="red", tags="tri_num"
             )
             self.canvas.tag_raise("tri_num")
+
+            # 5b) si un mot est associé à ce triangle, l’afficher sous l’ID (italique)
+            winfo = self._tri_words.get(int(tri_id))
+            if winfo and isinstance(winfo.get("word"), str) and winfo["word"].strip():
+                self.canvas.create_text(
+                    sx, word_y, text=winfo["word"],
+                    anchor="n", font=("Arial", 9, "italic"),
+                    fill="#222", tags="tri_word"
+                )
 
     # --- helpers: mode déconnexion (CTRL) + curseur ---
     def _on_ctrl_down(self, event=None):
@@ -1219,6 +1819,98 @@ class TriangleViewerManual(tk.Tk):
                 self.canvas.configure(cursor="X_cursor")
             except tk.TclError:
                 self.canvas.configure(cursor="crosshair")
+
+
+            # --- NOUVEAU (étape 2) ---
+            # Si CTRL est pressé *après* avoir sélectionné un sommet (assist ON),
+           # on applique immédiatement la ROTATION d'alignement (comme au release),
+            # mais SANS translation et SANS collage (CTRL empêchera le snap au relâchement).
+            try:
+                if self._sel and (not self._sel.get("suppress_assist")):
+                    mode = self._sel.get("mode")
+                    choice = getattr(self, "_edge_choice", None)
+                    if choice:
+                        import numpy as np
+
+                        # -------- Cas 1 : triangle seul (mode vertex) --------
+                        if mode == "vertex":
+                            idx = self._sel.get("idx")
+                            vkey = self._sel.get("vkey")
+                            if choice[0] == idx and choice[1] == vkey:
+                                (_, _, idx_t, vkey_t, (m_a, m_b, t_a, t_b)) = choice
+                                tri_m = self._last_drawn[idx]
+                                Pm = tri_m["pts"]
+
+                                A = np.array(m_a, dtype=float)  # mobile: sommet saisi
+                                B = np.array(m_b, dtype=float)  # mobile: voisin arête
+                                U = np.array(t_a, dtype=float)  # cible: sommet (pas utilisé ici)
+                                V = np.array(t_b, dtype=float)  # cible: voisin arête
+
+                                ang_m = self._ang_of_vec(B[0] - A[0], B[1] - A[1])
+                                ang_t = self._ang_of_vec(V[0] - U[0], V[1] - U[1])
+                                dtheta = ang_t - ang_m
+
+                                if abs(dtheta) > 1e-12:
+                                    R = np.array([[np.cos(dtheta), -np.sin(dtheta)],
+                                                  [np.sin(dtheta),  np.cos(dtheta)]], dtype=float)
+                                    for k in ("O", "B", "L"):
+                                        p = np.array(Pm[k], dtype=float)
+                                        p_rot = A + (R @ (p - A))
+                                        Pm[k][0] = float(p_rot[0])
+                                        Pm[k][1] = float(p_rot[1])
+
+                                    # Redessiner + remettre les aides (rouge/gris)
+                                    self._redraw_from(self._last_drawn)
+                                    v_world = np.array(self._last_drawn[idx]["pts"][vkey], dtype=float)
+                                    self._update_nearest_line(v_world, exclude_idx=idx)
+                                    self._update_edge_highlights(idx, vkey, idx_t, vkey_t)
+
+                        # -------- Cas 2 : déplacement de groupe ancré sur sommet --------
+                        elif mode == "move_group":
+                            anchor = self._sel.get("anchor")
+                            gid = self._sel.get("gid")
+                            if anchor and anchor.get("type") == "vertex":
+                                anchor_tid = anchor.get("tid")
+                                anchor_vkey = anchor.get("vkey")
+                                if choice[0] == anchor_tid and choice[1] == anchor_vkey:
+                                    (_, _, idx_t, vkey_t, (m_a, m_b, t_a, t_b)) = choice
+
+                                    A = np.array(m_a, dtype=float)
+                                    B = np.array(m_b, dtype=float)
+                                    U = np.array(t_a, dtype=float)
+                                    V = np.array(t_b, dtype=float)
+
+                                    ang_m = self._ang_of_vec(B[0] - A[0], B[1] - A[1])
+                                    ang_t = self._ang_of_vec(V[0] - U[0], V[1] - U[1])
+                                    dtheta = ang_t - ang_m
+
+                                    if abs(dtheta) > 1e-12:
+                                        R = np.array([[np.cos(dtheta), -np.sin(dtheta)],
+                                                      [np.sin(dtheta),  np.cos(dtheta)]], dtype=float)
+
+                                        g = self.groups.get(gid)
+                                        if g:
+                                            for node in g["nodes"]:
+                                                tid = node.get("tid")
+                                                if 0 <= tid < len(self._last_drawn):
+                                                    P = self._last_drawn[tid]["pts"]
+                                                    for k in ("O", "B", "L"):
+                                                        p = np.array(P[k], dtype=float)
+                                                        p_rot = A + (R @ (p - A))
+                                                        P[k][0] = float(p_rot[0])
+                                                        P[k][1] = float(p_rot[1])
+
+                                        # Redessiner + remettre les aides (en excluant le groupe mobile)
+                                        try:
+                                            self._recompute_group_bbox(gid)
+                                        except Exception:
+                                            pass
+                                        self._redraw_from(self._last_drawn)
+                                        v_world = np.array(self._last_drawn[anchor_tid]["pts"][anchor_vkey], dtype=float)
+                                        self._update_nearest_line(v_world, exclude_idx=anchor_tid, exclude_gid=gid)
+                                        self._update_edge_highlights(anchor_tid, anchor_vkey, idx_t, vkey_t)
+            except Exception:
+                pass
 
     def _on_ctrl_up(self, event=None):
         if self._ctrl_down:
@@ -1368,6 +2060,9 @@ class TriangleViewerManual(tk.Tk):
         return out
 
     def _on_canvas_motion_update_drag(self, event):
+        # Toujours garantir un pick-cache à jour avant tout hit/tooltip
+        self._ensure_pick_cache()
+
         # 1) Drag & drop depuis la liste → fantôme
         if self._drag:
             wx = (event.x - self.offset[0]) / self.zoom
@@ -1562,6 +2257,9 @@ class TriangleViewerManual(tk.Tk):
             # pas de sommet → masquer tooltip
             self._hide_tooltip()
 
+        # sécurité : si le cache n’est pas prêt (post-load), le régénérer pour les tooltips
+        if not self._pick_cache_valid:
+            self._rebuild_pick_cache()
 
     # ---------- Lien + surlignage faces candidates ----------
     def _find_nearest_vertex(self, v_world, exclude_idx=None, exclude_gid=None):
@@ -2296,6 +2994,8 @@ class TriangleViewerManual(tk.Tk):
                         self._ctx_menu.entryconfig(self._ctx_idx_ol0, state=tk.DISABLED)
                 except Exception:
                     pass
+            # (ré)construire la section "mot" du menu selon le triangle visé + selection dico
+            self._rebuild_ctx_word_entries()
             try:
                 self._ctx_menu.tk_popup(event.x_root, event.y_root)
             finally:
@@ -2516,7 +3216,29 @@ class TriangleViewerManual(tk.Tk):
         self._redraw_from(self._last_drawn)
         self.status.config(text=f"Inversion appliquée au groupe #{gid}.")
 
+    def _move_group_world(self, gid, dx_w, dy_w):
+        """Translate rigide de tout le groupe en coordonnées monde."""
+        g = self.groups.get(gid)
+        if not g:
+            return
+        d = np.array([dx_w, dy_w], dtype=float)
+        for node in g["nodes"]:
+            tid = node["tid"]
+            if 0 <= tid < len(self._last_drawn):
+                P = self._last_drawn[tid]["pts"]
+                for k in ("O","B","L"):
+                    P[k] = np.array([P[k][0] + d[0], P[k][1] + d[1]], dtype=float)
+        self._recompute_group_bbox(gid)
+
     def _on_canvas_left_down(self, event):
+        # garantir un cache pick à jour avant tout hit-test
+        self._ensure_pick_cache()
+        # mémoriser l'ancre monde de la souris pour des déplacements "delta"
+        try:
+            self._mouse_world_prev = self._screen_to_world(event.x, event.y)
+        except Exception:
+            self._mouse_world_prev = None
+
         # Horloge : démarrer drag si clic dans le disque (marge 10px)
         if self._is_in_clock(event.x, event.y):
             # ne pas intercepter si un drag de triangle est en cours
@@ -2561,6 +3283,7 @@ class TriangleViewerManual(tk.Tk):
                 "gid": gid,
                 "grab_offset": np.array([wx, wy]) - Gc,
                 "orig_group_pts": orig_group_pts,
+                "mouse_world_prev": np.array([wx, wy], dtype=float),
             }
             self.status.config(text=f"Déplacement du groupe #{gid} (clic sur tri {self._last_drawn[idx].get('id','?')})")
         elif mode == "vertex":
@@ -2817,50 +3540,17 @@ class TriangleViewerManual(tk.Tk):
                 self._clear_nearest_line()
                 self._clear_edge_highlights()
             gid = self._sel["gid"]
-            wx = (event.x - self.offset[0]) / self.zoom
-            wy = (self.offset[1] - event.y) / self.zoom
-            # Deux modes d'ancrage : 'centroid' (par défaut) ou 'vertex' (nouveau, après déconnexion)
-            anchor = self._sel.get("anchor")
-            if anchor and anchor.get("type") == "vertex":
-                # retrouver la position ACTUELLE du sommet dans le groupe (il peut avoir changé de gid)
-                anchor_tid = anchor.get("tid")
-                anchor_vkey = anchor.get("vkey")
-                # si le triangle ancre n'est plus dans ce gid (peu probable à ce stade), fallback centroid
-                in_group = False
-                g = self.groups.get(gid)
-                if g:
-                    for nd in g["nodes"]:
-                        if nd["tid"] == anchor_tid:
-                            in_group = True
-                            break
-                if in_group and (0 <= anchor_tid < len(self._last_drawn)):
-                    Panchor = self._last_drawn[anchor_tid]["pts"]
-                    cur_anchor = np.array(Panchor[anchor_vkey], dtype=float)
-                    target_anchor = np.array([wx, wy]) - self._sel["grab_offset"]
-                    d = target_anchor - cur_anchor
-                else:
-                    # fallback centroid
-                    target_c = np.array([wx, wy]) - self._sel["grab_offset"]
-                    cur_c = self._group_centroid(gid)
-                    if cur_c is None:
-                        return
-                    d = target_c - cur_c
-            else:
-                target_c = np.array([wx, wy]) - self._sel["grab_offset"]
-                cur_c = self._group_centroid(gid)
-                if cur_c is None:
-                    return
-                d = target_c - cur_c
-            g = self.groups.get(gid)
-            if not g:
+            # déplacement CALÉ SUR DELTA MONDE: w -> w_prev
+            wx, wy = self._screen_to_world(event.x, event.y)
+            prev = self._sel.get("mouse_world_prev")
+            if prev is None:
+                self._sel["mouse_world_prev"] = np.array([wx, wy], dtype=float)
                 return
-            for node in g["nodes"]:
-                tid = node["tid"]
-                if 0 <= tid < len(self._last_drawn):
-                    P = self._last_drawn[tid]["pts"]
-                    for k in ("O","B","L"):
-                        P[k] = np.array([P[k][0] + d[0], P[k][1] + d[1]])
-            self._recompute_group_bbox(gid)
+            dx, dy = float(wx - prev[0]), float(wy - prev[1])
+            if dx != 0.0 or dy != 0.0:
+                self._move_group_world(gid, dx, dy)
+                # avancer l'ancre
+                self._sel["mouse_world_prev"] = np.array([wx, wy], dtype=float)
             self._redraw_from(self._last_drawn)
             # --- NOUVEAU : pendant un move_group ancré sur SOMMET, afficher l'aide de collage ---
             if not self._sel.get("suppress_assist"):
@@ -2982,6 +3672,17 @@ class TriangleViewerManual(tk.Tk):
                 self._redraw_from(self._last_drawn)
                 return
 
+            # si CTRL est enfoncé AU RELÂCHEMENT, on ne colle pas.
+            # (On garde l'aide visuelle pendant le drag si CTRL a été pressé après le clic.)
+            if getattr(self, "_ctrl_down", False):
+                self._sel = None
+                self._reset_assist()
+                self._redraw_from(self._last_drawn)
+                try: self.status.config(text="Dépôt sans collage (CTRL).")
+                except Exception: pass
+                return
+
+
             # Déroulé du collage (rotation+translation) sur le TRIANGLE seul
             (_, _, idx_t, vkey_t, (m_a, m_b, t_a, t_b)) = choice
             tri_m = self._last_drawn[idx]
@@ -3039,6 +3740,7 @@ class TriangleViewerManual(tk.Tk):
             # mais à TOUS les triangles du groupe.
             choice = getattr(self, "_edge_choice", None)
             if (not suppress
+                and (not getattr(self, "_ctrl_down", False))
                 and anchor
                 and anchor.get("type") == "vertex"
                 and choice
@@ -3187,6 +3889,8 @@ class TriangleViewerManual(tk.Tk):
                                 event.y + wy * self.zoom], dtype=float)
 
         self._redraw_from(self._last_drawn)
+        # zoom modifie les coords écran -> invalider le pick-cache
+        self._invalidate_pick_cache()
 
     def _on_pan_start(self, event):
         self._pan_anchor = np.array([event.x, event.y], dtype=float)
@@ -3201,6 +3905,8 @@ class TriangleViewerManual(tk.Tk):
 
     def _on_pan_end(self, event):
         self._pan_anchor = None
+        # après pan -> invalider cache pick (coords écran changent)
+        self._invalidate_pick_cache()
 
     # ---------- Impression PDF (A4) ----------
     def _export_triangles_pdf(

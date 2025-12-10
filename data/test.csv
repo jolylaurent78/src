@@ -1,0 +1,42 @@
+Nom Ouverture;Nom Base;Nom Lumiere;Type Cadran;Angle Ouverture;Angle Base;Angle Lumiere;Longueur Ouverture-Base;Longueur Ouverture-Lumiere;Longueur Lumiere-Base;Orientation
+Bourges;Reims;La Ferté-Alais;final;24.78;27.84;127.38;271.26;159.36;143.22;CCW
+Bourges;Bouvines;Observatoire de Paris;final;9.5;9.1;161.4;393.36;195.11;203.51;CCW
+Loudun;Coetquidan;Burgos;lumiere;91.08;70.74;18.18;198.18;599.14;634.24;CCW
+Bourges;Pont de Noirmoutier;Lac-de-Trémelin;final;22.28;81.06;76.66;346.27;351.45;134.64;CW
+Bourges;Fontevraud;Beaufort-en-Vallée;final;7.95;127.49;44.56;178.24;201.53;35.06;CW
+Bourges;Saint-Amour;Jumièges;final;130.17;27.5;22.32;235.93;286.36;474.19;CCW
+Bourges;Rocamadour;Taillebourg;final;46.76;69.31;63.93;260.4;271.59;211.45;CW
+Bourges;Le Goulet;Pic du Midi;final;140.87;26.54;12.59;240.68;493.49;696.8;CCW
+Bourges;Saint-Amour;Grotte de Lombrives;final;81.07;71.09;27.84;235.93;477.0;498.43;CW
+Bourges;Le Goulet;Beaugency;final;19.09;11.94;148.97;240.68;96.67;152.65;CCW
+Bourges;Rocamadour;Poitiers;final;57.62;39.36;83.02;260.4;166.67;221.61;CW
+Bourges;Pont de Noirmoutier;Mirebeau;final;8.39;8.09;163.52;346.27;171.74;178.13;CCW
+Bourges;Pont de Noirmoutier;Mirebeau;final;8.39;8.09;163.52;346.27;171.74;178.13;CCW
+Bourges;Reims;Thury-sous-Clermont;final;27.17;68.29;84.54;271.26;253.07;124.64;CCW
+Bourges;Metz;Rumigny;final;25.94;67.23;86.83;361.19;333.26;158.33;CCW
+Bourges;Gergovie;Solesmes;final;134.26;26.56;19.18;161.91;220.68;353.24;CW
+Bourges;Carignan;Bâle;final;45.44;75.42;59.14;350.1;395.23;290.61;CW
+Bourges;Île-d'Aix;Mayence;final;163.19;10.86;5.95;298.19;541.31;831.26;CW
+Golfe-Juan;Coetquidan;Strasbourg;lumiere;57.58;39.89;82.53;866.15;559.45;737.88;CW
+Bourges;Carignan;Boulogne-sur-Mer;final;42.58;80.1;57.32;350.1;409.47;281.75;CCW
+Alise-Sainte-Reine;Coetquidan;Sedan;lumiere;90.07;25.94;63.99;500.17;242.98;556.42;CW
+Bourges;Bouvines;Waterloo;final;11.33;106.39;62.28;393.36;426.4;87.51;CW
+Bourges;Châlus;Saint-Valery-sur-Somme;final;136.01;28.72;15.28;192.14;350.14;506.16;CW
+Bourges;Gergovie;Pevensey;final;178.74;0.92;0.34;161.91;442.41;604.29;CCW
+Saint-Valentin;Coetquidan;Pont Tancarville;lumiere;48.69;60.94;70.37;322.54;298.86;257.09;CW
+Bourges;Aléria;Sainte-Mère-Église;final;177.23;0.9;1.87;789.03;378.14;1166.87;CCW
+Bourges;Aléria;Massif des Maures;final;11.79;23.05;145.16;789.03;540.52;282.41;CW
+Vouneuil-sur-Vienne;Coetquidan;Cherbourg;lumiere;29.65;111.33;39.01;245.14;362.36;192.43;CW
+Bourges;Domrémy;3RDV;final;168.77;6.65;4.57;288.39;419.0;704.12;CCW
+Bourges;Coetquidan;Vézelay;final;139.41;9.29;31.3;356.02;110.67;445.99;CW
+Nouaillé-Maupertuis;Coetquidan;Mont Saint Michel;lumiere;18.94;96.78;64.28;251.59;277.11;90.6;CW
+Bourges;Fontevraud;Crécy-en-Ponthieu;final;79.62;71.91;28.47;178.24;354.72;367.18;CW
+Bourges;Château-Gaillard;Montereau;final;32.48;33.18;114.33;250.89;150.7;148.03;CW
+Bourges;Metz;Troyes;final;7.46;7.66;164.88;361.19;184.57;179.79;CCW
+Bourges;Château-Gaillard;Guérande;final;67.18;72.08;40.75;250.89;366.43;354.74;CCW
+Bourges;Île-d'Aix;Carnac;final;32.02;104.12;43.86;298.19;417.47;227.96;CW
+Bourges;Châlus;Lampouy;final;78.58;71.13;30.29;192.14;360.84;373.41;CW
+Sainte-Catherine-de-Fierbois;Coetquidan;Orléans;lumiere;116.11;21.21;42.68;228.81;122.05;303.2;CW
+Bourges;Coetquidan;Chinon;final;13.15;10.71;156.14;356.02;163.63;200.14;CCW
+Bourges;Domrémy;Rouen;final;76.76;50.56;52.69;288.39;279.67;353.1;CCW
+Roncevaux;Coetquidan;Bourges;lumiere;38.09;68.91;73.0;550.87;537.81;356.02;CW
