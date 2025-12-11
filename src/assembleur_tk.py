@@ -3,11 +3,12 @@ import os
 import datetime as _dt
 import math
 import re
+import copy
 import numpy as np
 import pandas as pd
 from typing import Optional, List, Dict, Tuple
 
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, simpledialog
 import tkinter as tk
 from tksheet import Sheet
 
@@ -99,6 +100,41 @@ def _pose_params(Pm: Dict[str,np.ndarray], am: str, bm: str, Vm: np.ndarray,
     return R, T, pivot
 
 
+class ScenarioAssemblage:
+    """
+    Représente un scénario d'assemblage (manuel ou automatique).
+    Un scénario contient :
+      - un nom lisible (ex. 'Scénario manuel', 'Auto #1'),
+      - un type de source ('manual' / 'auto'),
+      - éventuellement l'identifiant de l'algorithme qui l'a généré,
+      - la liste des triangles d'origine (ids),
+      - l'état géométrique : triangles dessinés + groupes.
+
+    Pour le scénario manuel, last_drawn / groups sont des références
+    directes vers les structures runtime du viewer (pas une copie).
+    Pour les scénarios automatiques, on utilisera plutôt des copies.
+    """
+    def __init__(
+        self,
+        name: str,
+        source_type: str = "manual",
+        algo_id: Optional[str] = None,
+        tri_ids: Optional[List[int]] = None,
+    ):
+        self.name: str = name
+        self.source_type: str = source_type      # "manual" ou "auto"
+        self.algo_id: Optional[str] = algo_id    # id de l'algo (pour les auto)
+        self.tri_ids: List[int] = list(tri_ids) if tri_ids is not None else []
+
+        # État géométrique associé au scénario
+        self.last_drawn: List[Dict] = []         # même structure que viewer._last_drawn
+        self.groups: Dict[int, Dict] = {}        # même structure que viewer.groups
+
+        # Statut global du scénario (utile pour les simulations auto)
+        self.status: str = "complete"            # "complete", "pruned", etc.
+        self.created_at: _dt.datetime = _dt.datetime.now()
+
+
 # ---------- Application (MANUEL — sans algorithmes) ----------
 class TriangleViewerManual(tk.Tk):
     """
@@ -123,7 +159,7 @@ class TriangleViewerManual(tk.Tk):
         self._hit_px = 12             # tolérance de hit (pixels) pour les sommets
         self._marker_px = 6           # rayon des marqueurs (cercles) dessinés aux sommets
         self._ctx_target_idx = None   # index du triangle visé par clic droit (menu contextuel)
-        self._placed_ids = set()      # ids déjà posés (retirés de la liste)
+        self._placed_ids = set()      # ids déjà posés dans le scénario actif
         self._ctx_last_rclick = None  # dernière position écran du clic droit (pour pivoter)
         self._nearest_line_id = None  # trait d'aide "sommet le plus proche"
         self._edge_highlight_ids = [] # surlignage des 2 arêtes (mobile/cible)
@@ -164,6 +200,11 @@ class TriangleViewerManual(tk.Tk):
         self.groups: Dict[int, Dict] = {}
         self._next_group_id: int = 1
 
+        # === Scénarios d'assemblage ===
+        # Liste de scénarios (1 scénario manuel actif + futurs scénarios auto).
+        self.scenarios: List[ScenarioAssemblage] = []
+        self.active_scenario_index: int = 0
+
         # état IHM
         self.triangle_file = tk.StringVar(value="")
         self.start_index = tk.IntVar(value=1)
@@ -173,9 +214,25 @@ class TriangleViewerManual(tk.Tk):
         # Répertoires par défaut
         self.data_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "data"))
         self.scenario_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "scenario"))
+        # Répertoire des icônes
+        self.images_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "images"))
         os.makedirs(self.scenario_dir, exist_ok=True)
         self.df = None
         self._last_drawn = []   # liste d'items: (labels, P_world)
+
+
+        # Crée le scénario manuel "par défaut" qui pointe sur l'état runtime.
+        # last_drawn et groups sont partagés par référence : toute modification
+        # manuelle met automatiquement à jour ce scénario.
+        manual = ScenarioAssemblage(
+            name="Scénario manuel",
+            source_type="manual",
+            algo_id=None,
+            tri_ids=[],
+        )
+        manual.last_drawn = self._last_drawn
+        manual.groups = self.groups
+        self.scenarios.append(manual)
 
         # --- Horloge (overlay fixe) : état par défaut ---
         self._clock_state = {"hour": 5, "minute": 9, "label": "Trouver — (5h, 9')"}
@@ -570,8 +627,9 @@ class TriangleViewerManual(tk.Tk):
         # --- Menu Scénario (save/load XML) ---
         self.menu_scenario = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Scénario", menu=self.menu_scenario)
-        self.menu_scenario.add_command(label="Charger un scénario…", command=self._scenario_load_dialog)
-        self.menu_scenario.add_command(label="Enregistrer le scénario…", command=self._scenario_save_dialog)
+        self.menu_scenario.add_command(label="Nouveau", command=self._new_empty_scenario)
+        self.menu_scenario.add_command(label="Charger…", command=self._scenario_load_dialog)
+        self.menu_scenario.add_command(label="Enregistrer…", command=self._scenario_save_dialog)
         self.menu_scenario.add_separator()
         # placeholder pour la liste des .xml du dossier 'scenario'
         self._menu_scenario_files_anchor = self.menu_scenario.index("end")
@@ -665,20 +723,357 @@ class TriangleViewerManual(tk.Tk):
                 # Insérer à partir de l’index 2 (après la 1re séparatrice)
                 m.insert_command(2 + idx, label=fname, command=lambda p=full: self.load_excel(p))
 
-    def _build_left_pane(self, parent):
-        left = tk.Frame(parent, width=260); left.pack(side=tk.LEFT, fill=tk.Y); left.pack_propagate(False)
+    # ---------- Icônes ----------
+    def _load_icon(self, filename: str):
+        """
+        Charge une icône depuis le dossier images.
+        Retourne un tk.PhotoImage ou None si échec (fichier manquant, etc.).
+        """
+        try:
+            base = getattr(self, "images_dir", None)
+            if not base:
+                return None
+            path = os.path.join(base, filename)
+            if not os.path.isfile(path):
+                return None
+            return tk.PhotoImage(file=path)
+        except Exception:
+            return None
 
-        tk.Label(left, text="Triangles (ordre)").pack(anchor="w", padx=6, pady=(6,0))
-        # Frame pour Listbox + Scrollbar verticale (prend toute la hauteur)
-        lb_frame = tk.Frame(left)
-        lb_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0,6))
+    def _build_left_pane(self, parent):
+        left = tk.Frame(parent, width=260)
+        left.pack(side=tk.LEFT, fill=tk.Y)
+        left.pack_propagate(False)
+
+        # PanedWindow vertical : haut = triangles, bas = scénarios
+        pw = tk.PanedWindow(left, orient=tk.VERTICAL)
+        pw.pack(fill=tk.BOTH, expand=True)
+
+        # --- Panneau haut : liste des triangles ---
+        tri_frame = tk.Frame(pw)
+        tk.Label(tri_frame, text="Triangles (ordre)").pack(anchor="w", padx=6, pady=(6, 0))
+
+        lb_frame = tk.Frame(tri_frame)
+        lb_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
         self.listbox = tk.Listbox(lb_frame, width=34, exportselection=False)
         self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         lb_scroll = tk.Scrollbar(lb_frame, orient="vertical", command=self.listbox.yview)
         lb_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.listbox.configure(yscrollcommand=lb_scroll.set)
-        # Démarrer le drag dès qu'on clique sur un item
+        # Gestion de la sélection / triangles déjà utilisés
+        self._last_triangle_selection = None
+        self._in_triangle_select_guard = False
+        self.listbox.bind("<<ListboxSelect>>", self._on_triangle_list_select)
+        # Démarrer le drag dès qu'on clique sur un item de triangle
         self.listbox.bind("<ButtonPress-1>", self._on_list_mouse_down)
+
+        pw.add(tri_frame, minsize=150)  # hauteur mini raisonnable pour les triangles
+
+        # --- Panneau bas : scénarios + barre d'icônes ---
+        scen_frame = tk.Frame(pw)
+        tk.Label(scen_frame, text="Scénarios").pack(anchor="w", padx=6, pady=(6, 0))
+
+        # Barre d'icônes (Nouveau, Charger, Propriétés, Sauver, Dupliquer, Supprimer)
+        toolbar = tk.Frame(scen_frame)
+        toolbar.pack(anchor="w", padx=4, pady=(0, 2), fill="x")
+
+        # Chargement des icônes (tu peux adapter les noms de fichiers PNG)
+        self.icon_scen_new   = self._load_icon("scenario_new.png")
+        self.icon_scen_open  = self._load_icon("scenario_open.png")
+        self.icon_scen_props = self._load_icon("scenario_props.png")
+        self.icon_scen_save  = self._load_icon("scenario_save.png")
+        self.icon_scen_dup   = self._load_icon("scenario_duplicate.png")
+        self.icon_scen_del   = self._load_icon("scenario_delete.png")
+
+        def _make_btn(parent, icon, text, cmd):
+            if icon is not None:
+                return tk.Button(parent, image=icon, command=cmd, relief=tk.FLAT)
+            # fallback texte si l'icône n'est pas trouvée
+            return tk.Button(parent, text=text, command=cmd, width=2, relief=tk.FLAT)
+
+        _make_btn(toolbar, self.icon_scen_new,   "N", self._new_empty_scenario).pack(side=tk.LEFT, padx=1)
+        _make_btn(toolbar, self.icon_scen_open,  "O", self._scenario_load_dialog).pack(side=tk.LEFT, padx=1)
+        _make_btn(toolbar, self.icon_scen_props, "P", self._scenario_edit_properties).pack(side=tk.LEFT, padx=1)
+        _make_btn(toolbar, self.icon_scen_save,  "S", self._scenario_save_dialog).pack(side=tk.LEFT, padx=1)
+        _make_btn(toolbar, self.icon_scen_dup,   "D", self._scenario_duplicate).pack(side=tk.LEFT, padx=1)
+        _make_btn(toolbar, self.icon_scen_del,   "X", self._scenario_delete).pack(side=tk.LEFT, padx=1)
+
+        scen_lb_frame = tk.Frame(scen_frame)
+        scen_lb_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
+        self.scenario_listbox = tk.Listbox(scen_lb_frame, width=34, exportselection=False, height=6)
+        self.scenario_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scen_scroll = tk.Scrollbar(scen_lb_frame, orient="vertical", command=self.scenario_listbox.yview)
+        scen_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.scenario_listbox.configure(yscrollcommand=scen_scroll.set)
+        self.scenario_listbox.bind("<<ListboxSelect>>", self._on_scenario_select)
+
+        pw.add(scen_frame, minsize=80)  # hauteur mini pour la liste des scénarios
+
+        # Remplir la liste des scénarios existants (pour l'instant : le manuel)
+        self._refresh_scenario_listbox()
+
+    def _refresh_scenario_listbox(self):
+        """Met à jour la liste visible des scénarios dans le panneau de gauche."""
+        if not hasattr(self, "scenario_listbox"):
+            return
+        lb = self.scenario_listbox
+        lb.delete(0, tk.END)
+
+        for i, scen in enumerate(self.scenarios):
+            prefix = "[M]" if scen.source_type == "manual" else "[A]"
+            label = f"{prefix} {scen.name}"
+            if scen.status != "complete":
+                label += f" ({scen.status})"
+            lb.insert(tk.END, label)
+
+        # Sélectionner le scénario actif si possible
+        if 0 <= self.active_scenario_index < len(self.scenarios):
+            lb.selection_clear(0, tk.END)
+            lb.selection_set(self.active_scenario_index)
+            lb.see(self.active_scenario_index)
+
+    def _update_triangle_listbox_colors(self):
+        """
+        Met à jour la couleur des entrées de la listbox des triangles
+        en fonction de leur utilisation dans le scénario actif.
+        Triangles utilisés → grisés, triangles disponibles → noir.
+        """
+        if not hasattr(self, "listbox"):
+            return
+        lb = self.listbox
+        try:
+            size = lb.size()
+        except Exception:
+            return
+
+        for idx in range(size):
+            try:
+                txt = lb.get(idx)
+            except Exception:
+                continue
+
+            tri_id = None
+            try:
+                m = re.match(r"\s*(\d+)\.", str(txt))
+                if m:
+                    tri_id = int(m.group(1))
+            except Exception:
+                tri_id = None
+
+            if tri_id is not None and tri_id in self._placed_ids:
+                # Triangle déjà posé dans le scénario → grisé
+                try:
+                    lb.itemconfig(idx, fg="gray50")
+                except Exception:
+                    pass
+            else:
+                # Triangle disponible
+                try:
+                    lb.itemconfig(idx, fg="black")
+                except Exception:
+                    pass
+
+    def _on_scenario_select(self, event=None):
+        """Callback quand l'utilisateur sélectionne un scénario dans la liste."""
+        if not hasattr(self, "scenario_listbox"):
+            return
+        sel = self.scenario_listbox.curselection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        self._set_active_scenario(idx)
+
+    def _set_active_scenario(self, index: int):
+        """
+        Bascule vers le scénario d'index donné.
+        Pour l'instant, on n'a qu'un scénario manuel qui partage les mêmes
+        structures _last_drawn / groups, mais cette méthode sera utilisée
+        plus tard pour les scénarios automatiques (copies séparées).
+        """
+        if index < 0 or index >= len(self.scenarios):
+            return
+        if index == self.active_scenario_index:
+            return
+
+        scen = self.scenarios[index]
+        self.active_scenario_index = index
+
+        # Rattacher les structures géométriques du scénario courant
+        self._last_drawn = scen.last_drawn
+        self.groups = scen.groups
+
+        # Recalibrer _next_group_id si besoin
+        try:
+            self._next_group_id = (max(self.groups.keys()) + 1) if self.groups else 1
+        except Exception:
+            self._next_group_id = 1
+
+        # Recalcule la liste des triangles déjà utilisés pour ce scénario
+        try:
+            self._placed_ids = {
+                int(t["id"]) for t in self._last_drawn
+                if t.get("id") is not None
+            }
+        except Exception:
+            self._placed_ids = set()
+        self._update_triangle_listbox_colors()
+
+        # Invalider le cache de pick et redessiner
+        self._invalidate_pick_cache()
+        self._redraw_from(self._last_drawn)
+        self._redraw_overlay_only()
+
+        # Mettre à jour la sélection visuelle dans la liste (au cas d'appel programmatique)
+        try:
+            if hasattr(self, "scenario_listbox"):
+                self.scenario_listbox.selection_clear(0, tk.END)
+                self.scenario_listbox.selection_set(self.active_scenario_index)
+                self.scenario_listbox.see(self.active_scenario_index)
+        except Exception:
+            pass
+
+        try:
+            self.status.config(text=f"Scénario actif : {scen.name}")
+        except Exception:
+            pass
+
+    def _new_empty_scenario(self):
+        """
+        Crée un nouveau scénario *vide* (sans triangles assemblés),
+        l'ajoute à la liste et le rend actif.
+        Les triangles sources (dans la listbox) restent évidemment disponibles.
+        """
+        # Nom par défaut : "Scénario N" (N = nombre total de scénarios après ajout)
+        new_index = len(self.scenarios)  # l'index qu'il prendra une fois append
+        name = f"Scénario {new_index + 1}"
+
+        scen = ScenarioAssemblage(
+            name=name,
+            source_type="manual",
+            algo_id=None,
+            tri_ids=[],
+        )
+        # Scénario vide : nouvelles structures indépendantes
+        scen.last_drawn = []
+        scen.groups = {}
+
+        self.scenarios.append(scen)
+        # Bascule sur ce nouveau scénario
+        self._set_active_scenario(new_index)
+        # Rafraîchir la liste visible
+        self._refresh_scenario_listbox()
+
+        try:
+            self.status.config(text=f"Nouveau scénario créé : {scen.name}")
+        except Exception:
+            pass
+
+    def _scenario_edit_properties(self):
+        """
+        Modifie les propriétés du scénario actif (pour l'instant : uniquement le nom).
+        """
+        if not self.scenarios:
+            return
+        idx = self.active_scenario_index
+        if idx < 0 or idx >= len(self.scenarios):
+            return
+        scen = self.scenarios[idx]
+        new_name = simpledialog.askstring(
+            "Propriétés du scénario",
+            "Nom du scénario :",
+            initialvalue=scen.name,
+            parent=self,
+        )
+        if new_name is None:
+            return  # annulé
+        new_name = new_name.strip()
+        if not new_name:
+            return
+        scen.name = new_name
+        self._refresh_scenario_listbox()
+        try:
+            self.status.config(text=f"Nom du scénario mis à jour : {scen.name}")
+        except Exception:
+            pass
+
+    def _scenario_duplicate(self):
+        """
+        Duplique le scénario actif dans un nouveau scénario indépendant.
+        Les triangles et groupes sont copiés (deepcopy).
+        """
+        if not self.scenarios:
+            return
+        idx = self.active_scenario_index
+        if idx < 0 or idx >= len(self.scenarios):
+            return
+        src = self.scenarios[idx]
+
+        base_name = src.name or "Scénario"
+        new_name = f"{base_name} (copie)"
+        n = 2
+        # garantir un nom unique
+        while any(s.name == new_name for s in self.scenarios):
+            new_name = f"{base_name} (copie {n})"
+            n += 1
+
+        new_index = len(self.scenarios)
+        dup = ScenarioAssemblage(
+            name=new_name,
+            source_type=src.source_type,
+            algo_id=src.algo_id,
+            tri_ids=list(src.tri_ids),
+        )
+        # copies indépendantes
+        dup.last_drawn = copy.deepcopy(src.last_drawn)
+        dup.groups = copy.deepcopy(src.groups)
+        dup.status = src.status
+
+        self.scenarios.append(dup)
+        self._set_active_scenario(new_index)
+        self._refresh_scenario_listbox()
+        try:
+            self.status.config(text=f"Scénario dupliqué : {dup.name}")
+        except Exception:
+            pass
+
+    def _scenario_delete(self):
+        """
+        Supprime le scénario actif.
+        On interdit la suppression du scénario manuel de base pour garder un point d'appui.
+        """
+        if len(self.scenarios) <= 1:
+            messagebox.showinfo("Supprimer le scénario",
+                                "Impossible de supprimer le dernier scénario.")
+            return
+        idx = self.active_scenario_index
+        if idx < 0 or idx >= len(self.scenarios):
+            return
+
+        scen = self.scenarios[idx]
+        if idx == 0 and scen.source_type == "manual":
+            messagebox.showinfo("Supprimer le scénario",
+                                "Le scénario manuel ne peut pas être supprimé.")
+            return
+
+        if not messagebox.askyesno(
+            "Supprimer le scénario",
+            f"Supprimer le scénario « {scen.name} » ?",
+            parent=self,
+        ):
+            return
+
+        # Retirer le scénario
+        self.scenarios.pop(idx)
+        # Choisir le nouveau scénario actif (celui d'avant si possible)
+        if idx >= len(self.scenarios):
+            idx = len(self.scenarios) - 1
+
+        self._set_active_scenario(idx)
+        self._refresh_scenario_listbox()
+        try:
+            self.status.config(text=f"Scénario supprimé : {scen.name}")
+        except Exception:
+            pass
 
     def _build_canvas(self, parent):
         # Conteneur de droite : canvas (haut, expansible) + panel dico (bas, hauteur fixe)
@@ -872,6 +1267,64 @@ class TriangleViewerManual(tk.Tk):
         except Exception as e:
             messagebox.showerror("Enregistrer le scénario", str(e))
 
+
+    def _load_scenario_into_new_scenario(self, path: str):
+        """
+        Charge un fichier scénario XML dans un *nouveau* scénario.
+        - Le scénario courant n'est pas modifié.
+        - Le nouveau scénario porte le nom du fichier XML (sans extension).
+        """
+        # Nom lisible dérivé du fichier
+        base = os.path.basename(path)
+        name, ext = os.path.splitext(base)
+        if not name:
+            name = base
+
+        prev_index = self.active_scenario_index
+        new_index = len(self.scenarios)
+
+        scen = ScenarioAssemblage(
+            name=name,
+            source_type="manual",
+            algo_id=None,
+            tri_ids=[],
+        )
+        # Structures indépendantes pour ce scénario
+        scen.last_drawn = []
+        scen.groups = {}
+
+        self.scenarios.append(scen)
+
+        try:
+            # On bascule sur ce nouveau scénario AVANT de charger,
+            # ainsi load_scenario_xml() écrit bien dans ses structures.
+            self._set_active_scenario(new_index)
+            self.load_scenario_xml(path)
+        except Exception:
+            # En cas d'erreur, on nettoie le scénario incomplet
+            try:
+                self.scenarios.pop(new_index)
+            except Exception:
+                pass
+            # On revient au scénario précédent (s'il existe encore)
+            try:
+                if self.scenarios:
+                    if 0 <= prev_index < len(self.scenarios):
+                        self._set_active_scenario(prev_index)
+                    else:
+                        self._set_active_scenario(len(self.scenarios) - 1)
+            except Exception:
+                pass
+            self._refresh_scenario_listbox()
+            raise
+
+        # Succès : rafraîchir la liste et le statut
+        self._refresh_scenario_listbox()
+        try:
+            self.status.config(text=f"Scénario importé : {scen.name}")
+        except Exception:
+            pass
+
     def _scenario_load_dialog(self):
         """Boîte de dialogue pour charger un scénario XML."""
         path = filedialog.askopenfilename(
@@ -882,8 +1335,7 @@ class TriangleViewerManual(tk.Tk):
         if not path:
             return
         try:
-            self.load_scenario_xml(path)
-            self.status.config(text=f"Scénario chargé depuis {path}")
+            self._load_scenario_into_new_scenario(path)
         except Exception as e:
             messagebox.showerror("Charger le scénario", str(e))
     
@@ -908,7 +1360,8 @@ class TriangleViewerManual(tk.Tk):
         files.sort(key=str.lower)
         for fname in files:
             full = os.path.join(self.scenario_dir, fname)
-            m.add_command(label=fname, command=lambda p=full: self.load_scenario_xml(p))
+            # Chaque fichier XML crée désormais un *nouveau* scénario
+            m.add_command(label=fname, command=lambda p=full: self._load_scenario_into_new_scenario(p))
 
     def _pt_to_xml(self, p):
         return f"{float(p[0]):.9g},{float(p[1]):.9g}"
@@ -1060,18 +1513,33 @@ class TriangleViewerManual(tk.Tk):
         lb = root.find("listbox")
         if lb is not None:
             try:
-                self.listbox.delete(0, tk.END)
+                # ids des triangles encore présents dans la listbox au moment de la sauvegarde
                 remain_ids = [int(e.get("id")) for e in lb.findall("tri") if e.get("id")]
+                self.listbox.delete(0, tk.END)
                 # reconstruire la liste depuis df en conservant l'ordre original
                 if getattr(self, "df", None) is not None and not self.df.empty:
-                    for _, r in self.df.iterrows():
-                        tid = int(r["id"])
-                        if tid in remain_ids:
-                            self.listbox.insert(tk.END, f"{tid:02d}. B:{r['B']}  L:{r['L']}")
+                    if remain_ids:
+                        wanted = set(remain_ids)
+                        for _, r in self.df.iterrows():
+                            tid = int(r["id"])
+                            if tid in wanted:
+                                self.listbox.insert(
+                                    tk.END, f"{tid:02d}. B:{r['B']}  L:{r['L']}"
+                                )
+                    else:
+                        # listbox vide dans le XML (ancien scénario ou bug) :
+                        # on retombe sur le comportement par défaut = tous les triangles.
+                        for _, r in self.df.iterrows():
+                            tid = int(r["id"])
+                            self.listbox.insert(
+                                tk.END, f"{tid:02d}. B:{r['B']}  L:{r['L']}"
+                            )
             except Exception:
                 pass
         # 5) triangles posés (monde)
-        self._last_drawn = []
+        # On reconstruit la liste en vidant d'abord celle du scénario actif,
+        # sans casser la référence partagée avec scen.last_drawn.
+        self._last_drawn.clear()
         tris_xml = root.find("triangles")
         if tris_xml is not None:
             for t_el in tris_xml.findall("triangle"):
@@ -1117,6 +1585,8 @@ class TriangleViewerManual(tk.Tk):
             self._placed_ids = {int(t["id"]) for t in self._last_drawn}
         except Exception:
             self._placed_ids = set()
+        # Mettre à jour l'affichage de la listbox en fonction des triangles déjà posés
+        self._update_triangle_listbox_colors()
 
         # 6) mots associés
         self._tri_words = {}
@@ -1134,7 +1604,9 @@ class TriangleViewerManual(tk.Tk):
                 }
 
         # 7) groupes (reconstruction complète: nodes + bboxes)
-        self.groups = {}
+        # Même logique : on réutilise le dict existant pour préserver
+        # le lien avec manual.groups.
+        self.groups.clear()
         groups_xml = root.find("groups")
         if groups_xml is not None:
             for g_el in groups_xml.findall("group"):
@@ -1335,7 +1807,12 @@ class TriangleViewerManual(tk.Tk):
         for _, r in self.df.iterrows():
             self.listbox.insert(tk.END, f"{int(r['id']):02d}. B:{r['B']}  L:{r['L']}")
         self.status.config(text=f"{len(self.df)} triangles chargés depuis {path}")
-        self._last_drawn = []
+        # Réinitialiser les triangles posés du scénario actif
+        # IMPORTANT : on vide la liste en place pour préserver le lien
+        # avec scen.last_drawn du scénario manuel.
+        self._last_drawn.clear()
+        # Aucun triangle n'est encore utilisé dans le scénario actif        self._placed_ids = set()
+        self._update_triangle_listbox_colors()
 
     # ---------- Triangles (données locales) ----------
     def _triangles_local(self, start, n):
@@ -1591,14 +2068,21 @@ class TriangleViewerManual(tk.Tk):
             self.canvas.delete("all")
         except Exception:
             pass
-        # Réinitialiser l'état d'affichage
-        self._last_drawn = []
+        # Réinitialiser l'état d'affichage du scénario actif
+        # (vidage en place pour garder le lien scen.last_drawn)
+        self._last_drawn.clear()
         self._nearest_line_id = None
         self._clear_edge_highlights()
         self._edge_choice = None
         self._edge_highlights = None
-        # Rafraîchir la listbox complète à partir du DF chargé
-        self._refresh_listbox_from_df()
+        # Reconstruire la listbox à partir de la DF courante
+        if hasattr(self, "triangle_df") and self.triangle_df is not None:
+            self._refresh_listbox_from_df()
+        # Après effacement, plus aucun triangle n'est considéré comme "déjà utilisé"
+        # → on peut à nouveau les sélectionner pour un drag & drop.
+        self._placed_ids.clear()
+        self._update_triangle_listbox_colors()
+
         self.status.config(text="Affichage effacé")
         self._hide_tooltip()
 
@@ -1984,29 +2468,125 @@ class TriangleViewerManual(tk.Tk):
             except tk.TclError:
                 pass
 
+
+    # ---------- Mouse navigation ----------
+    # Drag depuis la liste
+    def _on_triangle_list_select(self, event=None):
+        """Empêche la sélection d'un triangle déjà utilisé dans le scénario courant."""
+        # éviter la récursion quand on modifie la sélection nous-mêmes
+        if getattr(self, "_in_triangle_select_guard", False):
+            return
+        if not hasattr(self, "listbox"):
+            return
+
+        sel = self.listbox.curselection()
+        if not sel:
+            self._last_triangle_selection = None
+            return
+
+        idx = int(sel[0])
+        try:
+            tri = self._triangle_from_index(idx)
+            tid = int(tri.get("id"))
+        except Exception:
+            tid = None
+
+        placed = getattr(self, "_placed_ids", set()) or set()
+        if tid is not None and tid in placed:
+            # Triangle déjà posé : on annule la sélection visuelle
+            self._in_triangle_select_guard = True
+            try:
+                self.listbox.selection_clear(0, tk.END)
+                if (self._last_triangle_selection is not None and
+                        0 <= self._last_triangle_selection < self.listbox.size()):
+                    self.listbox.selection_set(self._last_triangle_selection)
+            finally:
+                self._in_triangle_select_guard = False
+            if hasattr(self, "status"):
+                self.status.config(text=f"Triangle {tid} déjà utilisé dans ce scénario.")
+            return
+
+        # Sélection valide
+        self._last_triangle_selection = idx
+
+    def _on_ctrl_up(self, event=None):
+        if self._ctrl_down:
+            self._ctrl_down = False
+            try:
+                self.canvas.configure(cursor="")
+            except tk.TclError:
+                pass
+
     # ---------- Mouse navigation ----------
     # Drag depuis la liste
     def _on_list_mouse_down(self, event):
-        # Détermine l'index sous la souris et démarre un drag "virtuel"
+        """
+        Démarre un drag & drop depuis la listbox,
+        sauf si le triangle est déjà utilisé dans le scénario courant.
+        """
+        # Pas de DF → rien à faire
+        if getattr(self, "df", None) is None or self.df.empty:
+            return
+
+        # Index de la ligne cliquée dans la listbox
         i = self.listbox.nearest(event.y)
         if i < 0:
             return
+
+        # Sélection visuelle
         self.listbox.selection_clear(0, tk.END)
         self.listbox.selection_set(i)
+
+        # Récupération de la définition du triangle
         try:
             tri = self._triangle_from_index(i)
         except Exception as e:
-            self.status.config(text=f"Erreur: {e}")
+            try:
+                self.status.config(text=f"Erreur: {e}")
+            except Exception:
+                pass
             return
-        # on mémorise aussi l'index dans la listbox pour retirer l'entrée au dépôt
-        self._drag = {"triangle": tri, "list_index": i}
-        # créer un fantôme minimal dès le départ (sera positionné au mouvement)
+
+        tri_id = tri.get("id")
+        # Si le triangle est déjà posé dans ce scénario, on bloque le drag
+        if tri_id is not None and int(tri_id) in getattr(self, "_placed_ids", set()):
+            try:
+                self.status.config(text=f"Triangle {tri_id} déjà utilisé dans ce scénario.")
+            except Exception:
+                pass
+            self._drag = None
+            return
+
+        # Préparation de la structure de drag pour le moteur commun
+        start_screen = np.array([event.x_root, event.y_root], dtype=float)
+        # NOTE : last_canvas n'est plus utilisé dans la nouvelle logique de drag & drop
+        # (tout est géré en coords monde/écran via _world_to_screen / _screen_to_world).
+        self._drag = {
+            "from": "list",
+            "triangle": tri,
+            "list_index": i,
+            "start_screen": start_screen,
+            "mirrored": tri.get("mirrored", False),
+        }
+
+        # Réinitialiser un éventuel fantôme existant
         if self._drag_preview_id is not None:
             self.canvas.delete(self._drag_preview_id)
             self._drag_preview_id = None
-        # Forcer focus sur le canvas pour recevoir les motions
+
+        # Forcer le focus sur le canvas pour recevoir les mouvements
         self.canvas.focus_set()
-        self.status.config(text="Glissez le triangle sur le canvas puis relâchez pour le déposer.")
+
+        # Curseur "main" pendant le drag
+        try:
+            self.canvas.configure(cursor="hand2")
+        except tk.TclError:
+            pass
+
+        try:
+            self.status.config(text="Glissez le triangle sur le canvas puis relâchez pour le déposer.")
+        except Exception:
+            pass
 
     # ---------- Neighbours for tooltip ----------
     def _point_on_segment(self, P, A, B, eps):
@@ -2685,12 +3265,19 @@ class TriangleViewerManual(tk.Tk):
         # 3) UI
         self._redraw_from(self._last_drawn)
         self.status.config(text=f"Triangle déposé → Groupe #{gid} créé.")
-        li = self._drag.get("list_index")
-        if isinstance(li, int):
-            try: self.listbox.delete(li)
-            except Exception: pass
+        li = self._drag.get("list_index")  # conservé pour compat, même si on ne supprime plus
+        # On ne supprime plus l'entrée de la listbox : on marque le triangle comme utilisé
         if tri.get("id") is not None:
             self._placed_ids.add(int(tri["id"]))
+            self._update_triangle_listbox_colors()
+
+        # Après le dépôt, on désélectionne le triangle dans la listbox
+        # pour ne pas laisser un item actif alors qu'il est déjà utilisé
+        self._in_triangle_select_guard = True
+        if hasattr(self, "listbox"):
+            self.listbox.selection_clear(0, tk.END)
+        self._last_triangle_selection = None
+        self._in_triangle_select_guard = False
 
     # =============   Groupes : helpers   ====================
     def _new_group_id(self) -> int:
@@ -2901,10 +3488,23 @@ class TriangleViewerManual(tk.Tk):
         self.status.config(text=f"Triangle ajouté au groupe #{gid}.")
 
     def _cancel_drag(self):
+        # Mémoriser la source du drag avant de le remettre à zéro
+        drag_info = self._drag
         self._drag = None
+
         if self._drag_preview_id is not None:
             self.canvas.delete(self._drag_preview_id)
             self._drag_preview_id = None
+
+        # Toujours remettre le curseur normal quand on annule un drag (ESC ou autre)
+        self.canvas.configure(cursor="")
+
+        # Si le drag venait de la liste, on annule aussi la sélection du triangle
+        if drag_info and drag_info.get("from") == "list" and hasattr(self, "listbox"):
+            self._in_triangle_select_guard = True
+            self.listbox.selection_clear(0, tk.END)
+            self._in_triangle_select_guard = False
+            self._last_triangle_selection = None
 
     def _on_escape_key(self, event):
         """Annuler un drag&drop (liste) ou un déplacement/selection de triangle (avec rollback)."""
@@ -3028,6 +3628,8 @@ class TriangleViewerManual(tk.Tk):
         # Dé-marquer l'id comme posé
         if tri_id in self._placed_ids:
             self._placed_ids.discard(int(tri_id))
+        # Mettre à jour la couleur des entrées (ce triangle redevient disponible)
+        self._update_triangle_listbox_colors()
 
     # ---------- Clic droit / menu contextuel ----------
     def _on_canvas_right_click(self, event):
@@ -3107,7 +3709,9 @@ class TriangleViewerManual(tk.Tk):
             new_i = len(keep)
             old2new[old_i] = new_i
             keep.append(tri)
-        self._last_drawn = keep
+        # IMPORTANT : on remplace le contenu de la liste en place
+        # pour ne pas casser la référence scen.last_drawn.
+        self._last_drawn[:] = keep
 
         # 3) Supprimer le groupe et remapper les autres
         if gid in self.groups:
@@ -3713,6 +4317,8 @@ class TriangleViewerManual(tk.Tk):
             self._place_dragged_triangle()
             # Reset état de drag
             self._drag = None
+            # Remettre le curseur normal en fin de drag
+            self.canvas.configure(cursor="")
             return
 
         # 1) Le reste est ton comportement existant (fin de drag/rotation/snap)
