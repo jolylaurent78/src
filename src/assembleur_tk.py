@@ -149,6 +149,10 @@ class TriangleViewerManual(tk.Tk):
 
         # Hauteur fixe du panneau "Dico" (en pixels) sous le canvas
         self.dico_panel_height = 290
+        # État d'affichage du panneau dictionnaire (toggle via menu Visualisation)
+        self.show_dico_panel = tk.BooleanVar(value=True)
+        # État d'affichage du compas horaire (overlay horloge)
+        self.show_clock_overlay = tk.BooleanVar(value=True)
 
         # mode "déconnexion" activé par CTRL
         self._ctrl_down = False        
@@ -590,6 +594,20 @@ class TriangleViewerManual(tk.Tk):
             label="Effacer l'affichage…",
             command=self.clear_canvas
         )
+
+        # Toggle d'affichage du dictionnaire (panneau bas + combo/liste)
+        self.menu_visual.add_checkbutton(
+            label="Afficher le dictionnaire",
+            variable=self.show_dico_panel,
+            command=self._toggle_dico_panel
+        )
+
+        self.menu_visual.add_checkbutton(
+            label="Afficher le compas horaire",
+            variable=self.show_clock_overlay,
+            command=self._toggle_clock_overlay
+        )
+
         # Items fixes
         self.menu_triangle.add_command(label="Ouvrir un fichier Triangle…", command=self.open_excel)
         self.menu_triangle.add_separator()
@@ -679,10 +697,12 @@ class TriangleViewerManual(tk.Tk):
                                   bd=1, relief=tk.SUNKEN, bg="#f3f3f3")
         # empêcher le panel de rétrécir sur le contenu
         self.dicoPanel.pack_propagate(False)
-        self.dicoPanel.pack(side=tk.BOTTOM, fill=tk.X)
-        # Placeholder visuel
-        tk.Label(self.dicoPanel, text="Dictionnaire — (grille à intégrer)",
-                 bg="#f3f3f3", anchor="w").pack(fill=tk.X, padx=8, pady=4)
+        # Pack initial seulement si le toggle est actif
+        if self.show_dico_panel.get():
+            self.dicoPanel.pack(side=tk.BOTTOM, fill=tk.X)
+            # Placeholder visuel (sera remplacé par _build_dico_grid)
+            tk.Label(self.dicoPanel, text="Dictionnaire — (grille à intégrer)",
+                     bg="#f3f3f3", anchor="w").pack(fill=tk.X, padx=8, pady=4)
 
         # Menu contextuel
         self._ctx_menu = tk.Menu(self, tearoff=0)
@@ -706,6 +726,45 @@ class TriangleViewerManual(tk.Tk):
         self.bind_all("<F9>", self._toggle_skip_overlap_highlight)
         # Premier rendu de l'horloge (overlay)
         self._draw_clock_overlay()
+
+    def _toggle_dico_panel(self):
+        """
+        Affiche / cache le panneau dictionnaire (combo + liste + grille)
+        en fonction de self.show_dico_panel (toggle du menu Visualisation).
+        """
+        if not hasattr(self, "dicoPanel"):
+            return
+
+        show = bool(self.show_dico_panel.get())
+        if show:
+            # Si le panneau n'est pas déjà packé, on le repack en bas
+            if not self.dicoPanel.winfo_ismapped():
+                self.dicoPanel.pack(side=tk.BOTTOM, fill=tk.X)
+                # Si la grille n'a jamais été construite, on la (re)construit
+                if not getattr(self, "dicoSheet", None):
+                    try:
+                        self._build_dico_grid()
+                    except Exception:
+                        pass
+        else:
+            # Cacher le panneau (sans le détruire, pour pouvoir le réafficher)
+            try:
+                self.dicoPanel.pack_forget()
+            except Exception:
+                pass
+
+    def _toggle_clock_overlay(self):
+        """Affiche ou cache le compas horaire (overlay horloge)."""
+        if not getattr(self, "canvas", None):
+            return
+        # Effacer systématiquement l'overlay courant
+        try:
+            self.canvas.delete("clock_overlay")
+        except Exception:
+            pass
+        # Si l'option est active, on redessine l'horloge (sans toucher aux triangles)
+        if self.show_clock_overlay.get():
+            self._draw_clock_overlay()
 
     # -- pick cache helpers ---------------------------------------------------
     def _invalidate_pick_cache(self):
@@ -1549,6 +1608,8 @@ class TriangleViewerManual(tk.Tk):
     # ---------- Overlay Horloge (indépendant du zoom/pan) ----------
     def _redraw_overlay_only(self):
         """Efface/redessine uniquement l'overlay (horloge)."""
+        if not getattr(self, "canvas", None):
+            return
         try:
             self.canvas.delete("clock_overlay")
         except Exception:
@@ -1568,6 +1629,9 @@ class TriangleViewerManual(tk.Tk):
             self.canvas.delete("clock_overlay")
         except Exception:
             pass
+        # Si le compas est masqué via le menu, ne rien dessiner
+        if hasattr(self, "show_clock_overlay") and not self.show_clock_overlay.get():
+            return
         # Paramètres d'aspect
         margin = 12              # marge par rapport aux bords du canvas (px)
         R      = 69              # rayon (px) — +50% (46 -> 69)
