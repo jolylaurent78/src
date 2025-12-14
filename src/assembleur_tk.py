@@ -12,6 +12,8 @@ from typing import Optional, List, Dict, Tuple, Type
 
 from tkinter import filedialog, messagebox, simpledialog
 import tkinter as tk
+from tkinter import ttk
+import tkinter.font as tkfont
 from tksheet import Sheet
 
 
@@ -114,7 +116,6 @@ def _pose_params(Pm: Dict[str,np.ndarray], am: str, bm: str, Vm: np.ndarray,
     T = np.array(Vt, float) - Vm_rot
     return R, T, pivot
 
-
 class ScenarioAssemblage:
     """
     Représente un scénario d'assemblage (manuel ou automatique).
@@ -159,7 +160,6 @@ class AlgorithmeAssemblage:
     def run(self, tri_ids: List[int]) -> List["ScenarioAssemblage"]:
         """Lance la simulation et retourne une liste de scénarios."""
         raise NotImplementedError
-
 
 class AlgoQuadrisParPaires(AlgorithmeAssemblage):
     id = "quadris_par_paires"
@@ -809,6 +809,9 @@ class TriangleViewerManual(tk.Tk):
         self.scenarios: List[ScenarioAssemblage] = []
         self.active_scenario_index: int = 0
 
+        # Scénario de référence (pour comparaison des auto)
+        self.ref_scenario_token: Optional[int] = None  # id(scen)
+
         # état IHM
         self.triangle_file = tk.StringVar(value="")
         self.start_index = tk.IntVar(value=1)
@@ -826,6 +829,17 @@ class TriangleViewerManual(tk.Tk):
         self.config_path = os.path.join(self.config_dir, "assembleur_config.json")
         self.appConfig: Dict = {}
         self.loadAppConfig()
+
+        # === UI : persistance des toggles de visualisation (dico + compas) ===
+        # Doit être fait AVANT _build_ui() pour que le checkbutton + le pack initial
+        # reflètent correctement l'état sauvegardé.
+        self.show_dico_panel.set(bool(self.getAppConfigValue("uiShowDicoPanel", True)))
+        self.show_clock_overlay.set(bool(self.getAppConfigValue("uiShowClockOverlay", True)))
+
+        # Fond SVG : au démarrage le canvas n'a pas toujours une taille valide.
+        # On déclenche donc un redessin différé (au 1er <Configure>) après rechargement.
+        self._bg_defer_redraw = False
+        self._bg_startup_scheduled = False
 
         self.df = None
         self._last_drawn = []   # liste d'items: (labels, P_world)
@@ -1299,9 +1313,18 @@ class TriangleViewerManual(tk.Tk):
         # Construit la liste de fichiers disponibles
         self._rebuild_triangle_file_list_menu()
 
-        main = tk.Frame(self); main.pack(fill=tk.BOTH, expand=True)
+        # Zone principale : panneau gauche redimensionnable (liste) | panneau droit (canvas+dico)
+        main = tk.PanedWindow(self, orient=tk.HORIZONTAL, sashrelief=tk.RAISED, sashwidth=6)
+        main.pack(fill=tk.BOTH, expand=True)
+        self.mainPaned = main
+
+        # Panneau gauche (ajouté automatiquement dans le PanedWindow)
         self._build_left_pane(main)
-        self._build_canvas(main)
+
+        # Panneau droit
+        right = tk.Frame(main)
+        main.add(right, minsize=400)
+        self._build_canvas(right)
 
         self.status = tk.Label(self, text="Prêt", bd=1, relief=tk.SUNKEN, anchor="w")
         self.status.pack(side=tk.BOTTOM, fill=tk.X)
@@ -1309,6 +1332,7 @@ class TriangleViewerManual(tk.Tk):
         # Auto-load: recharger le dernier fichier triangles ouvert (config)
         # sinon fallback sur data/triangle.xlsx si présent.
         self.autoLoadTrianglesFileAtStartup()
+        self.autoLoadBackgroundAtStartup()
 
     # =========================
     #  SIMULATION (AUTO ASSEMBLAGE)
@@ -1482,7 +1506,12 @@ class TriangleViewerManual(tk.Tk):
 
     def _build_left_pane(self, parent):
         left = tk.Frame(parent, width=260)
-        left.pack(side=tk.LEFT, fill=tk.Y)
+        # Si le parent est un PanedWindow horizontal, on ajoute le panneau gauche dedans
+        # => l'utilisateur peut ensuite redimensionner la largeur via le séparateur.
+        if isinstance(parent, tk.PanedWindow):
+            parent.add(left, minsize=220)
+        else:
+            left.pack(side=tk.LEFT, fill=tk.Y)
         left.pack_propagate(False)
 
         # PanedWindow vertical : haut = triangles, bas = scénarios
@@ -1525,6 +1554,10 @@ class TriangleViewerManual(tk.Tk):
         self.icon_scen_dup   = self._load_icon("scenario_duplicate.png")
         self.icon_scen_del   = self._load_icon("scenario_delete.png")
 
+        # Icônes de type (affichées dans la Treeview)
+        self.icon_scen_manual = self._load_icon("scenario_manual.png")
+        self.icon_scen_auto   = self._load_icon("scenario_auto.png")
+
         def _make_btn(parent, icon, text, cmd):
             if icon is not None:
                 return tk.Button(parent, image=icon, command=cmd, relief=tk.FLAT)
@@ -1540,12 +1573,43 @@ class TriangleViewerManual(tk.Tk):
 
         scen_lb_frame = tk.Frame(scen_frame)
         scen_lb_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
-        self.scenario_listbox = tk.Listbox(scen_lb_frame, width=34, exportselection=False, height=6)
-        self.scenario_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scen_scroll = tk.Scrollbar(scen_lb_frame, orient="vertical", command=self.scenario_listbox.yview)
-        scen_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        self.scenario_listbox.configure(yscrollcommand=scen_scroll.set)
-        self.scenario_listbox.bind("<<ListboxSelect>>", self._on_scenario_select)
+
+        # Liste des scénarios (Treeview) : groupes Manuels / Automatiques (colonnes plus tard)
+        columns = ()
+
+        # IMPORTANT:
+        # - ttk ajoute une indentation (~20px) pour les items enfants => gros espace avant l'icône.
+        # - en plus, les colonnes (algo/status/n) réduisent #0 => libellés tronqués.
+        style = ttk.Style()
+        style.configure("Scenario.Treeview", indent=0)  # <- colle les icônes à gauche
+
+        self.scenario_tree = ttk.Treeview(
+            scen_lb_frame,
+            columns=columns,
+            show="tree",
+            selectmode="browse",
+            height=6,
+            style="Scenario.Treeview",
+        )
+        self.scenario_tree.column("#0", width=280, stretch=True)
+        # Scrollbar verticale (toujours visible)
+        # IMPORTANT: garder une référence (sinon GC => scrollbar détruite et elle "disparaît")
+        self.scenario_scroll = ttk.Scrollbar(
+            scen_lb_frame, orient="vertical", command=self.scenario_tree.yview
+        )
+        self.scenario_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.scenario_tree.configure(yscrollcommand=self.scenario_scroll.set)
+
+        # Pack après la scrollbar pour réserver l'espace à droite
+        self.scenario_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.scenario_tree.bind("<<TreeviewSelect>>", self._on_scenario_select)
+        self.scenario_tree.bind("<Double-1>", self._on_scenario_double_click)
+
+        # Police "référence" (gras)
+        base_font = tkfont.nametofont("TkDefaultFont")
+        self._font_scenario_ref = base_font.copy()
+        self._font_scenario_ref.configure(weight="bold")
+        self.scenario_tree.tag_configure("ref", font=self._font_scenario_ref)
 
         pw.add(scen_frame, minsize=80)  # hauteur mini pour la liste des scénarios
 
@@ -1553,24 +1617,64 @@ class TriangleViewerManual(tk.Tk):
         self._refresh_scenario_listbox()
 
     def _refresh_scenario_listbox(self):
-        """Met à jour la liste visible des scénarios dans le panneau de gauche."""
-        if not hasattr(self, "scenario_listbox"):
+        """Met à jour la liste visible des scénarios (Treeview) dans le panneau de gauche."""
+        if not hasattr(self, "scenario_tree"):
             return
-        lb = self.scenario_listbox
-        lb.delete(0, tk.END)
+        tree = self.scenario_tree
+
+        # Nettoyage
+        try:
+            for ch in tree.get_children(""):
+                tree.delete(ch)
+        except Exception:
+            pass
+
+        # Groupes
+        manual_count = 0
+        auto_count = 0
+        grp_manual = tree.insert("", tk.END, iid="grp_manual", text="Manuels", open=True)
+        grp_auto   = tree.insert("", tk.END, iid="grp_auto",   text="Automatiques", open=True)
 
         for i, scen in enumerate(self.scenarios):
-            prefix = "[M]" if scen.source_type == "manual" else "[A]"
-            label = f"{prefix} {scen.name}"
-            if scen.status != "complete":
-                label += f" ({scen.status})"
-            lb.insert(tk.END, label)
+            iid = f"scen_{i}"
+            parent = grp_manual if scen.source_type == "manual" else grp_auto
+            if scen.source_type == "manual":
+                manual_count += 1
+            else:
+                auto_count += 1
+
+            tags = []
+            is_ref = (
+                scen.source_type == "auto" and
+                self.ref_scenario_token is not None and
+                id(scen) == self.ref_scenario_token
+            )
+            if is_ref:
+                tags.append("ref")
+
+            # Texte + icône
+            text = scen.name
+            if is_ref:
+                text = "★ " + text
+            img = self.icon_scen_manual if scen.source_type == "manual" else self.icon_scen_auto
+
+
+            kwargs = {"text": text, "tags": tags}
+            if img is not None:
+                kwargs["image"] = img
+            tree.insert(parent, tk.END, iid=iid, **kwargs)
+
+        # Mettre à jour les titres des groupes avec compteur
+        tree.item(grp_manual, text=f"Manuels ({manual_count})")
+        tree.item(grp_auto,   text=f"Automatiques ({auto_count})")
+
 
         # Sélectionner le scénario actif si possible
         if 0 <= self.active_scenario_index < len(self.scenarios):
-            lb.selection_clear(0, tk.END)
-            lb.selection_set(self.active_scenario_index)
-            lb.see(self.active_scenario_index)
+            active_iid = f"scen_{self.active_scenario_index}"
+            tree.selection_set(active_iid)
+            tree.see(active_iid)
+
 
     def _update_triangle_listbox_colors(self):
         """
@@ -1614,14 +1718,43 @@ class TriangleViewerManual(tk.Tk):
                     pass
 
     def _on_scenario_select(self, event=None):
-        """Callback quand l'utilisateur sélectionne un scénario dans la liste."""
-        if not hasattr(self, "scenario_listbox"):
+        """Callback quand l'utilisateur sélectionne un scénario (target) dans la Treeview."""
+        if not hasattr(self, "scenario_tree"):
             return
-        sel = self.scenario_listbox.curselection()
+        tree = self.scenario_tree
+        sel = tree.selection()
         if not sel:
             return
-        idx = int(sel[0])
+        iid = str(sel[0])
+        if not iid.startswith("scen_"):
+            # clic sur un groupe (Manuels/Automatiques)
+            return
+        try:
+            idx = int(iid.split("_", 1)[1])
+        except Exception:
+            return
         self._set_active_scenario(idx)
+
+    def _on_scenario_double_click(self, event=None):
+        """Double-clic sur un scénario auto : le définit comme scénario de référence (gras/★)."""
+        if not hasattr(self, "scenario_tree"):
+            return
+
+        iid = self.scenario_tree.identify_row(event.y)
+
+        if not iid or not str(iid).startswith("scen_"):
+            return
+        idx = int(str(iid).split("_", 1)[1])
+        if idx < 0 or idx >= len(self.scenarios):
+            return
+        scen = self.scenarios[idx]
+        if getattr(scen, "source_type", None) != "auto":
+            # On ne marque en référence que les scénarios automatiques
+            return
+        self.ref_scenario_token = id(scen)
+        self._refresh_scenario_listbox()
+        self.status.config(text=f"Référence auto : {scen.name}")
+
 
     def _set_active_scenario(self, index: int):
         """
@@ -1671,18 +1804,13 @@ class TriangleViewerManual(tk.Tk):
         self._redraw_overlay_only()
 
         # Mettre à jour la sélection visuelle dans la liste (au cas d'appel programmatique)
-        try:
-            if hasattr(self, "scenario_listbox"):
-                self.scenario_listbox.selection_clear(0, tk.END)
-                self.scenario_listbox.selection_set(self.active_scenario_index)
-                self.scenario_listbox.see(self.active_scenario_index)
-        except Exception:
-            pass
+        if hasattr(self, "scenario_tree"):
+            active_iid = f"scen_{self.active_scenario_index}"
+            self.scenario_tree.selection_set(active_iid)
+            self.scenario_tree.see(active_iid)
 
-        try:
-            self.status.config(text=f"Scénario actif : {scen.name}")
-        except Exception:
-            pass
+        self.status.config(text=f"Scénario actif : {scen.name}")
+
 
     def _new_empty_scenario(self):
         """
@@ -1710,10 +1838,8 @@ class TriangleViewerManual(tk.Tk):
         # Rafraîchir la liste visible
         self._refresh_scenario_listbox()
 
-        try:
-            self.status.config(text=f"Nouveau scénario créé : {scen.name}")
-        except Exception:
-            pass
+        self.status.config(text=f"Nouveau scénario créé : {scen.name}")
+
 
     def _scenario_edit_properties(self):
         """
@@ -1797,6 +1923,14 @@ class TriangleViewerManual(tk.Tk):
             return
 
         scen = self.scenarios[idx]
+
+        # Si on supprime le scénario de référence, on efface la référence
+        try:
+            if self.ref_scenario_token is not None and id(scen) == self.ref_scenario_token:
+                self.ref_scenario_token = None
+        except Exception:
+            pass
+
         if idx == 0 and scen.source_type == "manual":
             messagebox.showinfo("Supprimer le scénario",
                                 "Le scénario manuel ne peut pas être supprimé.")
@@ -1832,7 +1966,7 @@ class TriangleViewerManual(tk.Tk):
         self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
         # Redessiner l'overlay si la taille du canvas change
-        self.canvas.bind("<Configure>", lambda e: (self._redraw_overlay_only(), self._invalidate_pick_cache()))
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
 
         # Panel dico (placeholder à hauteur fixe, prêt pour intégrer la grille)
         self.dicoPanel = tk.Frame(self.rightPane, height=self.dico_panel_height,
@@ -1869,6 +2003,35 @@ class TriangleViewerManual(tk.Tk):
         # Premier rendu de l'horloge (overlay)
         self._draw_clock_overlay()
 
+    def _on_canvas_configure(self, event=None):
+        """Handler unique pour <Configure> (resize du canvas).
+
+        - Redessine l'overlay (horloge, etc.)
+        - Invalide le pick-cache
+        - Si un fond SVG a été rechargé au démarrage alors que le canvas était trop petit,
+          on force UNE fois un redraw complet dès que la taille devient valide.
+        """
+        try:
+            if getattr(self, "_bg_defer_redraw", False) and getattr(self, "_bg", None):
+                cw = int(self.canvas.winfo_width() or 0)
+                ch = int(self.canvas.winfo_height() or 0)
+                if cw > 2 and ch > 2:
+                    # Un seul redraw complet (sinon c'est lourd)
+                    self._bg_defer_redraw = False
+                    self._redraw_from(self._last_drawn)
+        except Exception:
+            pass
+
+        # Overlay + pick-cache (après le redraw complet, car _redraw_from() fait delete('all'))
+        try:
+            self._redraw_overlay_only()
+        except Exception:
+            pass
+        try:
+            self._invalidate_pick_cache()
+        except Exception:
+            pass
+
     def _toggle_dico_panel(self):
         """
         Affiche / cache le panneau dictionnaire (combo + liste + grille)
@@ -1884,29 +2047,29 @@ class TriangleViewerManual(tk.Tk):
                 self.dicoPanel.pack(side=tk.BOTTOM, fill=tk.X)
                 # Si la grille n'a jamais été construite, on la (re)construit
                 if not getattr(self, "dicoSheet", None):
-                    try:
-                        self._build_dico_grid()
-                    except Exception:
-                        pass
+                    self._build_dico_grid()
+
         else:
             # Cacher le panneau (sans le détruire, pour pouvoir le réafficher)
-            try:
-                self.dicoPanel.pack_forget()
-            except Exception:
-                pass
+            self.dicoPanel.pack_forget()
 
+        # Persistance : mémoriser l'état (affiché/caché)
+        self.setAppConfigValue("uiShowDicoPanel", bool(show))
+
+  
     def _toggle_clock_overlay(self):
         """Affiche ou cache le compas horaire (overlay horloge)."""
         if not getattr(self, "canvas", None):
             return
         # Effacer systématiquement l'overlay courant
-        try:
-            self.canvas.delete("clock_overlay")
-        except Exception:
-            pass
+        self.canvas.delete("clock_overlay")
+
         # Si l'option est active, on redessine l'horloge (sans toucher aux triangles)
         if self.show_clock_overlay.get():
             self._draw_clock_overlay()
+
+        # Persistance : mémoriser l'état (affiché/caché)
+        self.setAppConfigValue("uiShowClockOverlay", bool(self.show_clock_overlay.get()))
 
     # -- pick cache helpers ---------------------------------------------------
     def _invalidate_pick_cache(self):
@@ -2537,6 +2700,86 @@ class TriangleViewerManual(tk.Tk):
         except Exception:
             pass
 
+    def _persistBackgroundConfig(self):
+        """Sauvegarde en config l'état du fond SVG (path + rect monde)."""
+        try:
+            if not hasattr(self, "appConfig") or self.appConfig is None:
+                self.appConfig = {}
+            if not getattr(self, "_bg", None):
+                changed = False
+                for k in ("bgSvgPath", "bgWorldRect"):
+                    if k in self.appConfig:
+                        del self.appConfig[k]
+                        changed = True
+                if changed:
+                    self.saveAppConfig()
+                return
+
+            self.appConfig["bgSvgPath"] = str(self._bg.get("path") or "")
+            self.appConfig["bgWorldRect"] = {
+                "x0": float(self._bg.get("x0", 0.0)),
+                "y0": float(self._bg.get("y0", 0.0)),
+                "w": float(self._bg.get("w", 1.0)),
+                "h": float(self._bg.get("h", 1.0)),
+                "aspect": float(self._bg.get("aspect", 1.0)),
+            }
+            self.saveAppConfig()
+        except Exception:
+            pass
+
+    def autoLoadBackgroundAtStartup(self):
+        """Recharge le fond SVG et sa géométrie depuis la config.
+
+        Important : au moment où _build_ui() s'exécute, le canvas peut encore avoir une taille
+        (winfo_width/height) quasi nulle. Dans ce cas, _bg_draw_world_layer() ne peut pas
+        rasteriser/afficher correctement et le fond semble "non rechargé".
+
+        Solution : charger le SVG *après* la 1ère passe de layout (after_idle) et forcer
+        un redraw complet au 1er <Configure> valide.
+        """
+        try:
+            if getattr(self, "_bg_startup_scheduled", False):
+                return
+            self._bg_startup_scheduled = True
+            self.after_idle(self._autoLoadBackgroundAfterLayout)
+        except Exception:
+            # best-effort
+            self._bg_startup_scheduled = False
+
+    def _autoLoadBackgroundAfterLayout(self):
+        """(interne) Effectue le vrai rechargement du fond après layout."""
+        try:
+            self._bg_startup_scheduled = False
+            svg_path = self.getAppConfigValue("bgSvgPath", "") or ""
+            rect = self.getAppConfigValue("bgWorldRect", None)
+            if not svg_path:
+                return
+
+            # Normaliser le chemin (Windows tolère / et \ mais os.path.isfile peut être sensible
+            # selon certains contextes d'exécution).
+            svg_path = os.path.normpath(str(svg_path))
+
+            if not os.path.isfile(svg_path):
+                return
+
+            # S'assurer que la géométrie Tk est calculée (best-effort)
+            try:
+                self.update_idletasks()
+            except Exception:
+                pass
+
+            if isinstance(rect, dict) and all(k in rect for k in ("x0", "y0", "w", "h")):
+                self._bg_set_svg(svg_path, rect_override=rect, persist=False)
+            else:
+                self._bg_set_svg(svg_path, rect_override=None, persist=False)
+
+            # Si le canvas était encore trop petit au moment du redraw, on redessinera une fois
+            # dès qu'un <Configure> avec une taille valide arrive.
+            self._bg_defer_redraw = True
+        except Exception:
+            # best-effort
+            self._bg_startup_scheduled = False
+
     def autoLoadTrianglesFileAtStartup(self):
         """Recharge au démarrage le dernier fichier triangles ouvert."""
         # 1) Dernier fichier explicitement chargé
@@ -3021,6 +3264,7 @@ class TriangleViewerManual(tk.Tk):
         self._bg_base_pil = None
         self._bg_photo = None
         self._bg_resizing = None
+        self._persistBackgroundConfig()
         self._redraw_from(self._last_drawn)
 
     def _bg_load_svg_dialog(self):
@@ -3032,7 +3276,7 @@ class TriangleViewerManual(tk.Tk):
             return
         self._bg_set_svg(path)
 
-    def _bg_set_svg(self, svg_path: str):
+    def _bg_set_svg(self, svg_path: str, rect_override: dict | None = None, persist: bool = True):
         if (Image is None or ImageTk is None or svg2rlg is None
                 or renderPDF is None or _rl_canvas is None or pdfium is None):
             messagebox.showerror(
@@ -3044,6 +3288,25 @@ class TriangleViewerManual(tk.Tk):
             return
 
         aspect = self._bg_parse_aspect(svg_path)
+        # Si on a une géométrie sauvegardée (monde), on la réapplique telle quelle
+        if isinstance(rect_override, dict) and all(k in rect_override for k in ("x0", "y0", "w", "h")):
+            try:
+                x0 = float(rect_override.get("x0", 0.0))
+                y0 = float(rect_override.get("y0", 0.0))
+                w  = float(rect_override.get("w", 1.0))
+                h  = float(rect_override.get("h", 1.0))
+                if w > 1e-9 and h > 1e-9:
+                    self._bg = {"path": svg_path, "x0": x0, "y0": y0, "w": w, "h": h, "aspect": aspect}
+                    # Raster base "normalisée" (taille fixe, ratio respecté)
+                    self._bg_base_pil = self._bg_render_base(svg_path, aspect, max_dim=4096)
+                    if self._bg_base_pil is not None:
+                        print(f"[Fond SVG] Fichier chargé: {os.path.basename(str(svg_path))} ({svg_path})")
+                    if persist:
+                        self._persistBackgroundConfig()
+                    self._redraw_from(self._last_drawn)
+                    return
+            except Exception:
+                pass
 
         # Position/taille initiale : calée sur bbox des triangles si dispo, sinon vue écran
         if self._last_drawn:
@@ -3080,6 +3343,11 @@ class TriangleViewerManual(tk.Tk):
 
         # Raster base "normalisée" (taille fixe, ratio respecté)
         self._bg_base_pil = self._bg_render_base(svg_path, aspect, max_dim=4096)
+
+        if persist:
+            self._persistBackgroundConfig()
+            if self._bg_base_pil is not None:
+                print(f"[Fond SVG] Fichier chargé: {os.path.basename(str(svg_path))} ({svg_path})")
 
         self._redraw_from(self._last_drawn)
 
@@ -5489,6 +5757,7 @@ class TriangleViewerManual(tk.Tk):
             self._bg_resizing = None
             try: self.canvas.configure(cursor="")
             except Exception: pass
+            self._persistBackgroundConfig()
             self._redraw_from(self._last_drawn)
             return "break"
 
