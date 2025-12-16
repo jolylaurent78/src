@@ -9,7 +9,6 @@ import io
 import numpy as np
 import pandas as pd
 from typing import Optional, List, Dict, Tuple, Type
-from pyproj import Transformer
 
 from tkinter import filedialog, messagebox, simpledialog
 import tkinter as tk
@@ -37,36 +36,739 @@ from shapely.affinity import rotate, translate
 
 import xml.etree.ElementTree as ET
 
-
-# === Modules externalisés (découpage maintenable) ===
-from src.assembleur_core import (
-    _overlap_shrink,
-    _tri_shape,
-    _group_shape_from_nodes,
-    _build_local_triangle,
-    _pose_params,
-    _apply_R_T_on_P,
-    ScenarioAssemblage,
-)
-
-from src.assembleur_sim import (
-    AlgorithmeAssemblage,
-    AlgoQuadrisParPaires,
-    MoteurSimulationAssemblage,
-    ALGOS,
-)
-
-import src.assembleur_io as _assembleur_io
-
 # --- Dictionnaire (chargement livre.txt) ---
 from src.DictionnaireEnigmes import DictionnaireEnigmes
 
 EPS_WORLD = 1e-6
 
 # ---------- Utils géométrie ----------
-# --- Extraits vers assembleur_core / assembleur_sim ---
+def _overlap_shrink(S_m, S_t, stroke_px: float, zoom: float) -> bool:
+    """
+    Anti-chevauchement unique et partagé : SHRINK-ONLY sur les deux solides.
+    - Rétrécit S_m et S_t de 2× (stroke_px / zoom) en unités monde,
+      puis teste l'intersection des solides réduits.
+    - Retourne True si chevauchement détecté, False sinon.
+    """
+    shrink_world = 2.0 * (float(stroke_px) / max(zoom, 1e-9))
+    S_t_shrunk = S_t.buffer(-shrink_world).buffer(0)
+    S_m_shrunk = S_m.buffer(-shrink_world).buffer(0)
+    if S_t_shrunk.is_empty or S_m_shrunk.is_empty:
+        return False
+    return S_m_shrunk.intersects(S_t_shrunk)
 
-# --- Extraits vers assembleur_sim ---
+
+def _tri_shape(P: Dict[str, np.ndarray]):
+    """Triangle → Polygon (brut, sans rétrécissement)."""
+    poly = _ShPoly([tuple(map(float, P["O"])),
+                    tuple(map(float, P["B"])),
+                    tuple(map(float, P["L"]))])
+    # 'buffer(0)' nettoie les très petites imprécisions numériques
+    return poly.buffer(0)
+
+def _group_shape_from_nodes(nodes, last_drawn):
+    """Union BRUTE des triangles listés dans 'nodes' (sans rétrécissement)."""
+    polys = []
+    for nd in nodes:
+        tid = nd.get("tid")
+        if tid is None or not (0 <= tid < len(last_drawn)):
+            continue
+        polys.append(_tri_shape(last_drawn[tid]["pts"]))
+    if not polys:
+        return None
+    # nettoie et unionne
+    return unary_union([p.buffer(0) for p in polys])
+
+
+def _build_local_triangle(OB: float, OL: float, BL: float) -> dict:
+    """
+    Construit un triangle local avec O=(0,0), B=(OB,0), L=(x,y) à partir des 3 longueurs.
+    """
+    x = (OL*OL - BL*BL + OB*OB) / (2*OB)
+    y2 = max(0.0, OL*OL - x*x)
+    y = math.sqrt(y2)
+    return {
+        "O": np.array([0.0,     0.0], dtype=float),
+        "B": np.array([float(OB), 0.0], dtype=float),
+        "L": np.array([float(x),  float(y)], dtype=float),
+    }
+
+# --- Simulation d'une pose (pour filtrer le chevauchement après collage) ---
+def _apply_R_T_on_P(P: Dict[str,np.ndarray], R: np.ndarray, T: np.ndarray, pivot: np.ndarray) -> Dict[str,np.ndarray]:
+    """Applique une rotation R autour de 'pivot' puis une translation T aux points P."""
+    out = {}
+    for k in ("O","B","L"):
+        v = np.array(P[k], dtype=float)
+        out[k] = (R @ (v - pivot)) + pivot + T
+    return out
+
+def _pose_params(Pm: Dict[str,np.ndarray], am: str, bm: str, Vm: np.ndarray,
+                 Pt: Dict[str,np.ndarray], at: str, bt: str, Vt: np.ndarray):
+    """Retourne (R, T, pivot) pour la pose 'am->bm' alignée sur 'at->bt' avec Vm→Vt."""
+    vm_dir = np.array(Pm[bm], float) - np.array(Pm[am], float)
+    vt_dir = np.array(Pt[bt], float) - np.array(Pt[at], float)
+    ang_m = math.atan2(vm_dir[1], vm_dir[0])
+    ang_t = math.atan2(vt_dir[1], vt_dir[0])
+    dtheta = ang_t - ang_m
+    c, s = math.cos(dtheta), math.sin(dtheta)
+    R = np.array([[c, -s],[s, c]], float)
+    pivot = np.array(Vm, float)
+    Vm_rot = (R @ (np.array(Pm[am], float) - pivot)) + pivot
+    T = np.array(Vt, float) - Vm_rot
+    return R, T, pivot
+
+class ScenarioAssemblage:
+    """
+    Représente un scénario d'assemblage (manuel ou automatique).
+    Un scénario contient :
+      - un nom lisible (ex. 'Scénario manuel', 'Auto #1'),
+      - un type de source ('manual' / 'auto'),
+      - éventuellement l'identifiant de l'algorithme qui l'a généré,
+      - la liste des triangles d'origine (ids),
+      - l'état géométrique : triangles dessinés + groupes.
+
+    Pour le scénario manuel, last_drawn / groups sont des références
+    directes vers les structures runtime du viewer (pas une copie).
+    Pour les scénarios automatiques, on utilisera plutôt des copies.
+    """
+    def __init__(self, name: str, source_type: str = "manual", algo_id: Optional[str] = None, tri_ids: Optional[List[int]] = None):
+        self.name: str = name
+        self.source_type: str = source_type      # "manual" ou "auto"
+        self.algo_id: Optional[str] = algo_id    # id de l'algo (pour les auto)
+        self.tri_ids: List[int] = list(tri_ids) if tri_ids is not None else []
+
+        # État géométrique associé au scénario
+        self.last_drawn: List[Dict] = []         # même structure que viewer._last_drawn
+        self.groups: Dict[int, Dict] = {}        # même structure que viewer.groups
+
+        # Statut global du scénario (utile pour les simulations auto)
+        self.status: str = "complete"            # "complete", "pruned", etc.
+        self.created_at: _dt.datetime = _dt.datetime.now()
+
+
+# =========================
+#  SIMULATION: moteur + algos
+# =========================
+
+class AlgorithmeAssemblage:
+    """Contrat minimal pour un algo d'assemblage automatique."""
+    id: str = "algo_base"
+    label: str = "Algorithme (base)"
+
+    def __init__(self, engine: "MoteurSimulationAssemblage"):
+        self.engine = engine
+
+    def run(self, tri_ids: List[int]) -> List["ScenarioAssemblage"]:
+        """Lance la simulation et retourne une liste de scénarios."""
+        raise NotImplementedError
+
+class AlgoQuadrisParPaires(AlgorithmeAssemblage):
+    id = "quadris_par_paires"
+    label = "Quadrilatères par paires (bases communes) [WIP]"
+
+    def _fill_group_vkeys_from_geometry(last_drawn: list, groups: dict, Q: float = 1e-6):
+        """
+        Enrichit groups[*]["nodes"] en remplissant :
+        - edge_in / edge_out : l'arête réellement partagée ("OB","BL","LO")
+        - vkey_in / vkey_out : le SOMMET OPPOSÉ à l'arête partagée
+          (car ton code de signature fait: O->BL, B->LO, L->OB).
+        """
+        def edgeFromVkeys(a, b):
+            if not a or not b or a == b:
+                return None
+            s = {a, b}
+            if s == {"O", "B"}: return "OB"
+            if s == {"B", "L"}: return "BL"
+            if s == {"L", "O"}: return "LO"
+            return None
+
+        def oppVertex(a, b):
+            if not a or not b:
+                return None
+            for k in ("O", "B", "L"):
+                if k != a and k != b:
+                    return k
+            return None
+
+        def qpt(p):
+            return (round(float(p[0]) / Q) * Q, round(float(p[1]) / Q) * Q)
+
+        def seg_key(a, b):
+            a2 = qpt(a); b2 = qpt(b)
+            return (a2, b2) if a2 <= b2 else (b2, a2)
+
+        def edges_of(P):
+            return {
+                "OB": seg_key(P["O"], P["B"]),
+                "BL": seg_key(P["B"], P["L"]),
+                "LO": seg_key(P["L"], P["O"]),
+            }
+
+        # arête -> sommet opposé
+        vkey_from_edge = {"OB": "L", "BL": "O", "LO": "B"}
+
+        for g in (groups or {}).values():
+            nodes = (g or {}).get("nodes") or []
+            if len(nodes) < 2:
+                continue
+
+            # reset soft (optionnel mais évite les restes)
+            for nd in nodes:
+                nd["vkey_in"] = nd.get("vkey_in") if nd.get("vkey_in") is not None else None
+                nd["vkey_out"] = nd.get("vkey_out") if nd.get("vkey_out") is not None else None
+                nd["edge_in"] = nd.get("edge_in") if nd.get("edge_in") is not None else None
+                nd["edge_out"] = nd.get("edge_out") if nd.get("edge_out") is not None else None
+
+            for i in range(len(nodes) - 1):
+                a = nodes[i]
+                b = nodes[i + 1]
+                try:
+                    ia = int(a.get("tid"))
+                    ib = int(b.get("tid"))
+                except Exception:
+                    continue
+                if not (0 <= ia < len(last_drawn) and 0 <= ib < len(last_drawn)):
+                    continue
+
+                Pa = (last_drawn[ia] or {}).get("pts") or {}
+                Pb = (last_drawn[ib] or {}).get("pts") or {}
+                if not all(k in Pa for k in ("O", "B", "L")):
+                    continue
+                if not all(k in Pb for k in ("O", "B", "L")):
+                    continue
+
+                ea = edges_of(Pa)
+                eb = edges_of(Pb)
+
+                shared_a = shared_b = None
+                for name_a, seg_a in ea.items():
+                    for name_b, seg_b in eb.items():
+                        if seg_a == seg_b:
+                            shared_a = name_a
+                            shared_b = name_b
+                            break
+                    if shared_a:
+                        break
+
+                if not shared_a:
+                    # pas d'arête partagée -> on ne remplit pas (normal pour des triangles juste "proches")
+                    continue
+
+                # --- NOUVEAU : stocker explicitement l'arête connectée (non ambigu : BL vs LO, etc.) ---
+                a["edge_out"] = shared_a
+                b["edge_in"] = shared_b
+
+                # --- vkey = sommet opposé à l'arête partagée (pour compat avec l'ancien code) ---
+                a["vkey_out"] = vkey_from_edge.get(shared_a)
+                b["vkey_in"] = vkey_from_edge.get(shared_b)
+
+    def run(self, tri_ids: List[int]) -> List["ScenarioAssemblage"]:
+        """Étape 1+2 :
+        - Si n=2 : assemble uniquement le 1er couple (2 triangles) en un quadrilatère.
+        - Si n>=4 : assemble le 1er couple (tri1,tri2), puis assemble le 2e couple (tri3,tri4)
+          et pose le quad2 en le connectant au quad1 via L2↔L3 avec EXACTEMENT 2 essais :
+            - aligner (L3→O3) sur (L2→O2)
+            - aligner (L3→O3) sur (L2→B2)
+
+        - Applique la convention: le triangle 1 est orienté pour que l'azimut O→L soit 0° (Nord, axe +Y).
+        - Détecte automatiquement la longueur commune entre les 2 triangles (OB / OL / BL).
+        - Tente 2 poses (direction directe / inversée) et conserve les poses sans chevauchement (shrink-only).
+        """
+        if not tri_ids or len(tri_ids) < 2:
+            return []
+        if (len(tri_ids) % 2) != 0:
+            # On ne gère que des n pairs pour l'instant
+            return []
+
+        tri1_id = int(tri_ids[0])
+        tri2_id = int(tri_ids[1])
+
+        engine = self.engine
+        v = engine.viewer
+
+        t1 = engine.build_local_triangle(tri1_id)
+        t2 = engine.build_local_triangle(tri2_id)
+
+        # ---- 1) Orientation : O→L au Nord (+Y) pour le 1er triangle
+        P1 = {k: np.array(t1["pts"][k], dtype=float) for k in ("O","B","L")}
+        vOL = P1["L"] - P1["O"]
+        if float(np.hypot(vOL[0], vOL[1])) > 1e-12:
+            cur = math.atan2(vOL[1], vOL[0])
+            target = math.pi / 2.0  # Nord = +Y
+            dtheta = target - cur
+            c, s = math.cos(dtheta), math.sin(dtheta)
+            R = np.array([[c, -s],[s, c]], dtype=float)
+            pivot = P1["O"]
+            for k in ("O","B","L"):
+                P1[k] = (R @ (P1[k] - pivot)) + pivot
+
+        # ---- 2) Détection de l'arête commune (OB / OL / BL)
+        def _edge_len(P: Dict[str,np.ndarray], a: str, b: str) -> float:
+            vv = np.array(P[b], float) - np.array(P[a], float)
+            return float(np.hypot(vv[0], vv[1]))
+
+        edges = [("O","B"), ("O","L"), ("B","L")]
+        e1 = [(a, b, _edge_len(P1, a, b)) for a, b in edges]
+
+        P2_local = {k: np.array(t2["pts"][k], dtype=float) for k in ("O","B","L")}
+        e2 = [(a, b, _edge_len(P2_local, a, b)) for a, b in edges]
+
+        tol_rel = 1e-3
+        best = None  # (rel, (a1,b1),(a2,b2))
+        for a1, b1, l1 in e1:
+            for a2, b2, l2 in e2:
+                rel = abs(l1 - l2) / max(l1, l2, 1e-9)
+                if rel <= tol_rel and (best is None or rel < best[0]):
+                    best = (rel, (a1, b1), (a2, b2))
+
+        if best is None:
+            raise ValueError("Aucune arête commune détectée entre les 2 triangles (tolérance 0.1%).")
+
+        (_, (a1, b1), (a2, b2)) = best
+
+        # ---- 3) Pose du triangle 2 : 2 essais (direct / inversé)
+        poly1 = _tri_shape(P1)
+
+        poses: List[Dict[str,np.ndarray]] = []
+        # Si on enchaîne (n>=4), on fige le 1er quad à la première pose valide
+        max_poses_first_pair = 2 if len(tri_ids) <= 2 else 1        
+        for (at, bt) in [(a1, b1), (b1, a1)]:  # direct puis inversé
+            try:
+                P2w = engine.pose_points_on_edge(
+                    Pm=P2_local, am=a2, bm=b2,
+                    Pt=P1, at=at, bt=bt,
+                    Vm=P2_local[a2], Vt=P1[at],
+                )
+            except Exception:
+                continue
+
+            # Chevauchement : utiliser EXACTEMENT la règle partagée "shrink-only"
+            try:
+                poly2 = _tri_shape(P2w)
+                if _overlap_shrink(
+                    poly2, poly1,
+                    getattr(v, "stroke_px", 2),
+                    engine.getOverlapZoomRef(),
+                ):
+                    continue
+            except Exception:
+                # En auto, si doute → on prune
+                continue
+
+            poses.append(P2w)
+
+            if len(poses) >= max_poses_first_pair:
+                break
+        if not poses:
+            return []
+
+        # ---- 4) Si n=2 : même comportement qu'avant (1 ou 2 scénarios possibles)
+        if len(tri_ids) <= 2:
+            out: List[ScenarioAssemblage] = []
+            for i, P2 in enumerate(poses[:2]):
+                scen = ScenarioAssemblage(
+                    name=f"Auto quad (2 triangles){'' if len(poses)==1 else f' #{i+1}'}",
+                    source_type="auto",
+                    algo_id=self.id,
+                    tri_ids=[tri1_id, tri2_id],
+                )
+                scen.status = "complete"
+
+                last_drawn = []
+                last_drawn.append({
+                    "labels": t1.get("labels"),
+                    "pts": P1,
+                    "id": tri1_id,
+                    "mirrored": bool(t1.get("mirrored", False)),
+                    "group_id": 1,
+                    "group_pos": 0,
+                })
+                last_drawn.append({
+                    "labels": t2.get("labels"),
+                    "pts": P2,
+                    "id": tri2_id,
+                    "mirrored": bool(t2.get("mirrored", False)),
+                    "group_id": 1,
+                    "group_pos": 1,
+                })
+
+                xs, ys = [], []
+                for t in last_drawn:
+                    for k in ("O","B","L"):
+                        xs.append(float(t["pts"][k][0]))
+                        ys.append(float(t["pts"][k][1]))
+                bbox = (min(xs), min(ys), max(xs), max(ys))
+                groups = {
+                    1: {
+                        "id": 1,
+                        "nodes": [
+                            {"tid": 0, "vkey_in": None, "vkey_out": None},
+                            {"tid": 1, "vkey_in": None, "vkey_out": None},
+                        ],
+                        "bbox": bbox,
+                    }
+                }
+                scen.last_drawn = last_drawn
+                # Enrichit les nodes (vkey_in / vkey_out) en déduisant l’arête partagée via la géométrie
+                AlgoQuadrisParPaires._fill_group_vkeys_from_geometry(last_drawn, groups, Q=1e-6)
+                scen.groups = groups
+                out.append(scen)
+            return out
+
+        # ---- 5) Étape 2 : chaîner les quadrilatères (tri3,tri4), (tri5,tri6), ... via les sommets Lumière
+        # Convention : on connecte L(2) ↔ L(3), puis L(4) ↔ L(5), etc.
+        # À chaque connexion : EXACTEMENT 2 essais (aligner (Lodd→Oodd) sur (Leven→Oeven) puis sur (Leven→Beven)).
+        #
+        # IMPORTANT :
+        # - On fige l'assemblage interne de chaque paire (A,B) à la 1ère pose valide (shrink-only)
+        #   pour éviter l'explosion combinatoire.
+        # - Tous les triangles restent dans un SEUL groupe (group_id=1) afin que les tests de chevauchement
+        #   et la manipulation de groupe restent cohérents.
+
+        if len(tri_ids) < 4:
+            return []
+
+        # On fige le 1er quad sur la pose retenue (déjà pruné par overlap shrink-only)
+        P2 = poses[0]
+
+        # Fabrique un last_drawn "base" (quad1)
+        base_last = [
+            {
+                "labels": t1.get("labels"),
+                "pts": P1,
+                "id": tri1_id,
+                "mirrored": bool(t1.get("mirrored", False)),
+                "group_id": 1,
+                "group_pos": 0,
+            },
+            {
+                "labels": t2.get("labels"),
+                "pts": P2,
+                "id": tri2_id,
+                "mirrored": bool(t2.get("mirrored", False)),
+                "group_id": 1,
+                "group_pos": 1,
+            },
+        ]
+
+        def _orient_O_to_L_north(P: Dict[str,np.ndarray]) -> Dict[str,np.ndarray]:
+            P = {k: np.array(P[k], dtype=float) for k in ("O","B","L")}
+            vOL = P["L"] - P["O"]
+            if float(np.hypot(vOL[0], vOL[1])) > 1e-12:
+                cur = math.atan2(vOL[1], vOL[0])
+                target = math.pi / 2.0
+                dtheta = target - cur
+                c, s = math.cos(dtheta), math.sin(dtheta)
+                R = np.array([[c, -s],[s, c]], dtype=float)
+                pivot = P["O"]
+                for k in ("O","B","L"):
+                    P[k] = (R @ (P[k] - pivot)) + pivot
+            return P
+
+        def _edge_len(P: Dict[str,np.ndarray], a: str, b: str) -> float:
+            vv = np.array(P[b], float) - np.array(P[a], float)
+            return float(np.hypot(vv[0], vv[1]))
+
+        def _build_quad_local(triA_id: int, triB_id: int) -> Tuple[Dict, Dict, Dict[str,np.ndarray], Dict[str,np.ndarray]]:
+            """Construit un quad (A,B) en repère local, en figeant B à la 1ère pose valide."""
+            tA = engine.build_local_triangle(triA_id)
+            tB = engine.build_local_triangle(triB_id)
+
+            PA = _orient_O_to_L_north({k: np.array(tA["pts"][k], dtype=float) for k in ("O","B","L")})
+            PB_local = {k: np.array(tB["pts"][k], dtype=float) for k in ("O","B","L")}
+
+            edges = [("O","B"), ("O","L"), ("B","L")]
+            eA = [(a, b, _edge_len(PA, a, b)) for a, b in edges]
+            eB = [(a, b, _edge_len(PB_local, a, b)) for a, b in edges]
+
+            tol_rel = 1e-3
+            best = None  # (rel, (aA,bA),(aB,bB))
+            for aA, bA, lA in eA:
+                for aB, bB, lB in eB:
+                    rel = abs(lA - lB) / max(lA, lB, 1e-9)
+                    if rel <= tol_rel and (best is None or rel < best[0]):
+                        best = (rel, (aA, bA), (aB, bB))
+
+            if best is None:
+                raise ValueError("Aucune arête commune détectée entre les 2 triangles (tolérance 0.1%).")
+
+            (_, (aA, bA), (aB, bB)) = best
+
+            polyA = _tri_shape(PA)
+            PB = None
+            # 2 essais internes (direct/inversé) MAIS on fige à la 1ère pose valide
+            for (at, bt) in [(aA, bA), (bA, aA)]:
+                try:
+                    PBw = engine.pose_points_on_edge(
+                        Pm=PB_local, am=aB, bm=bB,
+                        Pt=PA, at=at, bt=bt,
+                        Vm=PB_local[aB], Vt=PA[at],
+                    )
+                except Exception:
+                    continue
+                try:
+                    polyB = _tri_shape(PBw)
+                    if _overlap_shrink(
+                        polyB, polyA,
+                        getattr(v, "stroke_px", 2),
+                        engine.getOverlapZoomRef(),
+                    ):
+                        continue
+                except Exception:
+                    continue
+                PB = PBw
+                break
+
+            if PB is None:
+                raise ValueError("Aucune pose valide trouvée pour assembler le quadrilatère (A,B).")
+
+            return tA, tB, PA, PB
+
+        # État de recherche : liste de branches (scénarios partiels)
+        # Chaque état = (last_drawn, poly_occ)
+        poly_occ0 = unary_union([_tri_shape(base_last[0]["pts"]), _tri_shape(base_last[1]["pts"])])
+        states = [(base_last, poly_occ0)]
+
+        MAX_SCENARIOS = 200
+
+        # Boucle sur les paires suivantes : (tri3,tri4), (tri5,tri6), ...
+        for pair_start in range(2, len(tri_ids), 2):
+            if pair_start + 1 >= len(tri_ids):
+                break
+
+            tri_odd_id = int(tri_ids[pair_start])       # tri3, tri5, ...
+            tri_even_id = int(tri_ids[pair_start + 1])  # tri4, tri6, ...
+
+            # Construit le quad courant en repère local (indépendant de la branche)
+            try:
+                tOdd, tEven, Podd, Peven = _build_quad_local(tri_odd_id, tri_even_id)
+            except Exception:
+                return []
+
+            new_states = []
+
+            for (last_drawn_prev, poly_occ_prev) in states:
+                # Triangle "ancre" = le dernier triangle posé (tri2, puis tri4, puis tri6, ...)
+                anchor = last_drawn_prev[-1]["pts"]
+
+                # Côté cible (anchor) : 2 arêtes issues de L (L->O et L->B)
+                # Côté mobile (odd)   : pour n=4 on garde la convention (L->O) uniquement,
+                #                       mais à partir de n>=6 on doit aussi tester (L->B),
+                #                       sinon on peut pruner des solutions valides.
+                mob_keys = ("O",) if pair_start == 2 else ("O", "B")
+                for mob_key in mob_keys:
+                    for bt_key in ("O", "B"):
+                        try:
+                            R, T, pivot = _pose_params(
+                                Podd, "L", mob_key, Podd["L"],
+                                anchor, "L", bt_key, anchor["L"]
+                            )
+                            Podd_w = _apply_R_T_on_P(Podd, R, T, pivot)
+                            Peven_w = _apply_R_T_on_P(Peven, R, T, pivot)
+                        except Exception:
+                            continue
+
+                        # Overlap : le quad courant ne doit pas chevaucher l'occupation déjà posée
+                        try:
+                            poly_new = unary_union([_tri_shape(Podd_w), _tri_shape(Peven_w)])
+                            if _overlap_shrink(
+                                poly_new, poly_occ_prev,
+                                getattr(v, "stroke_px", 2),
+                                engine.getOverlapZoomRef(),
+                            ):
+                                continue
+                        except Exception:
+                            continue
+
+                        # Étend le scénario partiel
+                        last_drawn_new = copy.deepcopy(last_drawn_prev)
+                        # --- NOUVEAU : mémoriser la jonction entre quads (connexion via L)
+                        # bt_key = côté choisi sur l'ancre (L->O ou L->B)
+                        # mob_key = côté choisi sur le triangle odd (L->O ou L->B)
+                        # On encode l'arête incidente à L : "LO" ou "BL"
+                        anchor_edge = "LO" if bt_key == "O" else "BL"
+                        odd_edge = "LO" if mob_key == "O" else "BL"
+                        try:
+                            # l'ancre est le dernier triangle déjà posé (dans last_drawn_new)
+                            last_drawn_new[-1]["_chain_edge_out"] = anchor_edge
+                        except Exception:
+                            pass
+
+                        pos0 = len(last_drawn_new)
+                        last_drawn_new.append({
+                            "labels": tOdd.get("labels"),
+                            "pts": Podd_w,
+                            "id": tri_odd_id,
+                            "mirrored": bool(tOdd.get("mirrored", False)),
+                            "group_id": 1,
+                            "group_pos": pos0,
+                        })
+                        try:
+                            # le nouveau triangle odd "reçoit" la jonction
+                            last_drawn_new[pos0]["_chain_edge_in"] = odd_edge
+                        except Exception:
+                            pass
+
+                        last_drawn_new.append({
+                            "labels": tEven.get("labels"),
+                            "pts": Peven_w,
+                            "id": tri_even_id,
+                            "mirrored": bool(tEven.get("mirrored", False)),
+                            "group_id": 1,
+                            "group_pos": pos0 + 1,
+                        })
+
+                        poly_occ_new = unary_union([poly_occ_prev, poly_new])
+                        new_states.append((last_drawn_new, poly_occ_new))
+
+                        if len(new_states) >= MAX_SCENARIOS:
+                            break
+
+                    if len(new_states) >= MAX_SCENARIOS:
+                        break
+
+            states = new_states
+            if not states:
+                return []
+
+        # Finalisation : créer les scénarios complets
+        out: List[ScenarioAssemblage] = []
+        for i, (last_drawn, _poly_occ) in enumerate(states):
+            scen = ScenarioAssemblage(
+                name=f"Auto quadris ({len(last_drawn)} triangles)#{i+1}",
+                source_type="auto",
+                algo_id=self.id,
+                tri_ids=[int(x) for x in tri_ids[:len(last_drawn)]],
+            )
+            scen.status = "complete"
+            scen.last_drawn = last_drawn
+
+            # Groupe unique
+            idxs = list(range(len(last_drawn)))
+            xs, ys = [], []
+            for k in idxs:
+                t = last_drawn[k]
+                for vkey in ("O", "B", "L"):
+                    xs.append(float(t["pts"][vkey][0]))
+                    ys.append(float(t["pts"][vkey][1]))
+            bbox = (min(xs), min(ys), max(xs), max(ys))
+            groups = {
+                1: {"id": 1, "nodes": [{"tid": k, "vkey_in": None, "vkey_out": None} for k in idxs], "bbox": bbox},
+            }
+            # Enrichit les nodes (vkey_in / vkey_out) en déduisant l’arête partagée via la géométrie
+            AlgoQuadrisParPaires._fill_group_vkeys_from_geometry(last_drawn, groups, Q=1e-6)
+
+            # --- NOUVEAU : injecter la jonction "chaîne" (L->O vs L->B) dans les nodes
+            # Ici, ce n'est PAS une arête partagée géométriquement, donc _fill_group... ne peut pas la trouver.
+            vkey_from_edge = {"OB": "L", "BL": "O", "LO": "B"}
+            try:
+                nodes = groups[1]["nodes"]
+                for k in idxs:
+                    t = last_drawn[k]
+                    if "_chain_edge_out" in t:
+                        eout = t.get("_chain_edge_out")
+                        if eout:
+                            nodes[k]["edge_out"] = eout
+                            nodes[k]["vkey_out"] = vkey_from_edge.get(eout)
+                    if "_chain_edge_in" in t:
+                        ein = t.get("_chain_edge_in")
+                        if ein:
+                            nodes[k]["edge_in"] = ein
+                            nodes[k]["vkey_in"] = vkey_from_edge.get(ein)
+            except Exception:
+                pass
+            scen.groups = groups
+            out.append(scen)
+
+        return out
+
+
+# Registre des algorithmes disponibles pour la boîte de dialogue.
+# IMPORTANT : conserver l'ordre pour un affichage stable dans la combo.
+ALGOS: Dict[str, Type[AlgorithmeAssemblage]] = {
+    AlgoQuadrisParPaires.id: AlgoQuadrisParPaires,
+}
+
+
+class MoteurSimulationAssemblage:
+    """Wrapper 'pur data' autour des briques géométriques du viewer (manuel)."""
+
+    def __init__(self, viewer: "TriangleViewerManual"):
+        self.viewer = viewer
+        # IMPORTANT: la simulation ne doit pas dépendre du zoom écran courant.
+        # On fige un zoom de référence, clampé, utilisé uniquement pour _overlap_shrink().
+        try:
+            z = float(getattr(viewer, "simulationOverlapZoomRef", getattr(viewer, "zoom", 1.0)))
+        except Exception:
+            z = 1.0
+        # borne haute: évite shrink trop petit => faux chevauchement sur triangles collés
+        self.overlapZoomRef = min(max(z, 0.25), 8.0)
+
+    def getOverlapZoomRef(self) -> float:
+        return float(getattr(self, "overlapZoomRef", 1.0))
+
+    def build_local_triangle(self, tri_id: int) -> Dict:
+        """Construit un triangle en repère local à partir du DF (longueurs OB/OL/BL + orientation)."""
+        v = self.viewer
+        if getattr(v, "df", None) is None or v.df is None or v.df.empty:
+            raise RuntimeError("Aucun fichier Triangle chargé (df vide).")
+
+        row = v.df[v.df["id"] == int(tri_id)]
+        if row.empty:
+            raise ValueError(f"Triangle id={tri_id} introuvable dans la source.")
+        r = row.iloc[0]
+        P = _build_local_triangle(float(r["len_OB"]), float(r["len_OL"]), float(r["len_BL"]))
+
+        # Orientation : si CW → symétrie verticale (y -> -y)
+        try:
+            ori = str(r.get("orient", "CCW")).upper().strip()
+        except Exception:
+            ori = "CCW"
+        mirrored = (ori == "CW")
+        if mirrored:
+            P = {
+                "O": np.array([P["O"][0], -P["O"][1]], dtype=float),
+                "B": np.array([P["B"][0], -P["B"][1]], dtype=float),
+                "L": np.array([P["L"][0], -P["L"][1]], dtype=float),
+            }
+
+        return {
+            "labels": ("Bourges", str(r["B"]), str(r["L"])),  # (O,B,L) labels
+            "id": int(tri_id),
+            "mirrored": mirrored,
+            "pts": P,
+        }
+
+    def pose_points_on_edge(
+        self,
+        Pm: Dict[str, np.ndarray], am: str, bm: str,
+        Pt: Dict[str, np.ndarray], at: str, bt: str,
+        Vm: np.ndarray, Vt: np.ndarray,
+    ) -> Dict[str, np.ndarray]:
+        """Pose Pm (mobile) : aligne am→bm sur at→bt, en collant le point Vm sur Vt."""
+        R, T, pivot = _pose_params(Pm, am, bm, Vm, Pt, at, bt, Vt)
+        return _apply_R_T_on_P(Pm, R, T, pivot)
+
+    def check_overlap(self, tri_or_group_nodes: List[Dict], occupied_nodes: List[Dict]) -> bool:
+        """Retourne True si chevauchement (overlap) après shrink, sinon False."""
+        v = self.viewer
+        if not occupied_nodes:
+            return False
+        last_drawn = getattr(v, "_last_drawn", []) or []
+        try:
+            poly_new = _group_shape_from_nodes(tri_or_group_nodes, last_drawn)
+            poly_occ = _group_shape_from_nodes(occupied_nodes, last_drawn)
+            if (poly_new is None) or (poly_occ is None):
+                return False
+            # même règle que le mode manuel : shrink-only basé sur stroke_px et zoom
+            return _overlap_shrink(
+                poly_new,
+                poly_occ,
+                getattr(v, "stroke_px", 2),
+                max(self.getOverlapZoomRef(), 1e-9),
+            )
+        except Exception:
+            # En auto, en cas de doute on préfère "pruner" la branche plutôt que d'accepter une pose invalide
+            return True
 
 class DialogSimulationAssembler(tk.Toplevel):
     """Boîte de dialogue 'Simulation > Assembler…'"""
@@ -78,7 +780,7 @@ class DialogSimulationAssembler(tk.Toplevel):
         self.transient(parent)
         self.grab_set()
 
-        self.result = None  # (algo_id, n, clear_auto, order, first_edge)
+        self.result = None  # (algo_id, n, clear_auto)
 
         # Imports locaux (évite d'imposer ttk partout)
         from tkinter import ttk
@@ -110,34 +812,17 @@ class DialogSimulationAssembler(tk.Toplevel):
         self.n_spin = ttk.Spinbox(frm, from_=2, to=max(2, int(n_max)), textvariable=self.n_var, width=8)
         self.n_spin.grid(row=2, column=1, sticky="e")
 
-        # --- Ordre d'assemblage ---
-        self.order_var = tk.StringVar(value="forward")  # "forward" | "reverse"
-        ttk.Label(frm, text="Ordre d’assemblage :").grid(row=3, column=0, sticky="w", pady=(8, 0))
-        order_frm = ttk.Frame(frm)
-        order_frm.grid(row=3, column=1, sticky="e", pady=(8, 0))
-        ttk.Radiobutton(order_frm, text="Normal", value="forward", variable=self.order_var).grid(row=0, column=0, padx=(0, 10))
-        ttk.Radiobutton(order_frm, text="Inverse", value="reverse", variable=self.order_var).grid(row=0, column=1)
-
-        # --- Placement du 1er triangle ---
-        self.first_edge_var = tk.StringVar(value="OL")  # "OL" | "BL"
-        ttk.Label(frm, text="Placement 1er triangle :").grid(row=4, column=0, sticky="w", pady=(8, 0))
-        self.first_edge_combo = ttk.Combobox(
-            frm,
-            textvariable=self.first_edge_var,
-            state="readonly",
-            values=["OL = 0°", "BL = 0°"],
-            width=12
-        )
-        self.first_edge_combo.current(0)
-        self.first_edge_combo.grid(row=4, column=1, sticky="e", pady=(8, 0))
-
         self.clear_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(frm, text="Supprimer les scénarios auto existants", variable=self.clear_var).grid(
-            row=5, column=0, columnspan=2, sticky="w", pady=(8, 0)
+            row=3, column=0, columnspan=2, sticky="w", pady=(8, 0)
+        )
+
+        ttk.Label(frm, text="Note : pour l’instant, n doit être pair (on arrondit à l’inférieur).").grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(8, 0)
         )
 
         btns = ttk.Frame(frm)
-        btns.grid(row=6, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        btns.grid(row=5, column=0, columnspan=2, sticky="e", pady=(10, 0))
         ttk.Button(btns, text="Annuler", command=self._on_cancel).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(btns, text="OK", command=self._on_ok).grid(row=0, column=1)
 
@@ -171,21 +856,14 @@ class DialogSimulationAssembler(tk.Toplevel):
             if n2 < 2:
                 messagebox.showerror("Assembler", "n doit être pair (minimum 2).")
                 return
-            # n doit être pair : on ajuste silencieusement (pas de popup)
-            print(f"[SIM] n impair -> utilisation de n={n2}")
+            messagebox.showinfo("Assembler", f"n doit être pair : on utilise n={n2}.")
             n = n2
             try:
                 self.n_var.set(n)
             except Exception:
                 pass
 
-        order = str(getattr(self, "order_var", tk.StringVar(value="forward")).get() or "forward")
-
-        first_raw = str(getattr(self, "first_edge_var", tk.StringVar(value="OL")).get() or "OL")
-        first_edge = "BL" if "BL" in first_raw else "OL"
-
-        self.result = (algo_id, int(n), bool(self.clear_var.get()), order, first_edge)
-
+        self.result = (algo_id, int(n), bool(self.clear_var.get()))
         self.destroy()
 
 # ---------- Application (MANUEL — sans algorithmes) ----------
@@ -252,23 +930,6 @@ class TriangleViewerManual(tk.Tk):
         self._bg_base_pil = None  # PIL.Image RGBA (base, normalisée)
         self._bg_photo = None     # ImageTk.PhotoImage (vue écran)
         self._bg_resizing = None  # dict état drag poignée
-        self._bg_moving = None    # dict état drag déplacement (mode resize)
-
-        # --- Calibration fond (3 points) ---
-        self._bg_calib_active = False
-        self._bg_calib_points_cfg = None  # dict chargé depuis data/maps/<carte>.calib_points.json
-        self._bg_calib_clicked_world = []  # [(x,y), ...] en coordonnées monde
-        self._bg_calib_step = 0
-
-        # calibration chargée (si data/<carte>.json existe)
-        self._bg_calib_data = None  # dict du fichier JSON de calibration (affineLambertKmToWorld)
-
-        # Référence d'échelle "x1" : largeur monde du fond au moment où la calibration est chargée.
-        # Sert uniquement à afficher un facteur (x1, x1/3.15, x2.49) pendant le redimensionnement.
-        self._bg_scale_base_w = None
-
-        # --- Calibration chargée (Lambert93 km -> monde) ---
-        self._bg_affine_lambert_to_world = None  # [a, b, c, d, e, f]
 
         # mode "déconnexion" activé par CTRL
         self._ctrl_down = False        
@@ -297,13 +958,10 @@ class TriangleViewerManual(tk.Tk):
         self.excel_path = None
         # Répertoires par défaut
         self.data_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "data"))
-        # Sous-répertoire dédié aux cartes (fond + fichiers de calibration)
-        self.maps_dir = os.path.join(self.data_dir, "maps")
         self.scenario_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "scenario"))
         # Répertoire des icônes
         self.images_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "images"))
         os.makedirs(self.scenario_dir, exist_ok=True)
-        os.makedirs(self.maps_dir, exist_ok=True)
         # === Config (persistance des paramètres) ===
         self.config_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "config"))
         self.config_path = os.path.join(self.config_dir, "assembleur_config.json")
@@ -773,13 +1431,11 @@ class TriangleViewerManual(tk.Tk):
         )
 
         self.menu_visual.add_separator()
-        self.menu_visual.add_command(label="Charger une carte…", command=self._bg_load_svg_dialog)
-        self.menu_visual.add_command(label="Calibrer la carte…", command=self._bg_calibrate_start)
-
+        self.menu_visual.add_command(label="Charger fond SVG…", command=self._bg_load_svg_dialog)
         self.menu_visual.add_checkbutton(
-            label="Redimensioner et déplacer la carte",
+            label="Mode redimensionnement fond (ratio)",
             variable=self.bg_resize_mode,
-            command=self._toggle_bg_resize_mode
+            command=lambda: self._redraw_from(self._last_drawn)
         )
         self.menu_visual.add_command(label="Supprimer fond", command=self._bg_clear)
 
@@ -833,31 +1489,6 @@ class TriangleViewerManual(tk.Tk):
                 ids.append(int(m.group(1)))
         return ids
 
-    def _simulation_get_tri_ids_by_order(self, n: int, order: str = "normal") -> List[int]:
-        """Retourne les IDs logiques des triangles selon l'ordre choisi:
-        - normal : n premiers (début de listbox)
-        - inverse : n derniers en partant du dernier (ex: 32,31,30,...)
-        """
-        ids: List[int] = []
-        if not hasattr(self, "listbox"):
-            return ids
-
-        max_n = int(self.listbox.size())
-        n2 = min(int(n), max_n)
-
-        if str(order).lower() in ("inverse", "reverse"):
-            # prendre les n derniers, en commençant par le dernier (max_n-1)
-            for k in range(n2):
-                i = (max_n - 1) - k
-                s = str(self.listbox.get(i))
-                m = re.match(r"\s*(\d+)\.", s)
-                if m:
-                    ids.append(int(m.group(1)))
-            return ids
-
-        # normal
-        return self._simulation_get_tri_ids_first_n(n)
-
     def _simulation_clear_auto_scenarios(self):
         """Supprime tous les scénarios 'auto' (conserve les manuels)."""
         if not getattr(self, "scenarios", None):
@@ -901,32 +1532,23 @@ class TriangleViewerManual(tk.Tk):
         if not getattr(dlg, "result", None):
             return
 
-        algo_id, n, clear_auto, order, first_edge = dlg.result
-        self._simulation_last_order = order
+        algo_id, n, clear_auto = dlg.result
         self._simulation_last_algo_id = algo_id
         self._simulation_last_n = int(n)
 
         if clear_auto:
             self._simulation_clear_auto_scenarios()
 
-        # --- Construire la liste des triangles selon l'ordre choisi ---
-        tri_ids = self._simulation_get_tri_ids_by_order(n, order)
-
-        # --- DEBUG (console, sans spam) ---
-        print(f"[SIM] Assembler: algo={algo_id} order={order} n={n} tri_ids={tri_ids}")
-
-        # Sécurité
+        tri_ids = self._simulation_get_tri_ids_first_n(n)
         if len(tri_ids) < 2:
             messagebox.showwarning("Assembler", "Impossible de construire la liste des IDs de triangles.")
             return
 
-        # Forcer n pair
         if len(tri_ids) % 2 == 1:
             tri_ids = tri_ids[:-1]
 
         try:
             engine = MoteurSimulationAssemblage(self)
-            engine.firstTriangleEdge = str(first_edge or "OL").upper()
             algo_cls = ALGOS.get(algo_id)
             if algo_cls is None:
                 raise ValueError(f"Algo inconnu: {algo_id}")
@@ -940,18 +1562,7 @@ class TriangleViewerManual(tk.Tk):
             return
 
         if not scenarios:
-            print("[SIM] Aucun scénario généré.")
-            dbg = getattr(engine, "debug_last", None)
-            if isinstance(dbg, dict):
-                print(f"[SIM] debug.tri_ids = {dbg.get('tri_ids')}")
-                if dbg.get("pair") is not None:
-                    print(f"[SIM] debug.pair = {dbg.get('pair')}")
-                if dbg.get("step"):
-                    print(f"[SIM] debug.step = {dbg.get('step')}")
-                if dbg.get("reason"):
-                    print(f"[SIM] debug.reason = {dbg.get('reason')}")
-                if dbg.get("detail"):
-                    print(f"[SIM] debug.detail = {dbg.get('detail')}")
+            messagebox.showinfo("Assembler", "Aucun scénario généré.")
             return
 
         base_idx = len(self.scenarios)
@@ -1608,8 +2219,8 @@ class TriangleViewerManual(tk.Tk):
         dup.status = src.status
 
         self.scenarios.append(dup)
-        self._refresh_scenario_listbox()
         self._set_active_scenario(new_index)
+        self._refresh_scenario_listbox()
         try:
             self.status.config(text=f"Scénario dupliqué : {dup.name}")
         except Exception:
@@ -1762,21 +2373,7 @@ class TriangleViewerManual(tk.Tk):
         # Persistance : mémoriser l'état (affiché/caché)
         self.setAppConfigValue("uiShowDicoPanel", bool(show))
 
-    def _toggle_bg_resize_mode(self):
-        """Active/désactive le mode d'édition du fond (redimensionnement + déplacement).
-        Important : on force la persistance de la géométrie du fond (x0/y0/w/h)
-        quand on quitte le mode, comme pour la largeur/hauteur.
-        """
-        # Si on sort du mode : purge tout état de drag du fond + sauver la config.
-        if not bool(self.bg_resize_mode.get()):
-            self._bg_resizing = None
-            self._bg_moving = None
-            self.canvas.configure(cursor="")
-            self._persistBackgroundConfig()
-            self._bg_update_scale_status()
-
-        self._redraw_from(self._last_drawn)
-
+  
     def _toggle_clock_overlay(self):
         """Affiche ou cache le compas horaire (overlay horloge)."""
         if not getattr(self, "canvas", None):
@@ -2001,11 +2598,313 @@ class TriangleViewerManual(tk.Tk):
         return np.array([float(x), float(y)], dtype=float)
 
     def save_scenario_xml(self, path: str):
-        return _assembleur_io.saveScenarioXml(self, path)
+        """
+        Sauvegarde 'robuste' (v1) :
+          - source excel, view (zoom/offset), clock (pos + hm),
+          - ids restants (listbox),
+          - triangles affichés (id, mirrored, points monde O/B/L, group),
+          - groupes (membres best-effort),
+          - associations triangle→mot (word,row,col).
+        """
+        root = ET.Element("scenario", {
+            "version": "1",
+            "saved_at": _dt.datetime.now().isoformat(timespec="seconds")
+        })
+        # source
+        ET.SubElement(root, "source", {
+            "excel": os.path.abspath(self.excel_path) if getattr(self, "excel_path", None) else ""
+        })
+        # view
+        view = ET.SubElement(root, "view", {
+            "zoom": f"{float(getattr(self, 'zoom', 1.0)):.6g}",
+            "offset_x": f"{float(self.offset[0]) if hasattr(self,'offset') else 0.0:.6g}",
+            "offset_y": f"{float(self.offset[1]) if hasattr(self,'offset') else 0.0:.6g}",
+        })
+        # clock
+        ET.SubElement(root, "clock", {
+            "x": f"{float(self._clock_cx) if self._clock_cx is not None else 0.0:.6g}",
+            "y": f"{float(self._clock_cy) if self._clock_cy is not None else 0.0:.6g}",
+            "hour": f"{int(self._clock_state.get('hour', 0))}",
+            "minute": f"{int(self._clock_state.get('minute', 0))}",
+            "label": str(self._clock_state.get("label","")),
+        })
+        # listbox: ids restants
+        lb = ET.SubElement(root, "listbox")
+        try:
+            for i in range(self.listbox.size()):
+                txt = self.listbox.get(i)
+                m = re.match(r"\s*(\d+)\.", str(txt))
+                if m:
+                    ET.SubElement(lb, "tri", {"id": m.group(1)})
+        except Exception:
+            pass
+        # groupes (best-effort)
+        groups_xml = ET.SubElement(root, "groups")
+        try:
+            for gid, gdata in (self.groups or {}).items():
+                g_el = ET.SubElement(groups_xml, "group", {"id": str(gid)})
+                # si une API _group_nodes existe, on l’utilise
+                members = []
+                try:
+                    members = [nd.get("tid") for nd in self._group_nodes(gid) if nd.get("tid") is not None]
+                except Exception:
+                    # fallback: scanner _last_drawn via le champ runtime correct 'group_id'
+                    for idx, t in enumerate(self._last_drawn or []):
+                        if int(t.get("group_id", 0)) == int(gid):
+                            members.append(idx)
+                for tid in members:
+                    if tid is None:
+                        continue
+                    ET.SubElement(g_el, "member", {"tid": str(tid)})
+        except Exception:
+            pass
+        # triangles posés
+        tris_xml = ET.SubElement(root, "triangles")
+        for t in (self._last_drawn or []):
+            tri_el = ET.SubElement(tris_xml, "triangle", {
+                "id": str(t.get("id", "")),
+                "mirrored": "1" if t.get("mirrored", False) else "0",
+                # on sérialise la valeur runtime correcte
+                "group": str(t.get("group_id", 0)),
+            })
+            P = t.get("pts", {})
+            for key in ("O","B","L"):
+                if key in P:
+                    ET.SubElement(tri_el, key).text = self._pt_to_xml(P[key])
+        # mots associés
+        words_xml = ET.SubElement(root, "words")
+        for tri_id, info in (self._tri_words or {}).items():
+            ET.SubElement(words_xml, "w", {
+                "tri_id": str(tri_id),
+                "row": str(info.get("row","")),
+                "col": str(info.get("col","")),
+                "text": str(info.get("word","")),
+            })
+        # écrire
+        tree = ET.ElementTree(root)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tree.write(path, encoding="utf-8", xml_declaration=True)
 
     def load_scenario_xml(self, path: str):
-        return _assembleur_io.loadScenarioXml(self, path)
+        """
+        Recharge un scénario v1 :
+          - tente de recharger le fichier Excel source,
+          - restaure vue, horloge, listbox, triangles posés (+mots), groupes (best-effort),
+          - redessine.
+        """
+        tree = ET.parse(path)
+        root = tree.getroot()
+        if root.tag != "scenario":
+            raise ValueError("Fichier scénario invalide (balise racine).")
+        # 1) Excel source
+        src = root.find("source")
+        excel = src.get("excel") if src is not None else ""
+        if excel and os.path.isfile(excel):
+            self.load_excel(excel)
+        # 2) vue (restaurer AVANT toute reconstruction pour que les conversions monde<->écran soient cohérentes)
+        view = root.find("view")
+        if view is not None:
+            try:
+                self.zoom = float(view.get("zoom", self.zoom))
+            except Exception: pass
+            try:
+                ox = float(view.get("offset_x", self.offset[0] if hasattr(self,"offset") else 0.0))
+                oy = float(view.get("offset_y", self.offset[1] if hasattr(self,"offset") else 0.0))
+                self.offset = np.array([ox, oy], dtype=float)
+            except Exception:
+                pass
+        # État d’interaction propre (purge complète UI)
+        self._sel = {"mode": None}
+        self._clear_nearest_line()
+        self._clear_edge_highlights()
+        self._hide_tooltip()
+        self._ctx_target_idx = None
+        self._edge_choice = None
+        self._drag_preview_id = None
+        self.canvas.delete("preview")
 
+        # 3) horloge
+        clock = root.find("clock")
+        if clock is not None:
+            try: self._clock_cx = float(clock.get("x", "0"))
+            except Exception: pass
+            try: self._clock_cy = float(clock.get("y", "0"))
+            except Exception: pass
+            try:
+                h = int(clock.get("hour", "0")); m = int(clock.get("minute", "0"))
+                lbl = clock.get("label","")
+                self._clock_state.update({"hour": h, "minute": m, "label": lbl})
+            except Exception:
+                pass
+        # 4) listbox (ids restants)
+        lb = root.find("listbox")
+        if lb is not None:
+            try:
+                # ids des triangles encore présents dans la listbox au moment de la sauvegarde
+                remain_ids = [int(e.get("id")) for e in lb.findall("tri") if e.get("id")]
+                self.listbox.delete(0, tk.END)
+                # reconstruire la liste depuis df en conservant l'ordre original
+                if getattr(self, "df", None) is not None and not self.df.empty:
+                    if remain_ids:
+                        wanted = set(remain_ids)
+                        for _, r in self.df.iterrows():
+                            tid = int(r["id"])
+                            if tid in wanted:
+                                self.listbox.insert(
+                                    tk.END, f"{tid:02d}. B:{r['B']}  L:{r['L']}"
+                                )
+                    else:
+                        # listbox vide dans le XML (ancien scénario ou bug) :
+                        # on retombe sur le comportement par défaut = tous les triangles.
+                        for _, r in self.df.iterrows():
+                            tid = int(r["id"])
+                            self.listbox.insert(
+                                tk.END, f"{tid:02d}. B:{r['B']}  L:{r['L']}"
+                            )
+            except Exception:
+                pass
+        # 5) triangles posés (monde)
+        # On reconstruit la liste en vidant d'abord celle du scénario actif,
+        # sans casser la référence partagée avec scen.last_drawn.
+        self._last_drawn.clear()
+        tris_xml = root.find("triangles")
+        if tris_xml is not None:
+            for t_el in tris_xml.findall("triangle"):
+                try:
+                    tid = int(t_el.get("id"))
+                except Exception:
+                    continue
+                mirrored = (t_el.get("mirrored","0") == "1")
+                group_id = int(t_el.get("group","0"))
+                P = {}
+                for k in ("O","B","L"):
+                    n = t_el.find(k)
+                    if n is not None and n.text:
+                        P[k] = self._xml_to_pt(n.text)
+                # Ne plus écrire 'group' (inconnu du runtime) ; initialiser les champs officiels
+                item = {"id": tid, "pts": P, "mirrored": mirrored}
+                item["group_id"] = None
+                item["group_pos"] = None
+                self._last_drawn.append(item)
+
+        # 5bis) compléter les 'labels' manquants (compat v1: non stockés dans le XML)
+        try:
+            if getattr(self, "df", None) is not None and not self.df.empty:
+                # dictionnaire id -> (B, L) sous forme de chaînes
+                _by_id = {int(r["id"]): (str(r["B"]), str(r["L"])) for _, r in self.df.iterrows()}
+                for t in self._last_drawn:
+                    if "labels" not in t or not t["labels"]:
+                        b, l = _by_id.get(int(t.get("id", -1)), ("", ""))
+                        t["labels"] = ("Bourges", b, l)
+            else:
+                # DF absent : fallback neutre
+                for t in self._last_drawn:
+                    if "labels" not in t or not t["labels"]:
+                        t["labels"] = ("Bourges", "", "")
+        except Exception:
+            # sécurité : ne jamais laisser 'labels' absent
+            for t in self._last_drawn:
+                if "labels" not in t or not t["labels"]:
+                    t["labels"] = ("Bourges", "", "")
+
+        # 5ter) tenir à jour les ids déjà posés (pour cohérence listbox / drag)
+        try:
+            self._placed_ids = {int(t["id"]) for t in self._last_drawn}
+        except Exception:
+            self._placed_ids = set()
+        # Mettre à jour l'affichage de la listbox en fonction des triangles déjà posés
+        self._update_triangle_listbox_colors()
+
+        # 6) mots associés
+        self._tri_words = {}
+        words_xml = root.find("words")
+        if words_xml is not None:
+            for w in words_xml.findall("w"):
+                try:
+                    tid = int(w.get("tri_id"))
+                except Exception:
+                    continue
+                self._tri_words[tid] = {
+                    "word": w.get("text",""),
+                    "row": int(w.get("row","0")) if w.get("row") else 0,
+                    "col": int(w.get("col","0")) if w.get("col") else 0,
+                }
+
+        # 7) groupes (reconstruction complète: nodes + bboxes)
+        # Même logique : on réutilise le dict existant pour préserver
+        # le lien avec manual.groups.
+        self.groups.clear()
+        groups_xml = root.find("groups")
+        if groups_xml is not None:
+            for g_el in groups_xml.findall("group"):
+                try:
+                    gid = int(g_el.get("id"))
+                except Exception:
+                    continue
+                nodes = []
+                for mem in g_el.findall("member"):
+                    # compat: on accepte 'tid' (index dans _last_drawn) OU 'id' (id triangle)
+                    tidx = None
+                    if mem.get("tid") is not None:
+                        try:
+                            tidx = int(mem.get("tid"))
+                        except Exception:
+                            tidx = None
+                    elif mem.get("id") is not None:
+                        # recherche de l’index correspondant à l’id
+                        try:
+                            tri_id = int(mem.get("id"))
+                            for k, t in enumerate(self._last_drawn):
+                                if int(t.get("id")) == tri_id:
+                                    tidx = k
+                                    break
+                        except Exception:
+                            tidx = None
+                    if tidx is None or not (0 <= tidx < len(self._last_drawn)):
+                        continue
+                    # Nodes au format runtime + marquage triangle: group_id/group_pos
+                    nodes.append({"tid": tidx, "vkey_in": None, "vkey_out": None})
+                    self._last_drawn[tidx]["group_id"]  = gid
+                    self._last_drawn[tidx]["group_pos"] = len(nodes) - 1
+                    # Hygiène: supprimer l’ancien champ 'group' s’il subsiste
+                    if "group" in self._last_drawn[tidx]:
+                        del self._last_drawn[tidx]["group"]
+                self.groups[gid] = {"id": gid, "nodes": nodes, "bbox": None}
+                self._recompute_group_bbox(gid)
+
+        # Nettoyage global de compatibilité : purger toute trace résiduelle de 'group'
+        for _t in self._last_drawn:
+            if "group" in _t:
+                del _t["group"]
+        # sécurité: prochain id de groupe
+        try:
+            self._next_group_id = (max(self.groups.keys()) + 1) if self.groups else 1
+        except Exception:
+            self._next_group_id = 1
+
+        # 8) sélection et aides reset
+        self._sel = {"mode": None}
+        self._clear_nearest_line()
+        self._clear_edge_highlights()
+
+        # 9) réappliquer les bindings (utile si le canvas a été recréé ou si Tk a perdu des liaisons)
+        self._bind_canvas_handlers()
+
+        # 10) redraw complet avec la vue restaurée + overlay
+        self._redraw_from(self._last_drawn)
+        self._redraw_overlay_only()
+        # [H6] reconstruire le pick-cache avec la vue effectivement restaurée
+        try:
+            self._rebuild_pick_cache()
+            self._pick_cache_valid = True
+        except Exception:
+            self._pick_cache_valid = False
+
+        # focus + rebind défensif (tooltips/drag)
+        self.canvas.focus_set()
+        self._bind_canvas_handlers()
+
+    # ---------- Horloge : test de hit ----------
     def _is_in_clock(self, x, y, pad=10):
         """Vrai si (x,y) (coords canvas) est à l'intérieur du disque de l'horloge (+marge)."""
         if self._clock_cx is None or self._clock_cy is None:
@@ -2064,16 +2963,53 @@ class TriangleViewerManual(tk.Tk):
 
     # ---------- Config (JSON) ----------
     def loadAppConfig(self):
-        return _assembleur_io.loadAppConfig(self)
+        """Charge la config JSON (best-effort)."""
+        self.appConfig = {}
+        try:
+            path = getattr(self, "config_path", "")
+            if not path:
+                return
+            if not os.path.isfile(path):
+                return
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                self.appConfig = data
+        except Exception:
+            # Jamais bloquant : si la config est corrompue on repart de zéro.
+            self.appConfig = {}
 
     def saveAppConfig(self):
-        return _assembleur_io.saveAppConfig(self)
+        """Sauvegarde la config JSON (best-effort)."""
+        try:
+            path = getattr(self, "config_path", "")
+            if not path:
+                return
+            cfg_dir = os.path.dirname(path)
+            if cfg_dir:
+                os.makedirs(cfg_dir, exist_ok=True)
+            # écriture atomique (évite un fichier vide si un souci survient)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(getattr(self, "appConfig", {}) or {}, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
+        except Exception:
+            pass
 
-    def getAppConfigValue(self, key, default=None):
-        return _assembleur_io.getAppConfigValue(self, key, default)
+    def getAppConfigValue(self, key: str, default=None):
+        try:
+            return (getattr(self, "appConfig", {}) or {}).get(key, default)
+        except Exception:
+            return default
 
-    def setAppConfigValue(self, key, value):
-        return _assembleur_io.setAppConfigValue(self, key, value)
+    def setAppConfigValue(self, key: str, value):
+        try:
+            if not hasattr(self, "appConfig") or self.appConfig is None:
+                self.appConfig = {}
+            self.appConfig[key] = value
+            self.saveAppConfig()
+        except Exception:
+            pass
 
     def _persistBackgroundConfig(self):
         """Sauvegarde en config l'état du fond SVG (path + rect monde)."""
@@ -2630,229 +3566,6 @@ class TriangleViewerManual(tk.Tk):
                                     font=("Arial", 11), fill="#000000",
                                     anchor="n", tags="clock_overlay")
 
-    # ==========================
-    # Calibration fond (3 points)
-    # ==========================
-
-    def _bg_calibrate_start(self):
-        """Démarre un calibrage du fond en cliquant 3 points (villes) définis dans un fichier JSON.
-
-        Fichier attendu (dans ../data/maps) :
-            <nom_de_la_carte>.calib_points.json
-        Exemple :
-            {
-              "points": [
-                {"name": "Paris", "lat": 48.8566, "lon": 2.3522},
-                {"name": "Lyon",  "lat": 45.7640, "lon": 4.8357},
-                {"name": "Marseille", "lat": 43.2965, "lon": 5.3698}
-              ]
-            }
-
-        Résultat sauvegardé (dans ../data/maps) :
-            <nom_de_la_carte>.json
-        """
-        if not self._bg or not self._bg.get("path"):
-            messagebox.showwarning("Calibration", "Aucun fond SVG chargé. Charge d'abord une carte.")
-            return
-
-        svg_path = str(self._bg.get("path"))
-        base = os.path.splitext(os.path.basename(svg_path))[0]
-        cfg_path = os.path.join(self.maps_dir, f"{base}.calib_points.json")
-
-        if not os.path.isfile(cfg_path):
-            messagebox.showerror(
-                "Calibration",
-                "Fichier de points de calibration introuvable.\n\n"
-                f"Attendu :\n  {cfg_path}\n\n"
-                "Crée ce fichier avec 3 villes (name/lat/lon) puis relance."
-            )
-            return
-
-        try:
-            with open(cfg_path, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-        except Exception as e:
-            messagebox.showerror("Calibration", f"Impossible de lire {cfg_path}\n\n{e}")
-            return
-
-        pts = cfg.get("points") if isinstance(cfg, dict) else None
-        if not isinstance(pts, list) or len(pts) != 3:
-            messagebox.showerror(
-                "Calibration",
-                "Le fichier de calibration doit contenir exactement 3 points :\n"
-                '  {"points":[{"name":..,"lat":..,"lon":..}, ... x3]}'
-            )
-            return
-
-        for i, p in enumerate(pts):
-            if not isinstance(p, dict) or ("lat" not in p) or ("lon" not in p):
-                messagebox.showerror(
-                    "Calibration",
-                    f"Point #{i+1} invalide : chaque point doit contenir au moins 'lat' et 'lon'."
-                )
-                return
-
-        self._bg_calib_points_cfg = {"path": cfg_path, "points": pts, "svg": svg_path}
-        self._bg_calib_clicked_world = []
-        self._bg_calib_step = 0
-        self._bg_calib_active = True
-
-        name0 = str(pts[0].get("name") or "Point 1")
-        self.status.config(
-            text=(
-                f"Calibration carte : CTRL+clic sur {name0} (1/3) | "
-                "clic/drag = pan | molette = zoom | ESC = annuler"
-            )
-        )
-        self.canvas.configure(cursor="crosshair")
-
-    def _bg_calibrate_cancel(self):
-        if not getattr(self, "_bg_calib_active", False):
-            return
-        self._bg_calib_active = False
-        self._bg_calib_points_cfg = None
-        self._bg_calib_clicked_world = []
-        self._bg_calib_step = 0
-        try:
-            self.canvas.configure(cursor="")
-        except Exception:
-            pass
-        self.status.config(text="Calibration annulée.")
-
-    def _bg_calibrate_handle_click(self, event):
-        """Enregistre un clic de calibration (en coordonnées monde)."""
-        if not getattr(self, "_bg_calib_active", False):
-            return "continue"
-
-        # Pendant la calibration, on veut pouvoir pan/zoom pour viser précisément.
-        # On valide donc un point UNIQUEMENT sur CTRL+clic.
-        # Sans CTRL, le clic gauche redevient un "pan start".
-        if not getattr(self, "_ctrl_down", False):
-            self._on_pan_start(event)
-            return "break"
-
-        cfg = self._bg_calib_points_cfg or {}
-        pts = cfg.get("points") or []
-        if len(pts) != 3:
-            self._bg_calibrate_cancel()
-            return "break"
-
-        try:
-            w = self._screen_to_world(event.x, event.y)
-        except Exception:
-            return "break"
-
-        self._bg_calib_clicked_world.append((float(w[0]), float(w[1])))
-        self._bg_calib_step += 1
-
-        if self._bg_calib_step < 3:
-            nxt = pts[self._bg_calib_step]
-            name = str(nxt.get("name") or f"Point {self._bg_calib_step+1}")
-            self.status.config(text=f"Calibration carte : clique sur {name} ({self._bg_calib_step+1}/3) — ESC pour annuler.")
-            # petit feedback visuel
-            self._redraw_from(self._last_drawn)
-            return "break"
-
-        # 3 clics : calcul + sauvegarde
-        try:
-            self._bg_calibrate_finish()
-        except Exception as e:
-            messagebox.showerror("Calibration", f"Échec du calibrage :\n\n{e}")
-            self._bg_calibrate_cancel()
-            return "break"
-
-        self._bg_calib_active = False
-        try:
-            self.canvas.configure(cursor="")
-        except Exception:
-            pass
-        self._redraw_from(self._last_drawn)
-        return "break"
-
-    def _bg_calibrate_finish(self):
-        cfg = self._bg_calib_points_cfg or {}
-        pts = cfg.get("points") or []
-        svg_path = cfg.get("svg") or (self._bg.get("path") if self._bg else None)
-        if len(pts) != 3 or len(self._bg_calib_clicked_world) != 3 or not svg_path:
-            raise RuntimeError("Données de calibration incomplètes.")
-
-        # GPS -> Lambert93 (m) -> km
-        transformer = Transformer.from_crs("EPSG:4326", "EPSG:2154", always_xy=True)
-        lambert_km = []
-        for p in pts:
-            lon = float(p["lon"])
-            lat = float(p["lat"])
-            x_m, y_m = transformer.transform(lon, lat)
-            lambert_km.append((x_m / 1000.0, y_m / 1000.0))
-
-        world = self._bg_calib_clicked_world
-
-        # Résolution affine : (xw,yw) -> (xl,yl)
-        # xl = a*xw + b*yw + c
-        # yl = d*xw + e*yw + f
-        A = []
-        B = []
-        for (xw, yw), (xl, yl) in zip(world, lambert_km):
-            A.append([xw, yw, 1, 0, 0, 0])
-            A.append([0, 0, 0, xw, yw, 1])
-            B.append(xl)
-            B.append(yl)
-
-        A = np.array(A, dtype=float)
-        B = np.array(B, dtype=float)
-        params = np.linalg.solve(A, B)  # 6 paramètres exacts (3 points)
-        a, b, c, d, e, f = [float(v) for v in params.tolist()]
-
-        det = a * e - b * d
-        if abs(det) < 1e-12:
-            raise RuntimeError("Points de calibration dégénérés (transformée non inversible).")
-
-        # inverse (Lambert km -> monde)
-        inv_a = e / det
-        inv_b = -b / det
-        inv_d = -d / det
-        inv_e = a / det
-        inv_c = -(inv_a * c + inv_b * f)
-        inv_f = -(inv_d * c + inv_e * f)
-
-        # Sauvegarde
-        base = os.path.splitext(os.path.basename(str(svg_path)))[0]
-        out_path = os.path.join(self.maps_dir, f"{base}.json")
-
-        payload = {
-            "type": "bg_calibration_3points",
-            "date": _dt.datetime.now().isoformat(timespec="seconds"),
-            "svgPath": str(svg_path),
-            "bgWorldRectAtCalibration": (
-                {
-                    "x0": float(self._bg.get("x0")),
-                    "y0": float(self._bg.get("y0")),
-                    "w":  float(self._bg.get("w")),
-                    "h":  float(self._bg.get("h")),
-                }
-                if (self._bg is not None and all(k in self._bg for k in ("x0","y0","w","h")))
-                else None
-            ),
-            "points": [
-                {
-                    "name": str(p.get("name") or f"Point {i+1}"),
-                    "lat": float(p["lat"]),
-                    "lon": float(p["lon"]),
-                    "lambert93Km": [lambert_km[i][0], lambert_km[i][1]],
-                    "worldClicked": [world[i][0], world[i][1]],
-                }
-                for i, p in enumerate(pts)
-            ],
-            "affineWorldToLambertKm": [a, b, c, d, e, f],
-            "affineLambertKmToWorld": [inv_a, inv_b, inv_c, inv_d, inv_e, inv_f],
-        }
-
-        os.makedirs(self.maps_dir, exist_ok=True)
-        with open(out_path, "w", encoding="utf-8") as f_out:
-            json.dump(payload, f_out, ensure_ascii=False, indent=2)
-
-        self.status.config(text=f"Calibration enregistrée : {out_path}")
-
     # =========================
     # Fond SVG en coordonnées monde
     # =========================
@@ -2862,60 +3575,12 @@ class TriangleViewerManual(tk.Tk):
         self._bg_base_pil = None
         self._bg_photo = None
         self._bg_resizing = None
-        self._bg_calib_data = None
-        self._bg_scale_base_w = None
-
         self._persistBackgroundConfig()
         self._redraw_from(self._last_drawn)
-
-    def _bg_try_load_calibration(self, svg_path: str):
-        """Charge data/maps/<carte>.json si présent (calibration 3 points).
-
-        Objectif: disposer de affineLambertKmToWorld pour convertir (Lambert93 km) -> coordonnées monde.
-        """
-        try:
-            base = os.path.splitext(os.path.basename(str(svg_path)))[0]
-            calib_path = os.path.join(self.maps_dir, f"{base}.json")
-            if not os.path.isfile(calib_path):
-                self._bg_calib_data = None
-                self._bg_scale_base_w = None
-                return
-
-            with open(calib_path, "r", encoding="utf-8") as f_in:
-                data = json.load(f_in)
-
-            aff = data.get("affineLambertKmToWorld")
-            if not (isinstance(aff, list) and len(aff) == 6):
-                self._bg_calib_data = None
-                return
-
-            # Normaliser en float
-            data["affineLambertKmToWorld"] = [float(v) for v in aff]
-            self._bg_calib_data = data
-
-            # Référence d'échelle pour l'affichage :
-            # - si le JSON contient la géométrie monde du fond au moment de la calibration,
-            #   on s'y réfère (=> le "x1" est stable et cohérent entre sessions)
-            # - sinon, fallback : largeur actuelle au moment du chargement.
-            try:
-                rect = data.get("bgWorldRectAtCalibration") if isinstance(data, dict) else None
-                if isinstance(rect, dict) and ("w" in rect):
-                    self._bg_scale_base_w = float(rect.get("w"))
-                elif self._bg is not None:
-                    self._bg_scale_base_w = float(self._bg.get("w"))
-                else:
-                    self._bg_scale_base_w = None
-            except Exception:
-                self._bg_scale_base_w = None
-        except Exception:
-            # best-effort
-            self._bg_calib_data = None
-            self._bg_scale_base_w = None
 
     def _bg_load_svg_dialog(self):
         path = filedialog.askopenfilename(
             title="Choisir un fond SVG",
-            initialdir=getattr(self, "maps_dir", None) or None,
             filetypes=[("SVG", "*.svg"), ("Tous fichiers", "*.*")]
         )
         if not path:
@@ -2947,11 +3612,6 @@ class TriangleViewerManual(tk.Tk):
                     self._bg_base_pil = self._bg_render_base(svg_path, aspect, max_dim=4096)
                     if self._bg_base_pil is not None:
                         print(f"[Fond SVG] Fichier chargé: {os.path.basename(str(svg_path))} ({svg_path})")
-                    # calibration associée (si fichier data/<carte>.json existe)
-                    self._bg_try_load_calibration(svg_path)
-                    if self._bg_calib_data is not None:
-                        print(f"[BG] Calibration chargée : {os.path.basename(str(svg_path))}.json")
-
                     if persist:
                         self._persistBackgroundConfig()
                     self._redraw_from(self._last_drawn)
@@ -2994,11 +3654,6 @@ class TriangleViewerManual(tk.Tk):
 
         # Raster base "normalisée" (taille fixe, ratio respecté)
         self._bg_base_pil = self._bg_render_base(svg_path, aspect, max_dim=4096)
-
-        # calibration associée (si fichier data/<carte>.json existe)
-        if self._bg_calib_data is not None:
-            print(f"[BG] Calibration chargée : {os.path.basename(str(svg_path))}.json")
-        self._bg_try_load_calibration(svg_path)
 
         if persist:
             self._persistBackgroundConfig()
@@ -3260,27 +3915,6 @@ class TriangleViewerManual(tk.Tk):
             "start_rect": (float(self._bg["x0"]), float(self._bg["y0"]), float(self._bg["w"]), float(self._bg["h"])),
         }
 
-    def _bg_start_move(self, sx: int, sy: int):
-        """Démarre un déplacement du fond (mode resize actif mais pas sur une poignée)."""
-        if not self._bg:
-            return
-        mx, my = self._screen_to_world(sx, sy)
-        self._bg_moving = {
-            "start_mouse": (float(mx), float(my)),
-            "start_xy": (float(self._bg.get("x0", 0.0)), float(self._bg.get("y0", 0.0))),
-        }
-
-    def _bg_update_move(self, sx: int, sy: int):
-        if not getattr(self, "_bg_moving", None) or not self._bg:
-            return
-        mx, my = self._screen_to_world(sx, sy)
-        smx, smy = self._bg_moving["start_mouse"]
-        x0, y0 = self._bg_moving["start_xy"]
-        dx = float(mx - smx)
-        dy = float(my - smy)
-        self._bg["x0"] = float(x0 + dx)
-        self._bg["y0"] = float(y0 + dy)
-
     def _bg_update_resize(self, sx: int, sy: int):
         if not self._bg_resizing or not self._bg:
             return
@@ -3316,102 +3950,10 @@ class TriangleViewerManual(tk.Tk):
         self._bg["w"]  = float(w)
         self._bg["h"]  = float(h)
 
-        # Afficher l'échelle relative (x1, x1/3.15, x2.49...) pendant le resize
-        self._bg_update_scale_status()
-
-    def _bg_compute_scale_factor(self) -> float | None:
-        """Retourne le scale *carte vs triangles*.
-
-        On veut comparer :
-          - l'échelle "monde" des triangles (1 unité monde == 1 km)
-          - l'échelle "monde" implicite de la carte via la calibration 3 points.
-
-        La calibration fournit affineLambertKmToWorld (km -> monde) :
-            xw = a*xkm + b*ykm + c
-            yw = d*xkm + e*ykm + f
-
-        Les colonnes (a,d) et (b,e) donnent la taille en unités monde pour 1 km (Est / Nord).
-        On moyenne les deux normes pour obtenir un facteur global.
-
-        Si le fond a été redimensionné depuis la calibration, on applique le ratio (w_cur / w_ref).
-        """
-        if not self._bg:
-            return None
-
-        data = getattr(self, "_bg_calib_data", None)
-        if not (isinstance(data, dict) and "affineLambertKmToWorld" in data):
-            return None
-
-        aff = data.get("affineLambertKmToWorld")
-        if not (isinstance(aff, list) and len(aff) == 6):
-            return None
-
-        try:
-            a, b, c, d, e, f = [float(v) for v in aff]
-        except Exception:
-            return None
-
-        # Taille en unités monde pour 1 km (axes Est / Nord)
-        import math
-        norm_e = math.hypot(a, d)
-        norm_n = math.hypot(b, e)
-        base_norm = 0.5 * (norm_e + norm_n)
-
-        if base_norm <= 1e-12:
-            return None
-
-        # Ratio de redimensionnement du fond (si on a une référence)
-        ratio = 1.0
-        if self._bg_scale_base_w is not None:
-            try:
-                base_w = float(self._bg_scale_base_w)
-                cur_w = float(self._bg.get("w"))
-                if base_w > 1e-12 and cur_w > 1e-12:
-                    ratio = cur_w / base_w
-            except Exception:
-                ratio = 1.0
-
-        return base_norm * ratio
-
-    def _bg_format_scale(self, s: float | None) -> str:
-        if s is None:
-            return "x?"
-        if abs(s - 1.0) < 1e-3:
-            return "x1"
-        if s >= 1.0:
-            return f"x{s:.2f}"
-        # plus petit que la référence -> x1/k
-        k = 1.0 / max(1e-12, s)
-        return f"x1/{k:.2f}"
-
-    def _bg_update_scale_status(self):
-        # On n'affiche l'échelle que si le mode redimensionnement est actif.
-        if not self.bg_resize_mode.get() or not self._bg:
-            return
-        s = self._bg_compute_scale_factor()
-        self.status.config(text=f"Échelle carte : {self._bg_format_scale(s)}")
-
     def _world_to_screen(self, p):
         x = self.offset[0] + float(p[0]) * self.zoom
         y = self.offset[1] - float(p[1]) * self.zoom
         return x, y
-
-    def worldFromLambertKm(self, x_km: float, y_km: float):
-        """Convertit un point (Lambert93, en km) -> coordonnées monde (celles de la scène).
-
-        Nécessite que la calibration 3 points associée au fond soit chargée (data/<carte>.json).
-        """
-        data = getattr(self, "_bg_calib_data", None)
-        if not data or not isinstance(data, dict) or "affineLambertKmToWorld" not in data:
-            raise RuntimeError("Calibration fond absente : lance d'abord la calibration (3 points) ou charge le fichier .json associé à la carte.")
-
-        aff = data.get("affineLambertKmToWorld", [])
-        if not (isinstance(aff, list) and len(aff) == 6):
-            raise RuntimeError("Calibration fond invalide : affineLambertKmToWorld manquant/incomplet (6 paramètres attendus).")
-        a, b, c, d, e, f = [float(v) for v in aff]
-        xw = a * float(x_km) + b * float(y_km) + c
-        yw = d * float(x_km) + e * float(y_km) + f
-        return (xw, yw)
 
     def _fit_to_view(self, placed):
         if not placed:
@@ -4741,10 +5283,6 @@ class TriangleViewerManual(tk.Tk):
 
     def _on_escape_key(self, event):
         """Annuler un drag&drop (liste) ou un déplacement/selection de triangle (avec rollback)."""
-        # Annule aussi une calibration en cours
-        if getattr(self, "_bg_calib_active", False):
-            self._bg_calibrate_cancel()
-            return
         if self._drag:
             self._cancel_drag()
             self.status.config(text="Drag annulé (ESC).")
@@ -5144,10 +5682,6 @@ class TriangleViewerManual(tk.Tk):
         except Exception:
             self._mouse_world_prev = None
 
-        # Calibration fond (3 points) : intercepte le clic gauche
-        if getattr(self, "_bg_calib_active", False):
-            return self._bg_calibrate_handle_click(event)
-
         # Horloge : démarrer drag si clic dans le disque (marge 10px)
         if self._is_in_clock(event.x, event.y):
             # ne pas intercepter si un drag de triangle est en cours
@@ -5167,11 +5701,6 @@ class TriangleViewerManual(tk.Tk):
                 try: self.canvas.configure(cursor="sizing")
                 except Exception: pass
                 return "break"
-            # sinon, en mode redimensionnement : clic maintenu = déplacement du fond
-            self._bg_start_move(event.x, event.y)
-            try: self.canvas.configure(cursor="fleur")
-            except Exception: pass
-            return "break"
 
         # Nouveau clic gauche : purge l'éventuelle aide précédente (évite les fantômes)
         # et masque le tooltip s'il est visible.
@@ -5451,12 +5980,6 @@ class TriangleViewerManual(tk.Tk):
             self._redraw_overlay_only()
             return "break"
 
-        # Mode déplacement fond d'écran (mode resize actif, clic maintenu hors poignée)
-        if getattr(self, "_bg_moving", None):
-            self._bg_update_move(event.x, event.y)
-            self._redraw_from(self._last_drawn)
-            return "break"
-        
         # Mode resize fond d'écran
         if self._bg_resizing:
             self._bg_update_resize(event.x, event.y)
@@ -5559,22 +6082,8 @@ class TriangleViewerManual(tk.Tk):
             try: self.canvas.configure(cursor="")
             except Exception: pass
             self._persistBackgroundConfig()
-            self._bg_update_scale_status()
             self._redraw_from(self._last_drawn)
             return "break"
-
-        if getattr(self, "_bg_moving", None):
-            self._bg_moving = None
-            try: self.canvas.configure(cursor="")
-            except Exception: pass
-            self._persistBackgroundConfig()
-            self._redraw_from(self._last_drawn)
-            return "break"
-
-        # Pan au clic gauche : fin du pan même si aucun triangle n'est sélectionné
-        if getattr(self, "_pan_anchor", None) is not None and not getattr(self, "_sel", None) and not getattr(self, "_drag", None):
-            self._on_pan_end(event)
-            return
 
         """Fin du drag au clic gauche : dépôt de triangle (drag liste) OU fin d'une édition."""
         import numpy as np
