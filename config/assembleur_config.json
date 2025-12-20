@@ -1,13 +1,15 @@
 {
   "lastTriangleExcel": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_v5.xlsx",
   "uiShowDicoPanel": false,
-  "uiShowClockOverlay": false,
-  "bgSvgPath": "D:/Dropbox/La Chouette/Python/AssembleurTriangles/data/maps/Traité_de_Francfort.svg",
+  "uiShowClockOverlay": true,
+  "bgSvgPath": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\maps\\899 - Alsace.jpg",
   "bgWorldRect": {
-    "x0": -446.6,
-    "y0": -714.4628571428572,
-    "w": 1009.0915578197274,
-    "h": 1427.1437746307574,
-    "aspect": 0.7070707070707071
-  }
+    "x0": -2125.609720589845,
+    "y0": -887.1085798404547,
+    "w": 4444.522125622747,
+    "h": 5467.766626295781,
+    "aspect": 0.8128587830080367
+  },
+  "uiMapOpacity": 47,
+  "uiClockRefAzimuth": 0.011314536521353679
 }

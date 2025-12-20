@@ -78,7 +78,7 @@ class DialogSimulationAssembler(tk.Toplevel):
         self.transient(parent)
         self.grab_set()
 
-        self.result = None  # (algo_id, n, clear_auto, order, first_edge)
+        self.result = None  # (algo_id, n, order, first_edge)
 
         # Imports locaux (évite d'imposer ttk partout)
         from tkinter import ttk
@@ -131,23 +131,16 @@ class DialogSimulationAssembler(tk.Toplevel):
         self.first_edge_combo.current(0)
         self.first_edge_combo.grid(row=4, column=1, sticky="e", pady=(8, 0))
 
-        self.clear_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(frm, text="Supprimer les scénarios auto existants", variable=self.clear_var).grid(
-            row=5, column=0, columnspan=2, sticky="w", pady=(8, 0)
-        )
-
         btns = ttk.Frame(frm)
-        btns.grid(row=6, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        btns.grid(row=5, column=0, columnspan=2, sticky="e", pady=(10, 0))
         ttk.Button(btns, text="Annuler", command=self._on_cancel).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(btns, text="OK", command=self._on_ok).grid(row=0, column=1)
 
         self.protocol("WM_DELETE_WINDOW", self._on_cancel)
 
-        try:
-            self.n_spin.focus_set()
-            self.n_spin.selection_range(0, tk.END)
-        except Exception:
-            pass
+        self.n_spin.focus_set()
+        self.n_spin.selection_range(0, tk.END)
+
 
     def _on_cancel(self):
         self.result = None
@@ -184,7 +177,7 @@ class DialogSimulationAssembler(tk.Toplevel):
         first_raw = str(getattr(self, "first_edge_var", tk.StringVar(value="OL")).get() or "OL")
         first_edge = "BL" if "BL" in first_raw else "OL"
 
-        self.result = (algo_id, int(n), bool(self.clear_var.get()), order, first_edge)
+        self.result = (algo_id, int(n), order, first_edge)
 
         self.destroy()
 
@@ -245,6 +238,17 @@ class TriangleViewerManual(tk.Tk):
         self.show_dico_panel = tk.BooleanVar(value=True)
         # État d'affichage du compas horaire (overlay horloge)
         self.show_clock_overlay = tk.BooleanVar(value=True)
+
+        # Gestion des layers (visibilité)
+        self.show_map_layer = tk.BooleanVar(value=True)
+        self.show_triangles_layer = tk.BooleanVar(value=True)
+        # Opacité du layer "carte" (0..100). 100 = opaque, 0 = invisible.
+        self.map_opacity = tk.IntVar(value=70)
+        self._map_opacity_redraw_job = None
+
+
+        # Recentrage automatique (Fit à l'écran) lors de la sélection d'un scénario
+        self.auto_fit_scenario_select = tk.BooleanVar(value=False)
 
         # --- Fond SVG (coordonnées monde) ---
         self.bg_resize_mode = tk.BooleanVar(value=False)
@@ -315,6 +319,8 @@ class TriangleViewerManual(tk.Tk):
         # reflètent correctement l'état sauvegardé.
         self.show_dico_panel.set(bool(self.getAppConfigValue("uiShowDicoPanel", True)))
         self.show_clock_overlay.set(bool(self.getAppConfigValue("uiShowClockOverlay", True)))
+        self.auto_fit_scenario_select.set(bool(self.getAppConfigValue("uiAutoFitScenario", False)))
+        self.map_opacity.set(int(self.getAppConfigValue("uiMapOpacity", 70)))
 
         # Fond SVG : au démarrage le canvas n'a pas toujours une taille valide.
         # On déclenche donc un redessin différé (au 1er <Configure>) après rechargement.
@@ -344,9 +350,37 @@ class TriangleViewerManual(tk.Tk):
         self._clock_cx = None
         self._clock_cy = None
         self._clock_R  = 69    # rayon px (mis à jour dans le draw)
+        # Rayon "souhaité" du compas (modifiable via boutons < > dans les layers)
+        self._clock_radius = 69
+        # Azimut de référence (0° = Nord, sens horaire). Sert de base pour l'axe 0 du compas.
+        self._clock_ref_azimuth_deg = float(self.getAppConfigValue("uiClockRefAzimuth", 0.0) or 0.0)
+
+        # Mode interactif : définition de l'azimut de référence
+        self._clock_setref_active = False
+        self._clock_setref_line_id = None
+        self._clock_setref_text_id = None
+
+        # Mode interactif : mesure d'un azimut (relatif à l'azimut de référence)
+        self._clock_measure_active = False
+        self._clock_measure_line_id = None
+        self._clock_measure_text_id = None
+        self._clock_measure_last = None  # tuple(sx, sy, az_abs, az_rel)
+
+        # Mode interactif : mesure d'un arc d'angle (entre 2 points sur le compas)
+        self._clock_arc_active = False
+        self._clock_arc_step = 0        # 0: attente P1, 1: attente P2
+        self._clock_arc_p1 = None       # (sx, sy, az_abs)
+        self._clock_arc_p2 = None       # (sx, sy, az_abs)
+        self._clock_arc_line1_id = None
+        self._clock_arc_line2_id = None
+        self._clock_arc_arc_id = None
+        self._clock_arc_text_id = None
+
         self._clock_dragging = False
         self._clock_drag_dx = 0
         self._clock_drag_dy = 0
+        # "Snap" compas sur sommet le plus proche pendant le drag (CTRL au relâché = pas de snap)
+        self._clock_snap_target = None
 
         self._build_ui()
         # Centraliser / garantir les bindings (création initiale)
@@ -359,7 +393,6 @@ class TriangleViewerManual(tk.Tk):
         self.dico = None
         self._init_dictionary()
         self._build_dico_grid()
-
 
     # ---------- Dictionnaire : init ----------
     def _init_dictionary(self):
@@ -753,6 +786,11 @@ class TriangleViewerManual(tk.Tk):
             label="Fit à l'écran",
             command=lambda: self._fit_to_view(self._last_drawn)
         )
+        self.menu_visual.add_checkbutton(
+            label="Recentrer automatiquement sur le scénario",
+            variable=self.auto_fit_scenario_select,
+            command=self._toggle_auto_fit_scenario_select
+        )
         # Effacer l'affichage depuis le menu
         self.menu_visual.add_command(
             label="Effacer l'affichage…",
@@ -764,12 +802,6 @@ class TriangleViewerManual(tk.Tk):
             label="Afficher le dictionnaire",
             variable=self.show_dico_panel,
             command=self._toggle_dico_panel
-        )
-
-        self.menu_visual.add_checkbutton(
-            label="Afficher le compas horaire",
-            variable=self.show_clock_overlay,
-            command=self._toggle_clock_overlay
         )
 
         self.menu_visual.add_separator()
@@ -901,13 +933,13 @@ class TriangleViewerManual(tk.Tk):
         if not getattr(dlg, "result", None):
             return
 
-        algo_id, n, clear_auto, order, first_edge = dlg.result
+        algo_id, n, order, first_edge = dlg.result
         self._simulation_last_order = order
         self._simulation_last_algo_id = algo_id
         self._simulation_last_n = int(n)
 
-        if clear_auto:
-            self._simulation_clear_auto_scenarios()
+        # Par design : on détruit systématiquement les scénarios auto existants
+        self._simulation_clear_auto_scenarios()
 
         # --- Construire la liste des triangles selon l'ordre choisi ---
         tri_ids = self._simulation_get_tri_ids_by_order(n, order)
@@ -1032,6 +1064,12 @@ class TriangleViewerManual(tk.Tk):
             return None
 
     def _build_left_pane(self, parent):
+        style = ttk.Style()
+        style.configure(
+            "Bold.TLabelframe.Label",
+            font=(None, 9, "bold")
+        )
+
         left = tk.Frame(parent, width=260)
         # Si le parent est un PanedWindow horizontal, on ajoute le panneau gauche dedans
         # => l'utilisateur peut ensuite redimensionner la largeur via le séparateur.
@@ -1046,8 +1084,13 @@ class TriangleViewerManual(tk.Tk):
         pw.pack(fill=tk.BOTH, expand=True)
 
         # --- Panneau haut : liste des triangles ---
-        tri_frame = tk.Frame(pw)
-        tk.Label(tri_frame, text="Triangles (ordre)").pack(anchor="w", padx=6, pady=(6, 0))
+        tri_frame = ttk.LabelFrame(
+            pw,
+            text="Triangles (ordre)",
+            padding=(6, 4)
+        )
+        tri_frame.configure(labelanchor="nw")
+        tri_frame.configure(style="Bold.TLabelframe")
 
         lb_frame = tk.Frame(tri_frame)
         lb_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
@@ -1065,9 +1108,62 @@ class TriangleViewerManual(tk.Tk):
 
         pw.add(tri_frame, minsize=150)  # hauteur mini raisonnable pour les triangles
 
+        # --- Panneau intermédiaire : layers ---
+        layer_frame = ttk.LabelFrame(
+            pw,
+            text="Layers",
+            padding=(6, 4)
+        )
+        layer_frame.configure(labelanchor="nw")
+        layer_frame.configure(style="Bold.TLabelframe")
+
+        # Checkboxes de visibilité
+        cb_wrap = tk.Frame(layer_frame)
+        cb_wrap.pack(anchor="w", fill="x")
+
+        # Ligne "Carte" : checkbox + slider sur la même ligne
+        row_map = tk.Frame(cb_wrap)
+        # même espacement vertical que les autres checkboxes
+        row_map.pack(anchor="w", fill="x", pady=(2, 0))    
+        tk.Checkbutton(
+            row_map, text="Carte",
+            variable=self.show_map_layer,
+            command=self._toggle_layers,
+        ).pack(side=tk.LEFT, anchor="s")
+        self.mapOpacityScale = tk.Scale(
+            row_map, from_=0, to=100, orient=tk.HORIZONTAL,
+            variable=self.map_opacity,
+            showvalue=False,
+            length=120,
+            command=self._on_map_opacity_change,
+        )
+        # Slider aligné à droite
+        self.mapOpacityScale.pack(side=tk.RIGHT, padx=(0, 4), anchor="e")
+        tk.Checkbutton(cb_wrap, text="Triangle", variable=self.show_triangles_layer, command=self._toggle_layers).pack(anchor="w")
+
+        # Ligne "Compas" : checkbox + boutons de taille (< >)
+        row_clock = tk.Frame(cb_wrap)
+        row_clock.pack(anchor="w", fill="x")
+        tk.Checkbutton(
+            row_clock, text="Compas",
+            variable=self.show_clock_overlay,
+            command=self._toggle_clock_overlay
+        ).pack(side=tk.LEFT, anchor="w")
+        # Boutons taille compas : < réduit, > agrandit (pas de 5)
+        tk.Button(row_clock, text=">", width=2, command=lambda: self._clock_change_radius(+5)).pack(side=tk.RIGHT, padx=(0, 2))
+        tk.Button(row_clock, text="<", width=2, command=lambda: self._clock_change_radius(-5)).pack(side=tk.RIGHT, padx=(4, 0))
+
+
+        pw.add(layer_frame, minsize=80)
+
         # --- Panneau bas : scénarios + barre d'icônes ---
-        scen_frame = tk.Frame(pw)
-        tk.Label(scen_frame, text="Scénarios").pack(anchor="w", padx=6, pady=(6, 0))
+        scen_frame = ttk.LabelFrame(
+            pw,
+            text="Scénarios",
+            padding=(6, 4)
+        )
+        scen_frame.configure(labelanchor="nw")
+        scen_frame.configure(style="Bold.TLabelframe")
 
         # Barre d'icônes (Nouveau, Charger, Propriétés, Sauver, Dupliquer, Supprimer)
         toolbar = tk.Frame(scen_frame)
@@ -1199,8 +1295,23 @@ class TriangleViewerManual(tk.Tk):
         # Sélectionner le scénario actif si possible
         if 0 <= self.active_scenario_index < len(self.scenarios):
             active_iid = f"scen_{self.active_scenario_index}"
-            tree.selection_set(active_iid)
-            tree.see(active_iid)
+            # Défensif : lors d'un chargement/import, l'Excel peut être rechargé et déclencher
+            # des refresh intermédiaires ; dans ce cas l'item n'est pas toujours encore présent.
+            if hasattr(tree, "exists") and tree.exists(active_iid):
+                tree.selection_set(active_iid)
+                tree.see(active_iid)
+            else:
+                # fallback : sélectionner le 1er scénario (s'il existe)
+                for parent in ("grp_manual", "grp_auto", ""):
+                    try:
+                        kids = tree.get_children(parent)
+                    except Exception:
+                        kids = []
+                    if kids:
+                        tree.selection_set(kids[0])
+                        tree.see(kids[0])
+                        break
+
 
 
     def _update_triangle_listbox_colors(self):
@@ -1500,20 +1611,27 @@ class TriangleViewerManual(tk.Tk):
         # Invalider le cache de pick et redessiner
         self._invalidate_pick_cache()
 
-        # Fit à l'écran systématique lors de la sélection d'un scénario
-        # (utile pour voir immédiatement l’ensemble de l’assemblage)
-        if self._last_drawn:
+        # Fit à l'écran optionnel lors de la sélection d'un scénario
+        if self._last_drawn and bool(self.auto_fit_scenario_select.get()):
             # _fit_to_view redessine déjà via _redraw_from()
             self._fit_to_view(self._last_drawn)
         else:
             self._redraw_from(self._last_drawn)
+
         self._redraw_overlay_only()
 
         # Mettre à jour la sélection visuelle dans la liste (au cas d'appel programmatique)
         if hasattr(self, "scenario_tree"):
             active_iid = f"scen_{self.active_scenario_index}"
-            self.scenario_tree.selection_set(active_iid)
-            self.scenario_tree.see(active_iid)
+            tree = self.scenario_tree
+            # Défensif : _set_active_scenario() peut être appelé avant que la Treeview
+            # n'ait été rafraîchie (ex: import d'un scénario => append dans self.scenarios
+            # puis activation avant _refresh_scenario_listbox()). Dans ce cas, l'item
+            # n'existe pas encore et Tk lève "Item scen_X not found".
+            if hasattr(tree, "exists") and tree.exists(active_iid):
+                tree.selection_set(active_iid)
+                tree.see(active_iid)
+
 
         self.status.config(text=f"Scénario actif : {scen.name}")
 
@@ -1686,15 +1804,24 @@ class TriangleViewerManual(tk.Tk):
             tk.Label(self.dicoPanel, text="Dictionnaire — (grille à intégrer)",
                      bg="#f3f3f3", anchor="w").pack(fill=tk.X, padx=8, pady=4)
 
+        # Menu contextuel COMPAS (clic droit sur le compas)
+        self._ctx_menu_compass = tk.Menu(self, tearoff=0)
+        self._ctx_menu_compass.add_command(label="Définir l'azimut de ref…", command=self._ctx_define_clock_ref_azimuth)
+        self._ctx_menu_compass.add_command(label="Mesurer un azimut…", command=self._ctx_measure_clock_azimuth)
+        self._ctx_menu_compass.add_command(label="Mesurer un arc d'angle…", command=self._ctx_measure_clock_arc_angle)
+
         # Menu contextuel
         self._ctx_menu = tk.Menu(self, tearoff=0)
         self._ctx_menu.add_command(label="Supprimer", command=self._ctx_delete_group)
         self._ctx_menu.add_command(label="Pivoter", command=self._ctx_rotate_selected)
         self._ctx_menu.add_command(label="Inverser", command=self._ctx_flip_selected)
+        self._ctx_menu.add_command(label="Filtrer les scénarios…", command=self._ctx_filter_scenarios)
         self._ctx_menu.add_command(label="OL=0°", command=self._ctx_orient_OL_north)
+        self._ctx_menu.add_command(label="BL=0°", command=self._ctx_orient_BL_north)
 
-        # Mémoriser l'index de l'entrée "OL=0°" pour pouvoir la (dés)activer au vol
-        self._ctx_idx_ol0 = self._ctx_menu.index("end")
+        # Mémoriser l'index des entrées "OL=0°" / "BL=0°" pour pouvoir les (dés)activer au vol
+        self._ctx_idx_ol0 = self._ctx_menu.index("end") - 1
+        self._ctx_idx_bl0 = self._ctx_menu.index("end")
 
         # Séparateur et zone dynamique pour les actions "mot"
         self._ctx_menu.add_separator()
@@ -1717,26 +1844,60 @@ class TriangleViewerManual(tk.Tk):
         - Si un fond SVG a été rechargé au démarrage alors que le canvas était trop petit,
           on force UNE fois un redraw complet dès que la taille devient valide.
         """
+        # Note: Tk peut spammer <Configure> lors d'un resize -> on debounce.
         try:
-            if getattr(self, "_bg_defer_redraw", False) and getattr(self, "_bg", None):
-                cw = int(self.canvas.winfo_width() or 0)
-                ch = int(self.canvas.winfo_height() or 0)
-                if cw > 2 and ch > 2:
-                    # Un seul redraw complet (sinon c'est lourd)
-                    self._bg_defer_redraw = False
-                    self._redraw_from(self._last_drawn)
+            cw_now = int(self.canvas.winfo_width() or 0)
+            ch_now = int(self.canvas.winfo_height() or 0)
         except Exception:
-            pass
+            cw_now, ch_now = 0, 0
+
+        # Si la taille a réellement changé, on programme un redraw complet.
+        # (sinon, le fond de carte reste « figé » jusqu'au prochain pan/zoom)
+        if cw_now > 2 and ch_now > 2:
+            last_sz = getattr(self, "_last_canvas_size", None)
+            if last_sz != (cw_now, ch_now):
+                self._last_canvas_size = (cw_now, ch_now)
+                try:
+                    if getattr(self, "_resize_redraw_after_id", None) is not None:
+                        self.after_cancel(self._resize_redraw_after_id)
+                except Exception:
+                    pass
+                try:
+                    self._resize_redraw_after_id = self.after(40, self._do_resize_redraw)
+                except Exception:
+                    self._resize_redraw_after_id = None
+
+        if getattr(self, "_bg_defer_redraw", False) and getattr(self, "_bg", None):
+            cw = int(self.canvas.winfo_width() or 0)
+            ch = int(self.canvas.winfo_height() or 0)
+            if cw > 2 and ch > 2:
+                # Un seul redraw complet (sinon c'est lourd)
+                self._bg_defer_redraw = False
+                self._redraw_from(self._last_drawn)
+
 
         # Overlay + pick-cache (après le redraw complet, car _redraw_from() fait delete('all'))
+        self._redraw_overlay_only()
+        self._invalidate_pick_cache()
+
+
+    def _do_resize_redraw(self):
+        """Redraw complet après un resize (debounced).
+
+        Important : on redessine tout (fond + triangles + compas), sinon le fond
+        peut rester partiellement « non rafraîchi » après agrandissement.
+        """
+        self._resize_redraw_after_id = None
+
         try:
-            self._redraw_overlay_only()
+            self._redraw_from(self._last_drawn)
         except Exception:
-            pass
-        try:
-            self._invalidate_pick_cache()
-        except Exception:
-            pass
+            # Ne pas casser l'IHM sur un resize
+            return
+
+        # Overlay + pick-cache (après delete('all') dans _redraw_from)
+        self._redraw_overlay_only()
+        self._invalidate_pick_cache()
 
     def _toggle_dico_panel(self):
         """
@@ -1762,6 +1923,18 @@ class TriangleViewerManual(tk.Tk):
         # Persistance : mémoriser l'état (affiché/caché)
         self.setAppConfigValue("uiShowDicoPanel", bool(show))
 
+    def _clock_change_radius(self, delta: int):
+        """Modifie le rayon du compas (min=50) et redessine l'overlay."""
+        r = int(getattr(self, "_clock_radius", 69))
+        r = max(50, r + int(delta))
+        self._clock_radius = int(r)
+        # Redessiner uniquement l'overlay (ne touche pas aux triangles)
+        self._redraw_overlay_only()
+
+    def _toggle_auto_fit_scenario_select(self):
+        """Active/désactive le Fit automatique lors de la sélection d'un scénario."""
+        self.setAppConfigValue("uiAutoFitScenario", bool(self.auto_fit_scenario_select.get()))
+
     def _toggle_bg_resize_mode(self):
         """Active/désactive le mode d'édition du fond (redimensionnement + déplacement).
         Important : on force la persistance de la géométrie du fond (x0/y0/w/h)
@@ -1776,6 +1949,27 @@ class TriangleViewerManual(tk.Tk):
             self._bg_update_scale_status()
 
         self._redraw_from(self._last_drawn)
+
+
+    def _toggle_layers(self):
+        """Redessine le canvas suite à un changement de visibilité d'un layer."""
+        self._redraw_from(self._last_drawn)
+
+
+    def _on_map_opacity_change(self, value=None):
+        """Callback du slider d'opacité de la carte (debounced)."""
+        v = int(float(self.map_opacity.get()))
+        v = max(0, min(100, v))
+        self.map_opacity.set(v)
+        self.setAppConfigValue("uiMapOpacity", int(v))
+        if self._map_opacity_redraw_job is not None:
+            self.after_cancel(self._map_opacity_redraw_job)
+
+        def _do():
+            self._map_opacity_redraw_job = None
+            self._redraw_from(self._last_drawn)
+
+        self._map_opacity_redraw_job = self.after(60, _do)
 
     def _toggle_clock_overlay(self):
         """Affiche ou cache le compas horaire (overlay horloge)."""
@@ -1798,7 +1992,7 @@ class TriangleViewerManual(tk.Tk):
 
     def _ensure_pick_cache(self):
         """Reconstruit le pick-cache si nécessaire (appel paresseux côté input)."""
-        if not getattr(self, "_pick_cache_valid", False):
+        if not self._pick_cache_valid:
             self._rebuild_pick_cache()
 
     def _rebuild_pick_cache(self):
@@ -2144,9 +2338,9 @@ class TriangleViewerManual(tk.Tk):
                 pass
 
             if isinstance(rect, dict) and all(k in rect for k in ("x0", "y0", "w", "h")):
-                self._bg_set_svg(svg_path, rect_override=rect, persist=False)
+                self._bg_set_map(svg_path, rect_override=rect, persist=False)
             else:
-                self._bg_set_svg(svg_path, rect_override=None, persist=False)
+                self._bg_set_map(svg_path, rect_override=None, persist=False)
 
             # Si le canvas était encore trop petit au moment du redraw, on redessinera une fois
             # dès qu'un <Configure> avec une taille valide arrive.
@@ -2546,16 +2740,24 @@ class TriangleViewerManual(tk.Tk):
         if not getattr(self, "canvas", None):
             return
         # Nettoyer l'ancien overlay
-        try:
-            self.canvas.delete("clock_overlay")
-        except Exception:
-            pass
+        self.canvas.delete("clock_overlay")
+
         # Si le compas est masqué via le menu, ne rien dessiner
         if hasattr(self, "show_clock_overlay") and not self.show_clock_overlay.get():
             return
         # Paramètres d'aspect
         margin = 12              # marge par rapport aux bords du canvas (px)
-        R      = 69              # rayon (px) — +50% (46 -> 69)
+        # rayon (px) — modifiable via UI (min=50)
+        R = max(50, int(getattr(self, "_clock_radius", 69)))
+        # Si un ancrage monde existe (et qu'on ne drag pas), le centre du compas suit pan/zoom
+        if getattr(self, "_clock_anchor_world", None) is not None and not getattr(self, "_clock_dragging", False):
+            sx, sy = self._world_to_screen(self._clock_anchor_world)
+            self._clock_cx, self._clock_cy = float(sx), float(sy)
+        # Si on a déjà une position écran mais pas d'ancrage monde, on l'initialise
+        if getattr(self, "_clock_anchor_world", None) is None and self._clock_cx is not None and self._clock_cy is not None and not getattr(self, "_clock_dragging", False):
+            wx, wy = self._screen_to_world(self._clock_cx, self._clock_cy)
+            self._clock_anchor_world = np.array([wx, wy], dtype=float)
+
         # Si première fois, placer en haut-gauche ; sinon garder la position utilisateur
         if self._clock_cx is None or self._clock_cy is None:
             cx = margin + R
@@ -2564,6 +2766,10 @@ class TriangleViewerManual(tk.Tk):
         else:
             cx, cy = float(self._clock_cx), float(self._clock_cy)
         self._clock_R = R
+
+        # Axe 0 de référence (azimut)
+        ref_az = float(getattr(self, "_clock_ref_azimuth_deg", 0.0)) % 360.0
+
         # Couleurs
         col_circle = "#b0b0b0"   # gris cercle
         col_ticks  = "#707070"
@@ -2576,9 +2782,32 @@ class TriangleViewerManual(tk.Tk):
         # Cercle
         self.canvas.create_oval(cx-R, cy-R, cx+R, cy+R,
                                 outline=col_circle, width=2, tags="clock_overlay")
+
+        # Dessiner l'axe de référence (0°) selon l'azimut de référence
+        th = math.radians(ref_az)
+        x_ref = cx + (R * 0.92) * math.sin(th)
+        y_ref = cy - (R * 0.92) * math.cos(th)
+        self.canvas.create_line(cx, cy, x_ref, y_ref, width=2, fill="#404040", tags=("clock_overlay",))
+
+        # Graduations minutes : un trait toutes les minutes (les 5 min plus visibles)
+        for k in range(60):
+            ang = math.radians(ref_az + k * 6.0)  # 360/60 + ref az
+            if k % 5 == 0:
+                inner = R - 10
+                w = 1
+            else:
+                inner = R - 6
+                w = 1
+            outer = R
+            x1 = cx + inner * math.sin(ang)
+            y1 = cy - inner * math.cos(ang)
+            x2 = cx + outer * math.sin(ang)
+            y2 = cy - outer * math.cos(ang)
+            self.canvas.create_line(x1, y1, x2, y2, width=w, fill=col_ticks, tags="clock_overlay")
+
         # Graduations heures (12 traits) : quarts plus longs/épais
         for hmark in range(12):
-            ang = math.radians(hmark * 30.0)  # 360/12
+            ang = math.radians(ref_az + hmark * 30.0)  # 360/12 + ref az
             # longueur du trait
             if hmark % 3 == 0:     # 12/3/6/9
                 inner = R - 14
@@ -2593,16 +2822,28 @@ class TriangleViewerManual(tk.Tk):
             y2 = cy - outer * math.cos(ang)
             self.canvas.create_line(x1, y1, x2, y2, width=w, fill=col_ticks, tags="clock_overlay")
 
-        # Repères 12/3/6/9
+        # Repères 12/3/6/9 (alignés sur l'axe de référence)
         font_marks = ("Arial", 11, "bold")
-        self.canvas.create_text(cx,     cy-R+14, text="12", font=font_marks,
+
+        def _pos(angle_deg, rad):
+            a = math.radians(angle_deg)
+            return (cx + rad * math.sin(a), cy - rad * math.cos(a))
+
+        r_text = R - 18
+        x12, y12 = _pos(ref_az + 0.0,   r_text)
+        x3,  y3  = _pos(ref_az + 90.0,  r_text)
+        x6,  y6  = _pos(ref_az + 180.0, r_text)
+        x9,  y9  = _pos(ref_az + 270.0, r_text)
+
+        self.canvas.create_text(x12, y12, text="12", font=font_marks,
                                 fill=col_ticks, tags="clock_overlay")
-        self.canvas.create_text(cx+R-14, cy,     text="3",  font=font_marks,
+        self.canvas.create_text(x3,  y3,  text="3",  font=font_marks,
                                 fill=col_ticks, tags="clock_overlay")
-        self.canvas.create_text(cx,     cy+R-14, text="6",  font=font_marks,
+        self.canvas.create_text(x6,  y6,  text="6",  font=font_marks,
                                 fill=col_ticks, tags="clock_overlay")
-        self.canvas.create_text(cx-R+14, cy,     text="9",  font=font_marks,
+        self.canvas.create_text(x9,  y9,  text="9",  font=font_marks,
                                 fill=col_ticks, tags="clock_overlay")
+
         # Aiguilles
         # Convention : angle 0° = 12h, sens horaire ; conversion vers coords canvas:
         #   x = cx + R * sin(theta), y = cy - R * cos(theta)
@@ -2611,9 +2852,9 @@ class TriangleViewerManual(tk.Tk):
             a = math.radians(angle_deg)
             return (cx + length * math.sin(a), cy - length * math.cos(a))
         # Minutes -> 6° par minute
-        ang_min = m * 6.0
+        ang_min = ref_az + (m * 6.0)
         # Heures -> 30° par heure + 0,5° par minute
-        ang_hour = (h % 12) * 30.0 + (m * 0.5)
+        ang_hour = ref_az + ((h % 12) * 30.0) + (m * 0.5)
         # Longueurs des aiguilles
         L_min  = R * 0.86
         L_hour = R * 0.58
@@ -2629,6 +2870,48 @@ class TriangleViewerManual(tk.Tk):
             self.canvas.create_text(cx, cy + R + 20, text=label,
                                     font=("Arial", 11), fill="#000000",
                                     anchor="n", tags="clock_overlay")
+
+
+    # ---------- Horloge : snap sur sommet le plus proche ----------
+    def _clock_clear_snap_target(self):
+        """Efface le marqueur visuel du sommet 'target' pendant le drag du compas."""
+        self._clock_snap_target = None
+        if getattr(self, "canvas", None):
+            self.canvas.delete("clock_snap_target")
+
+
+    def _clock_update_snap_target(self, sx: float, sy: float):
+        """Calcule le sommet de triangle le plus proche du curseur (en écran/canvas) et l'affiche en rouge."""
+        # Pas de triangles -> rien à viser
+        if not getattr(self, "_last_drawn", None):
+            self._clock_clear_snap_target()
+            return
+        try:
+            w = self._screen_to_world(sx, sy)
+            v_world = np.array([float(w[0]), float(w[1])], dtype=float)
+        except Exception:
+            self._clock_clear_snap_target()
+            return
+
+        found = self._find_nearest_vertex(v_world, exclude_idx=None, exclude_gid=None)
+        if found is None:
+            self._clock_clear_snap_target()
+            return
+
+        idx, vkey, wbest = found
+        self._clock_snap_target = {"idx": int(idx), "vkey": str(vkey), "world": np.array(wbest, dtype=float)}
+
+        # Marqueur visuel : un anneau rouge autour du sommet
+
+        if getattr(self, "canvas", None):
+            self.canvas.delete("clock_snap_target")
+            px, py = self._world_to_screen(wbest)
+            r = 10  # rayon px fixe
+            self.canvas.create_oval(px - r, py - r, px + r, py + r,
+                                    outline="#FF0000", width=3,
+                                    fill="", tags="clock_snap_target")
+            self.canvas.tag_raise("clock_snap_target")
+
 
     # ==========================
     # Calibration fond (3 points)
@@ -2914,13 +3197,147 @@ class TriangleViewerManual(tk.Tk):
 
     def _bg_load_svg_dialog(self):
         path = filedialog.askopenfilename(
-            title="Choisir un fond SVG",
+            title="Choisir une carte (SVG/PNG/JPG)",
             initialdir=getattr(self, "maps_dir", None) or None,
-            filetypes=[("SVG", "*.svg"), ("Tous fichiers", "*.*")]
+            filetypes=[
+                ("Cartes", "*.svg *.png *.jpg *.jpeg"),
+                ("SVG", "*.svg"),
+                ("PNG", "*.png"),
+                ("JPG", "*.jpg *.jpeg"),
+                ("Tous fichiers", "*.*"),
+            ],
         )
         if not path:
             return
-        self._bg_set_svg(path)
+        self._bg_set_map(path)
+
+    def _bg_set_map(self, path: str, rect_override: dict | None = None, persist: bool = True):
+        """Charge une carte (fond) depuis un fichier .svg ou une image raster (.png/.jpg/.jpeg).
+
+        - SVG : rasterisation (svglib/reportlab/pypdfium2) comme avant
+        - PNG/JPG/JPEG : chargement direct via Pillow
+
+        Note : on conserve les clés de config 'bgSvgPath/bgWorldRect' pour compatibilité.
+        """
+        ext = os.path.splitext(str(path))[1].lower()
+        if ext == ".svg":
+            return self._bg_set_svg(path, rect_override=rect_override, persist=persist)
+        if ext in (".png", ".jpg", ".jpeg"):
+            return self._bg_set_png(path, rect_override=rect_override, persist=persist)
+
+        messagebox.showerror(
+            "Format non supporté",
+            f"Carte non supportée: {path}\nFormats acceptés: .svg, .png, .jpg, .jpeg"
+        )
+
+    def _bg_set_png(self, png_path: str, rect_override: dict | None = None, persist: bool = True):
+        if (Image is None or ImageTk is None):
+            messagebox.showerror(
+                "Dépendances manquantes",
+                "Pour afficher un fond PNG, installe :\n"
+                "  - pillow\n\n"
+                "pip install pillow"
+            )
+            return
+
+        try:
+            pil0 = Image.open(png_path).convert("RGBA")
+        except Exception as e:
+            messagebox.showerror("Erreur image", f"Impossible de charger l'image :\n{e}")
+            return
+
+        # aspect depuis l'image
+        try:
+            w0, h0 = pil0.size
+            aspect = float(w0) / float(h0) if h0 else 1.0
+            aspect = max(1e-6, aspect)
+        except Exception:
+            aspect = 1.0
+
+        # base normalisée : max 4096 sur le plus grand côté (comme SVG)
+        try:
+            max_dim = 4096
+            w0, h0 = pil0.size
+            if w0 <= 0 or h0 <= 0:
+                raise ValueError("image vide")
+            if max(w0, h0) > max_dim:
+                if w0 >= h0:
+                    W = int(max_dim)
+                    H = max(1, int(round(W / aspect)))
+                else:
+                    H = int(max_dim)
+                    W = max(1, int(round(H * aspect)))
+                pil0 = pil0.resize((W, H), Image.LANCZOS)
+        except Exception:
+            pass
+
+        # Si on a une géométrie sauvegardée (monde), on la réapplique telle quelle
+        if isinstance(rect_override, dict) and all(k in rect_override for k in ("x0", "y0", "w", "h")):
+            try:
+                x0 = float(rect_override.get("x0", 0.0))
+                y0 = float(rect_override.get("y0", 0.0))
+                w  = float(rect_override.get("w", 1.0))
+                h  = float(rect_override.get("h", 1.0))
+                if w > 1e-9 and h > 1e-9:
+                    self._bg = {"path": png_path, "x0": x0, "y0": y0, "w": w, "h": h, "aspect": aspect}
+                    self._bg_base_pil = pil0
+                    self._bg_try_load_calibration(png_path)
+                    if self._bg_calib_data is not None:
+                        print(f"[BG] Calibration chargée : {os.path.splitext(os.path.basename(str(png_path)))[0]}.json")
+
+                    if persist:
+                        self._persistBackgroundConfig()
+
+                    self._redraw_from(self._last_drawn)
+
+                    if persist:
+                        print(f"[Fond image] Fichier chargé: {os.path.basename(str(png_path))} ({png_path})")
+                    return
+            except Exception:
+                pass
+
+        # Position/taille initiale : calée sur bbox des triangles si dispo, sinon vue écran
+        if self._last_drawn:
+            xs, ys = [], []
+            for t in self._last_drawn:
+                P = t["pts"]
+                for k in ("O", "B", "L"):
+                    xs.append(float(P[k][0])); ys.append(float(P[k][1]))
+            xmin, xmax = min(xs), max(xs)
+            ymin, ymax = min(ys), max(ys)
+        else:
+            cw = max(2, int(self.canvas.winfo_width() or 2))
+            ch = max(2, int(self.canvas.winfo_height() or 2))
+            x0, yTop = self._screen_to_world(0, 0)
+            x1, yBot = self._screen_to_world(cw, ch)
+            xmin, xmax = (min(x0, x1), max(x0, x1))
+            ymin, ymax = (min(yBot, yTop), max(yBot, yTop))
+
+        cx = 0.5 * (xmin + xmax)
+        cy = 0.5 * (ymin + ymax)
+        bw = max(1e-6, (xmax - xmin) * 1.10)
+        bh = max(1e-6, (ymax - ymin) * 1.10)
+
+        # Ajuster pour conserver le ratio
+        if (bw / bh) > aspect:
+            w = bw
+            h = w / aspect
+        else:
+            h = bh
+            w = h * aspect
+
+        self._bg = {"path": png_path, "x0": cx - w/2, "y0": cy - h/2, "w": w, "h": h, "aspect": aspect}
+        self._bg_base_pil = pil0
+
+        self._bg_try_load_calibration(png_path)
+        if self._bg_calib_data is not None:
+            print(f"[BG] Calibration chargée : {os.path.splitext(os.path.basename(str(png_path)))[0]}.json")
+
+        if persist:
+            self._persistBackgroundConfig()
+            print(f"[Fond PNG] Fichier chargé: {os.path.basename(str(png_path))} ({png_path})")
+
+        self._redraw_from(self._last_drawn)
 
     def _bg_set_svg(self, svg_path: str, rect_override: dict | None = None, persist: bool = True):
         if (Image is None or ImageTk is None or svg2rlg is None
@@ -3180,7 +3597,9 @@ class TriangleViewerManual(tk.Tk):
 
         crop = crop.resize((wpx, hpx), Image.LANCZOS)
 
-        out = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+        # IMPORTANT: fond blanc pour éviter un rendu gris quand la carte est semi-transparente
+        # (Tk peut composer les pixels transparents sur un fond non-blanc selon la plateforme).
+        out = Image.new("RGBA", (cw, ch), (255, 255, 255, 255))
         px = int(round(sx0)); py = int(round(syTop))
 
         # clip paste
@@ -3197,6 +3616,18 @@ class TriangleViewerManual(tk.Tk):
         src_y1 = src_y0 + (paste_y1 - paste_y0)
 
         crop2 = crop.crop((src_x0, src_y0, src_x1, src_y1))
+        # Appliquer l'opacité utilisateur (0..100) sur l'alpha du fond
+        op = int(float(self.map_opacity.get()))
+
+        op = max(0, min(100, op))
+        if op <= 0:
+            return
+        if op < 100:
+            if crop2.mode != "RGBA":
+                crop2 = crop2.convert("RGBA")
+            r, g, b, a = crop2.split()
+            a = a.point(lambda p: int(p * op / 100))
+            crop2.putalpha(a)
         out.paste(crop2, (paste_x0, paste_y0), crop2)
 
         self._bg_photo = ImageTk.PhotoImage(out)
@@ -3447,43 +3878,44 @@ class TriangleViewerManual(tk.Tk):
         except Exception:
             self._comparison_diff_indices = set()
         self.canvas.delete("all")
-        # Fond SVG monde (toujours derrière)
-        self._bg_draw_world_layer()        
+        # Fond carte (si layer visible)
+        if getattr(self, "show_map_layer", None) is None or self.show_map_layer.get():
+            self._bg_draw_world_layer()     
 
         # l'ID de la ligne n'est plus valide après delete("all")
         self._nearest_line_id = None
         # on efface les IDs de surlignage déjà dessinés (mais on conserve le choix et les données)
         self._clear_edge_highlights()
-        for i, t in enumerate(placed):
-            labels = t["labels"]
-            P = t["pts"]
-            tri_id = t.get("id")
-            fill = "#ffd6d6" if i in getattr(self, "_comparison_diff_indices", set()) else None
-            self._draw_triangle_screen(
-                P,
-                labels=[f"O:{labels[0]}", f"B:{labels[1]}", f"L:{labels[2]}"],
-                tri_id=tri_id,
-                tri_mirrored=t.get("mirrored", False),
-                fill=fill,
-                diff_outline=bool(fill),
-            )
+        if getattr(self, "show_triangles_layer", None) is None or self.show_triangles_layer.get():
+            for i, t in enumerate(placed):
+                labels = t["labels"]
+                P = t["pts"]
+                tri_id = t.get("id")
+                fill = "#ffd6d6" if i in getattr(self, "_comparison_diff_indices", set()) else None
+                self._draw_triangle_screen(
+                    P,
+                    labels=[f"O:{labels[0]}", f"B:{labels[1]}", f"L:{labels[2]}"],
+                    tri_id=tri_id,
+                    tri_mirrored=t.get("mirrored", False),
+                    fill=fill,
+                    diff_outline=bool(fill),
+                )
+
         # — Recrée l'aide visuelle UNIQUEMENT si une sélection 'vertex' est encore active —
-        try:
-            if self._sel and self._sel.get("mode") == "vertex":
-                # redessine candidates + best si on a des données
-                if getattr(self, "_edge_highlights", None):
-                    self._redraw_edge_highlights()
-                # remet la ligne grise
-                idx = self._sel["idx"]; vkey = self._sel["vkey"]
-                P = self._last_drawn[idx]["pts"]
-                v_world = np.array(P[vkey], dtype=float)
-                self._update_nearest_line(v_world, exclude_idx=idx)
-            else:
-                # pas de sélection active -> pas d'aides persistantes
-                self._edge_highlights = None
-                self._edge_choice = None
-        except Exception:
-            pass
+        if self._sel and self._sel.get("mode") == "vertex":
+            # redessine candidates + best si on a des données
+            if getattr(self, "_edge_highlights", None):
+                self._redraw_edge_highlights()
+            # remet la ligne grise
+            idx = self._sel["idx"]; vkey = self._sel["vkey"]
+            P = self._last_drawn[idx]["pts"]
+            v_world = np.array(P[vkey], dtype=float)
+            self._update_nearest_line(v_world, exclude_idx=idx)
+        else:
+            # pas de sélection active -> pas d'aides persistantes
+            self._edge_highlights = None
+            self._edge_choice = None
+
         # Poignées de redimensionnement fond (overlay UI)
         self._bg_draw_resize_handles()
         # Redessiner l'horloge (overlay indépendant)
@@ -3592,6 +4024,12 @@ class TriangleViewerManual(tk.Tk):
 
     # --- helpers: mode déconnexion (CTRL) + curseur ---
     def _on_ctrl_down(self, event=None):
+        # Pendant une mesure d'azimut du compas, CTRL sert uniquement à désactiver le snap.
+        # On évite donc d'activer le mode "déconnexion" des triangles (curseur + aides).
+        if getattr(self, "_clock_measure_active", False):
+            self._ctrl_down = True
+            return
+
         if not self._ctrl_down:
             self._ctrl_down = True
             # Masquer tout tooltip en mode déconnexion
@@ -3881,7 +4319,7 @@ class TriangleViewerManual(tk.Tk):
          Retourne une liste d'objets { "name": str, "pt": (x, y) }.
         """
         nodes = self._group_nodes(gid) if gid else []
-        out_candidates = []   # [(name, dx, dy, dist, neigh_xy)]
+        out_candidates = []   # [(name, tid, dx, dy, dist, neigh_xy)]
         for nd in nodes:
             tid = nd.get("tid")
             if tid is None or not (0 <= tid < len(self._last_drawn)):
@@ -3899,14 +4337,14 @@ class TriangleViewerManual(tk.Tk):
                     dx, dy = float(B[0]-v_world[0]), float(B[1]-v_world[1])
                     dist = (dx*dx+dy*dy)**0.5
                     if name:
-                        out_candidates.append((name, dx, dy, dist, (float(B[0]), float(B[1]))))
+                        out_candidates.append((name, int(tid), dx, dy, dist, (float(B[0]), float(B[1]))))
                     continue
                 if (abs(v_world[0]-B[0]) <= eps and abs(v_world[1]-B[1]) <= eps):
                     name = self._display_name(a, lab)
                     dx, dy = float(A[0]-v_world[0]), float(A[1]-v_world[1])
                     dist = (dx*dx+dy*dy)**0.5
                     if name:
-                        out_candidates.append((name, dx, dy, dist, (float(A[0]), float(A[1]))))
+                        out_candidates.append((name, int(tid), dx, dy, dist, (float(A[0]), float(A[1]))))
                     continue
                 # 2) sinon : le point est-il sur le SEGMENT [A,B] ? ➜ connecté aux deux extrémités
                 if self._point_on_segment(v_world, A, B, eps):
@@ -3915,28 +4353,45 @@ class TriangleViewerManual(tk.Tk):
                     dx, dy = float(A[0]-v_world[0]), float(A[1]-v_world[1])
                     dist = (dx*dx+dy*dy)**0.5
                     if name_a:
-                        out_candidates.append((name_a, dx, dy, dist, (float(A[0]), float(A[1]))))
+                        out_candidates.append((name_a, int(tid), dx, dy, dist, (float(A[0]), float(A[1]))))
                     dx, dy = float(B[0]-v_world[0]), float(B[1]-v_world[1])
                     dist = (dx*dx+dy*dy)**0.5
                     if name_b:
-                        out_candidates.append((name_b, dx, dy, dist, (float(B[0]), float(B[1]))))
+                        out_candidates.append((name_b, int(tid), dx, dy, dist, (float(B[0]), float(B[1]))))
         if not out_candidates:
             return []
-        # Déduplication UNIQUE par (nom + position voisine quantifiée)
-        by_key = {}  # key = (name, qx, qy) -> (dist, pt)
+        # Déduplication UNIQUE par (nom + tid + position voisine quantifiée)
+        by_key = {}  # key = (name, tid, qx, qy) -> (dist, pt)
         def q(p):
-            return (round(neigh_xy[0]/eps)*eps, round(neigh_xy[1]/eps)*eps)
-        for (name, dx, dy, dist, neigh_xy) in out_candidates:
-            key = (name, *q(neigh_xy))
+            return (round(p[0]/eps)*eps, round(p[1]/eps)*eps)
+        for (name, tid, dx, dy, dist, neigh_xy) in out_candidates:
+            qx, qy = q(neigh_xy)
+            key = (name, int(tid), qx, qy)
             if (key not in by_key) or (dist > by_key[key][0]):
                 by_key[key] = (dist, neigh_xy)
-        # Restituer [{name, pt}] triés par distance décroissante (optionnel)
+        # Restituer [{name, pt, tid}] triés par distance décroissante (optionnel)
         out = []
-        for (name, qx, qy), (dist, pt) in sorted(by_key.items(), key=lambda kv: -kv[1][0]):
-            out.append({"name": name, "pt": (float(pt[0]), float(pt[1]))})
+        for (name, tid, qx, qy), (dist, pt) in sorted(by_key.items(), key=lambda kv: -kv[1][0]):
+            out.append({"name": name, "pt": (float(pt[0]), float(pt[1])), "tid": int(tid)})
+
         return out
 
     def _on_canvas_motion_update_drag(self, event):
+        # Mode compas : mesure d'un azimut (relatif à la référence)
+        if getattr(self, "_clock_measure_active", False):
+            self._clock_measure_update_preview(int(event.x), int(event.y))
+            return "break"
+
+        # Mode compas : mesure d'arc d'angle
+        if getattr(self, "_clock_arc_active", False):
+            self._clock_arc_update_preview(int(event.x), int(event.y))
+            return "break"
+
+        # Mode compas : définition de l'azimut de référence
+        if getattr(self, "_clock_setref_active", False):
+            self._clock_setref_update_preview(int(event.x), int(event.y))
+            return "break"
+
         # Toujours garantir un pick-cache à jour avant tout hit/tooltip
         self._ensure_pick_cache()
 
@@ -4048,13 +4503,13 @@ class TriangleViewerManual(tk.Tk):
                     for key, lbl in (("O", labels[0] if len(labels) > 0 else ""),
                                      ("B", labels[1] if len(labels) > 1 else ""),
                                      ("L", labels[2] if len(labels) > 2 else "")):
-                        try:
-                            if same_pos(Pt[key], v_world):
-                                txt = f"{key}:{str(lbl).strip()}"
-                                if txt and txt not in seen:
-                                    lines.append(txt); seen.add(txt)
-                        except Exception:
-                            continue
+
+                        if same_pos(Pt[key], v_world):
+                            triNum = int(tri.get("id", tid+1))
+                            txt = f"{key}:{str(lbl).strip()}({triNum}S)"
+                            if txt and txt not in seen:
+                                lines.append(txt); seen.add(txt)
+
                 # ---- LIGNE(S) DU DESSOUS : arêtes connectées ----
                 try:
                     connected = self._connected_vertices_from(v_world, gid, tol_world)
@@ -4068,20 +4523,28 @@ class TriangleViewerManual(tk.Tk):
                         try:
                             name = item.get("name", "")
                             pt   = item.get("pt", None)
+                            tid2 = item.get("tid", None)
                         except Exception:
                             name, pt = (str(item), None)
                         if not name:
                             continue
+                        # Ajouter l'id du triangle (ex: 2S) pour lever l'ambiguïté
+                        nameDisp = name
+                        if tid2 is not None and 0 <= int(tid2) < len(self._last_drawn):
+                            tri2 = self._last_drawn[int(tid2)]
+                            triNum2 = int(tri2.get("id", int(tid2)+1))
+                            nameDisp = f"{name} ({triNum2}S)"
+
                         if pt is None:
-                            lines.append(f"-> {name}")
+                            lines.append(f"-> {nameDisp}")
                             continue
                         az = self._azimutDegEtMinute(v_world, pt)
                         if az is None:
-                            lines.append(f"-> {name} — azimut indéterminé")
+                            lines.append(f"-> {nameDisp} — azimut indéterminé")
                         else:
                             degInt, minFloat, hourFloat = az
                             # Alignements lisibles: degrés sur 3, minutes & heures avec 1 décimale
-                            lines.append(f"-> {name} — {degInt:03d}° / {minFloat:04.1f}' / {hourFloat:0.1f}h")
+                            lines.append(f"-> {nameDisp} — {degInt:03d}° / {minFloat:04.1f}' / {hourFloat:0.1f}h")
             tooltip_txt = "\n".join(lines)
             if tooltip_txt:
                 # === Placement robuste par CENTRE du tooltip ===
@@ -4741,14 +5204,31 @@ class TriangleViewerManual(tk.Tk):
 
     def _on_escape_key(self, event):
         """Annuler un drag&drop (liste) ou un déplacement/selection de triangle (avec rollback)."""
-        # Annule aussi une calibration en cours
-        if getattr(self, "_bg_calib_active", False):
+        # Annule les modes compas (arc / mesure azimut / définition azimut ref)
+        if self._clock_arc_active:
+            self._clock_arc_cancel()
+            return
+
+        # Annule le mode de mesure d'azimut du compas
+        if self._clock_measure_active:
+            self._clock_measure_cancel()
+            return
+
+        # Annule le mode de définition d'azimut du compas
+        if self._clock_setref_active:
+            self._clock_setref_cancel()
+            return
+
+        # Annule une calibration en cours
+        if self._bg_calib_active:
             self._bg_calibrate_cancel()
             return
+ 
         if self._drag:
             self._cancel_drag()
             self.status.config(text="Drag annulé (ESC).")
             return
+
         if self._sel:
             # rollback rotation de GROUPE
             if self._sel.get("mode") == "rotate_group":
@@ -4874,6 +5354,14 @@ class TriangleViewerManual(tk.Tk):
         # Pas de menu si on est en train de drag depuis la liste
         if self._drag:
             return
+        # Si clic droit sur le compas : menu dédié (même si aucun triangle)
+        if self._is_point_in_clock(event.x, event.y):
+            self._ctx_target_idx = None
+            self._ctx_last_rclick = (event.x, event.y)
+            self._ctx_menu_compass.tk_popup(event.x_root, event.y_root)
+            self._ctx_menu_compass.grab_release()
+            return
+
         mode, idx, extra = self._hit_test(event.x, event.y)
         if idx is None:
             return
@@ -4882,27 +5370,481 @@ class TriangleViewerManual(tk.Tk):
             self._ctx_target_idx = idx
             self._ctx_last_rclick = (event.x, event.y)
 
-            # Activer "OL=0°" seulement si le groupe est un singleton
-            try:
-                gid = self._get_group_of_triangle(idx)
-                n_nodes = len(self._group_nodes(gid)) if gid else 0
-                state = (tk.NORMAL if n_nodes == 1 else tk.DISABLED)
-                # sécurité: si l'index n'existe pas, ne rien faire
-                if hasattr(self, "_ctx_idx_ol0") and self._ctx_idx_ol0 is not None:
-                    self._ctx_menu.entryconfig(self._ctx_idx_ol0, state=state)
-            except Exception:
-                # en cas d'erreur inattendue, mieux vaut désactiver
-                try:
-                    if hasattr(self, "_ctx_idx_ol0") and self._ctx_idx_ol0 is not None:
-                        self._ctx_menu.entryconfig(self._ctx_idx_ol0, state=tk.DISABLED)
-                except Exception:
-                    pass
+            # "OL=0°" et "BL=0°" sont valables aussi sur un groupe :
+            # on oriente tout le groupe en prenant le triangle cliqué comme référence.
+            if hasattr(self, "_ctx_idx_ol0") and self._ctx_idx_ol0 is not None:
+                self._ctx_menu.entryconfig(self._ctx_idx_ol0, state=tk.NORMAL)
+            if hasattr(self, "_ctx_idx_bl0") and self._ctx_idx_bl0 is not None:
+                self._ctx_menu.entryconfig(self._ctx_idx_bl0, state=tk.NORMAL)
+
             # (ré)construire la section "mot" du menu selon le triangle visé + selection dico
             self._rebuild_ctx_word_entries()
+            self._ctx_menu.tk_popup(event.x_root, event.y_root)
+            self._ctx_menu.grab_release()
+
+    def _is_point_in_clock(self, sx: float, sy: float) -> bool:
+        """True si (sx,sy) est dans le disque du compas (coords canvas)."""
+        if not getattr(self, "show_clock_overlay", None) or not self.show_clock_overlay.get():
+            return False
+        cx = float(getattr(self, "_clock_cx", None))
+        cy = float(getattr(self, "_clock_cy", None))
+        R  = float(getattr(self, "_clock_R", getattr(self, "_clock_radius", 69)))
+        if cx is None or cy is None:
+            return False
+        dx = float(sx) - cx
+        dy = float(sy) - cy
+        return (dx*dx + dy*dy) <= (R + 6.0) * (R + 6.0)
+
+    # ---- Compas : définition interactive de l'azimut de référence -----------------
+
+    def _ctx_define_clock_ref_azimuth(self):
+        """Entrée de menu : active le mode 'définir azimut de référence' du compas."""
+        # Repartir d'un état propre
+        self._clock_setref_cancel(silent=True)
+
+        if not getattr(self, "canvas", None):
+            return
+        if not getattr(self, "show_clock_overlay", None) or not self.show_clock_overlay.get():
+            self.status.config(text="Compas masqué : affiche-le pour définir l'azimut de référence.")
+            return
+
+        # Initialiser le mode
+        self._clock_setref_active = True
+        self.canvas.focus_set()
+        sx, sy = self._clock_get_initial_cursor_xy()
+        self._clock_setref_update_preview(sx, sy)
+
+        self.status.config(text="Définir azimut de référence : clic gauche pour valider, ESC pour annuler.")
+
+
+    # ---- Compas : mesure interactive d'un azimut (relatif à l'azimut de référence) ---------
+    def _ctx_measure_clock_azimuth(self):
+        """Entrée de menu : active le mode 'mesurer un azimut' (relatif à l'azimut de référence)."""
+        # Repartir d'un état propre
+        self._clock_measure_cancel(silent=True)
+        self._clock_setref_cancel(silent=True)
+
+        if not getattr(self, "canvas", None):
+            return
+        if not getattr(self, "show_clock_overlay", None) or not self.show_clock_overlay.get():
+            self.status.config(text="Compas masqué : affiche-le pour mesurer un azimut.")
+            return
+
+        self._clock_measure_active = True
+        self._clock_measure_last = None
+        self.canvas.focus_set()
+        sx, sy = self._clock_get_initial_cursor_xy()
+        self._clock_measure_update_preview(sx, sy)
+
+        self.status.config(text="Mesurer un azimut : clic gauche pour valider, ESC pour annuler. (Snap noeuds, CTRL = désactiver snap)")
+
+
+    # ---- Compas : mesure interactive d'un arc d'angle (entre 2 points) -------------------
+    def _ctx_measure_clock_arc_angle(self):
+        """Entrée de menu : active le mode 'mesurer un arc d'angle' (entre 2 points)."""
+        # Repartir d'un état propre
+        self._clock_arc_cancel(silent=True)
+        self._clock_measure_cancel(silent=True)
+        self._clock_setref_cancel(silent=True)
+
+        if not hasattr(self, "canvas") or self.canvas is None:
+            return
+        if not getattr(self, "show_clock_overlay", None) or not self.show_clock_overlay.get():
+            self.status.config(text="Compas masqué : affiche-le pour mesurer un arc d'angle.")
+            return
+
+        self._clock_arc_active = True
+        self._clock_arc_step = 0
+        self._clock_arc_p1 = None
+        self._clock_arc_p2 = None
+        self._clock_clear_snap_target()
+        self.canvas.focus_set()
+
+        self.status.config(text="Mesurer un arc d'angle : clic gauche P1 puis P2, ESC pour annuler. (Snap noeuds, CTRL = désactiver snap)")
+
+    def _clock_arc_handle_click(self, sx: int, sy: int):
+        """Gestion des clics gauche dans le mode 'arc d'angle'."""
+        if not getattr(self, "_clock_arc_active", False):
+            return
+
+        # Snap sur noeud (CTRL = pas de snap)
+        sx2, sy2 = self._clock_apply_optional_snap(int(sx), int(sy), enable_snap=True)
+
+        az_abs = float(self._clock_compute_azimuth_deg(sx2, sy2))
+
+        if int(getattr(self, "_clock_arc_step", 0)) == 0:
+            self._clock_arc_p1 = (int(sx2), int(sy2), float(az_abs))
+            self._clock_arc_step = 1
+            self.status.config(text="Mesurer un arc d'angle : sélectionne le point P2 (clic gauche), ESC pour annuler. (Snap noeuds, CTRL = désactiver snap)")
+            # Premier rendu immédiat (au même point)
+            self._clock_arc_update_preview(int(sx2), int(sy2))
+            return
+
+        # step==1 : valider P2 et conclure
+        self._clock_arc_p2 = (int(sx2), int(sy2), float(az_abs))
+        angle_deg = self._clock_arc_compute_angle_deg(self._clock_arc_p1[2], self._clock_arc_p2[2])
+        self._clock_arc_cancel(silent=True)
+        self.status.config(text=f"Arc mesuré : {angle_deg:0.0f}°")
+
+    def _clock_arc_update_preview(self, sx: int, sy: int):
+        """Met à jour le preview (2 rayons + arc + label) pendant la sélection de P2."""
+        if not getattr(self, "_clock_arc_active", False):
+            return
+        if int(getattr(self, "_clock_arc_step", 0)) != 1:
+            return
+        if self._clock_arc_p1 is None:
+            return
+        if not hasattr(self, "canvas") or self.canvas is None:
+            return
+
+        cx = float(getattr(self, "_clock_cx", 0.0))
+        cy = float(getattr(self, "_clock_cy", 0.0))
+        R  = float(getattr(self, "_clock_R", getattr(self, "_clock_radius", 69)))
+
+        # Snap P2 si activé
+        sx2, sy2 = self._clock_apply_optional_snap(int(sx), int(sy), enable_snap=True)
+        az2 = float(self._clock_compute_azimuth_deg(sx2, sy2))
+        az1 = float(self._clock_arc_p1[2])
+
+        # 2 rayons (centre->P1 et centre->P2)
+        x1, y1 = int(self._clock_arc_p1[0]), int(self._clock_arc_p1[1])
+        if self._clock_arc_line1_id is None:
+            self._clock_arc_line1_id = self.canvas.create_line(
+                cx, cy, x1, y1, width=2, dash=(4, 3),
+                fill="#202020", tags=("clock_overlay", "clock_arc_preview")
+            )
+        else:
+            self.canvas.coords(self._clock_arc_line1_id, cx, cy, x1, y1)
+
+        if self._clock_arc_line2_id is None:
+            self._clock_arc_line2_id = self.canvas.create_line(
+                cx, cy, sx2, sy2, width=2, dash=(4, 3),
+                fill="#202020", tags=("clock_overlay", "clock_arc_preview")
+            )
+        else:
+            self.canvas.coords(self._clock_arc_line2_id, cx, cy, sx2, sy2)
+
+        # Arc (plus petit arc entre az1 et az2)
+        start_deg_tk, extent_deg_tk, angle_deg, mid_az = self._clock_arc_compute_tk_arc(az1, az2)
+
+        bbox = (cx - R, cy - R, cx + R, cy + R)
+        if self._clock_arc_arc_id is None:
+            self._clock_arc_arc_id = self.canvas.create_arc(
+                *bbox,
+                start=float(start_deg_tk),
+                extent=float(extent_deg_tk),
+                style="arc",
+                width=2,
+                outline="#202020",
+                tags=("clock_overlay", "clock_arc_preview")
+            )
+        else:
+            self.canvas.coords(self._clock_arc_arc_id, *bbox)
+            self.canvas.itemconfig(self._clock_arc_arc_id, start=float(start_deg_tk), extent=float(extent_deg_tk))
+
+        # Texte angle, placé près du milieu de l'arc (légèrement à l'extérieur)
+        tx, ty = self._clock_point_on_circle(mid_az, R * 1.08)
+        label = f"{angle_deg:0.0f}°"
+        if self._clock_arc_text_id is None:
+            self._clock_arc_text_id = self.canvas.create_text(
+                tx, ty, text=label, anchor="center",
+                fill="#202020", font=("Arial", 12, "bold"),
+                tags=("clock_overlay", "clock_arc_preview")
+            )
+        else:
+            self.canvas.itemconfig(self._clock_arc_text_id, text=label)
+            self.canvas.coords(self._clock_arc_text_id, tx, ty)
+
+    def _clock_arc_cancel(self, silent: bool=False):
+        if not getattr(self, "_clock_arc_active", False):
+            return
+        self._clock_arc_active = False
+        self._clock_arc_step = 0
+        self._clock_arc_p1 = None
+        self._clock_arc_p2 = None
+
+        # Nettoyage items (pas de try/except silencieux : on veut voir les erreurs)
+        for attr in ("_clock_arc_line1_id", "_clock_arc_line2_id", "_clock_arc_arc_id", "_clock_arc_text_id"):
+            item_id = getattr(self, attr, None)
+            if item_id is not None and getattr(self, "canvas", None):
+                self.canvas.delete(item_id)
+            setattr(self, attr, None)
+
+        self._clock_clear_snap_target()
+        if not silent:
+            self.status.config(text="Mesure d'arc annulée.")
+
+    def _clock_arc_compute_angle_deg(self, az1: float, az2: float) -> float:
+        """Retourne le plus petit angle (0..180) entre deux azimuts."""
+        d = (float(az2) - float(az1)) % 360.0
+        if d > 180.0:
+            d = 360.0 - d
+        return float(d)
+
+    def _clock_arc_compute_tk_arc(self, az1: float, az2: float):
+        """Prépare les paramètres Tk (start/extent) pour dessiner le plus petit arc entre az1 et az2.
+
+        Retourne (start_deg_tk, extent_deg_tk, angle_deg, mid_az).
+        - start/extent sont dans le repère Tk (0° à 3h, CCW+)
+        - mid_az est l'azimut (0°=Nord, horaire) au milieu de l'arc choisi, utile pour placer le label.
+        """
+        a1 = float(az1) % 360.0
+        a2 = float(az2) % 360.0
+
+        # delta horaire (cw) de a1 vers a2
+        d_cw = (a2 - a1) % 360.0
+        d_ccw = (a1 - a2) % 360.0  # delta si on va anti-horaire
+
+        # Choisir le plus petit arc
+        if d_cw <= d_ccw:
+            # arc horaire de taille d_cw : Tk extent doit être négatif
+            angle = d_cw
+            start_az = a1
+            mid_az = (a1 + angle * 0.5) % 360.0
+            start_tk = (90.0 - start_az) % 360.0
+            extent_tk = -angle
+        else:
+            # arc anti-horaire de taille d_ccw : Tk extent positif
+            angle = d_ccw
+            start_az = a1
+            mid_az = (a1 - angle * 0.5) % 360.0
+            start_tk = (90.0 - start_az) % 360.0
+            extent_tk = angle
+
+        return (float(start_tk), float(extent_tk), float(angle), float(mid_az))
+
+    def _clock_point_on_circle(self, az_deg: float, radius: float):
+        """Point écran (sx,sy) à un azimut donné autour du centre du compas."""
+        cx = float(getattr(self, "_clock_cx", 0.0))
+        cy = float(getattr(self, "_clock_cy", 0.0))
+        a = math.radians(float(az_deg) % 360.0)
+        sx = cx + float(radius) * math.sin(a)
+        sy = cy - float(radius) * math.cos(a)
+        return (sx, sy)
+
+    def _clock_apply_optional_snap(self, sx: int, sy: int, *, enable_snap: bool) -> Tuple[int, int]:
+        """Applique le snap sur noeud si activé (et si CTRL n'est pas pressé)."""
+        sx2, sy2 = int(sx), int(sy)
+        if not enable_snap:
+            return sx2, sy2
+        if getattr(self, "_ctrl_down", False):
+            self._clock_clear_snap_target()
+            return sx2, sy2
+
+        self._clock_update_snap_target(float(sx2), float(sy2))
+        tgt = getattr(self, "_clock_snap_target", None)
+        if isinstance(tgt, dict) and tgt.get("world") is not None:
+            sxx, syy = self._world_to_screen(tgt["world"])
+            return (int(sxx), int(syy))
+        return sx2, sy2
+
+    def _clock_measure_update_preview(self, sx: int, sy: int):
+        if not self._clock_measure_active:
+            return
+        self._clock_measure_line_id, self._clock_measure_text_id, out = self._clock_update_azimuth_preview(
+            int(sx), int(sy),
+            line_id=self._clock_measure_line_id,
+            text_id=self._clock_measure_text_id,
+            preview_tag="clock_measure_preview",
+            relative_to_ref=True,
+            enable_snap=True,
+        )
+        if out:
+            sx2, sy2, az_abs, az_rel = out
+            self._clock_measure_last = (int(sx2), int(sy2), float(az_abs), float(az_rel))
+
+    def _clock_measure_confirm(self):
+        if not self._clock_measure_active:
+            return
+        last = self._clock_measure_last
+        if not last:
+            self._clock_measure_cancel(silent=True)
+            return
+        (_, _, az_abs, az_rel) = last
+        self._clock_measure_cancel(silent=True)
+        self.status.config(text=f"Azimut mesuré : {az_rel:0.0f}° (ref={float(getattr(self, '_clock_ref_azimuth_deg', 0.0))%360.0:0.0f}°, abs={az_abs:0.0f}°)")
+
+
+    def _clock_measure_cancel(self, silent: bool=False):
+        if not getattr(self, "_clock_measure_active", False):
+            return
+        self._clock_measure_active = False
+
+        if getattr(self, "_clock_measure_line_id", None) is not None:
             try:
-                self._ctx_menu.tk_popup(event.x_root, event.y_root)
-            finally:
-                self._ctx_menu.grab_release()
+                self.canvas.delete(self._clock_measure_line_id)
+            except Exception:
+                pass
+        if getattr(self, "_clock_measure_text_id", None) is not None:
+            try:
+                self.canvas.delete(self._clock_measure_text_id)
+            except Exception:
+                pass
+
+        self._clock_measure_line_id = None
+        self._clock_measure_text_id = None
+        self._clock_measure_last = None
+        self._clock_clear_snap_target()
+
+        if not silent:
+            self.status.config(text="Mesure d'azimut annulée.")
+
+    def _clock_compute_azimuth_deg(self, sx: float, sy: float) -> float:
+        """Azimut (degrés) depuis le centre du compas vers (sx,sy). 0°=Nord, sens horaire."""
+        cx = float(getattr(self, "_clock_cx", 0.0))
+        cy = float(getattr(self, "_clock_cy", 0.0))
+        vx = float(sx) - cx
+        vy = float(sy) - cy
+        # Tk: y vers le bas -> Nord = -y
+        ang = math.degrees(math.atan2(vx, -vy))  # 0=N, 90=E, 180=S, 270=O
+        ang = ang % 360.0
+        return ang
+
+
+    # ---------- Compas : helpers communs (éviter duplication setref/measure) ----------
+    def _clock_get_initial_cursor_xy(self) -> Tuple[int, int]:
+        """Point de départ pour les modes compas: clic droit si dispo, sinon position souris."""
+        if getattr(self, "_ctx_last_rclick", None):
+            sx, sy = self._ctx_last_rclick
+            return int(sx), int(sy)
+        # coords canvas sous la souris
+        sx = int(self.canvas.winfo_pointerx() - self.canvas.winfo_rootx())
+        sy = int(self.canvas.winfo_pointery() - self.canvas.winfo_rooty())
+        return sx, sy
+
+    def _clock_update_azimuth_preview(
+        self,
+        sx: int,
+        sy: int,
+        *,
+        line_id: Optional[int],
+        text_id: Optional[int],
+        preview_tag: str,
+        relative_to_ref: bool,
+        enable_snap: bool,
+    ) -> Tuple[Optional[int], Optional[int], Optional[Tuple[int, int, float, float]]]:
+        """Rendu commun (ligne centre->point + texte azimut clampé).
+
+        Retourne (new_line_id, new_text_id, (sx2, sy2, az_abs, az_val)).
+
+        Notes:
+        - Cette fonction NE vérifie PAS si un mode est actif : le caller doit le faire.
+        - `preview_tag` est un tag spécifique (en plus de 'clock_overlay') pour identifier le preview.
+        """
+        # Canvas / centre compas doivent exister
+        if self.canvas is None:
+            return (line_id, text_id, None)
+        if self._clock_cx is None or self._clock_cy is None:
+            return (line_id, text_id, None)
+
+        cx = float(self._clock_cx)
+        cy = float(self._clock_cy)
+
+        sx2, sy2 = int(sx), int(sy)
+
+        # Snap optionnel (CTRL => pas de snap)
+        if enable_snap:
+            if self._ctrl_down:
+                self._clock_clear_snap_target()
+            else:
+                self._clock_update_snap_target(float(sx), float(sy))
+                tgt = self._clock_snap_target
+                if isinstance(tgt, dict) and tgt.get("world") is not None:
+                    sxx, syy = self._world_to_screen(tgt["world"])
+                    sx2, sy2 = int(sxx), int(syy)
+
+        # Ligne centre -> point
+
+        if line_id is None:
+            line_id = self.canvas.create_line(
+                cx, cy, sx2, sy2, width=2, dash=(4, 3),
+                fill="#202020", tags=("clock_overlay", preview_tag)
+            )
+        else:
+            self.canvas.coords(line_id, cx, cy, sx2, sy2)
+
+        # Calcul azimut
+        az_abs = float(self._clock_compute_azimuth_deg(sx2, sy2))
+        if relative_to_ref:
+            ref_az = float(self._clock_ref_azimuth_deg) % 360.0
+            az_val = (az_abs - ref_az) % 360.0
+        else:
+            az_val = az_abs
+        label = f"{az_val:0.0f}°"
+
+        # Clamp du texte pour rester visible
+        cw = int(self.canvas.winfo_width() or 0)
+        ch = int(self.canvas.winfo_height() or 0)
+        tx = int(sx2 + 14)
+        ty = int(sy2 + 10)
+        pad = 6
+        est_w = 60
+        est_h = 20
+        if cw > 0:
+            if tx + est_w > cw - pad:
+                tx = int(sx2 - est_w - 14)
+            tx = max(pad, min(tx, cw - est_w - pad))
+        if ch > 0:
+            if ty + est_h > ch - pad:
+                ty = int(sy2 - est_h - 10)
+            ty = max(pad, min(ty, ch - est_h - pad))
+
+        if text_id is None:
+            text_id = self.canvas.create_text(
+                tx, ty, text=label, anchor="nw",
+                fill="#202020", font=("Arial", 12, "bold"),
+                tags=("clock_overlay", preview_tag)
+            )
+        else:
+            self.canvas.itemconfig(text_id, text=label)
+            self.canvas.coords(text_id, tx, ty)
+
+        return (line_id, text_id, (sx2, sy2, az_abs, float(az_val)))
+
+    def _clock_setref_update_preview(self, sx: int, sy: int):
+        if not self._clock_setref_active:
+            return
+        self._clock_setref_line_id, self._clock_setref_text_id, out = self._clock_update_azimuth_preview(
+            int(sx), int(sy),
+            line_id=self._clock_setref_line_id,
+            text_id=self._clock_setref_text_id,
+            preview_tag="clock_ref_preview",
+            relative_to_ref=False,
+            enable_snap=False,
+        )
+        if out:
+            sx2, sy2, az_abs, az_val = out
+            self._clock_setref_last = (int(sx2), int(sy2), float(az_abs), float(az_val))
+
+    def _clock_setref_confirm(self, sx: int, sy: int):
+        if not self._clock_setref_active:
+            return
+        az = self._clock_compute_azimuth_deg(sx, sy)
+        self._clock_ref_azimuth_deg = float(az)
+        self.setAppConfigValue("uiClockRefAzimuth", float(self._clock_ref_azimuth_deg))
+
+        self._clock_setref_cancel(silent=True)
+        self.status.config(text=f"Azimut de référence défini : {az:0.0f}°")
+
+        self._redraw_overlay_only()
+
+    def _clock_setref_cancel(self, silent: bool=False):
+        if not self._clock_setref_active:
+            return
+        self._clock_setref_active = False
+
+        if self._clock_setref_line_id is not None:
+            self.canvas.delete(self._clock_setref_line_id)
+
+        if self._clock_setref_text_id is not None:
+            self.canvas.delete(self._clock_setref_text_id)
+
+        self._clock_setref_line_id = None
+        self._clock_setref_text_id = None
+        # On laisse l'overlay se redessiner via les flux habituels
+        if not silent:
+            self.status.config(text="Définition d'azimut annulée.")
+
 
     def _ctx_delete_group(self):
         """Supprime **tout le groupe** du triangle ciblé, réinsère les triangles dans la liste,
@@ -5036,33 +5978,209 @@ class TriangleViewerManual(tk.Tk):
         }
         self.status.config(text="Mode pivoter : bouge la souris pour tourner, clic gauche pour valider, ESC pour annuler.")
  
-    def _ctx_orient_OL_north(self):
+    def _ctx_orient_segment_north(self, from_key: str, to_key: str, status_label: str):
         """
-        Oriente automatiquement le triangle pour que l'azimut du segment
-        Ouverture->Lumière soit 0° = vers le Nord (axe +Y en coords monde).
-        Rotation autour du barycentre (comme le mode Pivoter).
+        Oriente automatiquement le TRIANGLE ou le GROUPE pour que l'azimut du segment
+        (from_key -> to_key) du triangle cliqué soit 0° = vers le Nord (axe +Y en coords monde).
+
+        - Triangle seul : rotation autour du barycentre du triangle cliqué.
+        - Groupe : rotation RIGIDE de tout le groupe autour du barycentre du triangle cliqué.
         """
         idx = self._ctx_target_idx
         self._ctx_target_idx = None
         if idx is None or not (0 <= idx < len(self._last_drawn)):
             return
-        P = self._last_drawn[idx]["pts"]
-        # vecteur O->L en monde
-        v = np.array([P["L"][0] - P["O"][0], P["L"][1] - P["O"][1]], dtype=float)
+
+        # Déterminer le groupe (si présent)
+        gid = self._get_group_of_triangle(idx)
+
+        # Triangle de référence
+        P_ref = self._last_drawn[idx]["pts"]
+        v = np.array(
+            [P_ref[to_key][0] - P_ref[from_key][0], P_ref[to_key][1] - P_ref[from_key][1]],
+            dtype=float
+        )
+
         if float(np.hypot(v[0], v[1])) < 1e-12:
             return  # triangle dégénéré, rien à faire
-        cur = math.atan2(v[1], v[0])     # angle standard (x->y)
-        target = math.pi / 2.0           # Nord = +Y
+
+        # Orientation cible : Nord = +Y
+        cur = math.atan2(v[1], v[0])
+        target = math.pi / 2.0
         dtheta = target - cur
         c, s = math.cos(dtheta), math.sin(dtheta)
         R = np.array([[c, -s], [s, c]], dtype=float)
-        # pivot : barycentre (cohérent avec le mode Pivoter)
-        pivot = self._tri_centroid(P)
-        for k in ("O", "B", "L"):
-            pt = np.array(P[k], dtype=float)
-            P[k] = (R @ (pt - pivot)) + pivot
-        self._redraw_from(self._last_drawn)
-        self.status.config(text="Orientation appliquée : O→L au Nord (0°).")
+
+        # Pivot = barycentre du triangle cliqué (cohérent avec "Pivoter")
+        pivot = self._tri_centroid(P_ref)
+        pivot = np.array(pivot, dtype=float)
+
+        def rot_point(pt):
+            pt = np.array(pt, dtype=float)
+            return (R @ (pt - pivot)) + pivot
+
+        # Appliquer à tout le groupe si groupé, sinon au seul triangle
+        if gid and len(self._group_nodes(gid) or []) > 1:
+            g = self.groups.get(gid)
+            if not g:
+                return
+            for node in g["nodes"]:
+                tid = node.get("tid")
+                if tid is None or not (0 <= tid < len(self._last_drawn)):
+                    continue
+                Pt = self._last_drawn[tid]["pts"]
+                for k in ("O", "B", "L"):
+                    Pt[k] = rot_point(Pt[k])
+            self._recompute_group_bbox(gid)
+            self._redraw_from(self._last_drawn)
+            self.status.config(text=f"Orientation appliquée : GROUPE — {status_label} au Nord (0°).")
+        else:
+            P = P_ref
+            for k in ("O", "B", "L"):
+                P[k] = rot_point(P[k])
+            self._redraw_from(self._last_drawn)
+            self.status.config(text=f"Orientation appliquée : {status_label} au Nord (0°).")
+
+    def _ctx_orient_OL_north(self):
+        return self._ctx_orient_segment_north("O", "L", "O→L")
+
+    def _ctx_orient_BL_north(self):
+        return self._ctx_orient_segment_north("B", "L", "B→L")
+
+    def _ctx_filter_scenarios(self):
+        """
+        Filtre les scénarios automatiques en conservant uniquement ceux
+        dont la chaîne (ordre + arêtes utilisées entre triangles consécutifs)
+        correspond au préfixe validé dans le scénario actif.
+
+        Le scénario actif est la référence absolue et ne peut jamais être supprimé.
+        """
+        idx = self._ctx_target_idx
+        self._ctx_target_idx = None
+        if idx is None or not (0 <= idx < len(self._last_drawn)):
+            return
+
+        try:
+            clicked_tid = int(self._last_drawn[idx].get("id"))
+        except Exception:
+            return
+
+        ok = messagebox.askyesno(
+            "Filtrer les scénarios",
+            "Cette action va supprimer définitivement les scénarios automatiques incompatibles.\n\nContinuer ?"
+        )
+        if not ok:
+            return
+
+        self._filter_auto_scenarios_by_prefix_edges(clicked_tid)
+
+    def _scenario_prefix_edge_steps(self, scen, upto_index: int):
+        """
+        Retourne la liste des (edge_out, edge_in) pour les liaisons entre
+        triangles consécutifs, de 0->1->...->upto_index.
+        - upto_index est INCLUS côté triangle, donc il y a upto_index étapes.
+        """
+        if scen is None:
+            return None
+        groups = getattr(scen, "groups", None)
+        if not groups:
+            return None
+
+        # prendre la chaîne la plus longue (design actuel = un seul groupe)
+        best_nodes = None
+        for g in (groups or {}).values():
+            nodes = (g or {}).get("nodes") or []
+            if best_nodes is None or len(nodes) > len(best_nodes):
+                best_nodes = nodes
+        nodes = best_nodes or []
+        if len(nodes) < upto_index + 1:
+            return None
+
+        # fallback si edge_* absent : déduction via vkey_* (sommet opposé à l'arête)
+        opp_edge = {"O": "BL", "B": "LO", "L": "OB"}
+
+        steps = []
+        for i in range(upto_index):
+            a = nodes[i] or {}
+            b = nodes[i + 1] or {}
+
+            eout = a.get("edge_out")
+            if not eout:
+                vout = a.get("vkey_out")
+                eout = opp_edge.get(vout) if vout else None
+
+            ein = b.get("edge_in")
+            if not ein:
+                vin = b.get("vkey_in")
+                ein = opp_edge.get(vin) if vin else None
+
+            steps.append((eout, ein))
+        return steps
+
+    def _filter_auto_scenarios_by_prefix_edges(self, clicked_tid: int):
+        """
+        Filtre les scénarios automatiques en conservant uniquement ceux
+        qui commencent par le même préfixe de triangles ET les mêmes arêtes
+        (edge_out / edge_in) entre triangles consécutifs, jusqu'au triangle cliqué.
+
+        Le scénario actif est la référence absolue et ne peut jamais être supprimé.
+        """
+        if not self.scenarios or not (0 <= self.active_scenario_index < len(self.scenarios)):
+            return
+
+        active = self.scenarios[self.active_scenario_index]
+        if getattr(active, "source_type", "manual") != "auto":
+            return  # filtrage auto uniquement
+
+        tri_ids = list(getattr(active, "tri_ids", None) or [])
+        if clicked_tid not in tri_ids:
+            # Impossible par design → bug
+            raise RuntimeError(f"[FILTER] Triangle {clicked_tid} absent du scénario actif")
+
+        idx = tri_ids.index(clicked_tid)
+        prefix = tri_ids[: idx + 1]
+
+        ref_steps = self._scenario_prefix_edge_steps(active, idx)
+        if ref_steps is None:
+            raise RuntimeError("[FILTER] Données d'arêtes manquantes dans le scénario actif (groups/nodes)")
+
+        kept = []
+        removed = 0
+
+        for scen in self.scenarios:
+            # Le scénario actif est TOUJOURS conservé
+            if scen is active:
+                kept.append(scen)
+                continue
+
+            if getattr(scen, "source_type", "manual") != "auto":
+                kept.append(scen)
+                continue
+
+            # 1) même préfixe de triangles (ordre)
+            if list(getattr(scen, "tri_ids", None) or [])[: len(prefix)] != prefix:
+                removed += 1
+                continue
+
+            # 2) mêmes arêtes utilisées pour chaîner le préfixe
+            steps = self._scenario_prefix_edge_steps(scen, idx)
+            if steps != ref_steps:
+                removed += 1
+                continue
+
+            kept.append(scen)
+
+        if active not in kept:
+            raise RuntimeError("[FILTER] Le scénario actif a été supprimé (BUG)")
+
+        self.scenarios = kept
+        self.active_scenario_index = self.scenarios.index(active)
+
+        self._refresh_scenario_listbox()
+        self._set_active_scenario(self.active_scenario_index)
+
+        print(f"[FILTER] Préfixe validé {prefix} + arêtes {ref_steps} → {removed} scénarios supprimés")
+
 
     def _ctx_flip_selected(self):
         """
@@ -5136,6 +6254,21 @@ class TriangleViewerManual(tk.Tk):
         self._recompute_group_bbox(gid)
 
     def _on_canvas_left_down(self, event):
+        # Mode compas : arc d'angle (clic pour P1/P2)
+        if self._clock_arc_active:
+            self._clock_arc_handle_click(int(event.x), int(event.y))
+            return "break"
+
+        # Mode compas : clic pour valider une mesure d'azimut
+        if self._clock_measure_active:
+            self._clock_measure_confirm()
+            return "break"
+
+        # Mode compas : clic pour valider l'azimut de référence
+        if self._clock_setref_active:
+            self._clock_setref_confirm(int(event.x), int(event.y))
+            return "break"
+
         # garantir un cache pick à jour avant tout hit-test
         self._ensure_pick_cache()
         # mémoriser l'ancre monde de la souris pour des déplacements "delta"
@@ -5155,8 +6288,9 @@ class TriangleViewerManual(tk.Tk):
                 self._clock_dragging = True
                 self._clock_drag_dx = event.x - (self._clock_cx or event.x)
                 self._clock_drag_dy = event.y - (self._clock_cy or event.y)
-                try: self.canvas.configure(cursor="fleur")
-                except Exception: pass
+                # Mode "snap compas" : dès le mouse-down, viser le sommet le plus proche
+                self._clock_update_snap_target(event.x, event.y)
+                self.canvas.configure(cursor="fleur")
                 return "break"  # on court-circuite la logique des triangles
 
         # Fond SVG : si mode resize et clic sur poignée -> on capture et on court-circuite le reste
@@ -5448,6 +6582,8 @@ class TriangleViewerManual(tk.Tk):
         if getattr(self, "_clock_dragging", False):
             self._clock_cx = event.x - self._clock_drag_dx
             self._clock_cy = event.y - self._clock_drag_dy
+            # Cible snap (sommet le plus proche du curseur)
+            self._clock_update_snap_target(event.x, event.y)
             self._redraw_overlay_only()
             return "break"
 
@@ -5549,9 +6685,33 @@ class TriangleViewerManual(tk.Tk):
     def _on_canvas_left_up(self, event):
         # Horloge : fin de drag
         if getattr(self, "_clock_dragging", False):
+            # Si CTRL au relâché : on sort du mode sans "snap" (le compas reste où il est)
+            if getattr(self, "_ctrl_down", False):
+                try:
+                    wx, wy = self._screen_to_world(self._clock_cx, self._clock_cy)
+                    self._clock_anchor_world = np.array([wx, wy], dtype=float)
+                except Exception:
+                    self._clock_anchor_world = None
+            else:
+                tgt = getattr(self, "_clock_snap_target", None)
+                if isinstance(tgt, dict) and tgt.get("world") is not None:
+                    try:
+                        self._clock_anchor_world = np.array(tgt["world"], dtype=float)
+                    except Exception:
+                        self._clock_anchor_world = None
+                    sx, sy = self._world_to_screen(tgt["world"])
+                    self._clock_cx, self._clock_cy = float(sx), float(sy)
+                else:
+                    # pas de target : ancrer la position courante en monde
+                    try:
+                        wx, wy = self._screen_to_world(self._clock_cx, self._clock_cy)
+                        self._clock_anchor_world = np.array([wx, wy], dtype=float)
+                    except Exception:
+                        self._clock_anchor_world = None
             self._clock_dragging = False
-            try: self.canvas.configure(cursor="")
-            except Exception: pass
+            self.canvas.configure(cursor="")
+            self._clock_clear_snap_target()
+            self._redraw_overlay_only()
             return "break"
 
         if self._bg_resizing:
