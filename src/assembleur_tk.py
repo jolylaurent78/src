@@ -56,6 +56,12 @@ from src.assembleur_sim import (
     ALGOS,
 )
 
+from src.assembleur_sim import (
+    DecryptorBase,
+    ClockDicoDecryptor,
+    DECRYPTORS,
+)
+
 import src.assembleur_io as _assembleur_io
 
 # --- Dictionnaire (chargement livre.txt) ---
@@ -63,10 +69,60 @@ from src.DictionnaireEnigmes import DictionnaireEnigmes
 
 EPS_WORLD = 1e-6
 
-# ---------- Utils géométrie ----------
-# --- Extraits vers assembleur_core / assembleur_sim ---
+def createDecryptor(decryptorId: str) -> DecryptorBase:
+    """Instancie un decryptor à partir de son id (registre DECRYPTORS)."""
+    cls = DECRYPTORS.get(str(decryptorId))
+    if cls is None:
+        # Fallback explicite
+        return ClockDicoDecryptor()
+    return cls()
 
-# --- Extraits vers assembleur_sim ---
+
+class DialogParamDecryptage(tk.Toplevel):
+    def __init__(self, parent, decryptor):
+        super().__init__(parent)
+        self.title("Paramétrer le décryptage")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        self.result = None
+
+        frm = ttk.Frame(self, padding=10)
+        frm.pack(fill="both", expand=True)
+
+        ttk.Label(frm, text="Algorithme de décryptage").pack(anchor="w")
+
+        self.algoVar = tk.StringVar(value=decryptor.id)
+
+        values = [f"{d.id} — {d.label}" for d in DECRYPTORS.values()]
+        self.combo = ttk.Combobox(frm, values=values, state="readonly", width=45)
+        self.combo.pack(fill="x", pady=(0, 10))
+
+        for i, d in enumerate(DECRYPTORS.values()):
+            if d.id == decryptor.id:
+                self.combo.current(i)
+                break
+
+        self.hourMoveVar = tk.BooleanVar(value=getattr(decryptor, "hourMovesWithMinutes", True))
+
+        ttk.Checkbutton(
+            frm,
+            text="L’aiguille Heure avance avec les minutes",
+            variable=self.hourMoveVar
+        ).pack(anchor="w", pady=(5, 10))
+
+        btns = ttk.Frame(frm)
+        btns.pack(fill="x", pady=(10, 0))
+
+        ttk.Button(btns, text="Annuler", command=self.destroy).pack(side="right")
+        ttk.Button(btns, text="OK", command=self._on_ok).pack(side="right", padx=(0, 5))
+
+    def _on_ok(self):
+        idx = self.combo.current()
+        decryptorId = list(DECRYPTORS.keys())[idx]
+        self.result = (decryptorId, bool(self.hourMoveVar.get()))
+        self.destroy()
 
 class DialogSimulationAssembler(tk.Toplevel):
     """Boîte de dialogue 'Simulation > Assembler…'"""
@@ -345,7 +401,13 @@ class TriangleViewerManual(tk.Tk):
         self.scenarios.append(manual)
 
         # --- Horloge (overlay fixe) : état par défaut ---
-        self._clock_state = {"hour": 5, "minute": 9, "label": "Trouver — (5h, 9')"}
+        # hour peut être un float (si l'aiguille des heures avance avec les minutes)
+        self._clock_state = {"hour": 5.0, "minute": 9, "label": "Trouver — (5h, 9')"}
+
+        # --- Décryptage : stratégie active (extensible) ---
+        # Par défaut: mapping "horloge <-> dico" v1
+        self.decryptor: DecryptorBase = ClockDicoDecryptor()
+
         # Position & état de drag de l'horloge (coords CANVAS)
         self._clock_cx = None
         self._clock_cy = None
@@ -375,6 +437,16 @@ class TriangleViewerManual(tk.Tk):
         self._clock_arc_line2_id = None
         self._clock_arc_arc_id = None
         self._clock_arc_text_id = None
+
+        # Dernière mesure validée (persistée tant que le compas reste sur le même ancrage)
+        # {"az1": float, "az2": float, "angle": float}
+        self._clock_arc_last = None
+        self._clock_arc_last_angle_deg = None
+ 
+        # --- Dictionnaire : filtrage visuel par angle ---
+        self._dico_filter_active: bool = False
+        self._dico_filter_ref_angle_deg: Optional[float] = None
+        self._dico_filter_tolerance_deg: float = 4.0
 
         self._clock_dragging = False
         self._clock_drag_dx = 0
@@ -419,6 +491,7 @@ class TriangleViewerManual(tk.Tk):
         Construit/affiche la grille tksheet du dictionnaire dans self.dicoPanel.
         N’opère que si self.dico est chargé et tksheet disponible.
         """
+
         # Le panneau bas doit exister (créé dans _build_canvas)
         if not hasattr(self, "dicoPanel"):
             return
@@ -433,6 +506,18 @@ class TriangleViewerManual(tk.Tk):
             tk.Label(self.dicoPanel, text="Dictionnaire non chargé",
                      bg="#f3f3f3", anchor="w").pack(fill="x", padx=8, pady=6)
             return
+
+        # ===== Paramètres Dico (N) + référentiel logique (volatile) =====
+        # On affiche toujours 2N colonnes correspondant à j ∈ [-N .. N-1].
+        # Le "0 logique" doit correspondre au premier mot du livre (j=0),
+        # donc à la colonne physique c = N (pas à la colonne 0).
+        nb_mots_max = int(self.dico.nbMotMax())
+        self._dico_nb_mots_max = int(nb_mots_max)
+ 
+        # Origine logique = cellule physique (row0,col0) qui correspond à (0,0) logique.
+        # Par défaut / reset : (0, N) physique => 0 logique sur le 1er mot du livre.
+        if not hasattr(self, "_dico_origin_cell") or self._dico_origin_cell is None:
+            self._dico_origin_cell = (0, int(nb_mots_max))
 
         # --- Layout du panneau bas : [sidebar catégories] | [grille] ---
         from tkinter import ttk
@@ -453,7 +538,11 @@ class TriangleViewerManual(tk.Tk):
             cats = list(self.dico.getCategories())
         except Exception:
             cats = []
-        self._dico_cat_var = tk.StringVar(value=cats[0] if cats else "")
+        # Préserver la catégorie sélectionnée lors d'un rebuild
+        cat_default = getattr(self, "_dico_cat_selected", None)
+        if cat_default not in (cats or []):
+            cat_default = (cats[0] if cats else "")
+        self._dico_cat_var = tk.StringVar(value=cat_default)
         self._dico_cat_combo = ttk.Combobox(left, state="readonly", values=cats, textvariable=self._dico_cat_var)
         self._dico_cat_combo.pack(fill="x", padx=8, pady=(0,6))
 
@@ -469,6 +558,7 @@ class TriangleViewerManual(tk.Tk):
         self._dico_cat_items = []
         def _refresh_cat_list(*_):
             cat = self._dico_cat_var.get()
+            self._dico_cat_selected = cat
             self._dico_cat_list.delete(0, tk.END)
             if not cat:
                 return
@@ -479,9 +569,16 @@ class TriangleViewerManual(tk.Tk):
                 items = []
             # mémoriser pour la synchro avec la grille
             self._dico_cat_items = list(items)
-            # Afficher: "mot — (e, m)"
+            # Afficher: "mot — (eLog, mLog)" (index LOGIQUES uniquement)
+            nb_mots_max = self._dico_nb_mots_max if hasattr(self, "_dico_nb_mots_max") else self.dico.nbMotMax()
+            r0, c0 = (self._dico_origin_cell or (0, 0))
+            origin_indexMot = int(c0) - int(nb_mots_max)
             for mot, e, m in items:
-                self._dico_cat_list.insert(tk.END, f"{mot} — ({e}, {m})")
+                # Affichage: lignes en modulo 10 (pas d'énigmes négatives)
+                eLogRaw = int(e) - int(r0)
+                eLog = int(eLogRaw) % 10
+                mLog = int(m) - int(origin_indexMot)
+                self._dico_cat_list.insert(tk.END, f"{mot} — ({eLog}, {mLog})")
         self._dico_cat_combo.bind("<<ComboboxSelected>>", _refresh_cat_list)
         _refresh_cat_list()
 
@@ -526,14 +623,9 @@ class TriangleViewerManual(tk.Tk):
 
         # ===== Grille (tksheet) =====
         # Construire la matrice
-        try:
-            nb_mots_max = self.dico.nbMotMax()
-        except Exception:
-            # fallback conservateur
-            nb_mots_max = 50
-        # mémoriser pour conversions (colonne → minute)
-        self._dico_nb_mots_max = int(nb_mots_max)
-        headers = list(range(-nb_mots_max, nb_mots_max))
+        # Entêtes LOGIQUES : colLog = colPhys - col0Phys
+        r0, c0 = (self._dico_origin_cell or (0, 0))
+        headers = [int(c) - int(c0) for c in range(0, 2 * int(nb_mots_max))]
         data = []
         for i in range(len(self.dico)):
             try:
@@ -542,26 +634,33 @@ class TriangleViewerManual(tk.Tk):
                 # en cas de dépassement, remplir de chaînes vides
                 row = ["" for _ in range(2 * nb_mots_max)]
             data.append(row)
-        try:
-            row_index = self.dico.getTitres()
-        except Exception:
-            row_index = [str(i) for i in range(len(self.dico))]
-        # mémoriser les titres (ligne → "530", "780", …)
-        self._dico_row_index = list(row_index)
+
+
+        row_titles_raw = self.dico.getTitres()   # ["530", "780", ...]
+
+
+        # utilisé par le decryptor / compas (NE PAS TOUCHER)
+        self._dico_row_index = list(row_titles_raw)
+
+        # affichage UI : indexes LOGIQUES uniquement
+        # lignes en modulo 10 (pas d'énigmes négatives)
+        row_index_display = [f'{((i - int(r0)) % 10)} - "{t}"' for i, t in enumerate(row_titles_raw)]
 
         # Créer la grille
         self.dicoSheet = Sheet(
             right,
             data=data,
             headers=headers,
-            row_index=row_index,
+            row_index=row_index_display,
             show_row_index=True,
             height=max(120, getattr(self, "dico_panel_height", 220) - 10),
             empty_vertical=0,
         )
+        # NOTE: on désactive le menu contextuel interne TkSheet ("copy", etc.)
+        # car il entre en conflit avec notre menu "Définir comme origine (0,0)".
         self.dicoSheet.enable_bindings((
             "single_select","row_select","column_select",
-            "arrowkeys","copy","rc_select","right_click_popup_menu"
+            "arrowkeys","copy","rc_select","double_click"
         ))
         self.dicoSheet.align_columns(columns="all", align="center")
         self.dicoSheet.set_options(cell_align="center")
@@ -569,6 +668,7 @@ class TriangleViewerManual(tk.Tk):
 
         # --- MAJ horloge sur sélection de cellule (événement unique & propre) ---
         def _on_dico_cell_select(event=None):
+            # La sélection directe dans la grille doit toujours synchroniser le compas.
             # Source unique de vérité : cellule actuellement sélectionnée
             sel = self.dicoSheet.get_selected_cells()
             r = c = None
@@ -588,67 +688,275 @@ class TriangleViewerManual(tk.Tk):
             self._update_clock_from_cell(int(r), int(c))
 
         # Un seul binding tksheet, propre : "cell_select"
-        self.dicoSheet.extra_bindings([("cell_select", _on_dico_cell_select)])
+        def _on_dico_double_click(event=None):
+            # On ne traite QUE si double-clic sur une cellule.
+            # (évite les pièges : header / row_index / vide)
+            cur = self.dicoSheet.get_currently_selected()
+            if not (isinstance(cur, tuple) and len(cur) == 2 and cur[0] == "cell"):
+                return
+            try:
+                rr, cc = cur[1]
+                rr = int(rr); cc = int(cc)
+            except Exception:
+                return
+            # Toggle : même cellule => reset défaut (0 logique = 1er mot du livre)
+            nbm = int(getattr(self, "_dico_nb_mots_max", 50))
+            default_origin = (0, nbm)
+            if tuple(self._dico_origin_cell or default_origin) == (rr, cc):
+                self._dico_origin_cell = default_origin
+            else:
+                self._dico_origin_cell = (rr, cc)
+            # Rebuild complet (robuste vis-à-vis des API TkSheet)
+            self._build_dico_grid()
+
+        self.dicoSheet.extra_bindings([
+            ("cell_select", _on_dico_cell_select),
+        ])
+
+        # IMPORTANT (TkSheet) :
+        # - Le widget qui reçoit réellement les clics est souvent MainTable (sheet.MT).
+        # - On bind donc en priorité sur MT, sinon fallback sur Sheet.
+        def _bind_to_sheet_widget(widget, sequence, callback):
+            if widget is None:
+                return
+            try:
+                widget.bind(sequence, callback, add="+")
+            except TypeError:
+                widget.bind(sequence, callback)
+
+        target_widget = getattr(self.dicoSheet, "MT", None) or self.dicoSheet
+        _bind_to_sheet_widget(target_widget, "<Double-Button-1>", _on_dico_double_click)
+
+        # ===== Menu contextuel clic-droit : "Set as (0,0)" =====
+        # (On n’utilise pas le menu popup interne de TkSheet, on ajoute le nôtre en Tk.Menu)
+        if not hasattr(self, "_ctx_menu_dico"):
+            self._ctx_menu_dico = tk.Menu(self, tearoff=0)
+            self._ctx_menu_dico.add_command(
+                label="Définir comme origine (0,0)",
+                command=lambda: self._dico_set_origin_from_context_cell()
+            )
+            self._ctx_menu_dico.add_command(
+                label="Réinitialiser origine (0,0)",
+                command=lambda: self._dico_reset_origin()
+            )
+        # cellule visée par le clic-droit (row,col) en coordonnées TkSheet
+        self._dico_ctx_cell = None
+
+        def _dico_cell_from_event(event):
+            """Retourne (row, col) pour la cellule sous la souris (clic droit).
+            IMPORTANT (TkSheet) :
+            - identify_row/identify_column attendent un *event* Tk, pas un int.
+            - get_row_at_y/get_column_at_x attendent des coordonnées (x/y).
+            """
+            mt = getattr(self.dicoSheet, "MT", None)
+            x, y = int(getattr(event, "x", 0)), int(getattr(event, "y", 0))
+
+            def _call_rowcol(obj, meth_row: str, meth_col: str):
+                if not (obj is not None and hasattr(obj, meth_row) and hasattr(obj, meth_col)):
+                    return None
+                try:
+                    if meth_row.startswith("identify_"):
+                        r = getattr(obj, meth_row)(event)
+                        c = getattr(obj, meth_col)(event)
+                    else:
+                        r = getattr(obj, meth_row)(y)
+                        c = getattr(obj, meth_col)(x)
+                    if r is None or c is None:
+                        return None
+                    return int(r), int(c)
+                except Exception:
+                    return None
+
+            # 1) Priorité à MainTable (MT) si présent
+            for meth_row, meth_col in (
+                ("identify_row", "identify_column"),
+                ("get_row_at_y", "get_column_at_x"),
+            ):
+                rc = _call_rowcol(mt, meth_row, meth_col)
+                if rc is not None:
+                    return rc
+                rc = _call_rowcol(self.dicoSheet, meth_row, meth_col)
+                if rc is not None:
+                    return rc
+            return None
+
+        def _on_dico_right_click(event=None):
+            # Sélectionner d’abord la cellule sous la souris puis ouvrir le menu
+            rc = _dico_cell_from_event(event) if event is not None else None
+            if rc:
+                rr, cc = rc
+                self._dico_ctx_cell = (int(rr), int(cc))
+                try:
+                    self.dicoSheet.select_cell(rr, cc, redraw=False)
+                except Exception:
+                    # si select_cell diffère selon version, on laisse la sélection courante
+                    pass
+            try:
+                self._ctx_menu_dico.tk_popup(event.x_root, event.y_root)
+                self._ctx_menu_dico.grab_release()
+            except Exception:
+                pass
+            # IMPORTANT: empêcher TkSheet de traiter aussi le clic-droit (sinon popup interne)
+            return "break"
+
+        _bind_to_sheet_widget(target_widget, "<Button-3>", _on_dico_right_click)
 
         # --- Centrer l’affichage par défaut sur la colonne 0 ---
-        try:
-            zero_col = int(nb_mots_max)              # colonne "0" du dico
-            self.dicoSheet.select_cell(0, zero_col, redraw=False)
-            self.dicoSheet.see(row=0, column=zero_col)  # amène la colonne 0 dans la vue (le plus centré possible)
-        except Exception:
-            pass
+        # Centre sur l'origine LOGIQUE (0,0) => cellule physique (r0,c0)
+        self.dicoSheet.select_cell(int(r0), int(c0), redraw=False)
+        self.dicoSheet.see(row=int(r0), column=int(c0))  # amène la colonne 0 logique dans la vue (le plus centré possible)
 
-        try:
-            self.status.config(text="Dico affiché dans le panneau bas")
-        except Exception:
-            pass
 
+        # La sélection du dico doit rester possible pour synchroniser le compas,
+        # même si aucun arc n'est disponible (le filtrage, lui, restera grisé).
+        self._dico_set_selection_enabled(True)
+
+        # Appliquer style origine + filtre (si actif)
+        self._dico_apply_origin_style()
+        if getattr(self, "_dico_filter_active", False):
+            self._dico_apply_filter_styles()
+
+        self.status.config(text="Dico affiché dans le panneau bas")
+
+    # ---------- DICO : origine logique via menu contextuel ----------
+    def _dico_set_origin_from_context_cell(self):
+        # Action "Set as (0,0)" : utiliser la cellule du clic-droit (robuste, sans dépendre de la sélection)
+        if not getattr(self, "_dico_ctx_cell", None):
+            return
+        rr, cc = self._dico_ctx_cell
+        rr = int(rr); cc = int(cc)
+        # Toggle (même cellule => reset défaut: 0 logique = 1er mot du livre)
+        nbm = int(getattr(self, "_dico_nb_mots_max", 50))
+        default_origin = (0, nbm)
+        if tuple(self._dico_origin_cell or default_origin) == (rr, cc):
+            self._dico_origin_cell = default_origin
+        else:
+            self._dico_origin_cell = (rr, cc)
+        self._build_dico_grid()
+
+    def _dico_reset_origin(self):
+        # Origine par défaut = 1er mot du livre :
+        #  - ligne physique 0 (énigme 0)
+        #  - colonne physique nbm (car headers = [-nbm..0..+nbm])
+        nbm = int(getattr(self, "_dico_nb_mots_max", 50))
+        self._dico_origin_cell = (0, nbm)
+        self._build_dico_grid()
 
     # ---------- DICO → Horloge ----------
     def _update_clock_from_cell(self, row: int, col: int):
-        """
-        Met à jour l'horloge à partir d'une cellule de la grille Dico.
-          - Heure : dérivée du titre de ligne (ex: '530' -> 5h).
-          - Minute : distance à la colonne 0 (col absolue) -> abs(col - nb_mots_max).
-          - Libellé : contenu texte de la cellule.
+        """Met à jour l'horloge à partir d'une cellule de la grille Dico.
+        La conversion (row,col)->(hour,minute,label) est déléguée au decryptor actif.
         """
         if not getattr(self, "dicoSheet", None):
             return
-        # Sécurités
+
+ 
         nbm = int(getattr(self, "_dico_nb_mots_max", 50))
         row_titles = getattr(self, "_dico_row_index", [])
-        # Mot (texte de cellule)
         try:
-            word = str(self.dicoSheet.get_cell_data(row, col)).strip()
+            word = str(self.dicoSheet.get_cell_data(int(row), int(col))).strip()
         except Exception:
             word = ""
-        # Heure -> prendre les centaines (530 -> 5)
+ 
+        # Externalisation : conversion via decryptor
         try:
-            titre = str(row_titles[row]) if row_titles and 0 <= row < len(row_titles) else ""
-            hour = int(str(int(titre))[:1]) if titre and titre.isdigit() else (int(titre)//100)
+            # --- Passage en référentiel LOGIQUE pour le compas/decryptor ---
+            nbm = int(getattr(self, "_dico_nb_mots_max", 50))
+            # Par défaut, l'origine logique (0,0) est le 1er mot du livre => (0, nbm)
+            r0, c0 = (self._dico_origin_cell or (0, nbm))
+            rowDec = int(row) - int(r0)
+            # On reste en module 10 pour les énigmes : -1 => 9, -2 => 8, etc.
+            rowDec = int(rowDec) % 10
+            colDec = (int(col) - int(c0)) + int(nbm)
+            st = self.decryptor.clockStateFromDicoCell(
+                row=int(rowDec),
+                col=int(colDec),
+                nbMotsMax=int(nbm),
+                rowTitles=list(row_titles) if row_titles else None,
+                word=word,
+            )
         except Exception:
-            # fallback: si pas de titre exploitable, approx à partir de l'index
-            hour = max(0, int(row) % 12)
-        # Normaliser heure 0..11 (affichage 0h..11h ; si tu veux 12h remapper 0->12 à l'affichage)
-        try:
-            hour = int(hour) % 12
-        except Exception:
-            hour = 0
-        # Minute -> distance à la colonne centrale (colonne 0)
-        try:
-            minute = abs(int(col) - nbm)
-        except Exception:
-            minute = 0
-        # Libellé
-        label = word if word else ""
-        if label:
-            label = f"{label} — ({hour}h, {minute}')"
-        else:
-            label = f"({hour}h, {minute}')"
-        # Appliquer et redessiner
-        self._clock_state.update({"hour": hour, "minute": minute, "label": label})
+            # En cas d'erreur du decryptor, ne pas casser l'UI
+            return
+
+        self._clock_state.update({"hour": float(st.hour), "minute": int(st.minute), "label": str(st.label)})
         self._redraw_overlay_only()
 
+    # ---------- DICO : filtrage visuel par angle ----------
+    def _dico_apply_filter_styles(self):
+        """Applique le style (gras / gris) à l'ensemble du dictionnaire."""
+        if not getattr(self, "dicoSheet", None):
+            return
+        if not self._dico_filter_active:
+            return
+        if self._dico_filter_ref_angle_deg is None:
+            return
+
+        if not hasattr(self.dicoSheet, "highlight_cells"):
+            raise AttributeError("tksheet.Sheet.highlight_cells non disponible")
+
+        nbm = int(getattr(self, "_dico_nb_mots_max", 50))
+        row_titles = getattr(self, "_dico_row_index", [])
+        n_rows = int(len(self.dico)) if self.dico is not None else 0
+        n_cols = int(2 * nbm)
+
+        ref = float(self._dico_filter_ref_angle_deg) % 180.0
+        tol = float(getattr(self, "_dico_filter_tolerance_deg", 4.0))
+
+        r0, c0 = (self._dico_origin_cell or (0, 0))
+        for r in range(n_rows):
+            for c in range(n_cols):
+                word = str(self.dicoSheet.get_cell_data(r, c)).strip()
+                if not word:
+                    continue
+                # --- Passage en référentiel LOGIQUE pour l'angle ---
+                rowDec = (int(r) - int(r0)) % 10
+                colDec = (int(c) - int(c0)) + int(nbm)
+                ang = float(self.decryptor.deltaAngleFromDicoCell(
+                    row=int(rowDec),
+                    col=int(colDec),
+                    nbMotsMax=int(nbm),
+                    rowTitles=list(row_titles) if row_titles else None,
+                    word=word,
+                ))
+                ok = abs(ang - ref) <= tol
+                if ok:
+                    # Match: texte noir + fond légèrement marqué
+                    self.dicoSheet.highlight_cells(r, c, fg="#000000", bg="#E8E8E8")
+                else:
+                    # Non match: gris clair (pas de fond)
+                    self.dicoSheet.highlight_cells(r, c, fg="#B0B0B0")
+
+        # Priorité visuelle à l'origine
+        self._dico_apply_origin_style()
+
+        if hasattr(self.dicoSheet, "refresh"):
+            self.dicoSheet.refresh()
+
+    def _dico_clear_filter_styles(self):
+        """Réinitialise les styles appliqués par _dico_apply_filter_styles."""
+        if not getattr(self, "dicoSheet", None):
+            return
+        # Version récente : méthode dédiée
+        if hasattr(self.dicoSheet, "dehighlight_all"):
+            self.dicoSheet.dehighlight_all()
+        else:
+            # Fallback minimal si jamais (mais si tu mets à jour, tu ne passes jamais ici)
+            if hasattr(self.dicoSheet, "dehighlight_cells"):
+                self.dicoSheet.dehighlight_cells()
+        # Ré-appliquer l'origine après nettoyage
+        self._dico_apply_origin_style()
+        if hasattr(self.dicoSheet, "refresh"):
+            self.dicoSheet.refresh()
+
+    def _dico_apply_origin_style(self):
+        """Applique le style visuel de la cellule origine (0,0) logique."""
+        if not getattr(self, "dicoSheet", None):
+            return
+        if not hasattr(self.dicoSheet, "highlight_cells"):
+            return
+        r0, c0 = (self._dico_origin_cell or (0, 0))
+        self.dicoSheet.highlight_cells(int(r0), int(c0), fg="#9A9A9A", bg="#BFDFFF")
 
     # ---------- DICO : lecture de la sélection courante ----------
     def _get_selected_dico_word(self) -> Optional[Tuple[str, int, int]]:
@@ -776,8 +1084,11 @@ class TriangleViewerManual(tk.Tk):
         self.menu_simulation = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Simulation", menu=self.menu_simulation)
         self.menu_simulation.add_command(label="Assembler…", command=self._simulation_assemble_dialog)
-        self.menu_simulation.add_separator()
         self.menu_simulation.add_command(label="Supprimer les scénarios automatiques", command=self._simulation_clear_auto_scenarios)
+        self.menu_simulation.add_separator()
+        self.menu_simulation.add_command(label="Paramétrer le décryptage...", command=self._simulation_param_decryptage)
+        self.menu_simulation.add_command(label="Annuler le filtrage du dictionnaire", command=self._simulation_cancel_dictionary_filter, state="disabled")
+        self._menu_sim_cancel_dico_filter_index = self.menu_simulation.index("end")
 
         # --- Menu Visualisation ---
         self.menu_visual = tk.Menu(menubar, tearoff=0)
@@ -847,6 +1158,37 @@ class TriangleViewerManual(tk.Tk):
         # sinon fallback sur data/triangle.xlsx si présent.
         self.autoLoadTrianglesFileAtStartup()
         self.autoLoadBackgroundAtStartup()
+
+    def _simulation_param_decryptage(self):
+        dlg = DialogParamDecryptage(
+            self,
+            decryptor=self.decryptor
+        )
+        self.wait_window(dlg)
+
+        if dlg.result is None:
+            return
+
+        decryptorId, hourMoves = dlg.result
+
+        # Algo déjà existant → on garde l’instance si possible
+        if self.decryptor.id != decryptorId:
+            self.decryptor = createDecryptor(decryptorId)
+
+        self.decryptor.hourMovesWithMinutes = hourMoves
+        self._redraw_overlay_only()
+
+
+    def _simulation_cancel_dictionary_filter(self):
+        """Annule le filtrage visuel du dictionnaire (styles)."""
+        was_active = bool(self._dico_filter_active) or (self._dico_filter_ref_angle_deg is not None)
+        self._dico_filter_active = False
+        self._dico_filter_ref_angle_deg = None
+        if hasattr(self, "_menu_sim_cancel_dico_filter_index"):
+            self.menu_simulation.entryconfig(self._menu_sim_cancel_dico_filter_index, state="disabled")
+        self._dico_clear_filter_styles()
+        if was_active:
+            self.status.config(text="Dico: filtrage annule")
 
     # =========================
     #  SIMULATION (AUTO ASSEMBLAGE)
@@ -1809,6 +2151,10 @@ class TriangleViewerManual(tk.Tk):
         self._ctx_menu_compass.add_command(label="Définir l'azimut de ref…", command=self._ctx_define_clock_ref_azimuth)
         self._ctx_menu_compass.add_command(label="Mesurer un azimut…", command=self._ctx_measure_clock_azimuth)
         self._ctx_menu_compass.add_command(label="Mesurer un arc d'angle…", command=self._ctx_measure_clock_arc_angle)
+        self._ctx_menu_compass.add_separator()
+        self._ctx_menu_compass.add_command(label="Filtrer le dictionnaire…", command=self._ctx_filter_dictionary_by_clock_arc, state=tk.DISABLED)
+        self._ctx_compass_idx_filter_dico = self._ctx_menu_compass.index("end")
+        self._update_compass_ctx_menu_and_dico_state()
 
         # Menu contextuel
         self._ctx_menu = tk.Menu(self, tearoff=0)
@@ -2775,10 +3121,14 @@ class TriangleViewerManual(tk.Tk):
         col_ticks  = "#707070"
         col_hour   = "#0b3d91"   # bleue (petite aiguille)
         col_min    = "#000000"   # noire  (grande aiguille)
+
         # Données
-        h = int(self._clock_state.get("hour", 5)) % 12
+        # NOTE: l'algo de décryptage peut fournir une heure "float" (si l'aiguille avance avec les minutes)
+        #       ou une heure "int" (si elle reste sur l'heure pile). On respecte donc cette valeur telle quelle.
+        hFloat = float(self._clock_state.get("hour", 5.0)) % 12.0
         m = int(self._clock_state.get("minute", 9)) % 60
         label = str(self._clock_state.get("label", ""))
+
         # Cercle
         self.canvas.create_oval(cx-R, cy-R, cx+R, cy+R,
                                 outline=col_circle, width=2, tags="clock_overlay")
@@ -2853,8 +3203,15 @@ class TriangleViewerManual(tk.Tk):
             return (cx + length * math.sin(a), cy - length * math.cos(a))
         # Minutes -> 6° par minute
         ang_min = ref_az + (m * 6.0)
-        # Heures -> 30° par heure + 0,5° par minute
-        ang_hour = ref_az + ((h % 12) * 30.0) + (m * 0.5)
+        # Heures -> 30° par heure
+        # IMPORTANT: l'avance avec les minutes (ou non) est déjà encodée dans hFloat par l'algo de décryptage.
+        ang_hour = ref_az + (hFloat * 30.0)
+
+        # Écart entre aiguilles (0..180) — même définition que l'angle d'arc (plus petit angle)
+        # On repasse en [0..360) avant calcul.
+        delta_needles_deg = None
+        delta_needles_deg = self._clock_arc_compute_angle_deg(float(ang_hour) % 360.0, float(ang_min) % 360.0)
+
         # Longueurs des aiguilles
         L_min  = R * 0.86
         L_hour = R * 0.58
@@ -2867,9 +3224,14 @@ class TriangleViewerManual(tk.Tk):
         self.canvas.create_oval(cx-3, cy-3, cx+3, cy+3, fill=col_min, outline=col_min, tags="clock_overlay")
         # Libellé sous l'horloge
         if label:
-            self.canvas.create_text(cx, cy + R + 20, text=label,
-                                    font=("Arial", 11), fill="#000000",
+            label_disp = str(label)
+            if delta_needles_deg is not None:
+                label_disp = f"{label_disp} — Δ={float(delta_needles_deg):0.0f}°"
+            self.canvas.create_text(cx, cy + R + 20, text=label_disp,
+                                    font=("Arial", 11, "bold"), fill="#000000",
                                     anchor="n", tags="clock_overlay")
+        # Dernière mesure d'arc (persistée) : affichage tant que le compas reste au même ancrage
+        self._clock_arc_draw_last(cx, cy, R)
 
 
     # ---------- Horloge : snap sur sommet le plus proche ----------
@@ -2882,27 +3244,40 @@ class TriangleViewerManual(tk.Tk):
 
     def _clock_update_snap_target(self, sx: float, sy: float):
         """Calcule le sommet de triangle le plus proche du curseur (en écran/canvas) et l'affiche en rouge."""
+        prev = getattr(self, "_clock_snap_target", None)
         # Pas de triangles -> rien à viser
         if not getattr(self, "_last_drawn", None):
             self._clock_clear_snap_target()
+            # Si on quitte un ancrage (plus de snap), on perd aussi l'arc persisté + dico
+            if prev is not None and self._clock_arc_is_available():
+                self._clock_arc_clear_last()
             return
         try:
             w = self._screen_to_world(sx, sy)
             v_world = np.array([float(w[0]), float(w[1])], dtype=float)
         except Exception:
             self._clock_clear_snap_target()
+            if prev is not None and self._clock_arc_is_available():
+                self._clock_arc_clear_last()
             return
 
         found = self._find_nearest_vertex(v_world, exclude_idx=None, exclude_gid=None)
         if found is None:
             self._clock_clear_snap_target()
+            if prev is not None and self._clock_arc_is_available():
+                self._clock_arc_clear_last()
             return
 
         idx, vkey, wbest = found
+        # Si on change de noeud (idx/vkey), l'arc mesuré n'est plus valide => on reset arc + dico
+        if prev is not None:
+            prev_key = (int(prev.get("idx")), str(prev.get("vkey")))
+            new_key = (int(idx), str(vkey))
+            if prev_key is not None and new_key != prev_key and self._clock_arc_is_available():
+                self._clock_arc_clear_last()
         self._clock_snap_target = {"idx": int(idx), "vkey": str(vkey), "world": np.array(wbest, dtype=float)}
 
         # Marqueur visuel : un anneau rouge autour du sommet
-
         if getattr(self, "canvas", None):
             self.canvas.delete("clock_snap_target")
             px, py = self._world_to_screen(wbest)
@@ -5358,6 +5733,7 @@ class TriangleViewerManual(tk.Tk):
         if self._is_point_in_clock(event.x, event.y):
             self._ctx_target_idx = None
             self._ctx_last_rclick = (event.x, event.y)
+            self._update_compass_ctx_menu_and_dico_state()
             self._ctx_menu_compass.tk_popup(event.x_root, event.y_root)
             self._ctx_menu_compass.grab_release()
             return
@@ -5462,6 +5838,110 @@ class TriangleViewerManual(tk.Tk):
 
         self.status.config(text="Mesurer un arc d'angle : clic gauche P1 puis P2, ESC pour annuler. (Snap noeuds, CTRL = désactiver snap)")
 
+    def _ctx_filter_dictionary_by_clock_arc(self):
+        """Filtre visuellement le dictionnaire selon l'angle de référence mesuré."""
+        if not getattr(self, "dicoSheet", None):
+            messagebox.showinfo("Filtrer le dictionnaire", "Le dictionnaire n'est pas affiché.")
+            return
+        ref = getattr(self, "_clock_arc_last_angle_deg", None)
+        if ref is None:
+            messagebox.showinfo("Filtrer le dictionnaire", "Aucun arc n'a été mesuré.\n\nMesure d'abord un arc d'angle sur le compas.")
+            return
+        self._dico_filter_active = True
+        self._dico_filter_ref_angle_deg = float(ref)
+        if hasattr(self, "_menu_sim_cancel_dico_filter_index"):
+            self.menu_simulation.entryconfig(self._menu_sim_cancel_dico_filter_index, state="normal")
+        self._dico_apply_filter_styles()
+        self.status.config(text=f"Dico filtré (angle ref={float(ref):0.0f}°, tol=±{float(self._dico_filter_tolerance_deg):0.0f}°)")
+
+    def _clock_arc_is_available(self) -> bool:
+        """True si une mesure d'arc persistee est disponible (et affichee tant que le compas reste sur le meme noeud)."""
+        return (getattr(self, '_clock_arc_last_angle_deg', None) is not None) and isinstance(getattr(self, '_clock_arc_last', None), dict)
+
+    def _update_compass_ctx_menu_and_dico_state(self):
+        """Synchronise le menu compas et l'état de filtrage du dico selon la dispo de l'arc.
+
+        IMPORTANT:
+        - Le dico doit rester sélectionnable même s'il n'y a pas d'arc mesuré.
+        - Seule l'action "Filtrer le dictionnaire…" dépend de l'existence d'un arc.
+        """
+        arc_ok = bool(self._clock_arc_is_available())
+
+        menu = getattr(self, '_ctx_menu_compass', None)
+        idx = getattr(self, '_ctx_compass_idx_filter_dico', None)
+        if menu is not None and idx is not None:
+            menu.entryconfig(idx, state=(tk.NORMAL if arc_ok else tk.DISABLED))
+
+        # Le dico reste sélectionnable dans tous les cas.
+        self._dico_set_selection_enabled(True)
+
+        # Si on perd l'arc alors qu'un filtrage était actif, on annule le filtrage.
+        if not arc_ok:
+            if hasattr(self, "_simulation_cancel_dictionary_filter"):
+                self._simulation_cancel_dictionary_filter()
+
+    def _clock_update_compass_ctx_menu_states(self):
+        """Alias historique -> _update_compass_ctx_menu_and_dico_state."""
+        self._update_compass_ctx_menu_and_dico_state()
+
+    def _dico_clear_selection(self, refresh: bool = True):
+        """Supprime toute selection visible dans la TkSheet du dictionnaire."""
+        if not getattr(self, 'dicoSheet', None):
+            return
+
+        if hasattr(self.dicoSheet, 'deselect'):
+            try:
+                self.dicoSheet.deselect('all')
+            except Exception:
+                pass
+            else:
+                if refresh and hasattr(self.dicoSheet, 'refresh'):
+                    self.dicoSheet.refresh()
+                return
+
+        for meth in ('deselect_all', 'delete_selection', 'dehighlight_all'):
+            if hasattr(self.dicoSheet, meth):
+                try:
+                    getattr(self.dicoSheet, meth)()
+                except Exception:
+                    continue
+                break
+
+        if refresh and hasattr(self.dicoSheet, 'refresh'):
+            self.dicoSheet.refresh()
+
+    def _dico_set_selection_enabled(self, enabled: bool):
+        """(De)sactive la selection utilisateur sur la TkSheet du dictionnaire.
+
+        Objectif : quand le menu contextuel 'Filtrer le dictionnaire' est grise
+        (pas d'arc mesure/affiche), on desactive aussi la selection dans la grille.
+
+        Implementation :
+        - si tksheet expose disable_bindings/enable_bindings, on s'appuie dessus;
+        - sinon, on garde un garde-fou cote callback 'cell_select'."""
+        if not getattr(self, 'dicoSheet', None):
+            # On memorise quand meme l'etat pour le callback, meme si le widget n'existe pas.
+            self._dico_selection_enabled = bool(enabled)
+            return
+
+        self._dico_selection_enabled = bool(enabled)
+
+        # 1) Desactiver/activer les bindings principaux de selection
+        # NB: on ne touche pas a 'copy' et au popup menu pour rester neutre.
+        bindings = ('single_select', 'row_select', 'column_select', 'rc_select', 'arrowkeys')
+        if hasattr(self.dicoSheet, 'disable_bindings') and hasattr(self.dicoSheet, 'enable_bindings'):
+            if self._dico_selection_enabled:
+                self.dicoSheet.enable_bindings(bindings)
+            else:
+                self.dicoSheet.disable_bindings(bindings)
+
+        # 2) Si on desactive, on efface aussi la selection courante (visuellement)
+        if not self._dico_selection_enabled:
+            self._dico_clear_selection(refresh=False)
+
+        if hasattr(self.dicoSheet, 'refresh'):
+            self.dicoSheet.refresh()
+
     def _clock_arc_handle_click(self, sx: int, sy: int):
         """Gestion des clics gauche dans le mode 'arc d'angle'."""
         if not getattr(self, "_clock_arc_active", False):
@@ -5482,8 +5962,18 @@ class TriangleViewerManual(tk.Tk):
 
         # step==1 : valider P2 et conclure
         self._clock_arc_p2 = (int(sx2), int(sy2), float(az_abs))
-        angle_deg = self._clock_arc_compute_angle_deg(self._clock_arc_p1[2], self._clock_arc_p2[2])
+        az1 = float(self._clock_arc_p1[2])
+        az2 = float(self._clock_arc_p2[2])
+        angle_deg = float(self._clock_arc_compute_angle_deg(az1, az2))
+
+        # Persister la mesure : on l'affichera lors des redraw de l'overlay.
+        self._clock_arc_last = {"az1": az1, "az2": az2, "angle": angle_deg}
+        self._clock_arc_last_angle_deg = float(angle_deg)
+        self._update_compass_ctx_menu_and_dico_state()
+
+        # Sortir du mode interactif en nettoyant uniquement le preview
         self._clock_arc_cancel(silent=True)
+        self._redraw_overlay_only()
         self.status.config(text=f"Arc mesuré : {angle_deg:0.0f}°")
 
     def _clock_arc_update_preview(self, sx: int, sy: int):
@@ -5573,6 +6063,74 @@ class TriangleViewerManual(tk.Tk):
         self._clock_clear_snap_target()
         if not silent:
             self.status.config(text="Mesure d'arc annulée.")
+
+    def _clock_arc_clear_last(self):
+        """Efface la dernière mesure persistée (appelé notamment quand le compas bouge)."""
+        # Si le dico était filtré sur la base de cet arc, on doit annuler le filtrage
+        # dès que l'arc n'est plus disponible (changement de noeud compas).
+        if bool(getattr(self, "_dico_filter_active", False)) or (getattr(self, "_dico_filter_ref_angle_deg", None) is not None):
+            # Réutilise l'action standard de l'app (menu simulation "Annuler filtrage")
+            if hasattr(self, "_simulation_cancel_dictionary_filter"):
+                self._simulation_cancel_dictionary_filter()
+            else:
+                # fallback minimal (au cas où)
+                self._dico_filter_active = False
+                self._dico_filter_ref_angle_deg = None
+                self._dico_clear_filter_styles()
+
+        self._clock_arc_last = None
+        self._clock_arc_last_angle_deg = None
+        self._update_compass_ctx_menu_and_dico_state()
+
+    def _clock_arc_draw_last(self, cx: float, cy: float, R: float):
+        """Dessine la dernière mesure persistée (si présente) dans l'overlay."""
+        last = getattr(self, "_clock_arc_last", None)
+        if not isinstance(last, dict):
+            return
+        if not getattr(self, "canvas", None):
+            return
+        try:
+            az1 = float(last.get("az1"))
+            az2 = float(last.get("az2"))
+        except Exception:
+            return
+
+        start_deg_tk, extent_deg_tk, angle_deg, mid_az = self._clock_arc_compute_tk_arc(az1, az2)
+
+        # 2 rayons (centre->az1 et centre->az2)
+        x1, y1 = self._clock_point_on_circle(az1, R)
+        x2, y2 = self._clock_point_on_circle(az2, R)
+        self.canvas.create_line(
+            cx, cy, x1, y1, width=2, dash=(4, 3),
+            fill="#202020", tags=("clock_overlay", "clock_arc_persist")
+        )
+        self.canvas.create_line(
+            cx, cy, x2, y2, width=2, dash=(4, 3),
+            fill="#202020", tags=("clock_overlay", "clock_arc_persist")
+        )
+
+        # Arc
+        bbox = (cx - R, cy - R, cx + R, cy + R)
+        self.canvas.create_arc(
+            *bbox,
+            start=float(start_deg_tk),
+            extent=float(extent_deg_tk),
+            style="arc",
+            width=2,
+            outline="#202020",
+            tags=("clock_overlay", "clock_arc_persist"),
+        )
+
+        # Texte angle
+        tx, ty = self._clock_point_on_circle(mid_az, R * 1.08)
+        self.canvas.create_text(
+            tx, ty,
+            text=f"{float(angle_deg):0.0f}°",
+            anchor="center",
+            fill="#202020",
+            font=("Arial", 12, "bold"),
+            tags=("clock_overlay", "clock_arc_persist"),
+        )
 
     def _clock_arc_compute_angle_deg(self, az1: float, az2: float) -> float:
         """Retourne le plus petit angle (0..180) entre deux azimuts."""
@@ -6711,6 +7269,8 @@ class TriangleViewerManual(tk.Tk):
             self._clock_dragging = False
             self.canvas.configure(cursor="")
             self._clock_clear_snap_target()
+            # Spéc : si on déplace le compas, on réinitialise la mesure d'arc persistée
+            self._clock_arc_clear_last()
             self._redraw_overlay_only()
             return "break"
 

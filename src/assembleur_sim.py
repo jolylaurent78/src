@@ -4,7 +4,8 @@ Moteur + algorithmes d'assemblage automatique (sans dépendance Tk).
 
 from __future__ import annotations
 
-from typing import List, Dict, Tuple, Type
+from dataclasses import dataclass
+from typing import List, Dict, Tuple, Type, Optional, Any
 import numpy as np
 import math
 import copy
@@ -18,6 +19,177 @@ from src.assembleur_core import (
     _apply_R_T_on_P,
     ScenarioAssemblage,
 )
+
+ 
+# ============================================================
+# Décryptage (générique) — sans dépendance UI
+# ============================================================
+ 
+@dataclass
+class ClockState:
+    """État minimal du compas/horloge pour le décryptage."""
+    hour: float = 0.0
+    minute: int = 0
+    label: str = ""
+    # Conserver la provenance (utile pour debug / synchro)
+    dicoRow: Optional[int] = None
+    dicoCol: Optional[int] = None
+    word: str = ""
+
+
+class DecryptorBase:
+    """Contrat minimal pour brancher différents types de décryptage."""
+    id: str = "decrypt_base"
+    label: str = "Décryptage (base)"
+
+    # ----------------------------
+    #  Helpers "angles horloge"
+    # ----------------------------
+    def anglesFromClock(self, *, hour: float, minute: int) -> Tuple[float, float]:
+        """Retourne (angleHourDeg, angleMinuteDeg) dans [0..360).
+
+        Convention:
+          - 0° = 12h
+          - sens horaire
+        """
+        h = float(hour) % 12.0
+        m = int(minute) % 60
+        ang_min = (m * 6.0) % 360.0
+        ang_hour = (h * 30.0) % 360.0
+        return (ang_hour, ang_min)
+
+    def deltaAngleBetweenHands(self, *, hour: float, minute: int) -> float:
+        """Angle non orienté entre aiguilles, ramené dans [0..180]."""
+        ang_hour, ang_min = self.anglesFromClock(hour=hour, minute=minute)
+        d = abs(float(ang_hour) - float(ang_min)) % 360.0
+        if d > 180.0:
+            d = 360.0 - d
+        return float(d)
+
+    def deltaAngleFromDicoCell(self, *, row: int, col: int, nbMotsMax: int, rowTitles: Optional[List[Any]] = None, word: str = "") -> float:
+        """Calcul complet: cellule dico -> hour/minute -> delta angle (0..180)."""
+        st = self.clockStateFromDicoCell(
+            row=int(row),
+            col=int(col),
+            nbMotsMax=int(nbMotsMax),
+            rowTitles=rowTitles,
+            word=word,
+        )
+        return self.deltaAngleBetweenHands(hour=float(st.hour), minute=int(st.minute))
+
+    def clockStateFromDicoCell(self, *, row: int, col: int, nbMotsMax: int, rowTitles: Optional[List[Any]] = None, word: str = "") -> ClockState:
+        """Convertit une cellule (row,col) en état d'horloge.
+        Par défaut: non supporté.
+        """
+        raise NotImplementedError
+
+    def dicoCellFromClock(self, *, hour: int, minute: int, nbMotsMax: int, rowTitles: Optional[List[Any]] = None) -> Optional[Tuple[int, int]]:
+        """Convertit un état (hour,minute) en (row,col) si possible.
+
+        Par défaut: non supporté.
+        """
+        return None
+
+class ClockDicoDecryptor(DecryptorBase):
+    """Implémentation actuelle (celle codée dans assembleur_tk):
+
+    - Heure : dérivée de l’ORDRE de l’énigme (index de ligne)
+      * 1ère énigme (index 0) => Midi (12h)
+      * 2ème énigme (index 1) => 1h
+    - Minute : distance à la colonne 0 (col absolue) -> abs(col - nbMotsMax)
+    - Label : word + (h,m)
+    """
+    id = "clock_dico_v1"
+    label = "Horloge ↔ Dictionnaire (v1)"
+ 
+    def __init__(self):
+        super().__init__()
+        # Paramètres génériques (communs pour l’instant)
+        self.hourMovesWithMinutes = True
+
+    def clockStateFromDicoCell(self, *, row: int, col: int, nbMotsMax: int, rowTitles: Optional[List[Any]] = None, word: str = "") -> ClockState:
+        r = int(row)
+        c = int(col)
+        nbm = max(0, int(nbMotsMax))
+ 
+        # Hour : ordre de l’énigme = index de ligne
+        # On conserve hour en 0..11 pour le dessin (0 = position "12h").
+        hour = int(r) % 12
+        hourDisp = 12 if hour == 0 else hour
+ 
+        # Minute (distance à la colonne centrale)
+        minute = abs(c - nbm)
+
+        # Option : l’aiguille des heures avance avec les minutes
+        if self.hourMovesWithMinutes:
+            hourFloat = (hour + minute / 60.0) % 12
+        else:
+            hourFloat = hour
+ 
+        # Label
+        w = str(word or "").strip()
+        if w:
+            label = f"{w} — ({hourDisp}h, {minute}')"
+        else:
+            label = f"({hourDisp}h, {minute}')"
+ 
+        return ClockState(
+            hour=float(hourFloat),
+            minute=int(minute),
+            label=label,
+            dicoRow=r,
+            dicoCol=c,
+            word=w,
+        )
+ 
+    def dicoCellFromClock(
+        self,
+        *,
+        hour: int,
+        minute: int,
+        nbMotsMax: int,
+        rowTitles: Optional[List[Any]] = None,
+    ) -> Optional[Tuple[int, int]]:
+        """Version simple (WIP):
+ 
+        - row: on cherche la première ligne dont le titre commence par {hour}
+        - col: nbMotsMax ± minute (2 candidats)
+ 
+        Renvoie None si impossible.
+        """
+        h = int(hour) % 12
+        m = max(0, int(minute))
+        nbm = max(0, int(nbMotsMax))
+ 
+        # 1) résoudre row via rowTitles si dispo
+        if not rowTitles:
+            return None
+ 
+        targetRow = None
+        for i, t in enumerate(rowTitles):
+            try:
+                s = str(t).strip()
+                if s.isdigit() and int(str(int(s))[:1]) % 12 == h:
+                    targetRow = i
+                    break
+            except Exception:
+                continue
+        if targetRow is None:
+            return None
+ 
+        # 2) col: deux possibilités symétriques
+        #    (à trancher via la présence du mot / heuristique plus tard)
+        colA = nbm + m
+        colB = nbm - m
+        # Par défaut, renvoyer colA (même côté que l’implémentation habituelle “+”)
+        return (int(targetRow), int(colA))
+ 
+ 
+# Petit registre (optionnel) pour brancher d’autres décryptages
+DECRYPTORS: Dict[str, Type[DecryptorBase]] = {
+    ClockDicoDecryptor.id: ClockDicoDecryptor,
+}
+ 
 
 class AlgorithmeAssemblage:
     """Contrat minimal pour un algo d'assemblage automatique."""
