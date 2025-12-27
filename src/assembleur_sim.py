@@ -66,18 +66,35 @@ class DecryptorBase:
             d = 360.0 - d
         return float(d)
 
-    def deltaAngleFromDicoCell(self, *, row: int, col: int, nbMotsMax: int, rowTitles: Optional[List[Any]] = None, word: str = "") -> float:
-        """Calcul complet: cellule dico -> hour/minute -> delta angle (0..180)."""
+    def deltaAngleFromDicoCell(self,*, row: int, col: int, nbMotsMax: int, rowTitles: Optional[List[Any]] = None, word: str = "", mode: str = "delta") -> float:
+        """Calcul complet: cellule dico -> hour/minute -> delta angle (0..180).
+
+        Note:
+        - En DELTA (10 énigmes projetées sur un cadran 12h), une même ligne peut
+          correspondre à 2 heures possibles (ex: 1h ou 11h). Dans ce cas, on
+          renvoie l'angle MIN (utile pour le filtrage par angle).
+        - En ABS, la projection est unique.
+        """
+        m = str(mode or "delta").strip().lower()
         st = self.clockStateFromDicoCell(
             row=int(row),
             col=int(col),
             nbMotsMax=int(nbMotsMax),
             rowTitles=rowTitles,
             word=word,
+            mode=m,
         )
+
+        if m.startswith("del"):
+            hour0 = float(st.hour) % 12.0
+            minute0 = int(st.minute)
+            angA = self.deltaAngleBetweenHands(hour=hour0, minute=minute0)
+            angB = self.deltaAngleBetweenHands(hour=(hour0 + 10.0) % 12.0, minute=minute0)
+            return float(min(angA, angB))
+
         return self.deltaAngleBetweenHands(hour=float(st.hour), minute=int(st.minute))
 
-    def clockStateFromDicoCell(self, *, row: int, col: int, nbMotsMax: int, rowTitles: Optional[List[Any]] = None, word: str = "") -> ClockState:
+    def clockStateFromDicoCell(self, *, row: int, col: int, nbMotsMax: int, rowTitles: Optional[List[Any]] = None, word: str = "", mode: str = "delta") -> ClockState:
         """Convertit une cellule (row,col) en état d'horloge.
         Par défaut: non supporté.
         """
@@ -91,13 +108,20 @@ class DecryptorBase:
         return None
 
 class ClockDicoDecryptor(DecryptorBase):
-    """Implémentation actuelle (celle codée dans assembleur_tk):
+    """Décryptage Horloge ↔ Dictionnaire.
 
-    - Heure : dérivée de l’ORDRE de l’énigme (index de ligne)
-      * 1ère énigme (index 0) => Midi (12h)
-      * 2ème énigme (index 1) => 1h
-    - Minute : distance à la colonne 0 (col absolue) -> abs(col - nbMotsMax)
-    - Label : word + (h,m)
+    Modes supportés:
+      - ABS:
+        * row = 1..10 (pas de 0)
+        * col = … -2, -1, 1, 2, … (pas de 0)
+        * mapping compas: hour=row (1..10), minute=col en base 1
+          (col=-1 => 60, col=-2 => 59, etc.)
+
+      - DELTA:
+        * row = 0..9 (0 autorisé), col = delta signé (0 autorisé)
+        * mapping compas: hour=row, minute=col mod 60  (ex: -5 => 55')
+        * Pour le filtrage d'angle, la ligne a 2 interprétations horaires
+          possibles (h et h+10 mod 12) — géré dans deltaAngleFromDicoCell.
     """
     id = "clock_dico_v1"
     label = "Horloge ↔ Dictionnaire (v1)"
@@ -107,24 +131,42 @@ class ClockDicoDecryptor(DecryptorBase):
         # Paramètres génériques (communs pour l’instant)
         self.hourMovesWithMinutes = True
 
-    def clockStateFromDicoCell(self, *, row: int, col: int, nbMotsMax: int, rowTitles: Optional[List[Any]] = None, word: str = "") -> ClockState:
+    def clockStateFromDicoCell(self, *, row: int, col: int, nbMotsMax: int, rowTitles: Optional[List[Any]] = None, word: str = "", mode: str = "delta") -> ClockState:
         r = int(row)
         c = int(col)
         nbm = max(0, int(nbMotsMax))
- 
-        # Hour : ordre de l’énigme = index de ligne
-        # On conserve hour en 0..11 pour le dessin (0 = position "12h").
-        hour = int(r) % 12
-        hourDisp = 12 if hour == 0 else hour
- 
-        # Minute (distance à la colonne centrale)
-        minute = abs(c - nbm)
+        m = str(mode or "delta").strip().lower()
+
+        if m.startswith("abs"):
+            # --- ABS ---
+            rowDisp = ((int(r) - 1) % 10) + 1
+            hourDisp = int(rowDisp)
+            hour = int(hourDisp) % 12  # 12 -> 0 (position "12h")
+
+            # col: pas de 0. Convertir en minute 1..60.
+            if int(c) > 0:
+                minute = int(c)
+            else:
+                minute = 60 + int(c) + 1
+            minute = int(minute) % 60
+            if minute == 0:
+                minute = 60
+
+        else:
+            # --- DELTA ---
+            hour = int(r) % 12
+            hourDisp = int(hour)
+            # En DELTA, une colonne négative se lit comme une minute "avant":
+            #   -5 => 55' (comme 10h - 5' = 9h55)
+            # Donc: minute = col mod 60 (0..59)
+            minute = int(c) % 60
 
         # Option : l’aiguille des heures avance avec les minutes
         if self.hourMovesWithMinutes:
-            hourFloat = (hour + minute / 60.0) % 12
+            minuteFloat = 0.0 if int(minute) == 60 else float(minute)
+            hourFloat = (float(hour) + minuteFloat / 60.0) % 12.0
         else:
-            hourFloat = hour
+            hourFloat = float(hour)
  
         # Label
         w = str(word or "").strip()

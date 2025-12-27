@@ -569,16 +569,31 @@ class TriangleViewerManual(tk.Tk):
                 items = []
             # mémoriser pour la synchro avec la grille
             self._dico_cat_items = list(items)
-            # Afficher: "mot — (eLog, mLog)" (index LOGIQUES uniquement)
+            # Afficher: "mot — (eDisp, mDisp)" (index d’affichage)
+            # - Mode ABS (origine par défaut) : colonnes sans 0 (1=1er mot), lignes 1..10
+            # - Mode DELTA (origine cliquée) : colonnes/énigmes en delta avec 0 (pas d’énigmes négatives -> modulo 10)
             nb_mots_max = self._dico_nb_mots_max if hasattr(self, "_dico_nb_mots_max") else self.dico.nbMotMax()
-            r0, c0 = (self._dico_origin_cell or (0, 0))
+            default_origin = (0, int(nb_mots_max))
+            r0, c0 = (self._dico_origin_cell or default_origin)
+            isDelta = tuple((r0, c0)) != tuple(default_origin)
+
             origin_indexMot = int(c0) - int(nb_mots_max)
             for mot, e, m in items:
-                # Affichage: lignes en modulo 10 (pas d'énigmes négatives)
+                # Lignes : pas d’énigmes négatives
                 eLogRaw = int(e) - int(r0)
                 eLog = int(eLogRaw) % 10
+                eDisp = int(eLog) if isDelta else (int(eLog) + 1)
+
+                # Colonnes : indexMot (absolu) ou delta                
                 mLog = int(m) - int(origin_indexMot)
-                self._dico_cat_list.insert(tk.END, f"{mot} — ({eLog}, {mLog})")
+                if isDelta:
+                    mDisp = int(mLog)  # delta, 0 autorisé
+                else:
+                    # ABS : pas de colonne 0 ; 1 = 1er mot
+                    mDisp = int(mLog) if int(mLog) < 0 else (int(mLog) + 1)
+
+                self._dico_cat_list.insert(tk.END, f"{mot} — ({eDisp}, {mDisp})")
+
         self._dico_cat_combo.bind("<<ComboboxSelected>>", _refresh_cat_list)
         _refresh_cat_list()
 
@@ -623,9 +638,25 @@ class TriangleViewerManual(tk.Tk):
 
         # ===== Grille (tksheet) =====
         # Construire la matrice
-        # Entêtes LOGIQUES : colLog = colPhys - col0Phys
-        r0, c0 = (self._dico_origin_cell or (0, 0))
-        headers = [int(c) - int(c0) for c in range(0, 2 * int(nb_mots_max))]
+        # Deux modes d’affichage :
+        # - Mode ABS (origine par défaut (0, nbm)) : colonnes sans 0 (1=1er mot), lignes 1..10
+        # - Mode DELTA (origine cliquée) : colonnes/énigmes en delta avec 0 (lignes en modulo 10)
+        default_origin = (0, int(nb_mots_max))
+        r0, c0 = (self._dico_origin_cell or default_origin)
+        isDelta = tuple((r0, c0)) != tuple(default_origin)
+
+        # Entêtes d'affichage
+        if isDelta:
+            # DELTA : 0 sur la colonne d’origine
+            headers = [int(c) - int(c0) for c in range(0, 2 * int(nb_mots_max))]
+        else:
+            # ABS : 1 = 1er mot (j=0), pas de colonne 0
+            # Physique c ∈ [0..2N-1] ↔ j = c - N ∈ [-N..N-1]
+            headers = []
+            for c in range(0, 2 * int(nb_mots_max)):
+                j = int(c) - int(nb_mots_max)
+                headers.append(int(j) if int(j) < 0 else (int(j) + 1))
+
         data = []
         for i in range(len(self.dico)):
             try:
@@ -642,9 +673,13 @@ class TriangleViewerManual(tk.Tk):
         # utilisé par le decryptor / compas (NE PAS TOUCHER)
         self._dico_row_index = list(row_titles_raw)
 
-        # affichage UI : indexes LOGIQUES uniquement
-        # lignes en modulo 10 (pas d'énigmes négatives)
-        row_index_display = [f'{((i - int(r0)) % 10)} - "{t}"' for i, t in enumerate(row_titles_raw)]
+        # affichage UI : indexes
+        # - DELTA : lignes en modulo 10 (pas d'énigmes négatives), origine = 0
+        # - ABS   : 1..10
+        if isDelta:
+            row_index_display = [f'{((i - int(r0)) % 10)} - "{t}"' for i, t in enumerate(row_titles_raw)]
+        else:
+            row_index_display = [f'{(((i - int(r0)) % 10) + 1)} - "{t}"' for i, t in enumerate(row_titles_raw)]
 
         # Créer la grille
         self.dicoSheet = Sheet(
@@ -862,18 +897,29 @@ class TriangleViewerManual(tk.Tk):
         try:
             # --- Passage en référentiel LOGIQUE pour le compas/decryptor ---
             nbm = int(getattr(self, "_dico_nb_mots_max", 50))
-            # Par défaut, l'origine logique (0,0) est le 1er mot du livre => (0, nbm)
-            r0, c0 = (self._dico_origin_cell or (0, nbm))
-            rowDec = int(row) - int(r0)
-            # On reste en module 10 pour les énigmes : -1 => 9, -2 => 8, etc.
-            rowDec = int(rowDec) % 10
-            colDec = (int(col) - int(c0)) + int(nbm)
+
+            default_origin = (0, int(nbm))
+            r0, c0 = (self._dico_origin_cell or default_origin)
+            isDelta = tuple((int(r0), int(c0))) != tuple(default_origin)
+            mode = "delta" if isDelta else "abs"
+
+            if isDelta:
+                # DELTA : 0 autorisé. Lignes en modulo 10 (pas d’énigmes négatives)
+                rowVal = (int(row) - int(r0)) % 10
+                colVal = int(col) - int(c0)  # delta signé (0 autorisé)
+            else:
+                # ABS : pas de 0. Lignes 1..10, Colonnes … -2, -1, 1, 2, …
+                rowVal = ((int(row) - int(r0)) % 10) + 1
+                j = int(col) - int(nbm)  # j ∈ [-nbm..nbm-1]
+                colVal = int(j) if int(j) < 0 else (int(j) + 1)
+
             st = self.decryptor.clockStateFromDicoCell(
-                row=int(rowDec),
-                col=int(colDec),
+                row=int(rowVal),
+                col=int(colVal),
                 nbMotsMax=int(nbm),
                 rowTitles=list(row_titles) if row_titles else None,
                 word=word,
+                mode=str(mode),
             )
         except Exception:
             # En cas d'erreur du decryptor, ne pas casser l'UI
@@ -903,21 +949,31 @@ class TriangleViewerManual(tk.Tk):
         ref = float(self._dico_filter_ref_angle_deg) % 180.0
         tol = float(getattr(self, "_dico_filter_tolerance_deg", 4.0))
 
-        r0, c0 = (self._dico_origin_cell or (0, 0))
+        default_origin = (0, int(nbm))
+        r0, c0 = (self._dico_origin_cell or default_origin)
+        isDelta = tuple((int(r0), int(c0))) != tuple(default_origin)
+        mode = "delta" if isDelta else "abs"
         for r in range(n_rows):
             for c in range(n_cols):
                 word = str(self.dicoSheet.get_cell_data(r, c)).strip()
                 if not word:
                     continue
                 # --- Passage en référentiel LOGIQUE pour l'angle ---
-                rowDec = (int(r) - int(r0)) % 10
-                colDec = (int(c) - int(c0)) + int(nbm)
+                if isDelta:
+                    rowVal = (int(r) - int(r0)) % 10
+                    colVal = int(c) - int(c0)
+                else:
+                    rowVal = ((int(r) - int(r0)) % 10) + 1
+                    j = int(c) - int(nbm)
+                    colVal = int(j) if int(j) < 0 else (int(j) + 1)
+
                 ang = float(self.decryptor.deltaAngleFromDicoCell(
-                    row=int(rowDec),
-                    col=int(colDec),
+                    row=int(rowVal),
+                    col=int(colVal),
                     nbMotsMax=int(nbm),
                     rowTitles=list(row_titles) if row_titles else None,
                     word=word,
+                    mode=str(mode),
                 ))
                 ok = abs(ang - ref) <= tol
                 if ok:
@@ -1115,16 +1171,18 @@ class TriangleViewerManual(tk.Tk):
             command=self._toggle_dico_panel
         )
 
-        self.menu_visual.add_separator()
-        self.menu_visual.add_command(label="Charger une carte…", command=self._bg_load_svg_dialog)
-        self.menu_visual.add_command(label="Calibrer la carte…", command=self._bg_calibrate_start)
+        # --- Menu Carte ---
+        self.menu_carte = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Carte", menu=self.menu_carte)
+        self.menu_carte.add_command(label="Charger une carte…", command=self._bg_load_svg_dialog)
+        self.menu_carte.add_command(label="Calibrer la carte…", command=self._bg_calibrate_start)
 
-        self.menu_visual.add_checkbutton(
+        self.menu_carte.add_checkbutton(
             label="Redimensioner et déplacer la carte",
             variable=self.bg_resize_mode,
             command=self._toggle_bg_resize_mode
         )
-        self.menu_visual.add_command(label="Supprimer fond", command=self._bg_clear)
+        self.menu_carte.add_command(label="Supprimer fond", command=self._bg_clear)
 
         # Items fixes
         self.menu_triangle.add_command(label="Ouvrir un fichier Triangle…", command=self.open_excel)
@@ -1421,22 +1479,107 @@ class TriangleViewerManual(tk.Tk):
             left.pack(side=tk.LEFT, fill=tk.Y)
         left.pack_propagate(False)
 
-        # PanedWindow vertical : haut = triangles, bas = scénarios
-        pw = tk.PanedWindow(left, orient=tk.VERTICAL)
+        # PanedWindow vertical : triangles | layers | scénarios
+        # IMPORTANT: sash visible (séparateur) pour rendre le redimensionnement horizontal clair.
+        pw = tk.PanedWindow(left, orient=tk.VERTICAL, sashrelief=tk.RAISED, sashwidth=6)
         pw.pack(fill=tk.BOTH, expand=True)
 
         # --- Panneau haut : liste des triangles ---
-        tri_frame = ttk.LabelFrame(
-            pw,
-            text="Triangles (ordre)",
-            padding=(6, 4)
-        )
-        tri_frame.configure(labelanchor="nw")
-        tri_frame.configure(style="Bold.TLabelframe")
+        # Pas de LabelFrame ici : on retire le cadre (il ne sert plus à rien avec le header pliable).
+        tri_frame = tk.Frame(pw, bd=0, highlightthickness=0)
 
-        lb_frame = tk.Frame(tri_frame)
+        # Hauteurs mini (expanded vs collapsed)
+        tri_minsize_expanded = 150  # hauteur mini raisonnable pour les triangles
+
+        # État plié/déplié (on garde la variable si elle existe déjà)
+        if not hasattr(self, "_ui_triangles_collapsed"):
+            self._ui_triangles_collapsed = tk.BooleanVar(value=False)
+
+        header = tk.Frame(tri_frame)
+        header.pack(fill=tk.X, pady=(0, 2))
+
+        def _calcTrianglesExpandedHeightPx():
+            """
+            Calcule une hauteur 'confort' pour afficher ~10 lignes dans la listbox.
+            Retourne None si la listbox n'existe pas encore.
+            """
+            if not hasattr(self, "listbox") or self.listbox is None:
+                return None
+            try:
+                # hauteur d'une ligne selon la police réelle de la listbox
+                f = tkfont.Font(font=self.listbox.cget("font"))
+                line_h = int(f.metrics("linespace"))
+                # 10 lignes + padding interne + petits extras (bords / marges)
+                rows = 10
+                lb_h = rows * line_h
+                # un peu de marge pour éviter d'être "pile"
+                lb_h += 10
+                # header + content paddings (approximations stables)
+                hdr_h = int(header.winfo_reqheight() or 26)
+                return int(hdr_h + lb_h + 18)
+            except Exception:
+                return None
+
+        def _toggleTrianglesPanel():
+            collapsed = bool(self._ui_triangles_collapsed.get())
+            self._ui_triangles_collapsed.set(not collapsed)
+            if self._ui_triangles_collapsed.get():
+                # plier : cacher le contenu
+                self._ui_triangles_content.pack_forget()
+                self._ui_triangles_toggle_btn.config(text="▸")
+            else:
+                # déplier : ré-afficher le contenu
+                self._ui_triangles_content.pack(fill=tk.BOTH, expand=True)
+                self._ui_triangles_toggle_btn.config(text="▾")
+
+            # Rafraîchir la géométrie (important avec le PanedWindow)
+            tri_frame.update_idletasks()
+
+            # Réduire/étendre réellement la pane pour éviter l'espace vide.
+            hdr_h = int(header.winfo_reqheight() or 0)
+            tri_minsize_collapsed = max(28, hdr_h + 10)
+            if self._ui_triangles_collapsed.get():
+                pw.paneconfigure(tri_frame, minsize=tri_minsize_collapsed, height=tri_minsize_collapsed)
+            else:
+                target_h = _calcTrianglesExpandedHeightPx()
+                if target_h is None:
+                    pw.paneconfigure(tri_frame, minsize=tri_minsize_expanded)
+                else:
+                    target_h = max(int(tri_minsize_expanded), int(target_h))
+                    pw.paneconfigure(tri_frame, minsize=tri_minsize_expanded, height=target_h)
+
+        # Bouton toggle + titre cliquable
+        self._ui_triangles_toggle_btn = tk.Button(
+            header,
+            text=("▸" if self._ui_triangles_collapsed.get() else "▾"),
+            width=2,
+            command=_toggleTrianglesPanel
+        )
+        self._ui_triangles_toggle_btn.pack(side=tk.LEFT, padx=(0, 4))
+
+        title_lbl = tk.Label(header, text="Triangles (ordre)", font=(None, 9, "bold"))
+        title_lbl.pack(side=tk.LEFT, anchor="w")
+        # Cliquer sur le titre plie/déplie aussi (plus “VS Code”)
+        title_lbl.bind("<Button-1>", lambda _e: _toggleTrianglesPanel())
+        header.bind("<Button-1>", lambda _e: _toggleTrianglesPanel())
+
+        # Contenu pliable
+        self._ui_triangles_content = tk.Frame(tri_frame)
+        # (pack conditionnel selon l'état initial)
+        if not self._ui_triangles_collapsed.get():
+            self._ui_triangles_content.pack(fill=tk.BOTH, expand=True)
+
+        lb_frame = tk.Frame(self._ui_triangles_content, bd=0, highlightthickness=0)
         lb_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
-        self.listbox = tk.Listbox(lb_frame, width=34, exportselection=False)
+        # Listbox sans « cadre » (cohérent avec le panneau sans LabelFrame)
+        self.listbox = tk.Listbox(
+            lb_frame,
+            width=34,
+            exportselection=False,
+            relief=tk.FLAT,
+            borderwidth=0,
+            highlightthickness=0
+        )
         self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         lb_scroll = tk.Scrollbar(lb_frame, orient="vertical", command=self.listbox.yview)
         lb_scroll.pack(side=tk.RIGHT, fill=tk.Y)
@@ -1448,20 +1591,84 @@ class TriangleViewerManual(tk.Tk):
         # Démarrer le drag dès qu'on clique sur un item de triangle
         self.listbox.bind("<ButtonPress-1>", self._on_list_mouse_down)
 
-        pw.add(tri_frame, minsize=150)  # hauteur mini raisonnable pour les triangles
+        pw.add(tri_frame, minsize=tri_minsize_expanded)  # hauteur mini raisonnable pour les triangles
+
+        # Si on démarre "déplié", on force une hauteur par défaut (~10 lignes visibles)
+        if not bool(self._ui_triangles_collapsed.get()):
+            tri_frame.update_idletasks()
+            h0 = _calcTrianglesExpandedHeightPx()
+            if h0 is not None:
+                h0 = max(int(tri_minsize_expanded), int(h0))
+                pw.paneconfigure(tri_frame, height=h0)
+
 
         # --- Panneau intermédiaire : layers ---
-        layer_frame = ttk.LabelFrame(
-            pw,
-            text="Layers",
-            padding=(6, 4)
+        # Même approche que "Triangles" : header pliable (sans encadrement) + resize réel de la pane.
+        layer_minsize_expanded = 80
+
+        if not hasattr(self, "_ui_layers_collapsed"):
+            self._ui_layers_collapsed = tk.BooleanVar(value=False)
+
+        layer_frame = tk.Frame(pw, bd=0, highlightthickness=0)
+
+        layer_header = tk.Frame(layer_frame)
+        layer_header.pack(fill=tk.X, pady=(0, 2))
+
+        # Séparateur visuel sous le header (utile quand les cadres sont supprimés)
+        ttk.Separator(layer_frame, orient="horizontal").pack(fill=tk.X, pady=(0, 4))
+
+        self._ui_layers_content = tk.Frame(layer_frame)
+        if not self._ui_layers_collapsed.get():
+            self._ui_layers_content.pack(fill=tk.BOTH, expand=True)
+
+        def _calcLayersExpandedHeightPx():
+            """Hauteur 'exacte' pour afficher tous les widgets du panneau Layers."""
+            layer_frame.update_idletasks()
+            hdr_h = int(layer_header.winfo_reqheight() or 26)
+            # + séparateur (≈4) + padding/marges (≈18)
+            content_h = int(self._ui_layers_content.winfo_reqheight() or 0)
+            return int(hdr_h + content_h + 22)
+
+
+        def _toggleLayersPanel():
+            collapsed = bool(self._ui_layers_collapsed.get())
+            self._ui_layers_collapsed.set(not collapsed)
+            if self._ui_layers_collapsed.get():
+                self._ui_layers_content.pack_forget()
+                self._ui_layers_toggle_btn.config(text="▸")
+            else:
+                self._ui_layers_content.pack(fill=tk.BOTH, expand=True)
+                self._ui_layers_toggle_btn.config(text="▾")
+
+            layer_frame.update_idletasks()
+            hdr_h = int(layer_header.winfo_reqheight() or 0)
+            layer_minsize_collapsed = max(28, hdr_h + 10)
+            if self._ui_layers_collapsed.get():
+                pw.paneconfigure(layer_frame, minsize=layer_minsize_collapsed, height=layer_minsize_collapsed)
+            else:
+                target_h = _calcLayersExpandedHeightPx()
+                if target_h is None:
+                    pw.paneconfigure(layer_frame, minsize=layer_minsize_expanded)
+                else:
+                    target_h = max(int(layer_minsize_expanded), int(target_h))
+                    pw.paneconfigure(layer_frame, minsize=layer_minsize_expanded, height=target_h)
+
+        self._ui_layers_toggle_btn = tk.Button(
+            layer_header,
+            text=("▸" if self._ui_layers_collapsed.get() else "▾"),
+            width=2,
+            command=_toggleLayersPanel
         )
-        layer_frame.configure(labelanchor="nw")
-        layer_frame.configure(style="Bold.TLabelframe")
+        self._ui_layers_toggle_btn.pack(side=tk.LEFT, padx=(0, 4))
+
+        layer_title = tk.Label(layer_header, text="Layers", font=(None, 9, "bold"))
+        layer_title.pack(side=tk.LEFT, anchor="w")
+        layer_title.bind("<Button-1>", lambda _e: _toggleLayersPanel())
+        layer_header.bind("<Button-1>", lambda _e: _toggleLayersPanel())
 
         # Checkboxes de visibilité
-        cb_wrap = tk.Frame(layer_frame)
-        cb_wrap.pack(anchor="w", fill="x")
+        cb_wrap = tk.Frame(self._ui_layers_content, bd=0, highlightthickness=0)
+        cb_wrap.pack(anchor="w", fill="x", padx=6, pady=(0, 6))
 
         # Ligne "Carte" : checkbox + slider sur la même ligne
         row_map = tk.Frame(cb_wrap)
@@ -1495,21 +1702,88 @@ class TriangleViewerManual(tk.Tk):
         tk.Button(row_clock, text=">", width=2, command=lambda: self._clock_change_radius(+5)).pack(side=tk.RIGHT, padx=(0, 2))
         tk.Button(row_clock, text="<", width=2, command=lambda: self._clock_change_radius(-5)).pack(side=tk.RIGHT, padx=(4, 0))
 
+        pw.add(layer_frame, minsize=layer_minsize_expanded)
 
-        pw.add(layer_frame, minsize=80)
+        # Si on démarre "déplié", on force une hauteur qui montre tous les widgets du panneau.
+        if not bool(self._ui_layers_collapsed.get()):
+            layer_frame.update_idletasks()
+            h0 = _calcLayersExpandedHeightPx()
+            if h0 is not None:
+                h0 = max(int(layer_minsize_expanded), int(h0))
+                pw.paneconfigure(layer_frame, height=h0)
 
         # --- Panneau bas : scénarios + barre d'icônes ---
-        scen_frame = ttk.LabelFrame(
-            pw,
-            text="Scénarios",
-            padding=(6, 4)
+        # Même approche que Triangles / Layers : panneau pliable (sans encadrement) + resize réel de la pane.
+        scen_minsize_expanded = 120
+
+        if not hasattr(self, "_ui_scenarios_collapsed"):
+            self._ui_scenarios_collapsed = tk.BooleanVar(value=False)
+
+        scen_frame = tk.Frame(pw, bd=0, highlightthickness=0)
+
+        scen_header = tk.Frame(scen_frame)
+        scen_header.pack(fill=tk.X, pady=(0, 2))
+
+        # Séparateur visuel sous le header
+        ttk.Separator(scen_frame, orient="horizontal").pack(fill=tk.X, pady=(0, 4))
+
+        self._ui_scenarios_content = tk.Frame(scen_frame)
+        if not self._ui_scenarios_collapsed.get():
+            self._ui_scenarios_content.pack(fill=tk.BOTH, expand=True)
+
+        def _calcScenariosExpandedHeightPx(fill_bottom=False):
+            """Hauteur pour afficher le contenu (et optionnellement remplir jusqu'en bas)."""
+            scen_frame.update_idletasks()
+            hdr_h = int(scen_header.winfo_reqheight() or 26)
+            content_h = int(self._ui_scenarios_content.winfo_reqheight() or 0)
+            base_h = int(hdr_h + content_h + 22)  # + séparateur/paddings
+            if fill_bottom:
+                try:
+                    avail = int(pw.winfo_height() or 0)
+                except Exception:
+                    avail = 0
+                if avail > 0:
+                    base_h = max(base_h, avail)
+            return int(base_h)
+
+        def _toggleScenariosPanel():
+            collapsed = bool(self._ui_scenarios_collapsed.get())
+            self._ui_scenarios_collapsed.set(not collapsed)
+            if self._ui_scenarios_collapsed.get():
+                self._ui_scenarios_content.pack_forget()
+                self._ui_scenarios_toggle_btn.config(text="▸")
+            else:
+                self._ui_scenarios_content.pack(fill=tk.BOTH, expand=True)
+                self._ui_scenarios_toggle_btn.config(text="▾")
+
+            scen_frame.update_idletasks()
+            hdr_h = int(scen_header.winfo_reqheight() or 0)
+            scen_minsize_collapsed = max(28, hdr_h + 10)
+
+            if self._ui_scenarios_collapsed.get():
+                pw.paneconfigure(scen_frame, minsize=scen_minsize_collapsed, height=scen_minsize_collapsed)
+            else:
+                target_h = _calcScenariosExpandedHeightPx(fill_bottom=True)
+                target_h = max(int(scen_minsize_expanded), int(target_h))
+                pw.paneconfigure(scen_frame, minsize=scen_minsize_expanded, height=target_h)
+
+        # Bouton toggle + titre cliquable
+        self._ui_scenarios_toggle_btn = tk.Button(
+            scen_header,
+            text=("▸" if self._ui_scenarios_collapsed.get() else "▾"),
+            width=2,
+            command=_toggleScenariosPanel
         )
-        scen_frame.configure(labelanchor="nw")
-        scen_frame.configure(style="Bold.TLabelframe")
+        self._ui_scenarios_toggle_btn.pack(side=tk.LEFT, padx=(0, 4))
+
+        scen_title = tk.Label(scen_header, text="Scénarios", font=(None, 9, "bold"))
+        scen_title.pack(side=tk.LEFT, anchor="w")
+        scen_title.bind("<Button-1>", lambda _e: _toggleScenariosPanel())
+        scen_header.bind("<Button-1>", lambda _e: _toggleScenariosPanel())
 
         # Barre d'icônes (Nouveau, Charger, Propriétés, Sauver, Dupliquer, Supprimer)
-        toolbar = tk.Frame(scen_frame)
-        toolbar.pack(anchor="w", padx=4, pady=(0, 2), fill="x")
+        toolbar = tk.Frame(self._ui_scenarios_content, bd=0, highlightthickness=0)
+        toolbar.pack(anchor="w", padx=6, pady=(0, 2), fill="x")
 
         # Chargement des icônes (tu peux adapter les noms de fichiers PNG)
         self.icon_scen_new   = self._load_icon("scenario_new.png")
@@ -1536,7 +1810,7 @@ class TriangleViewerManual(tk.Tk):
         _make_btn(toolbar, self.icon_scen_dup,   "D", self._scenario_duplicate).pack(side=tk.LEFT, padx=1)
         _make_btn(toolbar, self.icon_scen_del,   "X", self._scenario_delete).pack(side=tk.LEFT, padx=1)
 
-        scen_lb_frame = tk.Frame(scen_frame)
+        scen_lb_frame = tk.Frame(self._ui_scenarios_content, bd=0, highlightthickness=0)
         scen_lb_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
 
         # Liste des scénarios (Treeview) : groupes Manuels / Automatiques (colonnes plus tard)
@@ -1576,7 +1850,21 @@ class TriangleViewerManual(tk.Tk):
         self._font_scenario_ref.configure(weight="bold")
         self.scenario_tree.tag_configure("ref", font=self._font_scenario_ref)
 
-        pw.add(scen_frame, minsize=80)  # hauteur mini pour la liste des scénarios
+        pw.add(scen_frame, minsize=scen_minsize_expanded)  # hauteur mini pour la liste des scénarios
+
+        # Les panneaux du haut ne doivent pas "aspirer" la hauteur quand la fenêtre grandit.
+        # On laisse Scénarios prendre la place restante (remplissage jusqu'en bas).
+        pw.paneconfigure(tri_frame, stretch="never")
+        pw.paneconfigure(layer_frame, stretch="never")
+        pw.paneconfigure(scen_frame, stretch="always")
+
+        # Si on démarre "déplié", on force une hauteur qui remplit jusqu'en bas.
+        if not bool(self._ui_scenarios_collapsed.get()):
+            scen_frame.update_idletasks()
+            h0 = _calcScenariosExpandedHeightPx(fill_bottom=True)
+            if h0 is not None:
+                h0 = max(int(scen_minsize_expanded), int(h0))
+                pw.paneconfigure(scen_frame, height=h0)
 
         # Remplir la liste des scénarios existants (pour l'instant : le manuel)
         self._refresh_scenario_listbox()
