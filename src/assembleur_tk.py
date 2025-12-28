@@ -967,14 +967,25 @@ class TriangleViewerManual(tk.Tk):
                     j = int(c) - int(nbm)
                     colVal = int(j) if int(j) < 0 else (int(j) + 1)
 
-                ang = float(self.decryptor.deltaAngleFromDicoCell(
+                # IMPORTANT:
+                #   Le filtre doit être cohérent avec ce que le compas affichera quand on clique une cellule.
+                #   Or le compas affiche Δ = angle entre aiguilles (heure/minute) calculé à partir de
+                #   clockStateFromDicoCell().
+                #   On n'utilise donc PAS deltaAngleFromDicoCell (qui peut avoir une convention différente)
+                #   mais exactement la même définition que l'overlay du compas.
+                st = self.decryptor.clockStateFromDicoCell(
                     row=int(rowVal),
                     col=int(colVal),
                     nbMotsMax=int(nbm),
                     rowTitles=list(row_titles) if row_titles else None,
                     word=word,
                     mode=str(mode),
-                ))
+                )
+                hFloat = float(getattr(st, "hour", 0.0)) % 12.0
+                m = int(getattr(st, "minute", 0)) % 60
+                ang_hour = (hFloat * 30.0) % 360.0
+                ang_min = (m * 6.0) % 360.0
+                ang = float(self._clock_arc_compute_angle_deg(float(ang_hour), float(ang_min)))
                 ok = abs(ang - ref) <= tol
                 if ok:
                     # Match: texte noir + fond légèrement marqué
