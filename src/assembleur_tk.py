@@ -78,52 +78,6 @@ def createDecryptor(decryptorId: str) -> DecryptorBase:
     return cls()
 
 
-class DialogParamDecryptage(tk.Toplevel):
-    def __init__(self, parent, decryptor):
-        super().__init__(parent)
-        self.title("Paramétrer le décryptage")
-        self.resizable(False, False)
-        self.transient(parent)
-        self.grab_set()
-
-        self.result = None
-
-        frm = ttk.Frame(self, padding=10)
-        frm.pack(fill="both", expand=True)
-
-        ttk.Label(frm, text="Algorithme de décryptage").pack(anchor="w")
-
-        self.algoVar = tk.StringVar(value=decryptor.id)
-
-        values = [f"{d.id} — {d.label}" for d in DECRYPTORS.values()]
-        self.combo = ttk.Combobox(frm, values=values, state="readonly", width=45)
-        self.combo.pack(fill="x", pady=(0, 10))
-
-        for i, d in enumerate(DECRYPTORS.values()):
-            if d.id == decryptor.id:
-                self.combo.current(i)
-                break
-
-        self.hourMoveVar = tk.BooleanVar(value=getattr(decryptor, "hourMovesWithMinutes", True))
-
-        ttk.Checkbutton(
-            frm,
-            text="L’aiguille Heure avance avec les minutes",
-            variable=self.hourMoveVar
-        ).pack(anchor="w", pady=(5, 10))
-
-        btns = ttk.Frame(frm)
-        btns.pack(fill="x", pady=(10, 0))
-
-        ttk.Button(btns, text="Annuler", command=self.destroy).pack(side="right")
-        ttk.Button(btns, text="OK", command=self._on_ok).pack(side="right", padx=(0, 5))
-
-    def _on_ok(self):
-        idx = self.combo.current()
-        decryptorId = list(DECRYPTORS.keys())[idx]
-        self.result = (decryptorId, bool(self.hourMoveVar.get()))
-        self.destroy()
-
 class DialogSimulationAssembler(tk.Toplevel):
     """Boîte de dialogue 'Simulation > Assembler…'"""
 
@@ -1153,7 +1107,6 @@ class TriangleViewerManual(tk.Tk):
         self.menu_simulation.add_command(label="Assembler…", command=self._simulation_assemble_dialog)
         self.menu_simulation.add_command(label="Supprimer les scénarios automatiques", command=self._simulation_clear_auto_scenarios)
         self.menu_simulation.add_separator()
-        self.menu_simulation.add_command(label="Paramétrer le décryptage...", command=self._simulation_param_decryptage)
         self.menu_simulation.add_command(label="Annuler le filtrage du dictionnaire", command=self._simulation_cancel_dictionary_filter, state="disabled")
         self._menu_sim_cancel_dico_filter_index = self.menu_simulation.index("end")
 
@@ -1227,26 +1180,6 @@ class TriangleViewerManual(tk.Tk):
         # sinon fallback sur data/triangle.xlsx si présent.
         self.autoLoadTrianglesFileAtStartup()
         self.autoLoadBackgroundAtStartup()
-
-    def _simulation_param_decryptage(self):
-        dlg = DialogParamDecryptage(
-            self,
-            decryptor=self.decryptor
-        )
-        self.wait_window(dlg)
-
-        if dlg.result is None:
-            return
-
-        decryptorId, hourMoves = dlg.result
-
-        # Algo déjà existant → on garde l’instance si possible
-        if self.decryptor.id != decryptorId:
-            self.decryptor = createDecryptor(decryptorId)
-
-        self.decryptor.hourMovesWithMinutes = hourMoves
-        self._redraw_overlay_only()
-
 
     def _simulation_cancel_dictionary_filter(self):
         """Annule le filtrage visuel du dictionnaire (styles)."""
@@ -1722,6 +1655,178 @@ class TriangleViewerManual(tk.Tk):
             if h0 is not None:
                 h0 = max(int(layer_minsize_expanded), int(h0))
                 pw.paneconfigure(layer_frame, height=h0)
+
+        # --- Panneau : Décryptage (paramètres rapides) ---
+        # Même principe que Triangles/Layers : header pliable + resize réel de la pane
+        decrypt_minsize_expanded = 90
+
+        if not hasattr(self, "_ui_decrypt_collapsed"):
+            self._ui_decrypt_collapsed = tk.BooleanVar(value=False)
+
+        decrypt_frame = tk.Frame(pw, bd=0, highlightthickness=0)
+
+        decrypt_header = tk.Frame(decrypt_frame)
+        decrypt_header.pack(fill=tk.X, pady=(0, 2))
+
+        # Séparateur visuel sous le header
+        ttk.Separator(decrypt_frame, orient="horizontal").pack(fill=tk.X, pady=(0, 4))
+
+        self._ui_decrypt_content = tk.Frame(decrypt_frame)
+        if not self._ui_decrypt_collapsed.get():
+            self._ui_decrypt_content.pack(fill=tk.BOTH, expand=True)
+
+        def _calcDecryptExpandedHeightPx():
+            """Hauteur 'exacte' pour afficher tous les widgets du panneau Décryptage."""
+            decrypt_frame.update_idletasks()
+            hdr_h = int(decrypt_header.winfo_reqheight() or 26)
+            content_h = int(self._ui_decrypt_content.winfo_reqheight() or 0)
+            return int(hdr_h + content_h + 22)
+
+        def _applyDecryptorFromUI():
+            """Applique les paramètres UI au decryptor + redraw overlay."""
+            idx = int(self._ui_decrypt_combo.current())
+            decryptorId = list(DECRYPTORS.keys())[idx]
+
+            # Algo déjà existant → on garde l’instance si possible
+            if getattr(self.decryptor, "id", None) != decryptorId:
+                self.decryptor = createDecryptor(decryptorId)
+            self.decryptor.hourMovesWithMinutes = bool(self._ui_decrypt_hourMoveVar.get())
+
+            # Bases minutes/heures (60/100 et 12/10)
+            mb = int(self._ui_decrypt_minutesBaseVar.get())
+            if hasattr(self.decryptor, "setMinutesBase"):
+                self.decryptor.setMinutesBase(mb)
+            else:
+                self.decryptor.minutesBase = mb
+
+            hb = int(self._ui_decrypt_hoursBaseVar.get())
+            if hasattr(self.decryptor, "setHoursBase"):
+                self.decryptor.setHoursBase(hb)
+            else:
+                self.decryptor.hoursBase = hb
+
+            # On ne redessine que l'overlay (horloge)
+            self._redraw_overlay_only()
+
+        def _toggleDecryptPanel():
+            collapsed = bool(self._ui_decrypt_collapsed.get())
+            self._ui_decrypt_collapsed.set(not collapsed)
+            if self._ui_decrypt_collapsed.get():
+                self._ui_decrypt_content.pack_forget()
+                self._ui_decrypt_toggle_btn.config(text="▸")
+            else:
+                self._ui_decrypt_content.pack(fill=tk.BOTH, expand=True)
+                self._ui_decrypt_toggle_btn.config(text="▾")
+
+            decrypt_frame.update_idletasks()
+            hdr_h = int(decrypt_header.winfo_reqheight() or 0)
+            decrypt_minsize_collapsed = max(28, hdr_h + 10)
+            if self._ui_decrypt_collapsed.get():
+                pw.paneconfigure(decrypt_frame, minsize=decrypt_minsize_collapsed, height=decrypt_minsize_collapsed)
+            else:
+                target_h = _calcDecryptExpandedHeightPx()
+                target_h = max(int(decrypt_minsize_expanded), int(target_h))
+                pw.paneconfigure(decrypt_frame, minsize=decrypt_minsize_expanded, height=target_h)
+
+        self._ui_decrypt_toggle_btn = tk.Button(
+            decrypt_header,
+            text=("▸" if self._ui_decrypt_collapsed.get() else "▾"),
+            width=2,
+            command=_toggleDecryptPanel
+        )
+        self._ui_decrypt_toggle_btn.pack(side=tk.LEFT, padx=(0, 4))
+
+        decrypt_title = tk.Label(decrypt_header, text="Décryptage", font=(None, 9, "bold"))
+        decrypt_title.pack(side=tk.LEFT, anchor="w")
+        decrypt_title.bind("<Button-1>", lambda _e: _toggleDecryptPanel())
+        decrypt_header.bind("<Button-1>", lambda _e: _toggleDecryptPanel())
+
+        # --- Widgets de décryptage ---
+        decrypt_wrap = tk.Frame(self._ui_decrypt_content, bd=0, highlightthickness=0)
+        decrypt_wrap.pack(fill="x", padx=6, pady=(0, 6))
+
+        ttk.Label(decrypt_wrap, text="Algorithme").pack(anchor="w")
+
+        values = [f"{d.id} — {d.label}" for d in DECRYPTORS.values()]
+        self._ui_decrypt_combo = ttk.Combobox(decrypt_wrap, values=values, state="readonly")
+        self._ui_decrypt_combo.pack(fill="x", pady=(0, 6))
+
+        # Sélection initiale (courant)
+        cur_id = getattr(self.decryptor, "id", None)
+        for i, d in enumerate(DECRYPTORS.values()):
+            if d.id == cur_id:
+                self._ui_decrypt_combo.current(i)
+                break
+        else:
+            self._ui_decrypt_combo.current(0)
+
+        self._ui_decrypt_hourMoveVar = tk.BooleanVar(value=getattr(self.decryptor, "hourMovesWithMinutes", True))
+        ttk.Checkbutton(
+            decrypt_wrap,
+            text="L’aiguille Heure avance avec les minutes",
+            variable=self._ui_decrypt_hourMoveVar,
+            command=_applyDecryptorFromUI
+        ).pack(anchor="w", pady=(2, 0))
+
+        # --- Bases du cadran (minutes/heures) ---
+        # Valeurs initiales depuis le decryptor (fallback 60/12)
+        cur_min_base = 60
+        cur_hour_base = 12
+        cur_min_base = int(getattr(self.decryptor, "getMinutesBase", lambda: getattr(self.decryptor, "minutesBase", 60))())
+        cur_hour_base = int(getattr(self.decryptor, "getHoursBase", lambda: getattr(self.decryptor, "hoursBase", 12))())
+
+        self._ui_decrypt_minutesBaseVar = tk.IntVar(value=cur_min_base if cur_min_base in (60, 100) else 60)
+        self._ui_decrypt_hoursBaseVar = tk.IntVar(value=cur_hour_base if cur_hour_base in (12, 10) else 12)
+
+        bases_box = tk.Frame(decrypt_wrap, bd=0, highlightthickness=0)
+        bases_box.pack(anchor="w", fill="x", pady=(6, 0))
+
+        # Minutes
+        row_m = tk.Frame(bases_box, bd=0, highlightthickness=0)
+        row_m.pack(anchor="w", fill="x")
+        ttk.Label(row_m, text="Minutes").pack(side=tk.LEFT)
+        ttk.Radiobutton(
+            row_m, text="60", value=60,
+            variable=self._ui_decrypt_minutesBaseVar,
+            command=_applyDecryptorFromUI
+        ).pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Radiobutton(
+            row_m, text="100", value=100,
+            variable=self._ui_decrypt_minutesBaseVar,
+            command=_applyDecryptorFromUI
+        ).pack(side=tk.LEFT, padx=(10, 0))
+
+        # Heures
+        row_h = tk.Frame(bases_box, bd=0, highlightthickness=0)
+        row_h.pack(anchor="w", fill="x", pady=(2, 0))
+        ttk.Label(row_h, text="Heures").pack(side=tk.LEFT)
+        ttk.Radiobutton(
+            row_h, text="12", value=12,
+            variable=self._ui_decrypt_hoursBaseVar,
+            command=_applyDecryptorFromUI
+        ).pack(side=tk.LEFT, padx=(18, 0))
+        ttk.Radiobutton(
+            row_h, text="10", value=10,
+            variable=self._ui_decrypt_hoursBaseVar,
+            command=_applyDecryptorFromUI
+        ).pack(side=tk.LEFT, padx=(10, 0))
+
+        # Appliquer quand l'algo change
+        try:
+            self._ui_decrypt_combo.bind("<<ComboboxSelected>>", lambda _e: _applyDecryptorFromUI())
+        except Exception:
+            pass
+
+        pw.add(decrypt_frame, minsize=decrypt_minsize_expanded)
+
+        # Si on démarre "déplié", on force une hauteur qui montre tous les widgets du panneau.
+        if not bool(self._ui_decrypt_collapsed.get()):
+            decrypt_frame.update_idletasks()
+            h0 = _calcDecryptExpandedHeightPx()
+            if h0 is not None:
+                h0 = max(int(decrypt_minsize_expanded), int(h0))
+                pw.paneconfigure(decrypt_frame, height=h0)
+
 
         # --- Panneau bas : scénarios + barre d'icônes ---
         # Même approche que Triangles / Layers : panneau pliable (sans encadrement) + resize réel de la pane.
@@ -3424,8 +3529,14 @@ class TriangleViewerManual(tk.Tk):
         # Données
         # NOTE: l'algo de décryptage peut fournir une heure "float" (si l'aiguille avance avec les minutes)
         #       ou une heure "int" (si elle reste sur l'heure pile). On respecte donc cette valeur telle quelle.
-        hFloat = float(self._clock_state.get("hour", 5.0)) % 12.0
-        m = int(self._clock_state.get("minute", 9)) % 60
+        # Bases dynamiques (60/100 et 12/10) pilotées par le decryptor
+        hBase = int(getattr(self.decryptor, "getHoursBase", lambda: getattr(self.decryptor, "hoursBase", 12))())
+        mBase = int(getattr(self.decryptor, "getMinutesBase", lambda: getattr(self.decryptor, "minutesBase", 60))())
+        hBase = max(1, int(hBase))
+        mBase = max(1, int(mBase))
+
+        hFloat = float(self._clock_state.get("hour", 5.0)) % float(hBase)
+        m = int(self._clock_state.get("minute", 9)) % int(mBase)
         label = str(self._clock_state.get("label", ""))
 
         # Cercle
@@ -3438,9 +3549,10 @@ class TriangleViewerManual(tk.Tk):
         y_ref = cy - (R * 0.92) * math.cos(th)
         self.canvas.create_line(cx, cy, x_ref, y_ref, width=2, fill="#404040", tags=("clock_overlay",))
 
-        # Graduations minutes : un trait toutes les minutes (les 5 min plus visibles)
-        for k in range(60):
-            ang = math.radians(ref_az + k * 6.0)  # 360/60 + ref az
+        # Graduations minutes : un trait toutes les minutes
+        deg_per_min = 360.0 / float(mBase)
+        for k in range(int(mBase)):
+            ang = math.radians(ref_az + k * deg_per_min)  # 360/mBase + ref az
             if k % 5 == 0:
                 inner = R - 10
                 w = 1
@@ -3454,11 +3566,13 @@ class TriangleViewerManual(tk.Tk):
             y2 = cy - outer * math.cos(ang)
             self.canvas.create_line(x1, y1, x2, y2, width=w, fill=col_ticks, tags="clock_overlay")
 
-        # Graduations heures (12 traits) : quarts plus longs/épais
-        for hmark in range(12):
-            ang = math.radians(ref_az + hmark * 30.0)  # 360/12 + ref az
+        # Graduations heures (hBase traits)
+        deg_per_hour = 360.0 / float(hBase)
+        for hmark in range(int(hBase)):
+            ang = math.radians(ref_az + hmark * deg_per_hour)  # 360/hBase + ref az
             # longueur du trait
-            if hmark % 3 == 0:     # 12/3/6/9
+            # Repères plus longs : quarts si possible
+            if (hBase % 4 == 0 and hmark % int(hBase // 4) == 0) or (hBase == 12 and hmark % 3 == 0):
                 inner = R - 14
                 w = 2
             else:
@@ -3471,7 +3585,7 @@ class TriangleViewerManual(tk.Tk):
             y2 = cy - outer * math.cos(ang)
             self.canvas.create_line(x1, y1, x2, y2, width=w, fill=col_ticks, tags="clock_overlay")
 
-        # Repères 12/3/6/9 (alignés sur l'axe de référence)
+        # Repères (alignés sur l'axe de référence)
         font_marks = ("Arial", 11, "bold")
 
         def _pos(angle_deg, rad):
@@ -3484,13 +3598,25 @@ class TriangleViewerManual(tk.Tk):
         x6,  y6  = _pos(ref_az + 180.0, r_text)
         x9,  y9  = _pos(ref_az + 270.0, r_text)
 
-        self.canvas.create_text(x12, y12, text="12", font=font_marks,
+        def _fmt_mark(v):
+            try:
+                fv = float(v)
+                if abs(fv - round(fv)) < 1e-9:
+                    return str(int(round(fv)))
+                # 1 décimale max
+                return f"{fv:.1f}".rstrip("0").rstrip(".")
+            except Exception:
+                return str(v)
+
+        # Haut = hBase (12 ou 10)
+        self.canvas.create_text(x12, y12, text=_fmt_mark(hBase), font=font_marks,
                                 fill=col_ticks, tags="clock_overlay")
-        self.canvas.create_text(x3,  y3,  text="3",  font=font_marks,
+        # Droite / bas / gauche : quarts (peuvent être décimaux si hBase=10)
+        self.canvas.create_text(x3,  y3,  text=_fmt_mark(hBase / 4.0),  font=font_marks,
                                 fill=col_ticks, tags="clock_overlay")
-        self.canvas.create_text(x6,  y6,  text="6",  font=font_marks,
+        self.canvas.create_text(x6,  y6,  text=_fmt_mark(hBase / 2.0),  font=font_marks,
                                 fill=col_ticks, tags="clock_overlay")
-        self.canvas.create_text(x9,  y9,  text="9",  font=font_marks,
+        self.canvas.create_text(x9,  y9,  text=_fmt_mark(3.0 * hBase / 4.0),  font=font_marks,
                                 fill=col_ticks, tags="clock_overlay")
 
         # Aiguilles
@@ -3500,11 +3626,11 @@ class TriangleViewerManual(tk.Tk):
             import math
             a = math.radians(angle_deg)
             return (cx + length * math.sin(a), cy - length * math.cos(a))
-        # Minutes -> 6° par minute
-        ang_min = ref_az + (m * 6.0)
-        # Heures -> 30° par heure
-        # IMPORTANT: l'avance avec les minutes (ou non) est déjà encodée dans hFloat par l'algo de décryptage.
-        ang_hour = ref_az + (hFloat * 30.0)
+        # Angles via decryptor (cohérence complète avec les bases minutes/heures)
+        ang_hour_0, ang_min_0 = self.decryptor.anglesFromClock(hour=float(hFloat), minute=int(m))
+        ang_min = ref_az + float(ang_min_0)
+        # IMPORTANT: l'avance avec les minutes (ou non) est déjà encodée dans hFloat par le decryptor.
+        ang_hour = ref_az + float(ang_hour_0)
 
         # Écart entre aiguilles (0..180) — même définition que l'angle d'arc (plus petit angle)
         # On repasse en [0..360) avant calcul.

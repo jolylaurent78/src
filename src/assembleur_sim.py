@@ -45,6 +45,22 @@ class DecryptorBase:
     # ----------------------------
     #  Helpers "angles horloge"
     # ----------------------------
+    def getMinutesBase(self) -> int:
+        """Base minutes du cadran (ex: 60 ou 100)."""
+        return int(getattr(self, "minutesBase", 60) or 60)
+
+    def getHoursBase(self) -> int:
+        """Base heures du cadran (ex: 12 ou 10)."""
+        return int(getattr(self, "hoursBase", 12) or 12)
+
+    def degreesPerMinute(self) -> float:
+        base = max(1, int(self.getMinutesBase()))
+        return 360.0 / float(base)
+
+    def degreesPerHour(self) -> float:
+        base = max(1, int(self.getHoursBase()))
+        return 360.0 / float(base)
+
     def anglesFromClock(self, *, hour: float, minute: int) -> Tuple[float, float]:
         """Retourne (angleHourDeg, angleMinuteDeg) dans [0..360).
 
@@ -52,10 +68,12 @@ class DecryptorBase:
           - 0° = 12h
           - sens horaire
         """
-        h = float(hour) % 12.0
-        m = int(minute) % 60
-        ang_min = (m * 6.0) % 360.0
-        ang_hour = (h * 30.0) % 360.0
+        hBase = max(1, int(self.getHoursBase()))
+        mBase = max(1, int(self.getMinutesBase()))
+        h = float(hour) % float(hBase)
+        m = int(minute) % int(mBase)
+        ang_min = (m * self.degreesPerMinute()) % 360.0
+        ang_hour = (h * self.degreesPerHour()) % 360.0
         return (ang_hour, ang_min)
 
     def deltaAngleBetweenHands(self, *, hour: float, minute: int) -> float:
@@ -86,11 +104,15 @@ class DecryptorBase:
         )
 
         if m.startswith("del"):
-            hour0 = float(st.hour) % 12.0
+            hBase = max(1, int(self.getHoursBase()))
+            hour0 = float(st.hour) % float(hBase)
             minute0 = int(st.minute)
             angA = self.deltaAngleBetweenHands(hour=hour0, minute=minute0)
-            angB = self.deltaAngleBetweenHands(hour=(hour0 + 10.0) % 12.0, minute=minute0)
-            return float(min(angA, angB))
+            if hBase == 12:
+                # Cas historique : 10 lignes projetées sur 12h -> ambiguité h vs h+10
+                angB = self.deltaAngleBetweenHands(hour=(hour0 + 10.0) % 12.0, minute=minute0)
+                return float(min(angA, angB))
+            return float(angA)
 
         return self.deltaAngleBetweenHands(hour=float(st.hour), minute=int(st.minute))
 
@@ -130,6 +152,21 @@ class ClockDicoDecryptor(DecryptorBase):
         super().__init__()
         # Paramètres génériques (communs pour l’instant)
         self.hourMovesWithMinutes = True
+        # Bases du cadran
+        self.minutesBase: int = 60
+        self.hoursBase: int = 12
+
+    def setMinutesBase(self, base: int):
+        b = int(base)
+        if b not in (60, 100):
+            raise ValueError(f"minutesBase invalide: {base}")
+        self.minutesBase = b
+
+    def setHoursBase(self, base: int):
+        b = int(base)
+        if b not in (12, 10):
+            raise ValueError(f"hoursBase invalide: {base}")
+        self.hoursBase = b
 
     def clockStateFromDicoCell(self, *, row: int, col: int, nbMotsMax: int, rowTitles: Optional[List[Any]] = None, word: str = "", mode: str = "delta") -> ClockState:
         r = int(row)
@@ -137,34 +174,37 @@ class ClockDicoDecryptor(DecryptorBase):
         nbm = max(0, int(nbMotsMax))
         m = str(mode or "delta").strip().lower()
 
+        hBase = max(1, int(self.getHoursBase()))
+        mBase = max(1, int(self.getMinutesBase()))
+
         if m.startswith("abs"):
             # --- ABS ---
             rowDisp = ((int(r) - 1) % 10) + 1
             hourDisp = int(rowDisp)
-            hour = int(hourDisp) % 12  # 12 -> 0 (position "12h")
+            hour = int(hourDisp) % int(hBase)
 
             # col: pas de 0. Convertir en minute 1..60.
             if int(c) > 0:
                 minute = int(c)
             else:
-                minute = 60 + int(c) + 1
-            minute = int(minute) % 60
+                minute = int(mBase) + int(c) + 1
+            minute = int(minute) % int(mBase)
             if minute == 0:
-                minute = 60
+                minute = int(mBase)
 
         else:
             # --- DELTA ---
-            hour = int(r) % 12
+            hour = int(r) % int(hBase)
             hourDisp = int(hour)
             # En DELTA, une colonne négative se lit comme une minute "avant":
             #   -5 => 55' (comme 10h - 5' = 9h55)
             # Donc: minute = col mod 60 (0..59)
-            minute = int(c) % 60
+            minute = int(c) % int(mBase)
 
         # Option : l’aiguille des heures avance avec les minutes
         if self.hourMovesWithMinutes:
-            minuteFloat = 0.0 if int(minute) == 60 else float(minute)
-            hourFloat = (float(hour) + minuteFloat / 60.0) % 12.0
+            minuteFloat = 0.0 if int(minute) == int(mBase) else float(minute)
+            hourFloat = (float(hour) + minuteFloat / float(mBase)) % float(hBase)
         else:
             hourFloat = float(hour)
  
