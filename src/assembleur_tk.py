@@ -3380,6 +3380,59 @@ class TriangleViewerManual(tk.Tk):
             out = [a0,a1]
         return out
 
+    def _incident_half_edges_at_point(self, graph, v, outline, eps=EPS_WORLD):
+        """Retourne 2 demi-arêtes incidentes au point `v` sur la frontière.
+
+        Cas gérés:
+     - `v` est un sommet du graphe de frontière -> _incident_half_edges_at_vertex
+        - `v` n'est pas un sommet mais tombe sur un segment de l'outline :
+          on retourne les 2 demi-segments (v->A) et (v->B) du segment (A,B).
+        """
+        v = (float(v[0]), float(v[1]))
+        out = self._incident_half_edges_at_vertex(graph, v, eps=eps)
+        if len(out) >= 2:
+            return out
+
+        # Fallback : point sur arête (ex: noeud connecté à une arête de triangle)
+        if not outline:
+         return out
+
+        def _pt_seg_dist2(px, py, ax, ay, bx, by):
+            # distance^2 point-segment + projection t
+            vx, vy = bx - ax, by - ay
+            wx, wy = px - ax, py - ay
+            vv = vx * vx + vy * vy
+            if vv <= 1e-18:
+               # segment dégénéré
+                dx, dy = px - ax, py - ay
+                return (dx * dx + dy * dy, 0.0)
+            t = (wx * vx + wy * vy) / vv
+            if t < 0.0:
+                t = 0.0
+            elif t > 1.0:
+                t = 1.0
+            qx, qy = ax + t * vx, ay + t * vy
+            dx, dy = px - qx, py - qy
+            return (dx * dx + dy * dy, float(t))
+
+        px, py = float(v[0]), float(v[1])
+        best = None  # (dist2, (a,b))
+        for (a, b) in outline:
+            ax, ay = float(a[0]), float(a[1])
+            bx, by = float(b[0]), float(b[1])
+            d2, t = _pt_seg_dist2(px, py, ax, ay, bx, by)
+            # On veut vraiment "sur" le segment (tolérance). On accepte aussi les extrémités
+            # car certains noeuds "collés" ne matchent pas forcément la clé d'adjacence.
+            if d2 <= float(eps) * float(eps):
+                if best is None or d2 < best[0]:
+                    best = (d2, ((ax, ay), (bx, by)))
+
+        if best is None:
+            return out
+
+        (a, b) = best[1]
+        return [((px, py), (float(a[0]), float(a[1]))), ((px, py), (float(b[0]), float(b[1])))]
+
     def _normalize_to_outline_granularity(self, outline, edges, eps=EPS_WORLD):
         """
         Décompose chaque segment incident en chaîne de micro-segments collés à l'outline (granularité identique),
@@ -3702,6 +3755,21 @@ class TriangleViewerManual(tk.Tk):
                 self._clock_arc_clear_last()
         self._clock_snap_target = {"idx": int(idx), "vkey": str(vkey), "world": np.array(wbest, dtype=float)}
 
+        # Auto-mesure : si on vient de s'accrocher à un nouveau noeud,
+        # on calcule automatiquement l'angle entre les 2 segments EXTÉRIEURS
+        # incidents à ce noeud (sur le contour du groupe).
+        try:
+            prev_key = (int(prev.get("idx")), str(prev.get("vkey"))) if isinstance(prev, dict) else None
+        except Exception:
+            prev_key = None
+        try:
+            new_key = (int(idx), str(vkey))
+        except Exception:
+            new_key = None
+
+        if new_key is not None and new_key != prev_key:
+            self._clock_arc_auto_measure_from_snap()
+
         # Marqueur visuel : un anneau rouge autour du sommet
         if getattr(self, "canvas", None):
             self.canvas.delete("clock_snap_target")
@@ -3712,6 +3780,74 @@ class TriangleViewerManual(tk.Tk):
                                     fill="", tags="clock_snap_target")
             self.canvas.tag_raise("clock_snap_target")
 
+
+    def _clock_arc_auto_measure_from_snap(self):
+        """Si le compas est accroché à un noeud, calcule automatiquement l'angle (arc) entre
+        les 2 arêtes **EXTÉRIEURES** incidentes à ce noeud (c'est-à-dire sur l'outline du groupe).
+        La mesure est persistée dans self._clock_arc_last (comme la mesure manuelle)."""
+        # NOTE: ici on calcule justement la mesure persistée.
+        # Ne PAS dépendre de _clock_arc_is_available(), sinon la fonction ne se déclenche jamais.
+        if not getattr(self, "canvas", None):
+            return
+        if not getattr(self, "show_clock_overlay", None) or not self.show_clock_overlay.get():
+            return
+        tgt = getattr(self, "_clock_snap_target", None)
+        if not (isinstance(tgt, dict) and tgt.get("world") is not None):
+            # Plus d'ancrage : ne pas garder une mesure invalide
+            self._clock_arc_clear_last()
+            return
+
+        try:
+            idx = int(tgt.get("idx"))
+            v_world = np.array(tgt.get("world"), dtype=float)
+        except Exception:
+            return
+
+        # Outline = contour du groupe auquel appartient idx
+        outline = self._outline_for_item(idx) or []
+        if not outline:
+            self._clock_arc_clear_last()
+            return
+
+        # 2 segments extérieurs incidents à v_world
+        g = self._build_boundary_graph(outline)
+        inc = self._incident_half_edges_at_vertex(g, v_world) or []
+        if len(inc) < 2:
+            self._clock_arc_clear_last()
+            return
+
+        # Les arêtes sont (v -> w). On prend les 2 voisins w1, w2.
+        try:
+            w1 = np.array(inc[0][1], dtype=float)
+            w2 = np.array(inc[1][1], dtype=float)
+        except Exception:
+            self._clock_arc_clear_last()
+            return
+
+        # Point d'ancrage = centre du compas = noeud snap
+        cx, cy = self._world_to_screen(v_world)
+        # Forcer le centre sur le noeud ancré (overlay cohérent)
+        self._clock_cx = float(cx)
+        self._clock_cy = float(cy)
+
+        # Azimuts vers les 2 voisins (en écran)
+        sx1, sy1 = self._world_to_screen(w1)
+        sx2, sy2 = self._world_to_screen(w2)
+        az1 = float(self._clock_compute_azimuth_deg(int(sx1), int(sy1)))
+        az2 = float(self._clock_compute_azimuth_deg(int(sx2), int(sy2)))
+        angle_deg = float(self._clock_arc_compute_angle_deg(az1, az2))
+
+        # Persister : même format que la mesure manuelle
+        self._clock_arc_last = {"az1": az1, "az2": az2, "angle": angle_deg}
+        self._clock_arc_last_angle_deg = float(angle_deg)
+
+        # Rafraîchir l'overlay (et donc le filtre dico s'il est activé)
+        self._draw_clock_overlay()
+
+        # Rafraîchir l'overlay + états UI (menu compas / dico)
+        self._update_compass_ctx_menu_and_dico_state()
+        self._redraw_overlay_only()
+        self.status.config(text=f"Arc auto (EXT) : {angle_deg:0.0f}°")
 
     # ==========================
     # Calibration fond (3 points)
@@ -6507,6 +6643,68 @@ class TriangleViewerManual(tk.Tk):
         self._clock_arc_last_angle_deg = None
         self._update_compass_ctx_menu_and_dico_state()
 
+    def _clock_arc_auto_from_snap_target(self, snap_tgt: dict) -> bool:
+        """Calcule automatiquement un arc (EXT) quand le compas s'accroche à un noeud.
+
+        Objectif : reproduire "Mesure un arc d'angle" sans interaction utilisateur,
+       en utilisant les 2 directions de frontière *extérieures* au point d'accroche.
+
+        Retourne True si une mesure a été calculée/persistée.
+
+        Remarques:
+        - Le point d'accroche peut être un sommet *ou* un point sur une arête (noeud connecté à une arête).
+        - En cas d'ambiguïté (>2 arêtes incidentes), on applique la même heuristique que
+          _incident_half_edges_at_vertex (2 extrêmes angulaires).
+        """
+        if not isinstance(snap_tgt, dict) or snap_tgt.get("world") is None:
+            return False
+
+        idx = int(snap_tgt.get("idx"))
+        v_world = snap_tgt.get("world")
+        if not (0 <= idx < len(self._last_drawn)):
+            return False
+
+        # Outline du groupe auquel appartient l'item
+        outline = self._outline_for_item(idx) or []
+        if not outline:
+            return False
+
+        g = self._build_boundary_graph(outline)
+        # Tolérance monde : au moins EPS_WORLD, mais on élargit selon le trait/zoom
+        # pour capter les noeuds posés "sur" une arête.
+        tol_world = max(
+            float(EPS_WORLD),
+            float(getattr(self, "stroke_px", 2.0)) / max(float(getattr(self, "zoom", 1.0)), 1e-9)
+        )
+        inc_raw = self._incident_half_edges_at_point(g, v_world, outline, eps=tol_world)
+        if not inc_raw or len(inc_raw) < 2:
+            return False
+
+        # Récupérer 2 directions (azimuts) depuis le point d'ancrage
+        a1, b1 = inc_raw[0]
+        a2, b2 = inc_raw[1]
+        az1 = float(self._azimuth_world_deg(a1, b1))
+        az2 = float(self._azimuth_world_deg(a2, b2))
+        angle_deg = float(self._clock_arc_compute_angle_deg(az1, az2))
+
+        self._clock_arc_last = {"az1": az1, "az2": az2, "angle": angle_deg}
+        self._clock_arc_last_angle_deg = float(angle_deg)
+        self._update_compass_ctx_menu_and_dico_state()
+        self.status.config(text=f"Arc auto (EXT) : {angle_deg:0.0f}°")
+        return True
+
+
+    def _azimuth_world_deg(self, a, b) -> float:
+        """Azimut absolu en degrés (0°=Nord, 90°=Est) entre 2 points monde."""
+        import math
+        ax, ay = float(a[0]), float(a[1])
+        bx, by = float(b[0]), float(b[1])
+        dx, dy = (bx - ax), (by - ay)
+        # dx vers Est, dy vers Nord (monde Lambert-like). Convertir en azimut.
+        ang = math.degrees(math.atan2(dx, dy)) % 360.0
+        return float(ang)
+
+
     def _clock_arc_draw_last(self, cx: float, cy: float, R: float):
         """Dessine la dernière mesure persistée (si présente) dans l'overlay."""
         last = getattr(self, "_clock_arc_last", None)
@@ -7565,8 +7763,8 @@ class TriangleViewerManual(tk.Tk):
         if getattr(self, "_clock_dragging", False):
             self._clock_cx = event.x - self._clock_drag_dx
             self._clock_cy = event.y - self._clock_drag_dy
-            # Cible snap (sommet le plus proche du curseur)
-            self._clock_update_snap_target(event.x, event.y)
+            # Cible snap (sommet le plus proche du CENTRE du compas)
+            self._clock_update_snap_target(self._clock_cx, self._clock_cy)
             self._redraw_overlay_only()
             return "break"
 
@@ -7668,6 +7866,10 @@ class TriangleViewerManual(tk.Tk):
     def _on_canvas_left_up(self, event):
         # Horloge : fin de drag
         if getattr(self, "_clock_dragging", False):
+            # On capture la cible de snap *avant* de la nettoyer pour pouvoir déclencher
+            # une éventuelle mesure d'arc automatique.
+            snap_tgt = getattr(self, "_clock_snap_target", None)
+
             # Si CTRL au relâché : on sort du mode sans "snap" (le compas reste où il est)
             if getattr(self, "_ctrl_down", False):
                 try:
@@ -7676,12 +7878,10 @@ class TriangleViewerManual(tk.Tk):
                 except Exception:
                     self._clock_anchor_world = None
             else:
-                tgt = getattr(self, "_clock_snap_target", None)
+                # cible snap calculée pendant le drag (capturée au début via snap_tgt)
+                tgt = snap_tgt
                 if isinstance(tgt, dict) and tgt.get("world") is not None:
-                    try:
-                        self._clock_anchor_world = np.array(tgt["world"], dtype=float)
-                    except Exception:
-                        self._clock_anchor_world = None
+                    self._clock_anchor_world = np.array(tgt["world"], dtype=float)
                     sx, sy = self._world_to_screen(tgt["world"])
                     self._clock_cx, self._clock_cy = float(sx), float(sy)
                 else:
@@ -7694,8 +7894,13 @@ class TriangleViewerManual(tk.Tk):
             self._clock_dragging = False
             self.canvas.configure(cursor="")
             self._clock_clear_snap_target()
-            # Spéc : si on déplace le compas, on réinitialise la mesure d'arc persistée
-            self._clock_arc_clear_last()
+            # Spéc : si on déplace le compas et qu'il s'accroche à un noeud,
+            # on tente une mesure d'arc automatique (EXT). Sinon on reset.
+            measured = False
+            if (not getattr(self, "_ctrl_down", False)) and isinstance(snap_tgt, dict):
+                measured = bool(self._clock_arc_auto_from_snap_target(snap_tgt))
+            if not measured:
+                self._clock_arc_clear_last()
             self._redraw_overlay_only()
             return "break"
 
@@ -7722,8 +7927,6 @@ class TriangleViewerManual(tk.Tk):
             return
 
         """Fin du drag au clic gauche : dépôt de triangle (drag liste) OU fin d'une édition."""
-        import numpy as np
-        from math import atan2
 
         # 0) Dépôt d'un triangle glissé depuis la liste
         if self._drag:
