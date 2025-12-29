@@ -4,12 +4,13 @@
   "uiShowClockOverlay": true,
   "bgSvgPath": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\maps\\899 - Alsace.jpg",
   "bgWorldRect": {
-    "x0": -2125.609720589845,
-    "y0": -715.898344701759,
+    "x0": -2028.7597471553684,
+    "y0": -838.5116246337591,
     "w": 4305.352382249387,
     "h": 5296.556391157085,
     "aspect": 0.8128587830080367
   },
   "uiMapOpacity": 36,
-  "uiClockRefAzimuth": 0.2687411363256192
+  "uiClockRefAzimuth": 179.76985811280392,
+  "uiShowOnlyGroupContours": false
 }

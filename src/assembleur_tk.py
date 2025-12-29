@@ -248,6 +248,8 @@ class TriangleViewerManual(tk.Tk):
         self.show_dico_panel = tk.BooleanVar(value=True)
         # État d'affichage du compas horaire (overlay horloge)
         self.show_clock_overlay = tk.BooleanVar(value=True)
+        # Mode "contours uniquement" : n'afficher que le contour de chaque groupe (pas les arêtes internes)
+        self.show_only_group_contours = tk.BooleanVar(value=False)
 
         # Gestion des layers (visibilité)
         self.show_map_layer = tk.BooleanVar(value=True)
@@ -289,6 +291,8 @@ class TriangleViewerManual(tk.Tk):
 
         # --- DEBUG: permettre de SKIP le test de chevauchement durant le highlight (F9) ---
         self.debug_skip_overlap_highlight = False
+        # --- DEBUG: traces console pour l'assist de collage (F10 pour basculer) ---
+        self._debug_snap_assist = False
 
         # === Groupes (Étape A) ===
         self.groups: Dict[int, Dict] = {}
@@ -329,6 +333,7 @@ class TriangleViewerManual(tk.Tk):
         # reflètent correctement l'état sauvegardé.
         self.show_dico_panel.set(bool(self.getAppConfigValue("uiShowDicoPanel", True)))
         self.show_clock_overlay.set(bool(self.getAppConfigValue("uiShowClockOverlay", True)))
+        self.show_only_group_contours.set(bool(self.getAppConfigValue("uiShowOnlyGroupContours", False)))
         self.auto_fit_scenario_select.set(bool(self.getAppConfigValue("uiAutoFitScenario", False)))
         self.map_opacity.set(int(self.getAppConfigValue("uiMapOpacity", 70)))
 
@@ -1074,10 +1079,12 @@ class TriangleViewerManual(tk.Tk):
     def _toggle_skip_overlap_highlight(self, event=None):
         self.debug_skip_overlap_highlight = not self.debug_skip_overlap_highlight
         state = "IGNORE" if self.debug_skip_overlap_highlight else "APPLIQUE"
-        try:
-            self.status.config(text=f"[DEBUG] Chevauchement (highlight): {state} — F9 pour basculer")
-        except Exception:
-            pass
+        self.status.config(text=f"[DEBUG] Chevauchement (highlight): {state} — F9 pour basculer")
+
+    def _toggle_debug_snap_assist(self, event=None):
+        self._debug_snap_assist = not bool(getattr(self, "_debug_snap_assist", False))
+        state = "ON" if self._debug_snap_assist else "OFF"
+        self.status.config(text=f"[DEBUG] Snap assist: {state} — F10 pour basculer")
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -1329,6 +1336,56 @@ class TriangleViewerManual(tk.Tk):
                 if dbg.get("detail"):
                     print(f"[SIM] debug.detail = {dbg.get('detail')}")
             return
+
+        # --- DEBUG : cohérence des GROUPES retournés par l'algo ---
+        # Objectif: comprendre pourquoi, pour un même jeu de triangles, l'assemblage auto
+        # peut laisser plusieurs groupes (ou un triangle "non assemblé") alors que le manuel aboutit.
+        # On ne modifie PAS la logique métier ici : on trace uniquement.
+        try:
+            tri_ids_set = {int(x) for x in (tri_ids or [])}
+        except Exception:
+            tri_ids_set = set()
+
+        for _k, _sc in enumerate(scenarios):
+            try:
+                ld = getattr(_sc, "last_drawn", None) or []
+                gr = getattr(_sc, "groups", None) or {}
+                drawn_ids = {int(t.get("id")) for t in ld if t.get("id") is not None}
+
+                grouped_ids = set()
+                for _gid, _g in (gr or {}).items():
+                    for _nd in (_g or {}).get("nodes", []) or []:
+                        _tid = _nd.get("tid")
+                        if _tid is None or not (0 <= int(_tid) < len(ld)):
+                            continue
+                        _id = ld[int(_tid)].get("id")
+                        if _id is not None:
+                            grouped_ids.add(int(_id))
+
+                missing_in_groups = sorted(drawn_ids - grouped_ids)
+                missing_in_drawn = sorted(tri_ids_set - drawn_ids) if tri_ids_set else []
+
+                if missing_in_groups or missing_in_drawn or len(gr or {}) != 1:
+                    # Trace uniquement les scénarios "suspects" pour éviter le spam.
+                    print(
+                        f"[SIM][CHK] scen#{_k+1} groups={len(gr or {})} "
+                        f"drawn={len(drawn_ids)} grouped={len(grouped_ids)} "
+                        f"missing_in_groups={missing_in_groups} missing_in_drawn={missing_in_drawn}"
+                    )
+                    if len(gr or {}) > 1:
+                        for __gid, __g in (gr or {}).items():
+                            __ids = []
+                            for __nd in (__g or {}).get("nodes", []) or []:
+                                __tid = __nd.get("tid")
+                                if __tid is None or not (0 <= int(__tid) < len(ld)):
+                                    continue
+                                __id = ld[int(__tid)].get("id")
+                                if __id is not None:
+                                    __ids.append(int(__id))
+                            print(f"[SIM][CHK]   group {__gid}: tri_ids={__ids}")
+            except Exception:
+                # Debug: ne jamais casser l'IHM sur une trace.
+                pass
 
         base_idx = len(self.scenarios)
         count_auto = sum(1 for s in self.scenarios if s.source_type == "auto")
@@ -1632,7 +1689,80 @@ class TriangleViewerManual(tk.Tk):
         )
         # Slider aligné à droite
         self.mapOpacityScale.pack(side=tk.RIGHT, padx=(0, 4), anchor="e")
-        tk.Checkbutton(cb_wrap, text="Triangle", variable=self.show_triangles_layer, command=self._toggle_layers).pack(anchor="w")
+
+        # Ligne "Triangle" : checkbox + 2 radios (icônes) pour le mode d'affichage
+        #  - value=0 : triangles + arêtes internes
+        #  - value=1 : contour uniquement (sans arêtes internes)
+        row_tri = tk.Frame(cb_wrap)
+        row_tri.pack(anchor="w", fill="x")
+        tk.Checkbutton(
+            row_tri,
+            text="Triangle",
+            variable=self.show_triangles_layer,
+            command=self._toggle_layers,
+        ).pack(side=tk.LEFT, anchor="w")
+
+        # charger les icônes depuis le répertoire (pas de génération online)
+        if not hasattr(self, "iconTriModeEdges"):
+            # noms de fichiers à créer/poser dans images_dir (on les fera ensemble ensuite)
+            self.iconTriModeEdges = self._load_icon("tri_mode_edges.png")
+            self.iconTriModeContour = self._load_icon("tri_mode_contour.png")
+
+        if not hasattr(self, "_ui_triangleContourMode"):
+            self._ui_triangleContourMode = tk.IntVar(
+                value=(1 if bool(self.show_only_group_contours.get()) else 0)
+            )
+        else:
+            # resynchroniser au cas où la valeur a changé depuis une autre action
+            self._ui_triangleContourMode.set(1 if bool(self.show_only_group_contours.get()) else 0)
+
+
+        def _onTriangleContourModeChange():
+            only = bool(self._ui_triangleContourMode.get() == 1)
+            if bool(self.show_only_group_contours.get()) != only:
+                self.show_only_group_contours.set(only)
+                self._toggle_only_group_contours()
+            else:
+                # forcer un redraw (utile si on a juste re-cliqué)
+                self._redraw()
+
+        # Radios à droite (icône-only). Fallback texte si l'icône n'est pas dispo.
+        rb_kwargs = dict(
+            variable=self._ui_triangleContourMode,
+            indicatoron=0,
+            padx=0,
+            pady=0,
+            command=_onTriangleContourModeChange,
+        )
+        if getattr(self, "iconTriModeContour", None) is not None:
+            tk.Radiobutton(
+                row_tri,
+                image=self.iconTriModeContour,
+                value=1,
+                **rb_kwargs,
+            ).pack(side=tk.RIGHT, padx=(2, 0))
+        else:
+            tk.Radiobutton(
+                row_tri,
+                text="Contour",
+                value=1,
+                **rb_kwargs,
+            ).pack(side=tk.RIGHT, padx=(2, 0))
+
+        if getattr(self, "iconTriModeEdges", None) is not None:
+            tk.Radiobutton(
+                row_tri,
+                image=self.iconTriModeEdges,
+                value=0,
+                **rb_kwargs,
+            ).pack(side=tk.RIGHT)
+        else:
+            tk.Radiobutton(
+                row_tri,
+                text="Arêtes",
+                value=0,
+                **rb_kwargs,
+            ).pack(side=tk.RIGHT)
 
         # Ligne "Compas" : checkbox + boutons de taille (< >)
         row_clock = tk.Frame(cb_wrap)
@@ -2338,6 +2468,49 @@ class TriangleViewerManual(tk.Tk):
         self._last_drawn = scen.last_drawn
         self.groups = scen.groups
 
+        # --- AUTO: réconcilier les métadonnées de groupe (group_id/group_pos) avec scen.groups ---
+        # Certains chemins (redraw / sélection / tools) se basent encore sur les champs portés par les triangles.
+        # Si un scénario auto fournit un dictionnaire groups cohérent mais que les triangles n'ont pas été annotés,
+        # on peut se retrouver avec un triangle "orphelin" ou des groupes recomposés de travers.
+        try:
+            if getattr(scen, "source_type", "manual") == "auto" and isinstance(scen.groups, dict) and scen.last_drawn:
+                # 1) reset défensif
+                for _t in scen.last_drawn:
+                    _t["group_id"] = None
+                    _t["group_pos"] = None
+
+                # 2) appliquer groups -> triangles
+                for _gid, _g in scen.groups.items():
+                    _nodes = (_g or {}).get("nodes", []) or []
+                    for _pos, _nd in enumerate(_nodes):
+                        _tid = _nd.get("tid")
+                        if _tid is None:
+                            continue
+                        try:
+                            _tid_i = int(_tid)
+                        except Exception:
+                            continue
+                        if 0 <= _tid_i < len(scen.last_drawn):
+                            scen.last_drawn[_tid_i]["group_id"] = _gid
+                            scen.last_drawn[_tid_i]["group_pos"] = int(_pos)
+
+                # 3) fallback : si un triangle n'est dans aucun node, on le rattache au 1er groupe
+                _first_gid = next(iter(scen.groups.keys()), None)
+                if _first_gid is not None:
+                    for _t in scen.last_drawn:
+                        if _t.get("group_id") is None:
+                            _t["group_id"] = _first_gid
+                            _t["group_pos"] = 0
+
+                # 4) bbox
+                for _gid in list(scen.groups.keys()):
+                    try:
+                        self._recompute_group_bbox(_gid)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         # Recalibrer _next_group_id si besoin
         try:
             self._next_group_id = (max(self.groups.keys()) + 1) if self.groups else 1
@@ -2583,6 +2756,7 @@ class TriangleViewerManual(tk.Tk):
         # DEBUG: F9 pour activer/désactiver le filtrage de chevauchement au highlight
         # (bind_all pour capter même si le focus clavier n'est pas explicitement sur le canvas)
         self.bind_all("<F9>", self._toggle_skip_overlap_highlight)
+        self.bind_all("<F10>", self._toggle_debug_snap_assist)
         # Premier rendu de l'horloge (overlay)
         self._draw_clock_overlay()
 
@@ -2672,6 +2846,12 @@ class TriangleViewerManual(tk.Tk):
 
         # Persistance : mémoriser l'état (affiché/caché)
         self.setAppConfigValue("uiShowDicoPanel", bool(show))
+
+    def _toggle_only_group_contours(self):
+        """Toggle: afficher uniquement les contours des groupes."""
+        self.setAppConfigValue("uiShowOnlyGroupContours", bool(self.show_only_group_contours.get()))
+        # Un mode purement visuel -> redraw complet
+        self._redraw_from(self._last_drawn)
 
     def _clock_change_radius(self, delta: int):
         """Modifie le rayon du compas (min=50) et redessine l'overlay."""
@@ -3335,8 +3515,17 @@ class TriangleViewerManual(tk.Tk):
         # plus petit écart absolu d’angle
         return abs(self._ang_wrap(a - b))
 
-    def _pt_key_eps(self, p, eps=1e-9):
-        return (round(float(p[0])/eps)*eps, round(float(p[1])/eps)*eps)
+    def _pt_key_eps(self, p, eps=EPS_WORLD):
+        # IMPORTANT:
+        # Toute la logique "boundary graph" doit utiliser la même granularité (EPS_WORLD),
+        # sinon on casse les lookup adjacence (graph["adj"]) et on se retrouve avec 0 demi-arêtes.
+        eps = float(eps) if eps is not None else float(EPS_WORLD)
+        if eps <= 0.0:
+            eps = float(EPS_WORLD)
+        return (
+            round(float(p[0]) / eps) * eps,
+            round(float(p[1]) / eps) * eps,
+        )
 
     def _build_boundary_graph(self, outline):
         """
@@ -3393,9 +3582,49 @@ class TriangleViewerManual(tk.Tk):
         if len(out) >= 2:
             return out
 
-        # Fallback : point sur arête (ex: noeud connecté à une arête de triangle)
-        if not outline:
-         return out
+        # --- Fallback 1 : v est "près" d'un sommet de l'outline, mais ne match pas la clé d'adjacence ---
+        # Cas typique : le snap s'accroche à un noeud du triangle (coordonnées exactes),
+        # mais l'outline provient d'une union Shapely et ses sommets sont légèrement décalés.
+        # On cherche alors les arêtes de l'outline qui ont une extrémité à <= eps de v,
+        # et on retourne les demi-arêtes sortantes depuis ce sommet.
+        if outline:
+            px, py = float(v[0]), float(v[1])
+            cand = []
+            e2 = float(eps) * float(eps)
+            for (a, b) in outline:
+                ax, ay = float(a[0]), float(a[1])
+                bx, by = float(b[0]), float(b[1])
+                da2 = (px - ax) * (px - ax) + (py - ay) * (py - ay)
+                db2 = (px - bx) * (px - bx) + (py - by) * (py - by)
+                if da2 <= e2:
+                    cand.append(((ax, ay), (bx, by)))
+                if db2 <= e2:
+                    cand.append(((bx, by), (ax, ay)))
+
+            # Dédupliquer
+            uniq = []
+            seen = set()
+            for (a, b) in cand:
+                k = (round(a[0], 9), round(a[1], 9), round(b[0], 9), round(b[1], 9))
+                if k in seen:
+                    continue
+                seen.add(k)
+                uniq.append((a, b))
+
+            if len(uniq) >= 2:
+                out2 = [((u[0][0], u[0][1]), (u[1][0], u[1][1])) for u in uniq]
+                if len(out2) > 2:
+                    import math
+                    def ang(e):
+                        (a, b) = e
+                        vx, vy = self._edge_dir(a, b)
+                        return math.atan2(vy, vx)
+                    out2 = sorted(out2, key=ang)
+                    a0 = out2[0]
+                    ang0 = ang(a0)
+                    a1 = max(out2[1:], key=lambda e: self._ang_diff(ang(e), ang0))
+                    out2 = [a0, a1]
+                return out2[:2]
 
         def _pt_seg_dist2(px, py, ax, ay, bx, by):
             # distance^2 point-segment + projection t
@@ -3781,6 +4010,53 @@ class TriangleViewerManual(tk.Tk):
             self.canvas.tag_raise("clock_snap_target")
 
 
+    def _clock_arc_auto_get_two_neighbors(self, idx: int, v_world, outline_eps=None):
+        """Helper commun (compas) : retourne 2 voisins (w1, w2) sur le contour (outline)
+        incident au point v_world.
+
+        Objectif : éviter la duplication entre _clock_arc_auto_measure_from_snap() et
+        _clock_arc_auto_from_snap_target().
+
+        - outline_eps=None : utiliser l'outline par défaut (ne pas changer le comportement)
+        - outline_eps=float : forcer un eps spécifique lors du calcul de l'outline
+
+        Retourne (w1, w2) en coordonnées monde (np.array), ou None.
+        """
+        try:
+            idx = int(idx)
+            v_world = np.array(v_world, dtype=float)
+        except Exception:
+            return None
+        if not (0 <= idx < len(self._last_drawn)):
+            return None
+
+        # Outline = contour du groupe auquel appartient idx
+        if outline_eps is None:
+            outline = self._outline_for_item(idx) or []
+        else:
+            outline = self._outline_for_item(idx, eps=float(outline_eps)) or []
+        if not outline:
+            return None
+
+        # 2 segments extérieurs incidents à v_world
+        g = self._build_boundary_graph(outline)
+        tol_world = max(
+            float(EPS_WORLD),
+            float(getattr(self, "stroke_px", 2.0)) / max(float(getattr(self, "zoom", 1.0)), 1e-9)
+        )
+        inc = self._incident_half_edges_at_point(g, v_world, outline, eps=tol_world) or []
+        if len(inc) < 2:
+            return None
+
+        try:
+            w1 = np.array(inc[0][1], dtype=float)
+            w2 = np.array(inc[1][1], dtype=float)
+        except Exception:
+            return None
+
+        return (w1, w2)
+
+
     def _clock_arc_auto_measure_from_snap(self):
         """Si le compas est accroché à un noeud, calcule automatiquement l'angle (arc) entre
         les 2 arêtes **EXTÉRIEURES** incidentes à ce noeud (c'est-à-dire sur l'outline du groupe).
@@ -3803,26 +4079,14 @@ class TriangleViewerManual(tk.Tk):
         except Exception:
             return
 
-        # Outline = contour du groupe auquel appartient idx
-        outline = self._outline_for_item(idx) or []
-        if not outline:
+        # IMPORTANT (compas) : on veut des sommets "tels quels" (pas l'eps de rendu),
+        # sinon le buffer décale légèrement les sommets et v_world ne tombe plus sur un sommet du graphe.
+        neigh = self._clock_arc_auto_get_two_neighbors(idx, v_world, outline_eps=EPS_WORLD)
+        if not neigh:
             self._clock_arc_clear_last()
             return
 
-        # 2 segments extérieurs incidents à v_world
-        g = self._build_boundary_graph(outline)
-        inc = self._incident_half_edges_at_vertex(g, v_world) or []
-        if len(inc) < 2:
-            self._clock_arc_clear_last()
-            return
-
-        # Les arêtes sont (v -> w). On prend les 2 voisins w1, w2.
-        try:
-            w1 = np.array(inc[0][1], dtype=float)
-            w2 = np.array(inc[1][1], dtype=float)
-        except Exception:
-            self._clock_arc_clear_last()
-            return
+        w1, w2 = neigh
 
         # Point d'ancrage = centre du compas = noeud snap
         cx, cy = self._world_to_screen(v_world)
@@ -4822,6 +5086,26 @@ class TriangleViewerManual(tk.Tk):
         self._nearest_line_id = None
         # on efface les IDs de surlignage déjà dessinés (mais on conserve le choix et les données)
         self._clear_edge_highlights()
+
+        # Mode "contours uniquement" : même visualisation (noeuds, tags, numéros, mot),
+        # mais SANS les arêtes internes. En plus, on trace l'enveloppe extérieure des groupes.
+        showContoursMode = bool(
+            getattr(self, "show_only_group_contours", None) is not None
+            and self.show_only_group_contours.get()
+        )
+
+        onlyContours = False
+        v = getattr(self, "only_group_contours", None)
+        if v is not None and hasattr(v, "get"):
+            onlyContours = bool(v.get())
+        else:
+            onlyContours = bool(getattr(self, "_only_group_contours", False))
+
+        # Si on est en mode "contour only", on force la suppression des arêtes internes.
+        if showContoursMode:
+            onlyContours = True
+
+        # 1) Triangles (toujours dessinés si layer actif) : on coupe juste les arêtes internes.
         if getattr(self, "show_triangles_layer", None) is None or self.show_triangles_layer.get():
             for i, t in enumerate(placed):
                 labels = t["labels"]
@@ -4835,22 +5119,28 @@ class TriangleViewerManual(tk.Tk):
                     tri_mirrored=t.get("mirrored", False),
                     fill=fill,
                     diff_outline=bool(fill),
+                    drawEdges=(not onlyContours),
                 )
 
-        # — Recrée l'aide visuelle UNIQUEMENT si une sélection 'vertex' est encore active —
-        if self._sel and self._sel.get("mode") == "vertex":
-            # redessine candidates + best si on a des données
-            if getattr(self, "_edge_highlights", None):
-                self._redraw_edge_highlights()
-            # remet la ligne grise
-            idx = self._sel["idx"]; vkey = self._sel["vkey"]
-            P = self._last_drawn[idx]["pts"]
-            v_world = np.array(P[vkey], dtype=float)
-            self._update_nearest_line(v_world, exclude_idx=idx)
-        else:
-            # pas de sélection active -> pas d'aides persistantes
-            self._edge_highlights = None
-            self._edge_choice = None
+        # 2) Contour des groupes par-dessus (lisible), si demandé.
+        if showContoursMode:
+            self._draw_group_outlines()
+
+        if not showContoursMode:
+            # — Recrée l'aide visuelle UNIQUEMENT si une sélection 'vertex' est encore active —
+            if self._sel and self._sel.get("mode") == "vertex":
+                # redessine candidates + best si on a des données
+                if getattr(self, "_edge_highlights", None):
+                    self._redraw_edge_highlights()
+                # remet la ligne grise
+                idx = self._sel["idx"]; vkey = self._sel["vkey"]
+                P = self._last_drawn[idx]["pts"]
+                v_world = np.array(P[vkey], dtype=float)
+                self._update_nearest_line(v_world, exclude_idx=idx)
+            else:
+                # pas de sélection active -> pas d'aides persistantes
+                self._edge_highlights = None
+                self._edge_choice = None
 
         # Poignées de redimensionnement fond (overlay UI)
         self._bg_draw_resize_handles()
@@ -4859,7 +5149,30 @@ class TriangleViewerManual(tk.Tk):
         # Après tout redraw, le cache de pick n'est plus valide
         self._invalidate_pick_cache()
 
-    def _draw_triangle_screen(self, P, outline="black", width=2, labels=None, inset=0.35, tri_id=None, tri_mirrored=False, fill=None, diff_outline=False):
+    def _draw_group_outlines(self):
+        """Dessine uniquement le contour de chaque groupe (enveloppe extérieure)."""
+        self.canvas.delete("group_outline")
+
+        # Si aucun groupe n'est défini, on n'a rien de spécial à tracer.
+        if not getattr(self, "groups", None):
+            return
+
+        for gid, g in self.groups.items():
+            nodes = g.get("nodes") or []
+            if not nodes:
+                continue
+            outline = self._group_outline_segments(gid)
+            for p1, p2 in outline:
+                x1, y1 = self._world_to_screen(p1)
+                x2, y2 = self._world_to_screen(p2)
+                self.canvas.create_line(
+                    x1, y1, x2, y2,
+                    fill="#000000",
+                    width=3,
+                    tags=("group_outline",),
+                )
+
+    def _draw_triangle_screen(self, P, outline="black", width=2, labels=None, inset=0.35, tri_id=None, tri_mirrored=False, fill=None, diff_outline=False, drawEdges=True):
         """
         P : dict {'O','B','L'} en coordonnées monde (np.array 2D)
         labels : liste de 3 strings pour O,B,L (facultatif)
@@ -4883,9 +5196,10 @@ class TriangleViewerManual(tk.Tk):
         #    - Lumière (L) -> Base (B)      : bleu foncé
         #    - Base (B) -> Ouverture (O)    : gris
         Ox, Oy, Bx, By, Lx, Ly = coords
-        self.canvas.create_line(Ox, Oy, Lx, Ly, fill="#000000", width=width)
-        self.canvas.create_line(Bx, By, Lx, Ly, fill="#00008B", width=width)
-        self.canvas.create_line(Bx, By, Ox, Oy, fill="#808080", width=width)
+        if drawEdges:
+            self.canvas.create_line(Ox, Oy, Lx, Ly, fill="#000000", width=width)
+            self.canvas.create_line(Bx, By, Lx, Ly, fill="#00008B", width=width)
+            self.canvas.create_line(Bx, By, Ox, Oy, fill="#808080", width=width)
 
         # 2b) marqueurs colorés par type de bord
         # O = Ouverture (noir), B = Base (bleu), L = Lumière (jaune)
@@ -4957,6 +5271,10 @@ class TriangleViewerManual(tk.Tk):
                     anchor="n", font=("Arial", 9, "italic"),
                     fill="#222", tags="tri_word"
                 )
+    def _dbgSnap(self, msg: str):
+        """Trace console pour diagnostiquer l'assist de collage (activable via F10)."""
+        if getattr(self, "_debug_snap_assist", False):
+            print(msg)
 
     # --- helpers: mode déconnexion (CTRL) + curseur ---
     def _on_ctrl_down(self, event=None):
@@ -5627,10 +5945,19 @@ class TriangleViewerManual(tk.Tk):
         if not tris:
             return []
 
-        # 2) union → frontière (LineString/MultiLineString)
-        poly = _sh_union([p for p in tris if p.is_valid and p.area > 0]).buffer(0)
-        boundary = poly.boundary  # peut être MultiLineString
-        if boundary.is_empty:
+        # 2) union → polygone du groupe
+        # NOTE: on part de l'union géométrique, puis on extrait directement les
+        # exterieures (pas les trous) pour obtenir **uniquement** le contour du groupe.
+        u = _sh_union([p for p in tris if p.is_valid and p.area > 0])
+        # IMPORTANT: l'auto-assemblage passe par des rotations/translations flottantes.
+        # Les sommets/côtés qui devraient coïncider peuvent être séparés d'un micro-écart.
+        # Sans "snap", l'union devient MultiPolygon et les arêtes communes réapparaissent
+        # en contour. On recolle donc les micro-écarts via buffer(+eps)/buffer(-eps).
+        if eps and eps > 0:
+            poly = u.buffer(eps).buffer(-eps).buffer(0)
+        else:
+            poly = u.buffer(0)
+        if getattr(poly, "is_empty", True):
             return []
 
         # helper
@@ -5659,34 +5986,46 @@ class TriangleViewerManual(tk.Tk):
                     out.append((q0, q1))
             return out
 
-        # 3) prendre toutes les arêtes des triangles, les découper,
-        #    puis NE GARDER que les sous-segments dont le **milieu** est sur la frontière
+        # 3) Extraire le contour EXTERIEUR depuis l'union, puis le "re-découper" sur
+        #    les sommets d'origine pour conserver la granularité (utile pour snap/compas).
         outline = []
-        # Frontière Shapely du solide de groupe
-        boundary = poly.boundary if hasattr(poly, "boundary") else _ShLine([])
-        # Tolérance en unités "monde" (liée à l'épaisseur d'affichage)
-        tol = max(1e-9, float(getattr(self, "stroke_px", 2)) / max(getattr(self, "zoom", 1.0), 1e-9))
-        bmask = boundary.buffer(tol) if (not boundary.is_empty) else boundary
-        def _push(P):
-            for a, b in ((P["O"], P["B"]), (P["B"], P["L"]), (P["L"], P["O"])):
-                for s in _split_by_vertices(a, b):
-                    seg = _ShLine([
-                        (float(s[0][0]), float(s[0][1])),
-                        (float(s[1][0]), float(s[1][1]))
-                    ])
-                    # Garder uniquement les sous-segments véritablement sur le périmètre
-                    if (not seg.is_empty) and seg.within(bmask):
-                        outline.append(s)
 
-        for nd in nodes:
-            tid = nd.get("tid")
-            if 0 <= tid < len(self._last_drawn):
-                _push(self._last_drawn[tid]["pts"])
+        # Récupérer uniquement les exteriors (pas les trous)
+        lines = []
+        try:
+            gtype = getattr(poly, "geom_type", "")
+            if gtype == "Polygon":
+                lines = [poly.exterior]
+            elif gtype == "MultiPolygon":
+                lines = [p.exterior for p in getattr(poly, "geoms", [])]
+            else:
+                # fallback: boundary brute (peut inclure des trous)
+                b = getattr(poly, "boundary", None)
+                if b is not None:
+                    if getattr(b, "geom_type", "") == "MultiLineString":
+                        lines = list(getattr(b, "geoms", []))
+                    else:
+                        lines = [b]
+        except Exception:
+            lines = []
+
+        for ln in (lines or []):
+            try:
+                coords = list(getattr(ln, "coords", []))
+            except Exception:
+                coords = []
+            if len(coords) < 2:
+                continue
+            for i in range(len(coords) - 1):
+                A = coords[i]
+                B = coords[i + 1]
+                for s in _split_by_vertices(A, B):
+                    outline.append(s)
 
         return outline
 
     # --- util: segments d'enveloppe (groupe ou triangle seul) ---
-    def _outline_for_item(self, idx: int):
+    def _outline_for_item(self, idx: int, eps: float | None = None):
         """
         Retourne les segments (p1,p2) de l'enveloppe **du groupe** auquel appartient idx.
         Hypothèse d'architecture : tout item a un group_id (singleton possible).
@@ -5694,7 +6033,17 @@ class TriangleViewerManual(tk.Tk):
         gid = self._last_drawn[idx].get("group_id")
         assert gid is not None, "Invariant brisé: item sans group_id"
         try:
-            return self._group_outline_segments(gid, eps=EPS_WORLD)
+            # Par défaut (eps=None), on calcule un eps "rendu" pour recoller les micro-écarts
+            # numériques (auto-assemblage) et éviter que des arêtes internes ressortent comme contours.
+            # IMPORTANT : certains appels (ex: snap/assist) ont besoin des sommets exacts ; dans ce cas,
+            # passer explicitement eps=EPS_WORLD (ou autre) pour éviter tout regroupement de sommets.
+            if eps is None:
+                tol_world = max(
+                    1e-9,
+                    float(getattr(self, "stroke_px", 2)) / max(getattr(self, "zoom", 1.0), 1e-9)
+                )
+                eps = max(EPS_WORLD, 0.5 * tol_world)
+            return self._group_outline_segments(gid, eps=float(eps))
         except Exception:
             return []
 
@@ -5728,14 +6077,33 @@ class TriangleViewerManual(tk.Tk):
         gid_m = tri_m.get("group_id"); gid_t = tri_t.get("group_id")
         if gid_m is None or gid_t is None:
             self._clear_edge_highlights(); self._edge_choice = None; return
-        
+
+
+        # DEBUG
+        self._dbgSnap(
+            f"[snap] update_edge_highlights mob={mob_idx}:{vkey_m} (gid={gid_m}) -> tgt={tgt_idx}:{tgt_vkey} (gid={gid_t})"
+        )
+
         # Tolérance (utile à d'autres endroits si besoin)
         tol_world = max(1e-9, float(getattr(self, "stroke_px", 2)) / max(getattr(self, "zoom", 1.0), 1e-9))
 
         # === Collecte via graphe de frontière puis argmin global (Δ-angle) ===
         # 1) outlines des deux groupes
-        mob_outline = self._outline_for_item(mob_idx) or []
-        tgt_outline = self._outline_for_item(tgt_idx) or []
+        # IMPORTANT (snap) : on veut les sommets "tels quels" pour que vm/vt appartiennent au graphe.
+        # L'eps "rendu" (contour-only) peut fusionner / décaler légèrement les sommets et casser
+        # l'incidence au sommet cliqué => aucune paire d'arêtes candidate.
+        mob_outline = self._outline_for_item(mob_idx, eps=EPS_WORLD) or []
+        tgt_outline = self._outline_for_item(tgt_idx, eps=EPS_WORLD) or []
+
+        # Fallback : si l'outline "groupe" est vide (ou indisponible),
+        # utiliser l'outline du triangle lui-même pour ne pas casser l'assist.
+        if not mob_outline:
+            mob_outline = [(tuple(Pm["O"]), tuple(Pm["B"])), (tuple(Pm["B"]), tuple(Pm["L"])), (tuple(Pm["L"]), tuple(Pm["O"]))]
+        if not tgt_outline:
+            tgt_outline = [(tuple(Pt["O"]), tuple(Pt["B"])), (tuple(Pt["B"]), tuple(Pt["L"])), (tuple(Pt["L"]), tuple(Pt["O"]))]
+
+        self._dbgSnap(f"[snap] outlines: mob={len(mob_outline)} tgt={len(tgt_outline)}")
+
         # 2) half-edges incidentes au sommet cliqué, côté mobile et côté cible
         g_m = self._build_boundary_graph(mob_outline)
         g_t = self._build_boundary_graph(tgt_outline)
@@ -6664,27 +7032,15 @@ class TriangleViewerManual(tk.Tk):
         if not (0 <= idx < len(self._last_drawn)):
             return False
 
-        # Outline du groupe auquel appartient l'item
-        outline = self._outline_for_item(idx) or []
-        if not outline:
+        neigh = self._clock_arc_auto_get_two_neighbors(idx, v_world, outline_eps=None)
+        if not neigh:
             return False
 
-        g = self._build_boundary_graph(outline)
-        # Tolérance monde : au moins EPS_WORLD, mais on élargit selon le trait/zoom
-        # pour capter les noeuds posés "sur" une arête.
-        tol_world = max(
-            float(EPS_WORLD),
-            float(getattr(self, "stroke_px", 2.0)) / max(float(getattr(self, "zoom", 1.0)), 1e-9)
-        )
-        inc_raw = self._incident_half_edges_at_point(g, v_world, outline, eps=tol_world)
-        if not inc_raw or len(inc_raw) < 2:
-            return False
+        w1, w2 = neigh
 
         # Récupérer 2 directions (azimuts) depuis le point d'ancrage
-        a1, b1 = inc_raw[0]
-        a2, b2 = inc_raw[1]
-        az1 = float(self._azimuth_world_deg(a1, b1))
-        az2 = float(self._azimuth_world_deg(a2, b2))
+        az1 = float(self._azimuth_world_deg(v_world, w1))
+        az2 = float(self._azimuth_world_deg(v_world, w2))
         angle_deg = float(self._clock_arc_compute_angle_deg(az1, az2))
 
         self._clock_arc_last = {"az1": az1, "az2": az2, "angle": angle_deg}
@@ -7982,12 +8338,18 @@ class TriangleViewerManual(tk.Tk):
 
             # si CTRL est enfoncé AU RELÂCHEMENT, on ne colle pas.
             # (On garde l'aide visuelle pendant le drag si CTRL a été pressé après le clic.)
+
+            # DEBUG : état du snap au relâchement
+            ctrl_state = bool(getattr(event, "state", 0) & 0x0004)
+            self._dbgSnap(
+                f"[snap] release(vertex) ctrl_down={getattr(self,'_ctrl_down',False)} ctrl_state={ctrl_state} choice={'OK' if choice else 'None'}"
+            )
+
             if getattr(self, "_ctrl_down", False):
                 self._sel = None
                 self._reset_assist()
                 self._redraw_from(self._last_drawn)
-                try: self.status.config(text="Dépôt sans collage (CTRL).")
-                except Exception: pass
+                self.status.config(text="Dépôt sans collage (CTRL).")
                 return
 
 
@@ -8047,6 +8409,9 @@ class TriangleViewerManual(tk.Tk):
             # on applique la même géométrie que pour un triangle seul,
             # mais à TOUS les triangles du groupe.
             choice = getattr(self, "_edge_choice", None)
+            self._dbgSnap(
+                f"[snap] release(move_group) suppress_assist={self._sel.get('suppress_assist')} choice={'OK' if choice else 'None'}"
+            )
             if (not suppress
                 and (not getattr(self, "_ctrl_down", False))
                 and anchor

@@ -555,8 +555,24 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 scen.last_drawn = last_drawn
                 # Enrichit les nodes (vkey_in / vkey_out) en déduisant l’arête partagée via la géométrie
                 AlgoQuadrisParPaires._fill_group_vkeys_from_geometry(last_drawn, groups, Q=1e-6)
-                scen.groups = groups
-                out.append(scen)
+
+            # DEBUG: cohérence last_drawn vs groups (triangle "orphelin")
+            try:
+                ld = scen.last_drawn
+                print(f"[SIM][RET] last_drawn={len(ld)} ids={[t.get('id') for t in ld]}")
+                for gid, g in (groups or {}).items():
+                    tids = [nd.get("tid") for nd in (g.get("nodes") or [])]
+                    ids  = []
+                    for tid in tids:
+                        if tid is None or not (0 <= int(tid) < len(ld)):
+                            ids.append(f"tid?{tid}")
+                        else:
+                            ids.append(ld[int(tid)].get("id"))
+                    print(f"[SIM][RET] group {gid}: tids={tids} -> ids={ids}")
+            except Exception:
+                pass
+            scen.groups = groups
+            out.append(scen)
             return out
 
         # ---- 5) Étape 2 : chaîner les quadrilatères (tri3,tri4), (tri5,tri6), ... via les sommets Lumière
