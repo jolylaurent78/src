@@ -2055,6 +2055,22 @@ class TriangleViewerManual(tk.Tk):
         _make_btn(toolbar, self.icon_scen_save,  "S", self._scenario_save_dialog).pack(side=tk.LEFT, padx=1)
         _make_btn(toolbar, self.icon_scen_dup,   "D", self._scenario_duplicate).pack(side=tk.LEFT, padx=1)
         _make_btn(toolbar, self.icon_scen_del,   "X", self._scenario_delete).pack(side=tk.LEFT, padx=1)
+ 
+        # --- Filtre des scénarios automatiques (par triangle "bascule") ---
+        # Valeurs: "Tous" ou "(26)" etc. (uniquement les IDs présents dans les libellés "+(id)")
+        self.scenario_filter_var = tk.StringVar(value="Tous")
+        self.scenario_filter_combo = ttk.Combobox(
+            toolbar,
+            textvariable=self.scenario_filter_var,
+            state="readonly",
+            width=8,
+            values=["Tous"],
+        )
+        self.scenario_filter_combo.pack(side=tk.RIGHT, padx=(6, 0))
+        self.scenario_filter_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _e: self._refresh_scenario_listbox(),
+        )
 
         scen_lb_frame = tk.Frame(self._ui_scenarios_content, bd=0, highlightthickness=0)
         scen_lb_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
@@ -2121,12 +2137,84 @@ class TriangleViewerManual(tk.Tk):
             return
         tree = self.scenario_tree
 
+ 
+        def _parseScenarioDisplayId(name: str):
+            """Extrait l'ID affiché (#n) depuis un libellé de scénario."""
+            s = str(name or "").strip()
+            if s.startswith("★"):
+                s = s.lstrip("★ ").strip()
+            m = re.match(r"^#(\d+)", s)
+            return int(m.group(1)) if m else None
+
+ 
+        def _parseScenarioRefId(name: str):
+            """Extrait la référence (#q) depuis un libellé du type '#n=#q+(tri)'."""
+            s = str(name or "")
+            m = re.search(r"=#(\d+)\+\(", s)
+            return int(m.group(1)) if m else None
+
+ 
+        def _parseScenarioBranchTriId(name: str):
+            """Extrait le triangle '(id)' depuis un libellé du type '#n=#q+(id)'."""
+            s = str(name or "")
+            m = re.search(r"\+\((\d+)\)", s)
+            return int(m.group(1)) if m else None
+
+        # --- Filtre sélectionné ("Tous" ou "(26)") ---
+        selected_tri = None
+        if hasattr(self, "scenario_filter_var"):
+            v = str(self.scenario_filter_var.get() or "").strip()
+            if v and v != "Tous":
+                m = re.search(r"(\d+)", v)
+                if m:
+                    selected_tri = int(m.group(1))
+
+ 
+         # --- Recalcul des valeurs possibles de la combo (sur l'ensemble des scénarios auto) ---
+        tri_values = set()
+        for _sc in (self.scenarios or []):
+            if getattr(_sc, "source_type", None) != "auto":
+                continue
+            tid = _parseScenarioBranchTriId(getattr(_sc, "name", ""))
+            if tid is not None:
+                tri_values.add(int(tid))
+        tri_values_sorted = sorted(tri_values)
+        combo_values = ["Tous"] + [f"({t})" for t in tri_values_sorted]
+
+        # Mettre à jour la combo sans casser la sélection courante
+        if hasattr(self, "scenario_filter_combo"):
+            cur = str(self.scenario_filter_var.get() or "Tous")
+            self.scenario_filter_combo["values"] = combo_values
+            if cur not in combo_values:
+                self.scenario_filter_var.set("Tous")
+                selected_tri = None
+ 
+        # --- Construire l'ensemble des scénarios auto à afficher (filtre) ---
+        visible_auto_display_ids = None  # None => pas de filtre
+        if selected_tri is not None:
+            # 1) scénarios '#n=#q+(selected_tri)'
+            matched_display_ids = set()
+            matched_ref_display_ids = set()
+            for _sc in (self.scenarios or []):
+                if getattr(_sc, "source_type", None) != "auto":
+                    continue
+                name = getattr(_sc, "name", "")
+                tid = _parseScenarioBranchTriId(name)
+                if tid is None or int(tid) != int(selected_tri):
+                    continue
+                did = _parseScenarioDisplayId(name)
+                if did is not None:
+                    matched_display_ids.add(int(did))
+                rid = _parseScenarioRefId(name)
+                if rid is not None:
+                    matched_ref_display_ids.add(int(rid))
+ 
+            # 2) + les scénarios '#q' associés (références)
+            visible_auto_display_ids = matched_display_ids.union(matched_ref_display_ids)
+
         # Nettoyage
-        try:
-            for ch in tree.get_children(""):
-                tree.delete(ch)
-        except Exception:
-            pass
+        for ch in tree.get_children(""):
+            tree.delete(ch)
 
         # Groupes
         manual_count = 0
@@ -2140,6 +2228,11 @@ class TriangleViewerManual(tk.Tk):
             if scen.source_type == "manual":
                 manual_count += 1
             else:
+                # Filtrage des scénarios auto
+                if visible_auto_display_ids is not None:
+                    did = _parseScenarioDisplayId(getattr(scen, "name", ""))
+                    if did is None or int(did) not in visible_auto_display_ids:
+                        continue
                 auto_count += 1
 
             tags = []

@@ -511,7 +511,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             out: List[ScenarioAssemblage] = []
             for i, P2 in enumerate(poses[:2]):
                 scen = ScenarioAssemblage(
-                    name=f"Auto quad (2 triangles){'' if len(poses)==1 else f' #{i+1}'}",
+                    name=(f"#1" if i==0 else f"#{i+1}=#1+({tri2_id})"),
                     source_type="auto",
                     algo_id=self.id,
                     tri_ids=[tri1_id, tri2_id],
@@ -690,9 +690,17 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             [{"tid": 0}, {"tid": 1}],
             base_last
         )
-        states = [(base_last, poly_occ0)]
+        @dataclass(eq=False)
+        class _BranchNode:
+            parent: Optional["_BranchNode"]
+            children: List["_BranchNode"]
+            branchTriId: Optional[int] = None
 
-        MAX_SCENARIOS = 200
+        rootNode = _BranchNode(parent=None, children=[], branchTriId=None)
+
+        # État de recherche : liste de branches (scénarios partiels)
+        # Chaque état = (node, last_drawn, poly_occ)
+        states = [(rootNode, base_last, poly_occ0)]
 
         # Boucle sur les paires suivantes : (tri3,tri4), (tri5,tri6), ...
         for pair_start in range(2, len(tri_ids), 2):
@@ -714,7 +722,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 dbg_overlap = 0
                 dbg_added = 0
 
-                for (last_drawn_prev, poly_occ_prev) in states:
+                for (node_prev, last_drawn_prev, poly_occ_prev) in states:
+                    candidates = []   
                     anchor = last_drawn_prev[-1]["pts"]
                     mob_keys = ("O", "B")
 
@@ -770,8 +779,26 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                 "group_pos": pos1,
                             })
 
-                            new_states.append((last_drawn_new, poly_occ_prev.union(poly_new)))
+                            candidates.append((last_drawn_new, poly_occ_prev.union(poly_new)))
                             dbg_added += 1
+
+                    # Si au moins 2 candidats existent *à cette étape*, on enregistre une bifurcation.
+                    # La bifurcation ne devient "réelle" que si les 2 sous-branches mènent à des feuilles survivantes,
+                    # ce qui sera résolu après pruning (sur l'arbre survivant).
+                    if candidates:
+                        node_prev.children = []
+                        if len(candidates) >= 2:
+                            # IMPORTANT (naming): la bifurcation correspond au triangle
+                            # connecté au bloc précédent via le point de Lumière,
+                            # c'est triOddId (triEvenId est "collé" au triOddId via BO).
+                            node_prev.branchTriId = int(triOddId)
+                        else:
+                            node_prev.branchTriId = None
+
+                        for (ld_new, poly_u) in candidates:
+                            child = _BranchNode(parent=node_prev, children=[], branchTriId=None)
+                            node_prev.children.append(child)
+                            new_states.append((child, ld_new, poly_u))
 
                 return new_states, dbg_try, dbg_overlap, dbg_added
 
@@ -806,11 +833,73 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 )
                 return []
 
+        # --- Post-traitement : construire une numérotation COHÉRENTE sur l'arbre survivant ---
+        # Objectif : pouvoir "pruner mentalement" par plages (#1..#96 / #97..#117, etc.).
+        leafData = {node: (last_drawn, _poly_occ) for (node, last_drawn, _poly_occ) in states}
+
+        kept = set()
+        for leaf in leafData.keys():
+            n = leaf
+            while n is not None and n not in kept:
+                kept.add(n)
+                n = n.parent
+
+        def _keptChildren(n):
+            return [c for c in (n.children or []) if c in kept]
+
+        # Collecte des feuilles survivantes dans l'ordre gauche→droite (DFS)
+        leaves = []
+        def _collectLeaves(n):
+            if n not in kept:
+                return
+            ch = _keptChildren(n)
+            if not ch:
+                leaves.append(n)
+                return
+            for c in ch:
+                _collectLeaves(c)
+
+        _collectLeaves(rootNode)
+
+        leafIndex = {leaf: (i + 1) for i, leaf in enumerate(leaves)}
+
+        def _leftMostLeaf(n):
+            cur = n
+            while True:
+                ch = _keptChildren(cur)
+                if not ch:
+                    return cur
+                cur = ch[0]
+
+        # Par défaut : "#k"
+        labels = {leaf: f"#{leafIndex[leaf]}" for leaf in leaves}
+
+        # Pour chaque bifurcation survivante, on étiquette UNIQUEMENT le "start" du sous-arbre droit :
+        #   #startR = #startL + (triEvenId)
+        for n in list(kept):
+            ch = _keptChildren(n)
+            if n.branchTriId is None:
+                continue
+            if len(ch) < 2:
+                continue
+            leftLeaf = _leftMostLeaf(ch[0])
+            idxL = leafIndex.get(leftLeaf)
+            if idxL is None:
+                continue
+            for j in range(1, len(ch)):
+                rightLeaf = _leftMostLeaf(ch[j])
+                idxR = leafIndex.get(rightLeaf)
+                if idxR is None:
+                    continue
+                labels[rightLeaf] = f"#{idxR}=#{idxL}+({int(n.branchTriId)})"
+
         # Finalisation : créer les scénarios complets
         out: List[ScenarioAssemblage] = []
-        for i, (last_drawn, _poly_occ) in enumerate(states):
+        for leaf in leaves:
+            (last_drawn, _poly_occ) = leafData[leaf]
+            idx = int(leafIndex.get(leaf, 0) or 0)
             scen = ScenarioAssemblage(
-                name=f"Auto quadris ({len(last_drawn)} triangles)#{i+1}",
+                name=labels.get(leaf, f"#{idx}"),
                 source_type="auto",
                 algo_id=self.id,
                 tri_ids=[int(x) for x in tri_ids[:len(last_drawn)]],
