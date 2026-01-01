@@ -81,7 +81,16 @@ def createDecryptor(decryptorId: str) -> DecryptorBase:
 class DialogSimulationAssembler(tk.Toplevel):
     """Boîte de dialogue 'Simulation > Assembler…'"""
 
-    def __init__(self, parent, algo_items: List[Tuple[str, str]], n_max: int, default_algo_id: str, default_n: int):
+    def __init__(
+        self,
+        parent,
+        algo_items: List[Tuple[str, str]],
+        n_max: int,
+        default_algo_id: str,
+        default_n: int,
+        default_order: str = "forward",
+        default_first_edge: str = "OL",
+    ):
         super().__init__(parent)
         self.title("Assembler (simulation)")
         self.resizable(False, False)
@@ -121,7 +130,10 @@ class DialogSimulationAssembler(tk.Toplevel):
         self.n_spin.grid(row=2, column=1, sticky="e")
 
         # --- Ordre d'assemblage ---
-        self.order_var = tk.StringVar(value="forward")  # "forward" | "reverse"
+        d_order = str(default_order or "forward").strip().lower()
+        if d_order not in ("forward", "reverse"):
+            d_order = "forward"
+        self.order_var = tk.StringVar(value=d_order)  # "forward" | "reverse"
         ttk.Label(frm, text="Ordre d’assemblage :").grid(row=3, column=0, sticky="w", pady=(8, 0))
         order_frm = ttk.Frame(frm)
         order_frm.grid(row=3, column=1, sticky="e", pady=(8, 0))
@@ -129,7 +141,10 @@ class DialogSimulationAssembler(tk.Toplevel):
         ttk.Radiobutton(order_frm, text="Inverse", value="reverse", variable=self.order_var).grid(row=0, column=1)
 
         # --- Placement du 1er triangle ---
-        self.first_edge_var = tk.StringVar(value="OL")  # "OL" | "BL"
+        d_edge = str(default_first_edge or "OL").upper().strip()
+        if d_edge not in ("OL", "BL"):
+            d_edge = "OL"
+        self.first_edge_var = tk.StringVar(value=d_edge)  # "OL" | "BL"
         ttk.Label(frm, text="Placement 1er triangle :").grid(row=4, column=0, sticky="w", pady=(8, 0))
         self.first_edge_combo = ttk.Combobox(
             frm,
@@ -138,7 +153,7 @@ class DialogSimulationAssembler(tk.Toplevel):
             values=["OL = 0°", "BL = 0°"],
             width=12
         )
-        self.first_edge_combo.current(0)
+        self.first_edge_combo.current(1 if d_edge == "BL" else 0)
         self.first_edge_combo.grid(row=4, column=1, sticky="e", pady=(8, 0))
 
         btns = ttk.Frame(frm)
@@ -336,6 +351,16 @@ class TriangleViewerManual(tk.Tk):
         self.show_only_group_contours.set(bool(self.getAppConfigValue("uiShowOnlyGroupContours", False)))
         self.auto_fit_scenario_select.set(bool(self.getAppConfigValue("uiAutoFitScenario", False)))
         self.map_opacity.set(int(self.getAppConfigValue("uiMapOpacity", 70)))
+
+        # === Simulation : derniers paramètres utilisés (dialog 'Simulation > Assembler…') ===
+        self._simulation_last_algo_id = str(self.getAppConfigValue("simLastAlgoId", "") or "").strip()
+        self._simulation_last_n = int(self.getAppConfigValue("simLastN", 8) or 8)
+        self._simulation_last_order = str(self.getAppConfigValue("simLastOrder", "forward") or "forward").strip().lower()
+        if self._simulation_last_order not in ("forward", "reverse"):
+            self._simulation_last_order = "forward"
+        self._simulation_last_first_edge = str(self.getAppConfigValue("simLastFirstEdge", "OL") or "OL").strip().upper()
+        if self._simulation_last_first_edge not in ("OL", "BL"):
+            self._simulation_last_first_edge = "OL"
 
         # Fond SVG : au démarrage le canvas n'a pas toujours une taille valide.
         # On déclenche donc un redessin différé (au 1er <Configure>) après rechargement.
@@ -1114,8 +1139,6 @@ class TriangleViewerManual(tk.Tk):
         self.menu_simulation.add_command(label="Assembler…", command=self._simulation_assemble_dialog)
         self.menu_simulation.add_command(label="Supprimer les scénarios automatiques", command=self._simulation_clear_auto_scenarios)
         self.menu_simulation.add_separator()
-        self.menu_simulation.add_command(label="Annuler le filtrage du dictionnaire", command=self._simulation_cancel_dictionary_filter, state="disabled")
-        self._menu_sim_cancel_dico_filter_index = self.menu_simulation.index("end")
 
         # --- Menu Visualisation ---
         self.menu_visual = tk.Menu(menubar, tearoff=0)
@@ -1193,9 +1216,8 @@ class TriangleViewerManual(tk.Tk):
         was_active = bool(self._dico_filter_active) or (self._dico_filter_ref_angle_deg is not None)
         self._dico_filter_active = False
         self._dico_filter_ref_angle_deg = None
-        if hasattr(self, "_menu_sim_cancel_dico_filter_index"):
-            self.menu_simulation.entryconfig(self._menu_sim_cancel_dico_filter_index, state="disabled")
         self._dico_clear_filter_styles()
+        self._update_compass_ctx_menu_and_dico_state()
         if was_active:
             self.status.config(text="Dico: filtrage annule")
 
@@ -1273,13 +1295,23 @@ class TriangleViewerManual(tk.Tk):
             return
 
         algo_items = [(aid, cls.label) for aid, cls in ALGOS.items()]
-        default_algo_id = getattr(self, "_simulation_last_algo_id", algo_items[0][0] if algo_items else "")
+        default_algo_id = getattr(self, "_simulation_last_algo_id", "") or (algo_items[0][0] if algo_items else "")
         default_n = getattr(self, "_simulation_last_n", n_max)
+        default_order = getattr(self, "_simulation_last_order", "forward")
+        default_first_edge = getattr(self, "_simulation_last_first_edge", "OL")
         default_n = min(int(default_n), n_max)
         if default_n < 2:
             default_n = 2
 
-        dlg = DialogSimulationAssembler(self, algo_items, n_max=n_max, default_algo_id=default_algo_id, default_n=default_n)
+        dlg = DialogSimulationAssembler(
+            self,
+            algo_items,
+            n_max=n_max,
+            default_algo_id=default_algo_id,
+            default_n=default_n,
+            default_order=default_order,
+            default_first_edge=default_first_edge,
+        )
         self.wait_window(dlg)
         if not getattr(dlg, "result", None):
             return
@@ -1289,14 +1321,22 @@ class TriangleViewerManual(tk.Tk):
         self._simulation_last_algo_id = algo_id
         self._simulation_last_n = int(n)
 
+        self._simulation_last_first_edge = str(first_edge or "OL").upper().strip()
+        if self._simulation_last_first_edge not in ("OL", "BL"):
+            self._simulation_last_first_edge = "OL"
+
+        # Persister (app config)
+        self.setAppConfigValue("simLastAlgoId", str(self._simulation_last_algo_id or ""))
+        self.setAppConfigValue("simLastN", int(self._simulation_last_n or 0))
+        self.setAppConfigValue("simLastOrder", str(self._simulation_last_order or "forward"))
+        self.setAppConfigValue("simLastFirstEdge", str(self._simulation_last_first_edge or "OL"))
+        self.saveAppConfig()
+
         # Par design : on détruit systématiquement les scénarios auto existants
         self._simulation_clear_auto_scenarios()
 
         # --- Construire la liste des triangles selon l'ordre choisi ---
         tri_ids = self._simulation_get_tri_ids_by_order(n, order)
-
-        # --- DEBUG (console, sans spam) ---
-        print(f"[SIM] Assembler: algo={algo_id} order={order} n={n} tri_ids={tri_ids}")
 
         # Sécurité
         if len(tri_ids) < 2:
@@ -1671,36 +1711,57 @@ class TriangleViewerManual(tk.Tk):
         cb_wrap = tk.Frame(self._ui_layers_content, bd=0, highlightthickness=0)
         cb_wrap.pack(anchor="w", fill="x", padx=6, pady=(0, 6))
 
-        # Ligne "Carte" : checkbox + slider sur la même ligne
+        # Colonne "contrôles" à droite : même largeur pour Carte / Triangle / Compas
+        rightColWidth = 140
+
+        # Ligne "Carte" : checkbox + slider sur la même ligne, slider aligné à droite
         row_map = tk.Frame(cb_wrap)
         # même espacement vertical que les autres checkboxes
-        row_map.pack(anchor="w", fill="x", pady=(2, 0))    
+        row_map.pack(anchor="w", fill="x", pady=(2, 0))
+        row_map.grid_columnconfigure(1, weight=1)
+
         tk.Checkbutton(
             row_map, text="Carte",
             variable=self.show_map_layer,
             command=self._toggle_layers,
-        ).pack(side=tk.LEFT, anchor="s")
+        ).grid(row=0, column=0, sticky="w")
+
+        # spacer pour pousser la colonne de droite au bord droit
+        tk.Frame(row_map).grid(row=0, column=1, sticky="ew")
+
+        row_map_right = tk.Frame(row_map, width=rightColWidth)
+        row_map_right.grid(row=0, column=2, sticky="e")
+        row_map_right.grid_propagate(False)
+
         self.mapOpacityScale = tk.Scale(
-            row_map, from_=0, to=100, orient=tk.HORIZONTAL,
+            row_map_right, from_=0, to=100, orient=tk.HORIZONTAL,
             variable=self.map_opacity,
             showvalue=False,
             length=120,
             command=self._on_map_opacity_change,
         )
-        # Slider aligné à droite
         self.mapOpacityScale.pack(side=tk.RIGHT, padx=(0, 4), anchor="e")
 
         # Ligne "Triangle" : checkbox + 2 radios (icônes) pour le mode d'affichage
         #  - value=0 : triangles + arêtes internes
         #  - value=1 : contour uniquement (sans arêtes internes)
         row_tri = tk.Frame(cb_wrap)
-        row_tri.pack(anchor="w", fill="x")
+        row_tri.pack(anchor="w", fill="x", pady=(2, 0))
+        row_tri.grid_columnconfigure(1, weight=1)
+
         tk.Checkbutton(
             row_tri,
             text="Triangle",
             variable=self.show_triangles_layer,
             command=self._toggle_layers,
-        ).pack(side=tk.LEFT, anchor="w")
+        ).grid(row=0, column=0, sticky="w")
+
+        # spacer pour pousser la colonne de droite au bord droit
+        tk.Frame(row_tri).grid(row=0, column=1, sticky="ew")
+
+        row_tri_right = tk.Frame(row_tri, width=rightColWidth)
+        row_tri_right.grid(row=0, column=2, sticky="e")
+        row_tri_right.grid_propagate(False)
 
         # charger les icônes depuis le répertoire (pas de génération online)
         if not hasattr(self, "iconTriModeEdges"):
@@ -1736,14 +1797,14 @@ class TriangleViewerManual(tk.Tk):
         )
         if getattr(self, "iconTriModeContour", None) is not None:
             tk.Radiobutton(
-                row_tri,
+                row_tri_right,
                 image=self.iconTriModeContour,
                 value=1,
                 **rb_kwargs,
             ).pack(side=tk.RIGHT, padx=(2, 0))
         else:
             tk.Radiobutton(
-                row_tri,
+                row_tri_right,
                 text="Contour",
                 value=1,
                 **rb_kwargs,
@@ -1751,14 +1812,14 @@ class TriangleViewerManual(tk.Tk):
 
         if getattr(self, "iconTriModeEdges", None) is not None:
             tk.Radiobutton(
-                row_tri,
+                row_tri_right,
                 image=self.iconTriModeEdges,
                 value=0,
                 **rb_kwargs,
             ).pack(side=tk.RIGHT)
         else:
             tk.Radiobutton(
-                row_tri,
+                row_tri_right,
                 text="Arêtes",
                 value=0,
                 **rb_kwargs,
@@ -1767,14 +1828,30 @@ class TriangleViewerManual(tk.Tk):
         # Ligne "Compas" : checkbox + boutons de taille (< >)
         row_clock = tk.Frame(cb_wrap)
         row_clock.pack(anchor="w", fill="x")
+        row_clock.grid_columnconfigure(1, weight=1)
+
         tk.Checkbutton(
             row_clock, text="Compas",
             variable=self.show_clock_overlay,
             command=self._toggle_clock_overlay
-        ).pack(side=tk.LEFT, anchor="w")
+        ).grid(row=0, column=0, sticky="w")
+
+        # spacer pour pousser la colonne de droite au bord droit
+        tk.Frame(row_clock).grid(row=0, column=1, sticky="ew")
+
+        row_clock_right = tk.Frame(row_clock, width=rightColWidth)
+        row_clock_right.grid(row=0, column=2, sticky="e")
+        row_clock_right.grid_propagate(False)
+
         # Boutons taille compas : < réduit, > agrandit (pas de 5)
-        tk.Button(row_clock, text=">", width=2, command=lambda: self._clock_change_radius(+5)).pack(side=tk.RIGHT, padx=(0, 2))
-        tk.Button(row_clock, text="<", width=2, command=lambda: self._clock_change_radius(-5)).pack(side=tk.RIGHT, padx=(4, 0))
+        tk.Button(
+            row_clock_right, text=">", width=2,
+            command=lambda: self._clock_change_radius(+5)
+        ).pack(side=tk.RIGHT, padx=(0, 2))
+        tk.Button(
+            row_clock_right, text="<", width=2,
+            command=lambda: self._clock_change_radius(-5)
+        ).pack(side=tk.RIGHT, padx=(4, 0))
 
         pw.add(layer_frame, minsize=layer_minsize_expanded)
 
@@ -2043,18 +2120,28 @@ class TriangleViewerManual(tk.Tk):
         self.icon_scen_manual = self._load_icon("scenario_manual.png")
         self.icon_scen_auto   = self._load_icon("scenario_auto.png")
 
-        def _make_btn(parent, icon, text, cmd):
+        def _make_btn(parent, icon, text, cmd, tooltip_text: str = ""):
             if icon is not None:
-                return tk.Button(parent, image=icon, command=cmd, relief=tk.FLAT)
-            # fallback texte si l'icône n'est pas trouvée
-            return tk.Button(parent, text=text, command=cmd, width=2, relief=tk.FLAT)
+                b = tk.Button(parent, image=icon, command=cmd, relief=tk.FLAT)
+            else:
+                # fallback texte si l'icône n'est pas trouvée
+                b = tk.Button(parent, text=text, command=cmd, width=2, relief=tk.FLAT)
+            # tooltips UI
+            self._ui_attach_tooltip(b, tooltip_text)
+            return b
 
-        _make_btn(toolbar, self.icon_scen_new,   "N", self._new_empty_scenario).pack(side=tk.LEFT, padx=1)
-        _make_btn(toolbar, self.icon_scen_open,  "O", self._scenario_load_dialog).pack(side=tk.LEFT, padx=1)
-        _make_btn(toolbar, self.icon_scen_props, "P", self._scenario_edit_properties).pack(side=tk.LEFT, padx=1)
-        _make_btn(toolbar, self.icon_scen_save,  "S", self._scenario_save_dialog).pack(side=tk.LEFT, padx=1)
-        _make_btn(toolbar, self.icon_scen_dup,   "D", self._scenario_duplicate).pack(side=tk.LEFT, padx=1)
-        _make_btn(toolbar, self.icon_scen_del,   "X", self._scenario_delete).pack(side=tk.LEFT, padx=1)
+        _make_btn(toolbar, self.icon_scen_new,   "N", self._new_empty_scenario,
+                  "Nouveau").pack(side=tk.LEFT, padx=1)
+        _make_btn(toolbar, self.icon_scen_open,  "O", self._scenario_load_dialog,
+                  "Charger...").pack(side=tk.LEFT, padx=1)
+        _make_btn(toolbar, self.icon_scen_props, "P", self._scenario_edit_properties,
+                  "Propriétés...").pack(side=tk.LEFT, padx=1)
+        _make_btn(toolbar, self.icon_scen_save,  "S", self._scenario_save_dialog,
+                  "Enregistrer...").pack(side=tk.LEFT, padx=1)
+        _make_btn(toolbar, self.icon_scen_dup,   "D", self._scenario_duplicate,
+                  "Dupliquer").pack(side=tk.LEFT, padx=1)
+        _make_btn(toolbar, self.icon_scen_del,   "X", self._scenario_delete,
+                  "Supprimer...").pack(side=tk.LEFT, padx=1)
  
         # --- Filtre des scénarios automatiques (par triangle "bascule") ---
         # Valeurs: "Tous" ou "(26)" etc. (uniquement les IDs présents dans les libellés "+(id)")
@@ -2824,6 +2911,8 @@ class TriangleViewerManual(tk.Tk):
         self._ctx_menu_compass.add_separator()
         self._ctx_menu_compass.add_command(label="Filtrer le dictionnaire…", command=self._ctx_filter_dictionary_by_clock_arc, state=tk.DISABLED)
         self._ctx_compass_idx_filter_dico = self._ctx_menu_compass.index("end")
+        self._ctx_menu_compass.add_command(label="Annuler le filtrage", command=self._simulation_cancel_dictionary_filter, state=tk.DISABLED)
+        self._ctx_compass_idx_cancel_dico_filter = self._ctx_menu_compass.index("end")
         self._update_compass_ctx_menu_and_dico_state()
 
         # Menu contextuel
@@ -3232,6 +3321,72 @@ class TriangleViewerManual(tk.Tk):
         return (dx*dx + dy*dy) <= (self._clock_R + pad) ** 2
 
     # ---------- Tooltip helpers ----------
+    def _ui_attach_tooltip(self, widget, text: str):
+        """Attache un tooltip (petit Toplevel) à un widget Tk (ex: bouton icône)."""
+        if widget is None:
+            return
+        tip = str(text or "").strip()
+        if not tip:
+            return
+        # stocker le texte sur le widget (pratique pour MAJ future)
+        widget._ui_tooltip_text = tip
+        widget.bind("<Enter>", lambda e, w=widget: self._ui_show_tooltip(w), add="+")
+        widget.bind("<Leave>", lambda e: self._ui_hide_tooltip(), add="+")
+        widget.bind("<ButtonPress>", lambda e: self._ui_hide_tooltip(), add="+")
+ 
+    def _ui_show_tooltip(self, widget):
+        """Affiche le tooltip UI près du widget."""
+        if widget is None:
+            return
+        text = str(getattr(widget, "_ui_tooltip_text", "") or "").strip()
+        if not text:
+            return
+ 
+        # créer si nécessaire
+        if not hasattr(self, "_ui_tooltip"):
+            self._ui_tooltip = None
+            self._ui_tooltip_label = None
+ 
+        if self._ui_tooltip is None or not self._ui_tooltip.winfo_exists():
+            self._ui_tooltip = tk.Toplevel(self)
+            self._ui_tooltip.wm_overrideredirect(True)
+            self._ui_tooltip.attributes("-topmost", True)
+            self._ui_tooltip_label = tk.Label(
+                self._ui_tooltip,
+                text=text,
+                bg="#ffffe0",
+                relief="solid",
+                borderwidth=1,
+                font=("Arial", 9),
+                justify="left",
+                anchor="w",
+            )
+            self._ui_tooltip_label.pack(ipadx=4, ipady=2)
+        else:
+            self._ui_tooltip_label.config(text=text, justify="left", anchor="w")
+
+        # placer près du widget (léger offset)
+        self._ui_tooltip.update_idletasks()
+        tw = max(1, int(self._ui_tooltip.winfo_width()))
+        th = max(1, int(self._ui_tooltip.winfo_height()))
+        x = int(widget.winfo_rootx() + 10)
+        y = int(widget.winfo_rooty() + widget.winfo_height() + 8)
+
+        # clamp dans l'écran courant (simple)
+        sw = int(self.winfo_screenwidth())
+        sh = int(self.winfo_screenheight())
+        x = max(0, min(x, sw - tw))
+        y = max(0, min(y, sh - th))
+ 
+        self._ui_tooltip.wm_geometry(f"+{x}+{y}")
+ 
+    def _ui_hide_tooltip(self):
+        if hasattr(self, "_ui_tooltip") and self._ui_tooltip is not None and self._ui_tooltip.winfo_exists():
+            self._ui_tooltip.destroy()
+        if hasattr(self, "_ui_tooltip"):
+            self._ui_tooltip = None
+            self._ui_tooltip_label = None
+ 
     def _show_tooltip_at_center(self, text: str, cx_canvas: float, cy_canvas: float):
         """Affiche/MAJ le tooltip en le **centrant** sur (cx_canvas, cy_canvas) (coords CANVAS)."""
         if not text:
@@ -4027,6 +4182,18 @@ class TriangleViewerManual(tk.Tk):
             label_disp = str(label)
             if delta_needles_deg is not None:
                 label_disp = f"{label_disp} — Δ={float(delta_needles_deg):0.0f}°"
+            # Si le filtrage dico est actif, afficher aussi l'azimut théorique du 12h (référence)
+            # pour aligner les aiguilles sur les 2 droites mesurées (az1/az2).
+            if getattr(self, "_dico_filter_active", False):
+                last = getattr(self, "_clock_arc_last", None)
+                if isinstance(last, dict) and ("az1" in last) and ("az2" in last):
+                    ref_theo = self._clock_compute_theoretical_ref_azimuth_deg(
+                        az1=float(last["az1"]),
+                        az2=float(last["az2"]),
+                        ang_hour_0=float(ang_hour_0),
+                        ang_min_0=float(ang_min_0),
+                    )
+                    label_disp = f"{label_disp} — Ref={ref_theo:0.1f}°"
             self.canvas.create_text(cx, cy + R + 20, text=label_disp,
                                     font=("Arial", 11, "bold"), fill="#000000",
                                     anchor="n", tags="clock_overlay")
@@ -6871,9 +7038,8 @@ class TriangleViewerManual(tk.Tk):
             return
         self._dico_filter_active = True
         self._dico_filter_ref_angle_deg = float(ref)
-        if hasattr(self, "_menu_sim_cancel_dico_filter_index"):
-            self.menu_simulation.entryconfig(self._menu_sim_cancel_dico_filter_index, state="normal")
         self._dico_apply_filter_styles()
+        self._update_compass_ctx_menu_and_dico_state()
         self.status.config(text=f"Dico filtré (angle ref={float(ref):0.0f}°, tol=±{float(self._dico_filter_tolerance_deg):0.0f}°)")
 
     def _clock_arc_is_available(self) -> bool:
@@ -6894,11 +7060,18 @@ class TriangleViewerManual(tk.Tk):
         if menu is not None and idx is not None:
             menu.entryconfig(idx, state=(tk.NORMAL if arc_ok else tk.DISABLED))
 
+        # Activer/désactiver "Annuler le filtrage" selon l'état courant
+        idx_cancel = getattr(self, '_ctx_compass_idx_cancel_dico_filter', None)
+        if menu is not None and idx_cancel is not None:
+            menu.entryconfig(idx_cancel, state=(tk.NORMAL if bool(getattr(self, "_dico_filter_active", False)) else tk.DISABLED))
+
         # Le dico reste sélectionnable dans tous les cas.
         self._dico_set_selection_enabled(True)
 
         # Si on perd l'arc alors qu'un filtrage était actif, on annule le filtrage.
-        if not arc_ok:
+        # IMPORTANT: ne pas appeler _simulation_cancel_dictionary_filter() si aucun filtrage n'est actif,
+        # sinon recursion infinie (cancel -> update -> cancel -> ...).
+        if (not arc_ok) and (bool(getattr(self, "_dico_filter_active", False)) or (getattr(self, "_dico_filter_ref_angle_deg", None) is not None)):
             if hasattr(self, "_simulation_cancel_dictionary_filter"):
                 self._simulation_cancel_dictionary_filter()
 
@@ -7330,6 +7503,44 @@ class TriangleViewerManual(tk.Tk):
         ang = ang % 360.0
         return ang
 
+
+    def _clock_angle_diff_deg(self, a: float, b: float) -> float:
+        """Différence angulaire minimale |a-b| sur un cercle (en degrés), résultat dans [0..180]."""
+        da = (float(a) - float(b)) % 360.0
+        if da > 180.0:
+            da = 360.0 - da
+        return abs(da)
+
+    def _clock_compute_theoretical_ref_azimuth_deg(
+        self,
+        *,
+        az1: float,
+        az2: float,
+        ang_hour_0: float,
+        ang_min_0: float,
+    ) -> float:
+        """Calcule l'azimut absolu (0=N) du '12h' qui ferait coïncider les aiguilles
+        (heure/minute) avec les 2 droites mesurées (az1/az2).
+
+        On teste les 2 correspondances possibles (heure->az1, minute->az2) et (heure->az2, minute->az1)
+        et on retient celle qui minimise l'erreur résiduelle.
+        """
+        a1 = float(az1) % 360.0
+        a2 = float(az2) % 360.0
+        h0 = float(ang_hour_0) % 360.0
+        m0 = float(ang_min_0) % 360.0
+
+        # Hypothèse 1 : heure->a1, minute->a2
+        ref1 = (a1 - h0) % 360.0
+        pred_m1 = (ref1 + m0) % 360.0
+        err1 = self._clock_angle_diff_deg(pred_m1, a2)
+
+        # Hypothèse 2 : heure->a2, minute->a1
+        ref2 = (a2 - h0) % 360.0
+        pred_m2 = (ref2 + m0) % 360.0
+        err2 = self._clock_angle_diff_deg(pred_m2, a1)
+
+        return float(ref1 if err1 <= err2 else ref2)
 
     # ---------- Compas : helpers communs (éviter duplication setref/measure) ----------
     def _clock_get_initial_cursor_xy(self) -> Tuple[int, int]:
@@ -7808,9 +8019,6 @@ class TriangleViewerManual(tk.Tk):
 
         self._refresh_scenario_listbox()
         self._set_active_scenario(self.active_scenario_index)
-
-        print(f"[FILTER] Préfixe validé {prefix} + arêtes {ref_steps} → {removed} scénarios supprimés")
-
 
     def _ctx_flip_selected(self):
         """

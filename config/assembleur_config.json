@@ -11,6 +11,10 @@
     "aspect": 0.8128587830080367
   },
   "uiMapOpacity": 36,
-  "uiClockRefAzimuth": 179.76985811280392,
-  "uiShowOnlyGroupContours": false
+  "uiClockRefAzimuth": 196.20072299647245,
+  "uiShowOnlyGroupContours": false,
+  "simLastAlgoId": "quadris_par_paires",
+  "simLastN": 32,
+  "simLastOrder": "reverse",
+  "simLastFirstEdge": "BL"
 }
