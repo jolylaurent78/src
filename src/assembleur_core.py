@@ -110,6 +110,13 @@ class ScenarioAssemblage:
         self.last_drawn: List[Dict] = []         # même structure que viewer._last_drawn
         self.groups: Dict[int, Dict] = {}        # même structure que viewer.groups
 
+        # --- Vue & Carte ---
+        # Vue: zoom + offset (pan). Stockée pour retrouver exactement l'affichage au switch.
+        # Carte: état du fond (fichier + worldRect + visibilité/opacité + scale affiché).
+        # Pour les scénarios automatiques, la carte peut être partagée au niveau du viewer.
+        self.view_state: Dict[str, float] = {}   # {"zoom":..., "offset_x":..., "offset_y":...}
+        self.map_state: Dict[str, object] = {}   # {"path":..., "x0":..., "y0":..., "w":..., "h":..., "visible":..., "opacity":..., "scale":...}
+ 
         # Statut global du scénario (utile pour les simulations auto)
         self.status: str = "complete"            # "complete", "pruned", etc.
         self.created_at: _dt.datetime = _dt.datetime.now()

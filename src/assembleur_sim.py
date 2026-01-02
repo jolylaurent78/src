@@ -249,13 +249,11 @@ class ClockDicoDecryptor(DecryptorBase):
  
         targetRow = None
         for i, t in enumerate(rowTitles):
-            try:
-                s = str(t).strip()
-                if s.isdigit() and int(str(int(s))[:1]) % 12 == h:
-                    targetRow = i
-                    break
-            except Exception:
-                continue
+            s = str(t).strip()
+            if s.isdigit() and int(str(int(s))[:1]) % 12 == h:
+                targetRow = i
+                break
+
         if targetRow is None:
             return None
  
@@ -293,8 +291,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
         """
         Enrichit groups[*]["nodes"] en remplissant :
         - edge_in / edge_out : l'arête réellement partagée ("OB","BL","LO")
-        - vkey_in / vkey_out : le SOMMET OPPOSÉ à l'arête partagée
-          (car ton code de signature fait: O->BL, B->LO, L->OB).
+        # (legacy vkey_in/out supprimé : on ne stocke plus que edge_in/out)
         """
         def edgeFromVkeys(a, b):
             if not a or not b or a == b:
@@ -328,8 +325,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             }
 
         # arête -> sommet opposé
-        vkey_from_edge = {"OB": "L", "BL": "O", "LO": "B"}
-
         for g in (groups or {}).values():
             nodes = (g or {}).get("nodes") or []
             if len(nodes) < 2:
@@ -337,19 +332,15 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
 
             # reset soft (optionnel mais évite les restes)
             for nd in nodes:
-                nd["vkey_in"] = nd.get("vkey_in") if nd.get("vkey_in") is not None else None
-                nd["vkey_out"] = nd.get("vkey_out") if nd.get("vkey_out") is not None else None
                 nd["edge_in"] = nd.get("edge_in") if nd.get("edge_in") is not None else None
                 nd["edge_out"] = nd.get("edge_out") if nd.get("edge_out") is not None else None
 
             for i in range(len(nodes) - 1):
                 a = nodes[i]
                 b = nodes[i + 1]
-                try:
-                    ia = int(a.get("tid"))
-                    ib = int(b.get("tid"))
-                except Exception:
-                    continue
+                ia = int(a.get("tid"))
+                ib = int(b.get("tid"))
+
                 if not (0 <= ia < len(last_drawn) and 0 <= ib < len(last_drawn)):
                     continue
 
@@ -381,9 +372,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 a["edge_out"] = shared_a
                 b["edge_in"] = shared_b
 
-                # --- vkey = sommet opposé à l'arête partagée (pour compat avec l'ancien code) ---
-                a["vkey_out"] = vkey_from_edge.get(shared_a)
-                b["vkey_in"] = vkey_from_edge.get(shared_b)
 
     def run(self, tri_ids: List[int]) -> List["ScenarioAssemblage"]:
         """Étape 1+2 :
@@ -469,28 +457,20 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
         max_poses_first_pair = 2 if len(tri_ids) <= 2 else 1        
         for (at, bt) in [(a1, b1), (b1, a1)]:  # direct puis inversé
             dbg_try += 1
-            try:
-                P2w = engine.pose_points_on_edge(
-                    Pm=P2_local, am=a2, bm=b2,
-                    Pt=P1, at=at, bt=bt,
-                    Vm=P2_local[a2], Vt=P1[at],
-                )
-            except Exception:
-                dbg_pose_exc += 1
-                continue
+            P2w = engine.pose_points_on_edge(
+                Pm=P2_local, am=a2, bm=b2,
+                Pt=P1, at=at, bt=bt,
+                Vm=P2_local[a2], Vt=P1[at],
+            )
 
             # Chevauchement : utiliser EXACTEMENT la règle partagée "shrink-only"
-            try:
-                poly2 = _tri_shape(P2w)
-                if _overlap_shrink(
-                    poly2, poly1,
-                    getattr(v, "stroke_px", 2),
-                    engine.getOverlapZoomRef(),
-                ):
-                    dbg_overlap += 1
-                    continue
-            except Exception:
-                # En auto, si doute → on prune
+            poly2 = _tri_shape(P2w)
+            if _overlap_shrink(
+                poly2, poly1,
+                getattr(v, "stroke_px", 2),
+                engine.getOverlapZoomRef(),
+            ):
+                dbg_overlap += 1
                 continue
 
             poses.append(P2w)
@@ -546,8 +526,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                     1: {
                         "id": 1,
                         "nodes": [
-                            {"tid": 0, "vkey_in": None, "vkey_out": None},
-                            {"tid": 1, "vkey_in": None, "vkey_out": None},
+                            {"tid": 0, "edge_in": None, "edge_out": None},
+                            {"tid": 1, "edge_in": None, "edge_out": None},
                         ],
                         "bbox": bbox,
                     }
@@ -556,21 +536,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 # Enrichit les nodes (vkey_in / vkey_out) en déduisant l’arête partagée via la géométrie
                 AlgoQuadrisParPaires._fill_group_vkeys_from_geometry(last_drawn, groups, Q=1e-6)
 
-            # DEBUG: cohérence last_drawn vs groups (triangle "orphelin")
-            try:
-                ld = scen.last_drawn
-                print(f"[SIM][RET] last_drawn={len(ld)} ids={[t.get('id') for t in ld]}")
-                for gid, g in (groups or {}).items():
-                    tids = [nd.get("tid") for nd in (g.get("nodes") or [])]
-                    ids  = []
-                    for tid in tids:
-                        if tid is None or not (0 <= int(tid) < len(ld)):
-                            ids.append(f"tid?{tid}")
-                        else:
-                            ids.append(ld[int(tid)].get("id"))
-                    print(f"[SIM][RET] group {gid}: tids={tids} -> ids={ids}")
-            except Exception:
-                pass
             scen.groups = groups
             out.append(scen)
             return out
@@ -658,24 +623,20 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             PB = None
             # 2 essais internes (direct/inversé) MAIS on fige à la 1ère pose valide
             for (at, bt) in [(aA, bA), (bA, aA)]:
-                try:
-                    PBw = engine.pose_points_on_edge(
-                        Pm=PB_local, am=aB, bm=bB,
-                        Pt=PA, at=at, bt=bt,
-                        Vm=PB_local[aB], Vt=PA[at],
-                    )
-                except Exception:
+                PBw = engine.pose_points_on_edge(
+                    Pm=PB_local, am=aB, bm=bB,
+                    Pt=PA, at=at, bt=bt,
+                    Vm=PB_local[aB], Vt=PA[at],
+                )
+
+                polyB = _tri_shape(PBw)
+                if _overlap_shrink(
+                    polyB, polyA,
+                    getattr(v, "stroke_px", 2),
+                    engine.getOverlapZoomRef(),
+                ):
                     continue
-                try:
-                    polyB = _tri_shape(PBw)
-                    if _overlap_shrink(
-                        polyB, polyA,
-                        getattr(v, "stroke_px", 2),
-                        engine.getOverlapZoomRef(),
-                    ):
-                        continue
-                except Exception:
-                    continue
+
                 PB = PBw
                 break
 
@@ -711,10 +672,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             tri_even_id = int(tri_ids[pair_start + 1])  # tri4, tri6, ...
 
             # On construit le quad local dans l'ordre courant (odd->even)
-            try:
-                tOdd, tEven, Podd, Peven = _build_quad_local(tri_odd_id, tri_even_id)
-            except Exception:
-                return []
+            tOdd, tEven, Podd, Peven = _build_quad_local(tri_odd_id, tri_even_id)
 
             def tryChainConnect(tOdd, tEven, Podd, Peven, triOddId, triEvenId):
                 new_states = []
@@ -810,18 +768,15 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             # 2) Fallback minimal : si échec, on retente en inversant odd/even
             #    (mobile = tri_even_id). Ça corrige la dépendance implicite à l'ordre.
             if not new_states:
-                try:
-                    tOdd2, tEven2, Podd2, Peven2 = _build_quad_local(tri_even_id, tri_odd_id)
-                    new_states2, dbg_try2, dbg_overlap2, dbg_added2 = tryChainConnect(
-                        tOdd2, tEven2, Podd2, Peven2, tri_even_id, tri_odd_id
-                    )
-                    if new_states2:
-                        new_states = new_states2
-                        dbg_try += dbg_try2
-                        dbg_overlap += dbg_overlap2
-                        dbg_added += dbg_added2
-                except Exception:
-                    pass
+                tOdd2, tEven2, Podd2, Peven2 = _build_quad_local(tri_even_id, tri_odd_id)
+                new_states2, dbg_try2, dbg_overlap2, dbg_added2 = tryChainConnect(
+                    tOdd2, tEven2, Podd2, Peven2, tri_even_id, tri_odd_id
+                )
+                if new_states2:
+                    new_states = new_states2
+                    dbg_try += dbg_try2
+                    dbg_overlap += dbg_overlap2
+                    dbg_added += dbg_added2
 
             states = new_states
             if not states:
@@ -917,7 +872,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                     ys.append(float(t["pts"][vkey][1]))
             bbox = (min(xs), min(ys), max(xs), max(ys))
             groups = {
-                1: {"id": 1, "nodes": [{"tid": k, "vkey_in": None, "vkey_out": None} for k in idxs], "bbox": bbox},
+                1: {"id": 1, "nodes": [{"tid": k, "edge_in": None, "edge_out": None} for k in idxs], "bbox": bbox},
             }
             # Enrichit les nodes (vkey_in / vkey_out) en déduisant l’arête partagée via la géométrie
             AlgoQuadrisParPaires._fill_group_vkeys_from_geometry(last_drawn, groups, Q=1e-6)
@@ -925,22 +880,20 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             # --- NOUVEAU : injecter la jonction "chaîne" (L->O vs L->B) dans les nodes
             # Ici, ce n'est PAS une arête partagée géométriquement, donc _fill_group... ne peut pas la trouver.
             vkey_from_edge = {"OB": "L", "BL": "O", "LO": "B"}
-            try:
-                nodes = groups[1]["nodes"]
-                for k in idxs:
-                    t = last_drawn[k]
-                    if "_chain_edge_out" in t:
-                        eout = t.get("_chain_edge_out")
-                        if eout:
-                            nodes[k]["edge_out"] = eout
-                            nodes[k]["vkey_out"] = vkey_from_edge.get(eout)
-                    if "_chain_edge_in" in t:
-                        ein = t.get("_chain_edge_in")
-                        if ein:
-                            nodes[k]["edge_in"] = ein
-                            nodes[k]["vkey_in"] = vkey_from_edge.get(ein)
-            except Exception:
-                pass
+            nodes = groups[1]["nodes"]
+            for k in idxs:
+                t = last_drawn[k]
+                if "_chain_edge_out" in t:
+                    eout = t.get("_chain_edge_out")
+                    if eout:
+                        nodes[k]["edge_out"] = eout
+                        nodes[k]["vkey_out"] = vkey_from_edge.get(eout)
+                if "_chain_edge_in" in t:
+                    ein = t.get("_chain_edge_in")
+                    if ein:
+                        nodes[k]["edge_in"] = ein
+                        nodes[k]["vkey_in"] = vkey_from_edge.get(ein)
+
             scen.groups = groups
             out.append(scen)
 
@@ -1009,10 +962,8 @@ class MoteurSimulationAssemblage:
         P = _build_local_triangle(float(r["len_OB"]), float(r["len_OL"]), float(r["len_BL"]))
 
         # Orientation : si CW → symétrie verticale (y -> -y)
-        try:
-            ori = str(r.get("orient", "CCW")).upper().strip()
-        except Exception:
-            ori = "CCW"
+        ori = str(r.get("orient", "CCW")).upper().strip()
+
         mirrored = (ori == "CW")
         if mirrored:
             P = {
@@ -1044,18 +995,15 @@ class MoteurSimulationAssemblage:
         if not occupied_nodes:
             return False
         last_drawn = getattr(v, "_last_drawn", []) or []
-        try:
-            poly_new = _group_shape_from_nodes(tri_or_group_nodes, last_drawn)
-            poly_occ = _group_shape_from_nodes(occupied_nodes, last_drawn)
-            if (poly_new is None) or (poly_occ is None):
-                return False
-            # même règle que le mode manuel : shrink-only basé sur stroke_px et zoom
-            return _overlap_shrink(
-                poly_new,
-                poly_occ,
-                getattr(v, "stroke_px", 2),
-                max(self.getOverlapZoomRef(), 1e-9),
-            )
-        except Exception:
-            # En auto, en cas de doute on préfère "pruner" la branche plutôt que d'accepter une pose invalide
-            return True
+        poly_new = _group_shape_from_nodes(tri_or_group_nodes, last_drawn)
+        poly_occ = _group_shape_from_nodes(occupied_nodes, last_drawn)
+        if (poly_new is None) or (poly_occ is None):
+            return False
+        # même règle que le mode manuel : shrink-only basé sur stroke_px et zoom
+        return _overlap_shrink(
+            poly_new,
+            poly_occ,
+            getattr(v, "stroke_px", 2),
+            max(self.getOverlapZoomRef(), 1e-9),
+        )
+
