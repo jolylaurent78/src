@@ -90,8 +90,10 @@ class DialogSimulationAssembler(tk.Toplevel):
         default_n: int,
         default_order: str = "forward",
         default_first_edge: str = "OL",
+        last_run_available_by_order: Optional[Dict[str, bool]] = None,
     ):
         super().__init__(parent)
+        self._last_run_available_by_order = dict(last_run_available_by_order or {})
         self.title("Assembler (simulation)")
         self.resizable(False, False)
         self.transient(parent)
@@ -156,6 +158,22 @@ class DialogSimulationAssembler(tk.Toplevel):
         self.first_edge_combo.current(1 if d_edge == "BL" else 0)
         self.first_edge_combo.grid(row=4, column=1, sticky="e", pady=(8, 0))
 
+        def _updateFirstEdgeComboValues(*_args):
+            # Base options
+            vals = ["OL = 0°", "BL = 0°"]
+            ordv = str(self.order_var.get() or "").strip().lower()
+            if self._last_run_available_by_order.get(ordv, False):
+                vals.append("Même dernier run")
+            cur = str(self.first_edge_combo.get() or "").strip()
+            self.first_edge_combo.configure(values=vals)
+            # Si la sélection courante n'existe plus (ex: switch d'ordre), fallback sur OL
+            if cur and cur not in vals:
+                self.first_edge_combo.current(0)
+
+        self._updateFirstEdgeComboValues = _updateFirstEdgeComboValues
+        self.order_var.trace_add("write", self._updateFirstEdgeComboValues)
+        self._updateFirstEdgeComboValues()
+
         btns = ttk.Frame(frm)
         btns.grid(row=5, column=0, columnspan=2, sticky="e", pady=(10, 0))
         ttk.Button(btns, text="Annuler", command=self._on_cancel).grid(row=0, column=0, padx=(0, 8))
@@ -195,7 +213,10 @@ class DialogSimulationAssembler(tk.Toplevel):
         order = str(getattr(self, "order_var", tk.StringVar(value="forward")).get() or "forward")
 
         first_raw = str(getattr(self, "first_edge_var", tk.StringVar(value="OL")).get() or "OL")
-        first_edge = "BL" if "BL" in first_raw else "OL"
+        if "Même" in first_raw or "même" in first_raw:
+            first_edge = "__LASTRUN__"
+        else:
+            first_edge = "BL" if "BL" in first_raw else "OL"
 
         self.result = (algo_id, int(n), order, first_edge)
 
@@ -318,6 +339,10 @@ class TriangleViewerManual(tk.Tk):
  
         # Carte partagée pour les scénarios automatiques (snapshot au lancement de la simu)
         self.auto_map_state: dict | None = None
+
+        # état géométrique global pour scénarios automatiques (transform commun)
+        # P_world = (ox,oy) + R(thetaDeg) * P_local
+        self.auto_geom_state: dict | None = None  # {'ox':float,'oy':float,'thetaDeg':float}
 
         # Scénario de référence (pour comparaison des auto)
         self.ref_scenario_token: Optional[int] = None  # id(scen)
@@ -502,6 +527,15 @@ class TriangleViewerManual(tk.Tk):
         if not hasattr(self, "_dico_origin_cell") or self._dico_origin_cell is None:
             self._dico_origin_cell = (0, int(nb_mots_max))
 
+        # Mode de référence (volatile, RAM) :
+        #   None      -> mode ABS
+        #   "origin"  -> relatif normal (addition)
+        #   "target"  -> relatif inversé (soustraction)
+        # Compat : si une origine non-default existe sans mode, on considère "origin".
+        if not hasattr(self, "_dico_ref_mode"):
+            default_origin = (0, int(nb_mots_max))
+            self._dico_ref_mode = "origin" if tuple(self._dico_origin_cell) != tuple(default_origin) else None
+
         # --- Layout du panneau bas : [sidebar catégories] | [grille] ---
         from tkinter import ttk
         container = tk.Frame(self.dicoPanel, bg="#f3f3f3")
@@ -554,13 +588,15 @@ class TriangleViewerManual(tk.Tk):
             nb_mots_max = self._dico_nb_mots_max if hasattr(self, "_dico_nb_mots_max") else self.dico.nbMotMax()
             default_origin = (0, int(nb_mots_max))
             r0, c0 = (self._dico_origin_cell or default_origin)
-            isDelta = tuple((r0, c0)) != tuple(default_origin)
+            refMode = getattr(self, "_dico_ref_mode", None)
+            isDelta = (tuple((r0, c0)) != tuple(default_origin)) and (refMode in ("origin", "target"))
+            isTarget = (refMode == "target")
 
             origin_indexMot = int(c0) - int(nb_mots_max)
             for mot, e, m in items:
                 # Lignes : pas d’énigmes négatives
                 eLogRaw = int(e) - int(r0)
-                eLog = int(eLogRaw) % 10
+                eLog = (-int(eLogRaw) % 10) if isTarget else (int(eLogRaw) % 10)
                 eDisp = int(eLog) if isDelta else (int(eLog) + 1)
 
                 # Colonnes : indexMot (absolu) ou delta                
@@ -610,12 +646,15 @@ class TriangleViewerManual(tk.Tk):
         # - Mode DELTA (origine cliquée) : colonnes/énigmes en delta avec 0 (lignes en modulo 10)
         default_origin = (0, int(nb_mots_max))
         r0, c0 = (self._dico_origin_cell or default_origin)
-        isDelta = tuple((r0, c0)) != tuple(default_origin)
+        refMode = getattr(self, "_dico_ref_mode", None)
+        isDelta = (tuple((r0, c0)) != tuple(default_origin)) and (refMode in ("origin", "target"))
+        isTarget = (refMode == "target")
 
         # Entêtes d'affichage
         if isDelta:
             # DELTA : 0 sur la colonne d’origine
-            headers = [int(c) - int(c0) for c in range(0, 2 * int(nb_mots_max))]
+            headers = [-(int(c) - int(c0)) if isTarget else (int(c) - int(c0))
+                       for c in range(0, 2 * int(nb_mots_max))]
         else:
             # ABS : 1 = 1er mot (j=0), pas de colonne 0
             # Physique c ∈ [0..2N-1] ↔ j = c - N ∈ [-N..N-1]
@@ -644,7 +683,8 @@ class TriangleViewerManual(tk.Tk):
         # - DELTA : lignes en modulo 10 (pas d'énigmes négatives), origine = 0
         # - ABS   : 1..10
         if isDelta:
-            row_index_display = [f'{((i - int(r0)) % 10)} - "{t}"' for i, t in enumerate(row_titles_raw)]
+            row_index_display = [f'{((-(i - int(r0))) % 10) if isTarget else ((i - int(r0)) % 10)} - "{t}"'
+                                for i, t in enumerate(row_titles_raw)]
         else:
             row_index_display = [f'{(((i - int(r0)) % 10) + 1)} - "{t}"' for i, t in enumerate(row_titles_raw)]
 
@@ -702,10 +742,8 @@ class TriangleViewerManual(tk.Tk):
             # Toggle : même cellule => reset défaut (0 logique = 1er mot du livre)
             nbm = int(getattr(self, "_dico_nb_mots_max", 50))
             default_origin = (0, nbm)
-            if tuple(self._dico_origin_cell or default_origin) == (rr, cc):
-                self._dico_origin_cell = default_origin
-            else:
-                self._dico_origin_cell = (rr, cc)
+            self._dico_origin_cell = (rr, cc)
+            self._dico_ref_mode = "origin"
             # Rebuild complet (robuste vis-à-vis des API TkSheet)
             self._build_dico_grid()
 
@@ -736,9 +774,26 @@ class TriangleViewerManual(tk.Tk):
                 command=lambda: self._dico_set_origin_from_context_cell()
             )
             self._ctx_menu_dico.add_command(
+                label="Définir comme cible (0,0)",
+                command=lambda: self._dico_set_target_from_context_cell()
+            )
+            self._ctx_menu_dico.add_command(
                 label="Réinitialiser origine (0,0)",
                 command=lambda: self._dico_reset_origin()
             )
+            self._ctx_menu_dico.add_separator()
+            self._ctx_menu_dico.add_command(
+                label="Occurrence précédente",
+                command=lambda: self._dico_move_context_occurrence(-1),
+                state=tk.DISABLED,
+            )
+            self._ctx_dico_idx_prev = self._ctx_menu_dico.index("end")
+            self._ctx_menu_dico.add_command(
+                label="Occurrence suivante",
+                command=lambda: self._dico_move_context_occurrence(+1),
+                state=tk.DISABLED,
+            )
+            self._ctx_dico_idx_next = self._ctx_menu_dico.index("end")
         # cellule visée par le clic-droit (row,col) en coordonnées TkSheet
         self._dico_ctx_cell = None
 
@@ -787,6 +842,9 @@ class TriangleViewerManual(tk.Tk):
                 self._dico_ctx_cell = (int(rr), int(cc))
                 self.dicoSheet.select_cell(rr, cc, redraw=False)
 
+            # Activer/désactiver "précédent/suivant" selon la cellule visée
+            self._dico_update_occurrence_ctx_menu_state()
+
             self._ctx_menu_dico.tk_popup(event.x_root, event.y_root)
             self._ctx_menu_dico.grab_release()
 
@@ -819,14 +877,95 @@ class TriangleViewerManual(tk.Tk):
             return
         rr, cc = self._dico_ctx_cell
         rr = int(rr); cc = int(cc)
-        # Toggle (même cellule => reset défaut: 0 logique = 1er mot du livre)
-        nbm = int(getattr(self, "_dico_nb_mots_max", 50))
-        default_origin = (0, nbm)
-        if tuple(self._dico_origin_cell or default_origin) == (rr, cc):
-            self._dico_origin_cell = default_origin
-        else:
-            self._dico_origin_cell = (rr, cc)
+        self._dico_origin_cell = (rr, cc)
+        self._dico_ref_mode = "origin"  # exclusif
         self._build_dico_grid()
+
+    def _dico_set_target_from_context_cell(self):
+        # Action "Set as target (0,0)" : cellule du clic-droit
+        if not getattr(self, "_dico_ctx_cell", None):
+            return
+        rr, cc = self._dico_ctx_cell
+        rr = int(rr); cc = int(cc)
+        self._dico_origin_cell = (rr, cc)
+        self._dico_ref_mode = "target"  # exclusif
+        self._build_dico_grid()
+
+    # ---------- DICO : navigation par occurrences (même mot) ----------
+    def _dico_find_occurrence_in_row(self, row: int, col: int, direction: int):
+        """Retourne la colonne de la prochaine occurrence du même mot sur la même ligne.
+        direction = +1 (droite) ou -1 (gauche). Recherche dans la grille affichée uniquement.
+        """
+        if not getattr(self, "dicoSheet", None):
+            return None
+
+        nbm = int(getattr(self, "_dico_nb_mots_max", 0) or 0)
+        n_cols = int(2 * nbm) if nbm > 0 else 0
+        if n_cols <= 0:
+            return None
+
+        if row < 0 or row >= len(self.dico):
+            return None
+        if col < 0 or col >= n_cols:
+            return None
+
+        w0 = str(self.dicoSheet.get_cell_data(int(row), int(col))).strip()
+        if not w0:
+            return None
+
+        c = int(col) + int(direction)
+        while 0 <= c < n_cols:
+            w = str(self.dicoSheet.get_cell_data(int(row), int(c))).strip()
+            if w and w == w0:
+                return int(c)
+            c += int(direction)
+
+        return None
+
+    def _dico_update_occurrence_ctx_menu_state(self):
+        """Active/désactive 'Occurrence précédente/suivante' selon le mot cliqué."""
+        if not hasattr(self, "_ctx_menu_dico"):
+            return
+        if not hasattr(self, "_ctx_dico_idx_prev") or not hasattr(self, "_ctx_dico_idx_next"):
+            return
+
+        prev_state = tk.DISABLED
+        next_state = tk.DISABLED
+
+        rc = getattr(self, "_dico_ctx_cell", None)
+        if rc is not None and getattr(self, "dicoSheet", None):
+            rr, cc = int(rc[0]), int(rc[1])
+            if self._dico_find_occurrence_in_row(rr, cc, -1) is not None:
+                prev_state = tk.NORMAL
+            if self._dico_find_occurrence_in_row(rr, cc, +1) is not None:
+                next_state = tk.NORMAL
+
+        self._ctx_menu_dico.entryconfig(self._ctx_dico_idx_prev, state=prev_state)
+        self._ctx_menu_dico.entryconfig(self._ctx_dico_idx_next, state=next_state)
+
+    def _dico_move_context_occurrence(self, direction: int):
+        """Déplace la sélection vers l'occurrence précédente/suivante du même mot (même ligne)."""
+        if not getattr(self, "dicoSheet", None):
+            return
+
+        rc = getattr(self, "_dico_ctx_cell", None)
+        if rc is None:
+            return
+
+        rr, cc = int(rc[0]), int(rc[1])
+        new_c = self._dico_find_occurrence_in_row(rr, cc, int(direction))
+        if new_c is None:
+            self._dico_update_occurrence_ctx_menu_state()
+            return
+
+        # Mettre à jour le "contexte" pour permettre des clics successifs
+        self._dico_ctx_cell = (rr, int(new_c))
+
+        self.dicoSheet.select_cell(rr, int(new_c), redraw=False)
+        self.dicoSheet.see(row=rr, column=int(new_c))
+        self._update_clock_from_cell(rr, int(new_c))
+
+        self._dico_update_occurrence_ctx_menu_state()
 
     def _dico_reset_origin(self):
         # Origine par défaut = 1er mot du livre :
@@ -834,7 +973,9 @@ class TriangleViewerManual(tk.Tk):
         #  - colonne physique nbm (car headers = [-nbm..0..+nbm])
         nbm = int(getattr(self, "_dico_nb_mots_max", 50))
         self._dico_origin_cell = (0, nbm)
+        self._dico_ref_mode = None   # retour ABS (donc style bleu)
         self._build_dico_grid()
+
 
     # ---------- DICO → Horloge ----------
     def _update_clock_from_cell(self, row: int, col: int):
@@ -856,13 +997,17 @@ class TriangleViewerManual(tk.Tk):
 
         default_origin = (0, int(nbm))
         r0, c0 = (self._dico_origin_cell or default_origin)
-        isDelta = tuple((int(r0), int(c0))) != tuple(default_origin)
+        refMode = getattr(self, "_dico_ref_mode", None)
+        isDelta = (tuple((int(r0), int(c0))) != tuple(default_origin)) and (refMode in ("origin", "target"))
+        isTarget = (refMode == "target")
         mode = "delta" if isDelta else "abs"
 
         if isDelta:
             # DELTA : 0 autorisé. Lignes en modulo 10 (pas d’énigmes négatives)
-            rowVal = (int(row) - int(r0)) % 10
-            colVal = int(col) - int(c0)  # delta signé (0 autorisé)
+            dr = (int(row) - int(r0)) % 10
+            dc = int(col) - int(c0)
+            rowVal = (-dr) % 10 if isTarget else dr
+            colVal = -dc if isTarget else dc
         else:
             # ABS : pas de 0. Lignes 1..10, Colonnes … -2, -1, 1, 2, …
             rowVal = ((int(row) - int(r0)) % 10) + 1
@@ -904,7 +1049,9 @@ class TriangleViewerManual(tk.Tk):
 
         default_origin = (0, int(nbm))
         r0, c0 = (self._dico_origin_cell or default_origin)
-        isDelta = tuple((int(r0), int(c0))) != tuple(default_origin)
+        refMode = getattr(self, "_dico_ref_mode", None)
+        isDelta = (tuple((int(r0), int(c0))) != tuple(default_origin)) and (refMode in ("origin", "target"))
+        isTarget = (refMode == "target")
         mode = "delta" if isDelta else "abs"
         for r in range(n_rows):
             for c in range(n_cols):
@@ -913,8 +1060,10 @@ class TriangleViewerManual(tk.Tk):
                     continue
                 # --- Passage en référentiel LOGIQUE pour l'angle ---
                 if isDelta:
-                    rowVal = (int(r) - int(r0)) % 10
-                    colVal = int(c) - int(c0)
+                    dr = (int(r) - int(r0)) % 10
+                    dc = int(c) - int(c0)
+                    rowVal = (-dr) % 10 if isTarget else dr
+                    colVal = -dc if isTarget else dc
                 else:
                     rowVal = ((int(r) - int(r0)) % 10) + 1
                     j = int(c) - int(nbm)
@@ -976,7 +1125,9 @@ class TriangleViewerManual(tk.Tk):
         if not hasattr(self.dicoSheet, "highlight_cells"):
             return
         r0, c0 = (self._dico_origin_cell or (0, 0))
-        self.dicoSheet.highlight_cells(int(r0), int(c0), fg="#9A9A9A", bg="#BFDFFF")
+        refMode = getattr(self, "_dico_ref_mode", None)
+        bg = "#BFDFFF" if refMode != "target" else "#FFCCCC"
+        self.dicoSheet.highlight_cells(int(r0), int(c0), fg="#9A9A9A", bg=bg)
 
     # ---------- DICO : lecture de la sélection courante ----------
     def _get_selected_dico_word(self) -> Optional[Tuple[str, int, int]]:
@@ -1107,7 +1258,7 @@ class TriangleViewerManual(tk.Tk):
 
         # --- Menu Visualisation ---
         self.menu_visual = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Visualisation", menu=self.menu_visual)
+        menubar.add_cascade(label="Affichage", menu=self.menu_visual)
         self.menu_visual.add_command(
             label="Fit à l'écran",
             command=lambda: self._fit_to_view(self._last_drawn)
@@ -1128,6 +1279,12 @@ class TriangleViewerManual(tk.Tk):
             label="Afficher le dictionnaire",
             variable=self.show_dico_panel,
             command=self._toggle_dico_panel
+        )
+
+        self.menu_visual.add_separator()
+        self.menu_visual.add_command(
+            label="Exporter en pdf…",
+            command=self._export_view_pdf_dialog
         )
 
         # --- Menu Carte ---
@@ -1242,6 +1399,57 @@ class TriangleViewerManual(tk.Tk):
         self._refresh_scenario_listbox()
         self.status.config(text=f"Scénarios auto supprimés : {removed}")
 
+    # === Simulation : persistance "Même dernier run" (position + rotation auto) ===
+    def _simulationGetMapKey(self) -> str:
+        """Clé de carte (basename) pour la persistance simulation."""
+        p = str(self.getAppConfigValue("bgSvgPath", "") or "").strip()
+        if not p and isinstance(getattr(self, "_bg", None), dict):
+            p = str(self._bg.get("path", "") or "").strip()
+        return os.path.basename(p) if p else ""
+
+    def _simulationGetLastAutoPlacement(self, map_key: str, order: str) -> Optional[Dict]:
+        data = self.getAppConfigValue("simAutoPlacementByMap", {}) or {}
+        mk = str(map_key or "").strip()
+        ordk = str(order or "").strip().lower()
+        if not mk or ordk not in ("forward", "reverse"):
+            return None
+        per_map = data.get(mk) or {}
+        st = per_map.get(ordk)
+        if isinstance(st, dict) and all(k in st for k in ("ox", "oy", "thetaDeg")):
+            return st
+        return None
+
+    def _simulationSetLastAutoPlacement(self, map_key: str, order: str, state: Dict, save: bool = True):
+        mk = str(map_key or "").strip()
+        ordk = str(order or "").strip().lower()
+        if not mk or ordk not in ("forward", "reverse"):
+            return
+        if not isinstance(state, dict):
+            return
+        st = {
+            "ox": float(state.get("ox", 0.0)),
+            "oy": float(state.get("oy", 0.0)),
+            "thetaDeg": float(state.get("thetaDeg", 0.0)),
+        }
+        data = self.getAppConfigValue("simAutoPlacementByMap", {}) or {}
+        if not isinstance(data, dict):
+            data = {}
+        per_map = data.get(mk)
+        if not isinstance(per_map, dict):
+            per_map = {}
+        per_map[ordk] = st
+        data[mk] = per_map
+        self.setAppConfigValue("simAutoPlacementByMap", data)
+        if save:
+            self.saveAppConfig()
+
+    def _simulationPersistCurrentAutoPlacement(self, order: Optional[str] = None, save: bool = True):
+        """Persiste le repère global auto courant (ox/oy/thetaDeg) pour (carte, ordre)."""
+        if self.auto_geom_state is None:
+            return
+        ordk = str(order or getattr(self, "_simulation_last_order", "forward") or "forward").strip().lower()
+        mk = self._simulationGetMapKey()
+        self._simulationSetLastAutoPlacement(mk, ordk, self.auto_geom_state, save=save)
 
     def _simulation_assemble_dialog(self):
         """Ouvre la boîte de dialogue 'Assembler…' et lance l'algo choisi."""
@@ -1266,6 +1474,12 @@ class TriangleViewerManual(tk.Tk):
         if default_n < 2:
             default_n = 2
 
+        map_key = self._simulationGetMapKey()
+        last_run_available_by_order = {
+            "forward": self._simulationGetLastAutoPlacement(map_key, "forward") is not None,
+            "reverse": self._simulationGetLastAutoPlacement(map_key, "reverse") is not None,
+        }
+
         dlg = DialogSimulationAssembler(
             self,
             algo_items,
@@ -1274,17 +1488,26 @@ class TriangleViewerManual(tk.Tk):
             default_n=default_n,
             default_order=default_order,
             default_first_edge=default_first_edge,
+            last_run_available_by_order=last_run_available_by_order,
         )
         self.wait_window(dlg)
         if not getattr(dlg, "result", None):
             return
 
         algo_id, n, order, first_edge = dlg.result
+        use_last_run = (str(first_edge or "") == "__LASTRUN__")
+        # Si "Même dernier run" : on conserve le dernier edge connu (global) pour lancer l'algo
+        first_edge_for_engine = self._simulation_last_first_edge if use_last_run else str(first_edge or "OL").upper().strip()
+        if first_edge_for_engine not in ("OL", "BL"):
+            first_edge_for_engine = "OL"
+
         self._simulation_last_order = order
         self._simulation_last_algo_id = algo_id
         self._simulation_last_n = int(n)
 
-        self._simulation_last_first_edge = str(first_edge or "OL").upper().strip()
+        # On ne remplace pas simLastFirstEdge si on a choisi "Même dernier run"
+        if not use_last_run:
+            self._simulation_last_first_edge = str(first_edge_for_engine or "OL").upper().strip()
         if self._simulation_last_first_edge not in ("OL", "BL"):
             self._simulation_last_first_edge = "OL"
 
@@ -1311,7 +1534,7 @@ class TriangleViewerManual(tk.Tk):
             tri_ids = tri_ids[:-1]
 
         engine = MoteurSimulationAssemblage(self)
-        engine.firstTriangleEdge = str(first_edge or "OL").upper()
+        engine.firstTriangleEdge = str(first_edge_for_engine or "OL").upper()
         algo_cls = ALGOS.get(algo_id)
         if algo_cls is None:
             raise ValueError(f"Algo inconnu: {algo_id}")
@@ -1334,6 +1557,23 @@ class TriangleViewerManual(tk.Tk):
             if not scen.name:
                 scen.name = f"Auto #{count_auto + k + 1}"
             self.scenarios.append(scen)
+
+        # AUTO: construire géométrie locale + init transform global (commun)
+        self._autoInitFromGeneratedScenarios(base_idx, order)
+
+        # Persister le repère auto initial (carte, ordre) après génération
+        # (sauf si on a choisi "Même dernier run" : on ne doit pas écraser l’état sauvegardé)
+        if not use_last_run:
+            self._simulationPersistCurrentAutoPlacement(order=order, save=True)
+
+        # Option "Même dernier run" : appliquer la dernière position/rotation sauvegardée (carte, ordre)
+        if use_last_run:
+            map_key = self._simulationGetMapKey()
+            st = self._simulationGetLastAutoPlacement(map_key, order)
+            if isinstance(st, dict):
+                self.auto_geom_state = {"ox": float(st.get("ox", 0.0)), "oy": float(st.get("oy", 0.0)), "thetaDeg": float(st.get("thetaDeg", 0.0))}
+                self._autoRebuildWorldGeometry(redraw=False)
+                self._redraw_from(self._last_drawn)
 
         self._refresh_scenario_listbox()
         self._set_active_scenario(base_idx)
@@ -2041,8 +2281,30 @@ class TriangleViewerManual(tk.Tk):
         scen_lb_frame = tk.Frame(self._ui_scenarios_content, bd=0, highlightthickness=0)
         scen_lb_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
 
-        # Liste des scénarios (Treeview) : groupes Manuels / Automatiques (colonnes plus tard)
-        columns = ()
+        # Liste des scénarios (Treeview) : groupes Manuels / Automatiques
+        # + colonnes de propriétés calculées sur l'assemblage final.
+
+        # Spécification extensible des colonnes (ajout facile de nouvelles propriétés)
+        # - getter(scen) doit retourner une string affichable ;
+        #   en cas de valeur indéfinie, retourner "".
+        self._scenario_prop_specs = [
+            {
+                "id": "dist_km",
+                "title": "D(km)",
+                "width": 80,
+                "anchor": "center",
+                "getter": self._scenarioPropDistanceKm,
+            },
+            {
+                "id": "az_deg",
+                "title": "Az(°)",
+                "width": 70,
+                "anchor": "center",
+                "getter": self._scenarioPropAzimuthDeltaDeg,
+            },
+        ]
+
+        columns = tuple([c["id"] for c in self._scenario_prop_specs])
 
         # IMPORTANT:
         # - ttk ajoute une indentation (~20px) pour les items enfants => gros espace avant l'icône.
@@ -2053,12 +2315,37 @@ class TriangleViewerManual(tk.Tk):
         self.scenario_tree = ttk.Treeview(
             scen_lb_frame,
             columns=columns,
-            show="tree",
+            show="tree headings",
             selectmode="browse",
             height=6,
             style="Scenario.Treeview",
         )
-        self.scenario_tree.column("#0", width=280, stretch=True)
+        # Colonne principale = ID (libellé)
+        # Tri au clic sur en-tête
+        self._scenario_tree_sort_col = None
+        self._scenario_tree_sort_reverse = False
+        self.scenario_tree.heading(
+            "#0",
+            text="ID",
+            command=lambda c="#0": self._scenarioTreeSortBy(c),
+        )
+        self.scenario_tree.column("#0", width=230, stretch=True, anchor="w")
+
+        # Colonnes propriétés
+        for spec in self._scenario_prop_specs:
+            cid = spec["id"]
+            self.scenario_tree.heading(
+                cid,
+                text=str(spec.get("title", cid)),
+                command=lambda c=cid: self._scenarioTreeSortBy(c),
+            )
+            self.scenario_tree.column(
+                cid,
+                width=int(spec.get("width", 70)),
+                stretch=False,
+                anchor=str(spec.get("anchor", "center")),
+            )
+
         # Scrollbar verticale (toujours visible)
         # IMPORTANT: garder une référence (sinon GC => scrollbar détruite et elle "disparaît")
         self.scenario_scroll = ttk.Scrollbar(
@@ -2216,8 +2503,17 @@ class TriangleViewerManual(tk.Tk):
                 text = "★ " + text
             img = self.icon_scen_manual if scen.source_type == "manual" else self.icon_scen_auto
 
+            # Valeurs des colonnes additionnelles (propriétés calculées)
+            values = []
+            for spec in (getattr(self, "_scenario_prop_specs", None) or []):
+                getter = spec.get("getter")
+                if callable(getter):
+                    v = getter(scen)
+                    values.append("" if v is None else str(v))
+                else:
+                    values.append("")
 
-            kwargs = {"text": text, "tags": tags}
+            kwargs = {"text": text, "tags": tags, "values": tuple(values)}
             if img is not None:
                 kwargs["image"] = img
             tree.insert(parent, tk.END, iid=iid, **kwargs)
@@ -2244,7 +2540,243 @@ class TriangleViewerManual(tk.Tk):
                         tree.see(kids[0])
                         break
 
+    # =========================
+    # Scénarios: propriétés calculées (Treeview)
+    # =========================
 
+    def _scenarioTreeSortBy(self, col_id: str):
+        """Tri au clic sur une colonne de la Treeview Scénarios.
+
+        - Trie séparément dans chaque groupe (Manuels / Automatiques).
+        - Tri numérique pour D(km)/Az(°) quand possible.
+        - Les valeurs vides sont toujours envoyées en bas.
+        """
+        if not hasattr(self, "scenario_tree"):
+            return
+        tree = self.scenario_tree
+ 
+        # Toggle sens de tri
+        if self._scenario_tree_sort_col == col_id:
+            self._scenario_tree_sort_reverse = not bool(self._scenario_tree_sort_reverse)
+        else:
+            self._scenario_tree_sort_col = col_id
+            self._scenario_tree_sort_reverse = False
+ 
+        # Helpers de parsing
+        def _parseDisplayIdFromText(txt: str):
+            s = str(txt or "").strip()
+            if s.startswith("★"):
+                s = s.lstrip("★ ").strip()
+            m = re.match(r"^#(\d+)", s)
+            return int(m.group(1)) if m else None
+ 
+        def _coerceKey(val: str):
+            s = str(val or "").strip()
+            if s == "":
+                return (1, 0.0, "")  # vide => en bas
+            # numérique si possible
+            try:
+                return (0, float(s.replace(",", ".")), "")
+            except Exception:
+                return (0, 0.0, s.lower())
+ 
+        def _itemKey(iid: str):
+            if col_id == "#0":
+                txt = tree.item(iid, "text")
+                did = _parseDisplayIdFromText(txt)
+                if did is None:
+                    # fallback string (vide en bas)
+                    s = str(txt or "").strip()
+                    if s == "":
+                        return (1, 0.0, "")
+                    return (0, 0.0, s.lower())
+                return (0, float(did), "")
+            else:
+                return _coerceKey(tree.set(iid, col_id))
+ 
+        # Trier dans chaque groupe sans casser la structure
+        for parent in ("grp_manual", "grp_auto"):
+            if not (hasattr(tree, "exists") and tree.exists(parent)):
+                continue
+            kids = list(tree.get_children(parent))
+            if not kids:
+                continue
+            kids_sorted = sorted(
+                kids,
+                key=_itemKey,
+                reverse=bool(self._scenario_tree_sort_reverse),
+            )
+            for pos, iid in enumerate(kids_sorted):
+                tree.move(iid, parent, pos)
+ 
+        # Optionnel: petit indicateur ▲/▼ sur l'en-tête trié
+        base_id_title = "ID"
+        tree.heading("#0", text=base_id_title, command=lambda c="#0": self._scenarioTreeSortBy(c))
+        for spec in (getattr(self, "_scenario_prop_specs", None) or []):
+            cid = spec.get("id")
+            if not cid:
+                continue
+            title = str(spec.get("title", cid))
+            tree.heading(cid, text=title, command=lambda c=cid: self._scenarioTreeSortBy(c))
+
+        arrow = " ▼" if bool(self._scenario_tree_sort_reverse) else " ▲"
+        if self._scenario_tree_sort_col == "#0":
+            tree.heading("#0", text=base_id_title + arrow, command=lambda c="#0": self._scenarioTreeSortBy(c))
+        elif self._scenario_tree_sort_col:
+            # retrouver le titre de la colonne
+            title = None
+            for spec in (getattr(self, "_scenario_prop_specs", None) or []):
+                if spec.get("id") == self._scenario_tree_sort_col:
+                    title = str(spec.get("title", self._scenario_tree_sort_col))
+                    break
+            if title is None:
+                title = str(self._scenario_tree_sort_col)
+            tree.heading(self._scenario_tree_sort_col, text=title + arrow,
+                            command=lambda c=self._scenario_tree_sort_col: self._scenarioTreeSortBy(c))
+
+    def _scenarioGetFirstLastTriangles(self, scen):
+        """Retourne (t_first, t_last) en se basant sur scen.tri_ids (ordre d'assemblage).
+
+        Contrat: en fin d'assemblage, ces triangles doivent exister et contenir les clés 'pts' avec 'L' et 'B'.
+        """
+        if scen is None:
+            return (None, None)
+
+        last_drawn = getattr(scen, "last_drawn", None)
+        tri_ids = list(getattr(scen, "tri_ids", None) or [])
+        if not last_drawn or not tri_ids:
+            return (None, None)
+
+        first_id = int(tri_ids[0])
+        last_id = int(tri_ids[-1])
+
+        t_first = None
+        t_last = None
+        for t in last_drawn:
+            tid = t.get("id")
+            if tid is None:
+                continue
+            if int(tid) == first_id:
+                t_first = t
+            if int(tid) == last_id:
+                t_last = t
+
+        if t_first is None or t_last is None:
+            raise RuntimeError(
+                f"scenarioGetFirstLastTriangles: triangles introuvables dans last_drawn (first={first_id}, last={last_id})"
+            )
+        return (t_first, t_last)
+
+    def _scenarioPropDistanceKm(self, scen) -> str:
+        """Distance (km) entre les 2 points de Lumière libres: L du 1er triangle et L du dernier triangle.
+
+        - Nécessite une carte chargée + calibration Lambert.
+        - Affichage: 1 décimale, toujours positive.
+        - Si pas de carte: retourne "".
+        """
+        # Pas de carte => pas de distance (par design)
+        if self._bg is None:
+            return ""
+
+        (t_first, t_last) = self._scenarioGetFirstLastTriangles(scen)
+        if t_first is None or t_last is None:
+            return ""
+
+        P1 = (t_first.get("pts") or {}).get("L")
+        P2 = (t_last.get("pts") or {}).get("L")
+        if P1 is None or P2 is None:
+            raise RuntimeError("scenarioPropDistanceKm: point 'L' manquant sur first/last")
+
+        x1_km, y1_km = self._bgWorldToLambertKm(float(P1[0]), float(P1[1]))
+        x2_km, y2_km = self._bgWorldToLambertKm(float(P2[0]), float(P2[1]))
+        d = math.hypot(x2_km - x1_km, y2_km - y1_km)
+        return f"{abs(d):.1f}"
+
+    def _scenarioPropAzimuthDeltaDeg(self, scen) -> str:
+        """Différence d'azimut (degrés) entre LB du 1er triangle et LB du dernier triangle.
+
+        - Ordre strict L -> B.
+        - 0° = Nord, sens horaire.
+        - Normalisé sur [0..360).
+        - Si azimut indéterminé (points confondus): retourne "".
+        """
+        (t_first, t_last) = self._scenarioGetFirstLastTriangles(scen)
+        if t_first is None or t_last is None:
+            return ""
+
+        P1 = t_first.get("pts") or {}
+        P2 = t_last.get("pts") or {}
+        if "L" not in P1 or "B" not in P1 or "L" not in P2 or "B" not in P2:
+            raise RuntimeError("scenarioPropAzimuthDeltaDeg: points 'L'/'B' manquants sur first/last")
+
+        a1 = self._azimuthDegFromWorld(P1["L"], P1["B"])
+        a2 = self._azimuthDegFromWorld(P2["L"], P2["B"])
+        if a1 is None or a2 is None:
+            return ""
+        d = (float(a2) - float(a1)) % 360.0
+        return f"{d:.1f}"
+
+    def _azimuthDegFromWorld(self, p1, p2) -> Optional[float]:
+        """Azimut absolu en degrés pour le segment p1->p2.
+
+        - p1/p2 sont des points en coordonnées monde.
+        - 0° = Nord (axe +Y), 90° = Est (axe +X).
+        Retourne None si les points sont confondus.
+        """
+        x1, y1 = float(p1[0]), float(p1[1])
+        x2, y2 = float(p2[0]), float(p2[1])
+        dx = x2 - x1
+        dy = y2 - y1
+        if abs(dx) < 1e-12 and abs(dy) < 1e-12:
+            return None
+        # atan2(E, N) => 0° au Nord, sens horaire
+        ang = math.degrees(math.atan2(dx, dy)) % 360.0
+        return float(ang)
+
+    def _bgWorldToLambertKm(self, wx: float, wy: float) -> Tuple[float, float]:
+        """Convertit un point monde -> Lambert93 (km), en tenant compte du redimensionnement/déplacement du fond.
+
+        Contrat:
+        - nécessite une calibration (affineWorldToLambertKm + bgWorldRectAtCalibration).
+        - si la calibration est absente alors qu'une carte est chargée, c'est un bug (on lève).
+        """
+        if self._bg is None:
+            raise RuntimeError("bgWorldToLambertKm: pas de carte chargée")
+        data = getattr(self, "_bg_calib_data", None)
+        if not isinstance(data, dict):
+            raise RuntimeError("bgWorldToLambertKm: calibration absente (_bg_calib_data)")
+        aff = data.get("affineWorldToLambertKm")
+        if not (isinstance(aff, list) and len(aff) == 6):
+            raise RuntimeError("bgWorldToLambertKm: affineWorldToLambertKm absent de la calibration")
+        rect_cal = data.get("bgWorldRectAtCalibration")
+        if not isinstance(rect_cal, dict):
+            raise RuntimeError("bgWorldToLambertKm: bgWorldRectAtCalibration absent de la calibration")
+
+        rect_cur = self._bg
+        # Similarité entre monde_calibration -> monde_actuel (resize + translation)
+        w_cal = float(rect_cal.get("w"))
+        h_cal = float(rect_cal.get("h"))
+        w_cur = float(rect_cur.get("w"))
+        h_cur = float(rect_cur.get("h"))
+        if w_cal <= 0 or h_cal <= 0 or w_cur <= 0 or h_cur <= 0:
+            raise RuntimeError("bgWorldToLambertKm: rect invalide")
+
+        sx = w_cur / w_cal
+        sy = h_cur / h_cal
+
+        x0_cal = float(rect_cal.get("x0"))
+        y0_cal = float(rect_cal.get("y0"))
+        x0_cur = float(rect_cur.get("x0"))
+        y0_cur = float(rect_cur.get("y0"))
+
+        # Inverse: monde_actuel -> monde_calibration
+        wx_cal = x0_cal + (float(wx) - x0_cur) / sx
+        wy_cal = y0_cal + (float(wy) - y0_cur) / sy
+
+        a, b, c, d, e, f = [float(v) for v in aff]
+        x_km = a * wx_cal + b * wy_cal + c
+        y_km = d * wx_cal + e * wy_cal + f
+        return (float(x_km), float(y_km))
 
     def _update_triangle_listbox_colors(self):
         """
@@ -2436,12 +2968,9 @@ class TriangleViewerManual(tk.Tk):
 
             if "tid" not in n:
                 raise RuntimeError(f"normalize_group_nodes: tid manquant gid={gid!r} i={i}")
-            try:
-                n["tid"] = int(n["tid"])
-            except Exception as e:
-                raise RuntimeError(
-                    f"normalize_group_nodes: tid non entier gid={gid!r} i={i} tid={n.get('tid')!r}"
-                ) from e
+
+            n["tid"] = int(n["tid"])
+
 
             # Hygiène: supprimer les champs legacy si présents
             n.pop("vkey_in", None)
@@ -2573,7 +3102,7 @@ class TriangleViewerManual(tk.Tk):
         self.zoom = float(vs.get("zoom", getattr(self, "zoom", 1.0) or 1.0))
         ox = float(vs.get("offset_x", self.offset[0] if hasattr(self, "offset") else 0.0))
         oy = float(vs.get("offset_y", self.offset[1] if hasattr(self, "offset") else 0.0))
-        self.offset = (ox, oy)
+        self.offset = np.array([ox, oy], dtype=float)
  
     def _capture_map_state(self) -> dict:
         bg = getattr(self, "_bg", None)
@@ -2621,7 +3150,215 @@ class TriangleViewerManual(tk.Tk):
             "w": float(ms.get("w", 0.0)),
             "h": float(ms.get("h", 0.0)),
         }
+
+        # --- OPTIM: ne pas recharger la carte + calibration si rien n'a changé ---
+        bg = getattr(self, "_bg", None) or {}
+        samePath = str(bg.get("path") or "") == str(path or "")
+        eps = 1e-9
+        sameRect = (
+            abs(float(bg.get("x0") or 0.0) - float(rect.get("x0") or 0.0)) < eps and
+            abs(float(bg.get("y0") or 0.0) - float(rect.get("y0") or 0.0)) < eps and
+            abs(float(bg.get("w")  or 0.0) - float(rect.get("w")  or 0.0)) < eps and
+            abs(float(bg.get("h")  or 0.0) - float(rect.get("h")  or 0.0)) < eps
+        )
+        sameScale = (getattr(self, "_bg_scale_factor_override", None) == ms.get("scale"))
+
+
+        if samePath and sameRect and sameScale:
+            # Rien à faire : on a déjà exactement cette carte dans ce repère monde
+            return
+
         self._bg_set_map(path, rect_override=rect, persist=persist)
+
+    # ---------- AUTO (scénarios automatiques): transform géométrique global ----------
+    def _get_active_scenario(self):
+        if not getattr(self, "scenarios", None):
+            return None
+        idx = int(getattr(self, "active_scenario_index", 0) or 0)
+        if idx < 0 or idx >= len(self.scenarios):
+            return None
+        return self.scenarios[idx]
+
+    def _is_active_auto_scenario(self) -> bool:
+        scen = self._get_active_scenario()
+        return bool(scen is not None and getattr(scen, "source_type", "manual") == "auto")
+
+    def _autoGetAnchorWorld(self, scen):
+        """Retourne l'ancre monde (sommet L du triangle de référence).
+
+        IMPORTANT:
+        - Ne pas se baser sur l'ordre de `last_drawn`, qui peut varier.
+        - On se base sur `scen.tri_ids` (ordre d'assemblage) et on retrouve le triangle correspondant dans `last_drawn`.
+        """
+        if scen is None or not getattr(scen, "last_drawn", None):
+            return None
+
+        tri_ids = list(getattr(scen, "tri_ids", None) or [])
+
+        tid_ref = None
+        if tri_ids:
+            tid_ref = tri_ids[0]
+
+        t_ref = None
+        if tid_ref is not None:
+            for t in scen.last_drawn:
+                if int(t.get("id", -1)) == int(tid_ref):
+                    t_ref = t
+                    break
+
+        if t_ref is None:
+            # fallback legacy: premier/dernier de last_drawn
+            idx = 0 if str(order) == "forward" else (len(scen.last_drawn) - 1)
+            idx = max(0, min(int(idx), len(scen.last_drawn) - 1))
+            t_ref = scen.last_drawn[idx]
+
+        P = (t_ref or {}).get("pts", {})
+        if "L" not in P:
+            return None
+        return np.array(P["L"], dtype=float)
+
+    def _autoEnsureLocalGeometry(self, scen):
+        """Construit scen.last_drawn_local si absent (coords relatives à l'ancre L_ref)."""
+        if scen is None or getattr(scen, "source_type", "manual") != "auto":
+            return
+        if getattr(scen, "last_drawn_local", None) is not None:
+            return
+        anchor = self._autoGetAnchorWorld(scen)
+        if anchor is None:
+            return
+
+        local = []
+        for t in (scen.last_drawn or []):
+            tt = dict(t)
+            P = t.get("pts", {})
+            Pl = {}
+            for k in ("O", "B", "L"):
+                if k in P:
+                    Pl[k] = np.array(P[k], dtype=float) - anchor
+            tt["pts"] = Pl
+            local.append(tt)
+        scen.last_drawn_local = local
+
+        # init auto_geom_state si nécessaire (origine = ancre monde, theta=0)
+        if self.auto_geom_state is None:
+            self.auto_geom_state = {"ox": float(anchor[0]), "oy": float(anchor[1]), "thetaDeg": 0.0}
+
+    def _autoRebuildWorldGeometry(self, redraw: bool = True):
+        """Recalcule scen.last_drawn (monde) pour tous les scénarios auto en mémoire, depuis last_drawn_local + auto_geom_state."""
+        if self.auto_geom_state is None:
+            return
+        ox = float(self.auto_geom_state.get("ox", 0.0))
+        oy = float(self.auto_geom_state.get("oy", 0.0))
+        thetaDeg = float(self.auto_geom_state.get("thetaDeg", 0.0))
+        th = math.radians(thetaDeg)
+        c, s = math.cos(th), math.sin(th)
+        R = np.array([[c, -s], [s, c]], dtype=float)
+        origin = np.array([ox, oy], dtype=float)
+
+        active_idx = int(getattr(self, "active_scenario_index", 0) or 0)
+
+        for i, scen in enumerate(getattr(self, "scenarios", []) or []):
+            if getattr(scen, "source_type", "manual") != "auto":
+                continue
+            self._autoEnsureLocalGeometry(scen)
+            local = getattr(scen, "last_drawn_local", None)
+            if not local:
+                continue
+
+            world = []
+            for tloc in local:
+                tt = dict(tloc)
+                Ploc = tloc.get("pts", {})
+                Pw = {}
+                for k in ("O", "B", "L"):
+                    if k in Ploc:
+                        v = np.array(Ploc[k], dtype=float)
+                        Pw[k] = origin + (R @ v)
+                tt["pts"] = Pw
+                world.append(tt)
+
+            scen.last_drawn = world
+
+            # si c'est le scénario actif, rattacher les pointeurs UI
+            if i == active_idx:
+                self._last_drawn = scen.last_drawn
+                self.groups = scen.groups
+                # recompute bbox groupes
+                if isinstance(self.groups, dict):
+                    for gid in list(self.groups.keys()):
+                        self._recompute_group_bbox(gid)
+
+        if redraw:
+            self._redraw_from(self._last_drawn)
+
+    def _autoInitFromGeneratedScenarios(self, base_idx: int, order: str):
+        """Après génération d'autos, construit les géométries locales + initialise le transform global."""
+        if not getattr(self, "scenarios", None):
+            return
+        for i in range(int(base_idx), len(self.scenarios)):
+            scen = self.scenarios[i]
+            if getattr(scen, "source_type", "manual") != "auto":
+                continue
+            scen.autoOrder = str(order or "forward")
+            # ensure local + possibly init auto_geom_state
+            self._autoEnsureLocalGeometry(scen)
+
+        # rebuild monde une fois pour tout aligner (no-op visuellement au départ)
+        self._autoRebuildWorldGeometry(redraw=False)
+
+    def _convertActiveAutoToManualSnapshot(self):
+        """Convertit le scénario auto actif en un nouveau scénario manuel (snapshot monde), et retourne son index."""
+        scen = self._get_active_scenario()
+        if scen is None or getattr(scen, "source_type", "manual") != "auto":
+            return None
+
+        # Snapshot monde courant (déjà transformé par auto_geom_state)
+        def clone_last_drawn_world(last_drawn):
+            out = []
+            for t in (last_drawn or []):
+                tt = dict(t)
+                P = t.get("pts", {})
+                Pw = {}
+                for k in ("O", "B", "L"):
+                    if k in P:
+                        Pw[k] = np.array(P[k], dtype=float).copy()
+                tt["pts"] = Pw
+                out.append(tt)
+            return out
+
+        def clone_groups(groups):
+            if not isinstance(groups, dict):
+                return {}
+            g2 = {}
+            for gid, g in groups.items():
+                gg = dict(g)
+                gg["nodes"] = [dict(n) for n in (g.get("nodes") or [])]
+                if "bbox" in gg and gg["bbox"] is not None:
+                    try:
+                        gg["bbox"] = [float(x) for x in gg["bbox"]]
+                    except Exception:
+                        pass
+                g2[gid] = gg
+            return g2
+
+        name = str(getattr(scen, "name", "") or "Snapshot")
+        name = name + " (manuel)" if "manuel" not in name.lower() else name
+
+        new_scen = ScenarioAssemblage(name=name, source_type="manual")
+        new_scen.last_drawn = clone_last_drawn_world(getattr(scen, "last_drawn", None))
+        new_scen.groups = clone_groups(getattr(scen, "groups", None))
+
+        # copier quelques métadonnées utiles
+        for attr in ("algo_id", "tri_ids", "status"):
+            if hasattr(scen, attr):
+                setattr(new_scen, attr, getattr(scen, attr))
+
+        new_scen.view_state = self._capture_view_state()
+        new_scen.map_state = self._capture_map_state()
+
+        self.scenarios.append(new_scen)
+        return len(self.scenarios) - 1
+
  
     def _set_active_scenario(self, index: int):
         """
@@ -2637,8 +3374,16 @@ class TriangleViewerManual(tk.Tk):
 
         # Sauvegarder l'état courant dans l'ancien scénario (vue + carte)
         prev = self.scenarios[self.active_scenario_index]
-        prev.view_state = self._capture_view_state()
-        if getattr(prev, "source_type", "manual") == "auto":
+        prevIsAuto = (getattr(prev, "source_type", "manual") == "auto")
+
+        # Vue: en AUTO, on synchronise => état partagé
+        if prevIsAuto:
+            self.auto_view_state = self._capture_view_state()
+        else:
+            prev.view_state = self._capture_view_state()
+
+        # Carte: en AUTO, on synchronise => état partagé
+        if prevIsAuto:
             self.auto_map_state = self._capture_map_state()
         else:
             prev.map_state = self._capture_map_state()
@@ -2651,11 +3396,18 @@ class TriangleViewerManual(tk.Tk):
         self.groups = scen.groups
 
         # Restaurer carte + vue (sans écraser la config globale)
-        if getattr(scen, "source_type", "manual") == "auto":
-            self._apply_map_state(self.auto_map_state, persist=False)
+        scenIsAuto = (getattr(scen, "source_type", "manual") == "auto")
+
+        if scenIsAuto:
+            self._apply_map_state(getattr(self, "auto_map_state", None), persist=False)
         else:
             self._apply_map_state(getattr(scen, "map_state", None), persist=False)
-        self._apply_view_state(getattr(scen, "view_state", None))
+
+        if scenIsAuto:
+            # Vue AUTO partagée, fallback si jamais pas encore initialisée
+            self._apply_view_state(getattr(self, "auto_view_state", None) or getattr(scen, "view_state", None))
+        else:
+            self._apply_view_state(getattr(scen, "view_state", None))
 
         # --- AUTO: réconcilier les métadonnées de groupe (group_id/group_pos) avec scen.groups ---
         # Certains chemins (redraw / sélection / tools) se basent encore sur les champs portés par les triangles.
@@ -3178,6 +3930,13 @@ class TriangleViewerManual(tk.Tk):
         )
         if not path:
             return
+
+        # Si scénario AUTO : le figer en MANUEL (snapshot) avant export
+        if self._is_active_auto_scenario():
+            new_idx = self._convertActiveAutoToManualSnapshot()
+            if new_idx is not None:
+                self._refresh_scenario_listbox()
+                self._set_active_scenario(int(new_idx))
 
         self.save_scenario_xml(path)
         self.status.config(text=f"Scénario enregistré dans {path}")
@@ -4552,6 +5311,14 @@ class TriangleViewerManual(tk.Tk):
 
             # Normaliser en float
             data["affineLambertKmToWorld"] = [float(v) for v in aff]
+
+            # Optionnel mais recommandé: inverse monde -> Lambert93 (km)
+            aff_inv = data.get("affineWorldToLambertKm")
+            if isinstance(aff_inv, list):
+                if len(aff_inv) != 6:
+                    raise ValueError("affineWorldToLambertKm doit contenir 6 valeurs")
+                data["affineWorldToLambertKm"] = [float(v) for v in aff_inv]
+
             self._bg_calib_data = data
 
             # Référence d'échelle pour l'affichage :
@@ -5792,6 +6559,20 @@ class TriangleViewerManual(tk.Tk):
             wy = (self.offset[1] - event.y) / self.zoom
             cur_angle = math.atan2(wy - pivot[1], wx - pivot[0])
             dtheta = cur_angle - sel["start_angle"]
+
+            # AUTO: rotation globale partagée (doit impacter TOUS les scénarios auto)
+            if sel.get("auto_geom"):
+                if self.auto_geom_state is None:
+                    self._autoEnsureLocalGeometry(self._get_active_scenario())
+                if self.auto_geom_state is None:
+                    return
+                theta0 = float(sel.get("auto_theta0", float(self.auto_geom_state.get("thetaDeg", 0.0))))
+                self.auto_geom_state["thetaDeg"] = float(theta0 + math.degrees(dtheta))
+                self._autoRebuildWorldGeometry(redraw=False)
+                self._redraw_from(self._last_drawn)
+                return
+
+            # MANUEL: rotation géométrique des points autour du pivot
             c, s = math.cos(dtheta), math.sin(dtheta)
             R = np.array([[c, -s], [s, c]], dtype=float)
             P = self._last_drawn[idx]["pts"]
@@ -5810,6 +6591,20 @@ class TriangleViewerManual(tk.Tk):
             wy = (self.offset[1] - event.y) / self.zoom
             cur_angle = math.atan2(wy - pivot[1], wx - pivot[0])
             dtheta = cur_angle - sel["start_angle"]
+
+            # AUTO: rotation globale partagée (doit impacter TOUS les scénarios auto)
+            if sel.get("auto_geom"):
+                if self.auto_geom_state is None:
+                    self._autoEnsureLocalGeometry(self._get_active_scenario())
+                if self.auto_geom_state is None:
+                    return
+                theta0 = float(sel.get("auto_theta0", float(self.auto_geom_state.get("thetaDeg", 0.0))))
+                self.auto_geom_state["thetaDeg"] = float(theta0 + math.degrees(dtheta))
+                self._autoRebuildWorldGeometry(redraw=False)
+                self._redraw_from(self._last_drawn)
+                self._sel["last_angle"] = cur_angle
+                return
+
             c, s = math.cos(dtheta), math.sin(dtheta)
             R = np.array([[c, -s], [s, c]], dtype=float)
             g = self.groups.get(gid)
@@ -6638,6 +7433,15 @@ class TriangleViewerManual(tk.Tk):
         if self._sel:
             # rollback rotation de GROUPE
             if self._sel.get("mode") == "rotate_group":
+                # AUTO: rollback du transform global
+                if self._sel.get("auto_geom") and self._sel.get("auto_state0") is not None:
+                    self.auto_geom_state = dict(self._sel.get("auto_state0") or {})
+                    self._autoRebuildWorldGeometry(redraw=False)
+                    self._sel = None
+                    self.status.config(text="Rotation auto annulée (ESC).")
+                    self._clear_nearest_line()
+                    self._clear_edge_highlights()
+                    return
                 gid = self._sel.get("gid")
                 orig = self._sel.get("orig_group_pts")
                 if gid is not None and isinstance(orig, dict):
@@ -7592,9 +8396,18 @@ class TriangleViewerManual(tk.Tk):
         # Si le triangle fait partie d'un groupe : PIVOTER LE GROUPE
         gid = self._get_group_of_triangle(idx)
         if gid:
-            pivot = self._group_centroid(gid)
-            if pivot is None:
-                return
+            # AUTO: pivot = origine globale (0,0) commune ; MANUAL: barycentre groupe
+            auto_geom = self._is_active_auto_scenario()
+            if auto_geom:
+                if self.auto_geom_state is None:
+                    self._autoEnsureLocalGeometry(self._get_active_scenario())
+                if self.auto_geom_state is None:
+                    return
+                pivot = (float(self.auto_geom_state.get("ox", 0.0)), float(self.auto_geom_state.get("oy", 0.0)))
+            else:
+                pivot = self._group_centroid(gid)
+                if pivot is None:
+                    return
             # snapshot complet du groupe pour rollback
             orig_group_pts = {}
             for node in self._group_nodes(gid):
@@ -7616,6 +8429,9 @@ class TriangleViewerManual(tk.Tk):
                 "orig_group_pts": orig_group_pts,
                 "pivot": np.array(pivot, dtype=float),
                 "start_angle": start_angle,
+                "auto_geom": bool(auto_geom),
+                "auto_theta0": float(self.auto_geom_state.get("thetaDeg", 0.0)) if auto_geom and self.auto_geom_state else 0.0,
+                "auto_state0": dict(self.auto_geom_state) if auto_geom and self.auto_geom_state else None,
             }
             self.status.config(text=f"Mode pivoter GROUPE #{gid} : bouge la souris pour tourner, clic gauche pour valider, ESC pour annuler.")
             return
@@ -7845,6 +8661,9 @@ class TriangleViewerManual(tk.Tk):
         self._ctx_target_idx = None
         if idx is None or not (0 <= idx < len(self._last_drawn)):
             return
+        if self._is_active_auto_scenario():
+            self.status.config(text="Inversion désactivée pour les scénarios automatiques.")
+            return
         # --- Étendue : GROUPE du triangle ciblé ---
         gid = self._get_group_of_triangle(idx)
         if not gid:
@@ -7891,6 +8710,18 @@ class TriangleViewerManual(tk.Tk):
 
     def _move_group_world(self, gid, dx_w, dy_w):
         """Translate rigide de tout le groupe en coordonnées monde."""
+        # AUTO: on déplace le référentiel global (commun à tous les scénarios auto)
+        if self._is_active_auto_scenario():
+            if self.auto_geom_state is None:
+                # fallback: init à partir du scénario actif
+                self._autoEnsureLocalGeometry(self._get_active_scenario())
+            if self.auto_geom_state is None:
+                return
+            self.auto_geom_state["ox"] = float(self.auto_geom_state.get("ox", 0.0) + float(dx_w))
+            self.auto_geom_state["oy"] = float(self.auto_geom_state.get("oy", 0.0) + float(dy_w))
+            self._autoRebuildWorldGeometry(redraw=False)
+            return
+
         g = self.groups.get(gid)
         if not g:
             return
@@ -8703,12 +9534,18 @@ class TriangleViewerManual(tk.Tk):
 
 
             # Fin (pas de snap : simple dépôt à la dernière position)
+            # AUTO: persister position/rotation globale (carte, ordre)
+            if isinstance(self._sel, dict) and self._sel.get("auto_geom") and self.auto_geom_state is not None:
+                self._simulationPersistCurrentAutoPlacement(save=True)
             self._sel = None
             self._reset_assist()
             self._redraw_from(self._last_drawn)
             return
 
         elif mode == "rotate":
+            # AUTO: persister position/rotation globale (carte, ordre)
+            if isinstance(self._sel, dict) and self._sel.get("auto_geom") and self.auto_geom_state is not None:
+                self._simulationPersistCurrentAutoPlacement(save=True)
             self._sel = None
             self._reset_assist()
             self.status.config(text="Rotation validée.")
@@ -8716,6 +9553,9 @@ class TriangleViewerManual(tk.Tk):
             return
 
         # Autres modes : on nettoie juste
+        # AUTO rotate_group : persister la rotation globale (carte, ordre)
+        if isinstance(self._sel, dict) and self._sel.get("mode") == "rotate_group" and self._sel.get("auto_geom") and self.auto_geom_state is not None:
+            self._simulationPersistCurrentAutoPlacement(save=True)
         self._sel = None
         self._reset_assist()
         self._redraw_from(self._last_drawn)
@@ -8745,7 +9585,7 @@ class TriangleViewerManual(tk.Tk):
 
     def _on_pan_start(self, event):
         self._pan_anchor = np.array([event.x, event.y], dtype=float)
-        self._offset_anchor = self.offset.copy()
+        self._offset_anchor = np.array(self.offset, dtype=float).copy()
 
     def _on_pan_move(self, event):
         if getattr(self, "_pan_anchor", None) is None:
@@ -8758,6 +9598,471 @@ class TriangleViewerManual(tk.Tk):
         self._pan_anchor = None
         # après pan -> invalider cache pick (coords écran changent)
         self._invalidate_pick_cache()
+
+    # ---------- Export PDF de l'affichage (A4) ----------
+    class _PdfCanvasAdapter:
+        """Adaptateur minimal Tk Canvas -> ReportLab.
+
+        Les coordonnées reçues sont en "pixels" avec origine en haut-gauche (comme Tk).
+        Elles sont mappées dans une zone A4 en points (ReportLab, origine bas-gauche).
+        """
+
+        def __init__(self, rl_canvas, page_w_pt: float, page_h_pt: float,
+                     margin_left_pt: float, margin_bottom_pt: float,
+                     scale_pt_per_px: float, virtual_h_px: float):
+            self._c = rl_canvas
+            self._pw = float(page_w_pt)
+            self._ph = float(page_h_pt)
+            self._ml = float(margin_left_pt)
+            self._mb = float(margin_bottom_pt)
+            self._s = float(scale_pt_per_px)
+            self._vh = float(virtual_h_px)
+            self._id = 1
+
+        def _next_id(self):
+            i = self._id
+            self._id += 1
+            return i
+
+        def _xy(self, x, y):
+            # Tk: (0,0) en haut-gauche ; RL: (0,0) en bas-gauche
+            xp = self._ml + float(x) * self._s
+            yp = self._mb + (self._vh - float(y)) * self._s
+            return xp, yp
+
+        def _dash(self, dash):
+            if not dash:
+                return None
+            seq = [max(0.0, float(v) * self._s) for v in dash]
+            return seq if seq else None
+
+
+        def _set_stroke(self, color, width=1, dash=None):
+            from reportlab.lib import colors
+            from PIL import ImageColor
+            if color is None or color == "":
+                color = "#000000"
+            if isinstance(color, str) and color.startswith("#"):
+                col = colors.HexColor(color)
+            else:
+                r, g, b = ImageColor.getrgb(str(color))
+                col = colors.Color(r/255.0, g/255.0, b/255.0)
+
+            self._c.setStrokeColor(col)
+            self._c.setLineWidth(max(0.1, float(width) * self._s))
+            d = self._dash(dash)
+            if d:
+                self._c.setDash(d)
+            else:
+                self._c.setDash()
+
+        def _set_fill(self, color):
+            from reportlab.lib import colors
+            from PIL import ImageColor
+            if color is None or color == "":
+                self._c.setFillColor(colors.transparent)
+                return
+            if isinstance(color, str) and color.startswith("#"):
+                col = colors.HexColor(color)
+            else:
+                r, g, b = ImageColor.getrgb(str(color))
+                col = colors.Color(r/255.0, g/255.0, b/255.0)
+
+            self._c.setFillColor(col)
+
+        # --- API Tk (subset) ---
+        def delete(self, *args, **kwargs): return
+        def tag_lower(self, *args, **kwargs): return
+        def tag_raise(self, *args, **kwargs): return
+        # alias Tk : Canvas.lift(...) fait la même chose que tag_raise(...)
+        def lift(self, *args, **kwargs): return
+        def coords(self, *args, **kwargs): return
+        def itemconfig(self, *args, **kwargs): return
+
+        def create_line(self, x1, y1, x2, y2, **kw):
+            fill = kw.get("fill", "#000000")
+            width = kw.get("width", 1)
+            dash = kw.get("dash", None)
+            self._set_stroke(fill, width=width, dash=dash)
+            a = self._xy(x1, y1)
+            b = self._xy(x2, y2)
+            self._c.line(a[0], a[1], b[0], b[1])
+            return self._next_id()
+
+        def create_polygon(self, coords, **kw):
+            fill = kw.get("fill", None)
+            outline = kw.get("outline", None)
+            width = kw.get("width", 1)
+
+            pts = list(coords or [])
+            if len(pts) < 6:
+                return self._next_id()
+
+            path = self._c.beginPath()
+            x0, y0 = self._xy(pts[0], pts[1])
+            path.moveTo(x0, y0)
+            for i in range(2, len(pts), 2):
+                xi, yi = self._xy(pts[i], pts[i+1])
+                path.lineTo(xi, yi)
+            path.close()
+
+            do_fill = bool(fill) and str(fill) not in ("", "none")
+            do_stroke = bool(outline) and str(outline) not in ("", "none")
+            if do_fill:
+                self._set_fill(fill)
+            if do_stroke:
+                self._set_stroke(outline, width=width)
+            self._c.drawPath(path, fill=int(do_fill), stroke=int(do_stroke))
+            return self._next_id()
+
+        def create_rectangle(self, x1, y1, x2, y2, **kw):
+            outline = kw.get("outline", None)
+            fill = kw.get("fill", None)
+            width = kw.get("width", 1)
+            do_fill = bool(fill) and str(fill) not in ("", "none")
+            do_stroke = bool(outline) and str(outline) not in ("", "none")
+            if do_fill:
+                self._set_fill(fill)
+            if do_stroke:
+                self._set_stroke(outline, width=width, dash=kw.get("dash"))
+            xa, ya = self._xy(min(x1, x2), max(y1, y2))
+            xb, yb = self._xy(max(x1, x2), min(y1, y2))
+            self._c.rect(xa, yb, xb - xa, ya - yb, stroke=int(do_stroke), fill=int(do_fill))
+            return self._next_id()
+
+        def create_oval(self, x1, y1, x2, y2, **kw):
+            outline = kw.get("outline", None)
+            fill = kw.get("fill", None)
+            width = kw.get("width", 1)
+            do_fill = bool(fill) and str(fill) not in ("", "none")
+            do_stroke = bool(outline) and str(outline) not in ("", "none")
+            if do_fill:
+                self._set_fill(fill)
+            if do_stroke:
+                self._set_stroke(outline, width=width, dash=kw.get("dash"))
+            xa, ya = self._xy(min(x1, x2), max(y1, y2))
+            xb, yb = self._xy(max(x1, x2), min(y1, y2))
+            self._c.ellipse(xa, yb, xb, ya, stroke=int(do_stroke), fill=int(do_fill))
+            return self._next_id()
+
+        def create_arc(self, x1, y1, x2, y2, **kw):
+            outline = kw.get("outline", "#000000")
+            width = kw.get("width", 1)
+            start = float(kw.get("start", 0.0))
+            extent = float(kw.get("extent", 0.0))
+            style = str(kw.get("style", "arc"))
+            if style != "arc":
+                return self._next_id()
+
+            self._set_stroke(outline, width=width, dash=kw.get("dash"))
+            xa, ya = self._xy(min(x1, x2), max(y1, y2))
+            xb, yb = self._xy(max(x1, x2), min(y1, y2))
+            self._c.arc(xa, yb, xb, ya, startAng=start, extent=extent)
+            return self._next_id()
+
+        def create_text(self, x, y, **kw):
+            txt = str(kw.get("text", ""))
+            fill = kw.get("fill", "#000000")
+            anchor = str(kw.get("anchor", "center"))
+            font = kw.get("font", ("Arial", 10))
+
+            face = "Helvetica"
+            size = 10
+            style = ""
+
+            if isinstance(font, tuple) and len(font) >= 2:
+                size = int(font[1])
+                if any(str(x).lower() == "bold" for x in font[2:]):
+                    style = "-Bold"
+            elif isinstance(font, str):
+                parts = font.split()
+                for p in parts:
+                    if p.isdigit():
+                        size = int(p)
+                if any(p.lower() == "bold" for p in parts):
+                    style = "-Bold"
+
+            face = face + style
+
+            self._set_fill(fill)
+            self._c.setFont(face, max(4, float(size)))
+
+            xp, yp = self._xy(x, y)
+            yp_adj = yp - 0.35 * float(size)
+
+            if anchor in ("center", "c"):
+                self._c.drawCentredString(xp, yp_adj, txt)
+            elif anchor in ("w", "west"):
+                self._c.drawString(xp, yp_adj, txt)
+            elif anchor in ("e", "east"):
+                w = self._c.stringWidth(txt, face, max(4, float(size)))
+                self._c.drawString(xp - w, yp_adj, txt)
+            elif anchor in ("nw", "nwest"):
+                self._c.drawString(xp, yp_adj + 0.35 * float(size), txt)
+            else:
+                self._c.drawCentredString(xp, yp_adj, txt)
+
+            return self._next_id()
+
+    def _export_view_pdf_dialog(self):
+        """Boîte de dialogue pour exporter l'affichage courant en PDF A4."""
+        from tkinter import filedialog
+        scen_name = ""
+
+        if getattr(self, "scenarios", None) and 0 <= int(getattr(self, "active_scenario_index", 0)) < len(self.scenarios):
+            scen_name = str(getattr(self.scenarios[self.active_scenario_index], "name", "") or "")
+
+        tri_file = str(getattr(self, "triangle_file", None).get()) if hasattr(getattr(self, "triangle_file", None), "get") else ""
+
+
+        def _safe(s: str) -> str:
+            s = str(s or "").strip()
+            s = re.sub(r"[^A-Za-z0-9._ -]+", "_", s)
+            s = re.sub(r"\s+", " ", s).strip()
+            return s
+
+        base = "affichage"
+        if scen_name:
+            base += "_" + _safe(scen_name)[:40]
+        if tri_file:
+            base += "_" + _safe(os.path.splitext(os.path.basename(tri_file))[0])[:30]
+        base = base.strip("_ ") + ".pdf"
+
+        path = filedialog.asksaveasfilename(
+            title="Exporter en PDF",
+            defaultextension=".pdf",
+            filetypes=[("PDF", "*.pdf")],
+            initialfile=base,
+        )
+        if not path:
+            return
+        try:
+            self._export_view_pdf(path)
+            self.status.config(text=f"PDF généré : {path}")
+            messagebox.showinfo("Export PDF", f"Export terminé avec succès.\n\nFichier :\n{path}")            
+        except Exception as e:
+            messagebox.showerror("Export PDF", f"Impossible de générer le PDF :\n{e}")
+
+    def _export_view_pdf(self, path: str):
+        """Exporte l'affichage courant (carte/triangles/compas selon visibilité) en PDF A4."""
+        from reportlab.pdfgen import canvas as rl_canvas
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib.units import mm
+        from reportlab.lib.utils import ImageReader
+        from reportlab.lib import colors
+        import copy
+
+        cw = int(self.canvas.winfo_width() or 0)
+        ch = int(self.canvas.winfo_height() or 0)
+        if cw <= 2 or ch <= 2:
+            self.update_idletasks()
+            cw = int(self.canvas.winfo_width() or 0)
+            ch = int(self.canvas.winfo_height() or 0)
+        if cw <= 2 or ch <= 2:
+            cw, ch = 800, 600
+
+        xA, yTop = self._screen_to_world(0, 0)
+        xB, yBot = self._screen_to_world(cw, ch)
+        vx0 = min(xA, xB); vx1 = max(xA, xB)
+        vy0 = min(yBot, yTop); vy1 = max(yBot, yTop)
+        w0 = max(1e-9, vx1 - vx0)
+        h0 = max(1e-9, vy1 - vy0)
+        cx0 = 0.5 * (vx0 + vx1)
+        cy0 = 0.5 * (vy0 + vy1)
+
+        margin_lr = 10 * mm
+        margin_bottom = 10 * mm
+        margin_top = 10 * mm
+        title_space = 12 * mm
+
+        def _expand_bbox_to_aspect(w: float, h: float, target_aspect: float):
+            cur = w / h
+            if cur > target_aspect:
+                return (w, w / target_aspect)
+            return (h * target_aspect, h)
+
+        def _choose_layout():
+            candidates = []
+            for is_land in (False, True):
+                pw, ph = (landscape(A4) if is_land else A4)
+                dw = pw - 2 * margin_lr
+                dh = ph - margin_bottom - (margin_top + title_space)
+                aspect = dw / max(1e-9, dh)
+                w2, h2 = _expand_bbox_to_aspect(w0, h0, aspect)
+                factor = (w2 * h2) / max(1e-12, (w0 * h0))
+                candidates.append((factor, is_land, pw, ph, dw, dh, aspect, w2, h2))
+            candidates.sort(key=lambda t: t[0])
+            return candidates[0]
+
+        _, is_land, page_w, page_h, draw_w, draw_h, target_aspect, w2, h2 = _choose_layout()
+
+        vx0e = cx0 - 0.5 * w2
+        vx1e = cx0 + 0.5 * w2
+        vy0e = cy0 - 0.5 * h2
+        vy1e = cy0 + 0.5 * h2
+
+        Z = float(getattr(self, "zoom", 1.0))
+        virt_w_px = w2 * Z
+        virt_h_px = h2 * Z
+        if virt_w_px <= 1 or virt_h_px <= 1:
+            virt_w_px, virt_h_px = float(cw), float(ch)
+
+        s = min(draw_w / max(1e-9, virt_w_px), draw_h / max(1e-9, virt_h_px))
+
+        c = rl_canvas.Canvas(path, pagesize=(page_w, page_h))
+        c.setFillColor(colors.white)
+        c.rect(0, 0, page_w, page_h, stroke=0, fill=1)
+
+        scen_name = ""
+        if getattr(self, "scenarios", None) and 0 <= int(getattr(self, "active_scenario_index", 0)) < len(self.scenarios):
+            scen_name = str(getattr(self.scenarios[self.active_scenario_index], "name", "") or "")
+        tri_name = str(getattr(self, "triangle_file", None).get()) if hasattr(getattr(self, "triangle_file", None), "get") else ""
+
+
+        title_y = page_h - margin_top - 10
+        c.setFillColor(colors.black)
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(margin_lr, title_y, f"Scénario : {scen_name or '—'}")
+        c.setFont("Helvetica", 10)
+        c.drawString(margin_lr, title_y - 14, f"Triangles : {os.path.basename(tri_name) if tri_name else '—'}")
+
+        origin_x_pt = margin_lr
+        origin_y_pt = margin_bottom
+
+        # --- Carte raster (si affichée) ---
+        show_map = (getattr(self, "show_map_layer", None) is None) or bool(self.show_map_layer.get())
+        op = int(float(self.map_opacity.get())) if hasattr(self, "map_opacity") else 100
+        op = max(0, min(100, int(op)))
+        if show_map and op > 0 and getattr(self, "_bg", None) and getattr(self, "_bg_base_pil", None) is not None and Image is not None:
+            bx0 = float(self._bg.get("x0", 0.0)); by0 = float(self._bg.get("y0", 0.0))
+            bw = float(self._bg.get("w", 0.0));  bh = float(self._bg.get("h", 0.0))
+            bx1 = bx0 + bw; by1 = by0 + bh
+
+            ix0 = max(vx0e, bx0); ix1 = min(vx1e, bx1)
+            iy0 = max(vy0e, by0); iy1 = min(vy1e, by1)
+            if ix0 < ix1 and iy0 < iy1 and bw > 1e-9 and bh > 1e-9:
+                base = self._bg_base_pil
+                baseW, baseH = base.size
+
+                left  = int((ix0 - bx0) / bw * baseW)
+                right = int((ix1 - bx0) / bw * baseW)
+                upper = int((by1 - iy1) / bh * baseH)
+                lower = int((by1 - iy0) / bh * baseH)
+
+                left = max(0, min(baseW - 1, left))
+                right = max(left + 1, min(baseW, right))
+                upper = max(0, min(baseH - 1, upper))
+                lower = max(upper + 1, min(baseH, lower))
+
+                crop = base.crop((left, upper, right, lower))
+                if crop.mode != "RGBA":
+                    crop = crop.convert("RGBA")
+
+                if op < 100:
+                    r, g, b, a = crop.split()
+                    a = a.point(lambda p: int(p * op / 100))
+                    crop.putalpha(a)
+
+                white = Image.new("RGBA", crop.size, (255, 255, 255, 255))
+                white.paste(crop, (0, 0), crop)
+                rgb = white.convert("RGB")
+
+                x_px = (ix0 - vx0e) * Z
+                y_px_top = (vy1e - iy1) * Z
+                w_px = (ix1 - ix0) * Z
+                h_px = (iy1 - iy0) * Z
+
+                x_pt = origin_x_pt + x_px * s
+                y_pt = origin_y_pt + (virt_h_px - (y_px_top + h_px)) * s
+                w_pt = w_px * s
+                h_pt = h_px * s
+
+                c.drawImage(ImageReader(rgb), x_pt, y_pt, width=w_pt, height=h_pt, mask=None)
+
+        adapter = self._PdfCanvasAdapter(
+            c,
+            page_w_pt=page_w,
+            page_h_pt=page_h,
+            margin_left_pt=origin_x_pt,
+            margin_bottom_pt=origin_y_pt,
+            scale_pt_per_px=s,
+            virtual_h_px=virt_h_px,
+        )
+
+        old_canvas = self.canvas
+        old_offset = np.array(self.offset, dtype=float).copy()
+        old_zoom = float(getattr(self, "zoom", 1.0))
+        old_nearest = getattr(self, "_nearest_line_id", None)
+        old_clock = {
+            "_clock_cx": getattr(self, "_clock_cx", None),
+            "_clock_cy": getattr(self, "_clock_cy", None),
+            "_clock_R": getattr(self, "_clock_R", None),
+            "_clock_anchor_world": copy.deepcopy(getattr(self, "_clock_anchor_world", None)),
+        }
+
+        try:
+            self.canvas = adapter
+            self.zoom = old_zoom
+            self.offset = np.array([(-vx0e * Z), (vy1e * Z)], dtype=float)
+            self._nearest_line_id = None
+
+            self._update_current_scenario_differences()
+
+            showContoursMode = bool(
+                getattr(self, "show_only_group_contours", None) is not None
+                and self.show_only_group_contours.get()
+            )
+            onlyContours = False
+            v = getattr(self, "only_group_contours", None)
+            if v is not None and hasattr(v, "get"):
+                onlyContours = bool(v.get())
+            else:
+                onlyContours = bool(getattr(self, "_only_group_contours", False))
+            if showContoursMode:
+                onlyContours = True
+
+            if getattr(self, "show_triangles_layer", None) is None or self.show_triangles_layer.get():
+                for i, t in enumerate(getattr(self, "_last_drawn", []) or []):
+                    labels = t.get("labels")
+                    P = t.get("pts")
+                    if not labels or not P:
+                        continue
+                    tri_id = t.get("id")
+                    fill = "#ffd6d6" if i in getattr(self, "_comparison_diff_indices", set()) else None
+                    self._draw_triangle_screen(
+                        P,
+                        labels=[f"O:{labels[0]}", f"B:{labels[1]}", f"L:{labels[2]}"],
+                        tri_id=tri_id,
+                        tri_mirrored=t.get("mirrored", False),
+                        fill=fill,
+                        diff_outline=bool(fill),
+                        drawEdges=(not onlyContours),
+                    )
+
+            if showContoursMode:
+                self._draw_group_outlines()
+            else:
+                if self._sel and self._sel.get("mode") == "vertex":
+                    if getattr(self, "_edge_highlights", None):
+                        self._redraw_edge_highlights()
+                    idx = self._sel.get("idx"); vkey = self._sel.get("vkey")
+                    if idx is not None and vkey and 0 <= int(idx) < len(self._last_drawn):
+                        P = self._last_drawn[int(idx)]["pts"]
+                        v_world = np.array(P[vkey], dtype=float)
+                        self._update_nearest_line(v_world, exclude_idx=int(idx))
+
+            self._draw_clock_overlay()
+
+        finally:
+            self.canvas = old_canvas
+            self.offset = old_offset
+            self.zoom = old_zoom
+            self._nearest_line_id = old_nearest
+            for k, v in old_clock.items():
+                setattr(self, k, v)
+
+        c.showPage()
+        c.save()
 
     # ---------- Impression PDF (A4) ----------
     def _export_triangles_pdf(

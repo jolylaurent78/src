@@ -207,7 +207,7 @@ def loadScenarioXml(viewer, path: str):
 
     ver = str(root.get("version", "1") or "1").strip()
     if ver != "3":
-        # Option 1 : on refuse les anciens formats.
+        # on refuse les anciens formats.
         raise ValueError(
             f"Scenario XML incompatible (version={ver}). "
             "Ce projet attend des scénarios v3 (nodes avec edge_in/edge_out + bloc <map>). "
