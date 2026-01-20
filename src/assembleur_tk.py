@@ -222,6 +222,107 @@ class DialogSimulationAssembler(tk.Toplevel):
 
         self.destroy()
 
+
+class DialogCreateCheminParams(tk.Toplevel):
+    """Boîte de dialogue 'Créer un chemin…' (V1: paramètres uniquement)."""
+    def __init__(self, parent, triangle_label: str, vertex_key: str, vertex_city: str):
+        super().__init__(parent)
+        self.title("Créer un chemin…")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        self.result = None  # dict {limit: bool, maxPoints: int, orientation: 'cw'|'ccw'}
+
+        frm = ttk.Frame(self, padding=10)
+        frm.grid(row=0, column=0, sticky="nsew")
+
+        # Infos (premier point choisi automatiquement)
+        # Format demandé : "Premier point: Ville (Triangle XX)" sur 1 seule ligne
+        city = str(vertex_city or "").strip()
+        tri_txt = str(triangle_label or "").strip()
+        info = f"Premier point: {city} (Triangle {tri_txt})"
+        ttk.Label(frm, text=info, justify="left").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        # Orientation du contour pour définir le chemin
+        ttk.Label(frm, text="Orientation :").grid(row=1, column=0, sticky="w")
+        self.orientation_var = tk.StringVar(value="cw")  # cw=horaire (défaut) | ccw=inverse
+        orient_frm = ttk.Frame(frm)
+        orient_frm.grid(row=1, column=1, sticky="e")
+        ttk.Radiobutton(orient_frm, text="Sens horaire", value="cw", variable=self.orientation_var)\
+            .grid(row=0, column=0, padx=(0, 10))
+        ttk.Radiobutton(orient_frm, text="Sens inverse", value="ccw", variable=self.orientation_var)\
+            .grid(row=0, column=1)
+
+        # Limiter le nombre de points
+        self.limit_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(frm, text="Limiter le nombre de sommets parcourus", variable=self.limit_var)\
+            .grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+        ttk.Label(frm, text="Nombre max :").grid(row=3, column=0, sticky="w", pady=(6, 0))
+        # IMPORTANT: valeurs impaires (1,3,5,7,...) car (1,2,3)(3,4,5)...
+        self.max_var = tk.IntVar(value=7)
+        self.max_spin = ttk.Spinbox(
+            frm,
+            from_=1,
+            to=199,
+            increment=2,
+            textvariable=self.max_var,
+            width=8
+        )
+        self.max_spin.grid(row=3, column=1, sticky="e", pady=(6, 0))
+
+        def _enforce_odd_value(event=None):
+            v = int(self.max_var.get())
+            if v < 1:
+                v = 1
+            # forcer impair
+            if v % 2 == 0:
+                v = v + 1
+            self.max_var.set(int(v))
+
+        # Si l'utilisateur tape au clavier, corriger au focus out / Return
+        self.max_spin.bind("<FocusOut>", _enforce_odd_value)
+        self.max_spin.bind("<Return>", _enforce_odd_value)
+
+        # Activer/désactiver la combo selon checkbox
+        def _update_enable(*_):
+            st = "normal" if self.limit_var.get() else "disabled"
+            self.max_spin.configure(state=st)
+        self.limit_var.trace_add("write", _update_enable)
+        _update_enable()
+
+        btns = ttk.Frame(frm)
+        btns.grid(row=4, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        ttk.Button(btns, text="Annuler", command=self._on_cancel).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(btns, text="OK", command=self._on_ok).grid(row=0, column=1)
+
+        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+
+    def _on_cancel(self):
+        self.result = None
+        self.destroy()
+
+    def _on_ok(self):
+        limit = bool(self.limit_var.get())
+        maxPoints = int(self.max_var.get())
+        # sécuriser impair
+        if maxPoints < 1:
+            maxPoints = 1
+        if maxPoints % 2 == 0:
+            maxPoints += 1
+
+        if limit and maxPoints <= 2:
+            messagebox.showerror("Créer un chemin…", "Le nombre max doit être > 2.")
+            return
+        orient = str(getattr(self, "orientation_var", tk.StringVar(value="cw")).get() or "cw").strip().lower()
+        if orient not in ("cw", "ccw"):
+            orient = "cw"
+        self.result = {"limit": limit, "maxPoints": int(maxPoints), "orientation": orient}
+
+        self.destroy()
+
+
 # ---------- Application (MANUEL — sans algorithmes) ----------
 class TriangleViewerManual(tk.Tk):
     """
@@ -251,6 +352,7 @@ class TriangleViewerManual(tk.Tk):
         self._ctx_target_idx = None   # index du triangle visé par clic droit (menu contextuel)
         self._placed_ids = set()      # ids déjà posés dans le scénario actif
         self._ctx_last_rclick = None  # dernière position écran du clic droit (pour pivoter)
+        self._ctx_nearest_vertex_key = None  # 'O'|'B'|'L' sommet le plus proche du clic droit        
         self._nearest_line_id = None  # trait d'aide "sommet le plus proche"
         self._edge_highlight_ids = [] # surlignage des 2 arêtes (mobile/cible)
         self._edge_choice = None      # (i_mob, key_mob, edge_m, i_tgt, key_tgt, edge_t)
@@ -2367,19 +2469,121 @@ class TriangleViewerManual(tk.Tk):
 
         pw.add(scen_frame, minsize=scen_minsize_expanded)  # hauteur mini pour la liste des scénarios
 
+        # --- Panneau bas : chemins (V1 : UI uniquement, liste vide) ---
+        # Même approche que Triangles/Layers/Scénarios : panneau pliable + resize réel de la pane.
+        chemins_minsize_expanded = 120
+
+        if not hasattr(self, "_ui_chemins_collapsed"):
+            self._ui_chemins_collapsed = tk.BooleanVar(value=False)
+
+        chemins_frame = tk.Frame(pw, bd=0, highlightthickness=0)
+
+        chemins_header = tk.Frame(chemins_frame)
+        chemins_header.pack(fill=tk.X, pady=(0, 2))
+
+        # Séparateur visuel sous le header
+        ttk.Separator(chemins_frame, orient="horizontal").pack(fill=tk.X, pady=(0, 4))
+
+        self._ui_chemins_content = tk.Frame(chemins_frame)
+        if not self._ui_chemins_collapsed.get():
+            self._ui_chemins_content.pack(fill=tk.BOTH, expand=True)
+
+        def _calcCheminsExpandedHeightPx():
+            """Hauteur 'exacte' pour afficher le contenu du panneau Chemins (hors remplissage)."""
+            chemins_frame.update_idletasks()
+            hdr_h = int(chemins_header.winfo_reqheight() or 26)
+            content_h = int(self._ui_chemins_content.winfo_reqheight() or 0)
+            return int(hdr_h + content_h + 22)  # + séparateur/paddings
+
+        def _toggleCheminsPanel():
+            collapsed = bool(self._ui_chemins_collapsed.get())
+            self._ui_chemins_collapsed.set(not collapsed)
+            if self._ui_chemins_collapsed.get():
+                self._ui_chemins_content.pack_forget()
+                self._ui_chemins_toggle_btn.config(text="▸")
+            else:
+                self._ui_chemins_content.pack(fill=tk.BOTH, expand=True)
+                self._ui_chemins_toggle_btn.config(text="▾")
+
+            chemins_frame.update_idletasks()
+            hdr_h = int(chemins_header.winfo_reqheight() or 0)
+            chemins_minsize_collapsed = max(28, hdr_h + 10)
+
+            if self._ui_chemins_collapsed.get():
+                # Important : si Chemins reste en stretch="always", il reprendra toute la hauteur.
+                pw.paneconfigure(chemins_frame, stretch="never")
+                pw.paneconfigure(chemins_frame, minsize=chemins_minsize_collapsed, height=chemins_minsize_collapsed)
+            else:
+                pw.paneconfigure(chemins_frame, stretch="always")
+                target_h = _calcCheminsExpandedHeightPx()
+                target_h = max(int(chemins_minsize_expanded), int(target_h))
+                pw.paneconfigure(chemins_frame, minsize=chemins_minsize_expanded, height=target_h)
+
+        # Bouton toggle + titre cliquable
+        self._ui_chemins_toggle_btn = tk.Button(
+            chemins_header,
+            text=("▸" if self._ui_chemins_collapsed.get() else "▾"),
+            width=2,
+            command=_toggleCheminsPanel
+        )
+        self._ui_chemins_toggle_btn.pack(side=tk.LEFT, padx=(0, 4))
+
+        chemins_title = tk.Label(chemins_header, text="Chemins", font=(None, 9, "bold"))
+        chemins_title.pack(side=tk.LEFT, anchor="w")
+        chemins_title.bind("<Button-1>", lambda _e: _toggleCheminsPanel())
+        chemins_header.bind("<Button-1>", lambda _e: _toggleCheminsPanel())
+
+        # Barre d'actions (✎ éditer, 🗑 supprimer)
+        chemins_toolbar = tk.Frame(self._ui_chemins_content, bd=0, highlightthickness=0)
+        chemins_toolbar.pack(anchor="w", padx=6, pady=(0, 2), fill="x")
+
+        tk.Button(
+            chemins_toolbar,
+            text="✎",
+            width=2,
+            command=self._chemins_edit_selected,
+            relief=tk.FLAT,
+        ).pack(side=tk.LEFT, padx=1)
+        tk.Button(
+            chemins_toolbar,
+            text="🗑",
+            width=2,
+            command=self._chemins_delete_selected,
+            relief=tk.FLAT,
+        ).pack(side=tk.LEFT, padx=1)
+
+        chemins_lb_frame = tk.Frame(self._ui_chemins_content, bd=0, highlightthickness=0)
+        chemins_lb_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
+
+        # Treeview "Chemins" (vide en V1)
+        self.chemins_tree = ttk.Treeview(
+            chemins_lb_frame,
+            columns=("abc", "angle"),
+            show="headings",
+            selectmode="browse",
+            height=6,
+        )
+        self.chemins_tree.heading("abc", text="A,B,C")
+        self.chemins_tree.heading("angle", text="Angle")
+        self.chemins_tree.column("abc", width=170, stretch=True, anchor="w")
+        self.chemins_tree.column("angle", width=70, stretch=False, anchor="center")
+
+        self.chemins_scroll = ttk.Scrollbar(
+            chemins_lb_frame, orient="vertical", command=self.chemins_tree.yview
+        )
+        self.chemins_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.chemins_tree.configure(yscrollcommand=self.chemins_scroll.set)
+        self.chemins_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        pw.add(chemins_frame, minsize=chemins_minsize_expanded)
+
         # Les panneaux du haut ne doivent pas "aspirer" la hauteur quand la fenêtre grandit.
-        # On laisse Scénarios prendre la place restante (remplissage jusqu'en bas).
+        # Désormais, "Chemins" est collé en bas et prend la place restante.
         pw.paneconfigure(tri_frame, stretch="never")
         pw.paneconfigure(layer_frame, stretch="never")
-        pw.paneconfigure(scen_frame, stretch="always")
-
-        # Si on démarre "déplié", on force une hauteur qui remplit jusqu'en bas.
-        if not bool(self._ui_scenarios_collapsed.get()):
-            scen_frame.update_idletasks()
-            h0 = _calcScenariosExpandedHeightPx(fill_bottom=True)
-            if h0 is not None:
-                h0 = max(int(scen_minsize_expanded), int(h0))
-                pw.paneconfigure(scen_frame, height=h0)
+        pw.paneconfigure(decrypt_frame, stretch="never")
+        pw.paneconfigure(scen_frame, stretch="never")
+        pw.paneconfigure(chemins_frame, stretch="always")
 
         # Remplir la liste des scénarios existants (pour l'instant : le manuel)
         self._refresh_scenario_listbox()
@@ -2539,6 +2743,17 @@ class TriangleViewerManual(tk.Tk):
                         tree.selection_set(kids[0])
                         tree.see(kids[0])
                         break
+
+    # =========================
+    #  CHEMINS (V1 : UI uniquement)
+    # =========================
+    def _chemins_edit_selected(self):
+        """V1: stub. L'édition sera implémentée plus tard."""
+        messagebox.showinfo("Chemins", "V1 : édition non implémentée")
+
+    def _chemins_delete_selected(self):
+        """V1: stub. La suppression sera implémentée plus tard."""
+        messagebox.showinfo("Chemins", "V1 : suppression non implémentée")
 
     # =========================
     # Scénarios: propriétés calculées (Treeview)
@@ -3666,10 +3881,12 @@ class TriangleViewerManual(tk.Tk):
         self._ctx_menu.add_command(label="Filtrer les scénarios…", command=self._ctx_filter_scenarios)
         self._ctx_menu.add_command(label="OL=0°", command=self._ctx_orient_OL_north)
         self._ctx_menu.add_command(label="BL=0°", command=self._ctx_orient_BL_north)
+        self._ctx_menu.add_separator()
+        self._ctx_menu.add_command(label="Créer un chemin…", command=self._ctx_create_chemin)
 
         # Mémoriser l'index des entrées "OL=0°" / "BL=0°" pour pouvoir les (dés)activer au vol
-        self._ctx_idx_ol0 = self._ctx_menu.index("end") - 1
-        self._ctx_idx_bl0 = self._ctx_menu.index("end")
+        self._ctx_idx_ol0 = 4
+        self._ctx_idx_bl0 = 5
 
         # Séparateur et zone dynamique pour les actions "mot"
         self._ctx_menu.add_separator()
@@ -4503,6 +4720,120 @@ class TriangleViewerManual(tk.Tk):
             adj.setdefault(ka, []).append(b)
             adj.setdefault(kb, []).append(a)
         return {"adj": adj, "pts": pts}
+
+
+    # ---------- CHEMIN : lissage du boundary graph (post-traitement) ----------
+    def _smooth_boundary_graph_for_chemin(self, graph, epsSnap: float):
+        """
+        Lisse un boundary graph *après* _build_boundary_graph(), sans modifier la fonction partagée.
+        Objectif: fusionner des sommets quasi-identiques (pollution shapely) pour restaurer un cycle (degré=2).
+
+        - graph: {"adj": {k:[pt,...]}, "pts": {k:(x,y)}}
+        - epsSnap: tolérance monde pour fusion (typiquement 1e-5..1e-4 dans tes cas)
+        """
+        if not graph or "pts" not in graph or "adj" not in graph:
+            return graph
+        eps = float(epsSnap) if epsSnap is not None else 0.0
+        if eps <= 0.0:
+            return graph
+
+        pts_map = graph.get("pts", {}) or {}
+        adj = graph.get("adj", {}) or {}
+        if len(pts_map) <= 1:
+            return graph
+
+        keys = list(pts_map.keys())
+        coords = {k: (float(pts_map[k][0]), float(pts_map[k][1])) for k in keys}
+        e2 = eps * eps
+
+        # --- bucketing sur grille eps (réduit drastiquement les comparaisons) ---
+        def _cell(p):
+            return (int(math.floor(float(p[0]) / eps)), int(math.floor(float(p[1]) / eps)))
+
+        buckets = {}
+        for k in keys:
+            c = _cell(coords[k])
+            buckets.setdefault(c, []).append(k)
+
+        # --- union-find minimal ---
+        parent = {k: k for k in keys}
+
+        def _find(a):
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+
+        def _union(a, b):
+            ra, rb = _find(a), _find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        # compare dans cellule + voisines
+        neighCells = [(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)]
+        for (cx, cy), lst in buckets.items():
+            if not lst:
+                continue
+            # comparer la liste avec celles des cellules voisines (évite doublons massifs)
+            for dx, dy in neighCells:
+                lst2 = buckets.get((cx + dx, cy + dy))
+                if not lst2:
+                    continue
+                for a in lst:
+                    pa = coords[a]
+                    for b in lst2:
+                        if a == b:
+                            continue
+                        pb = coords[b]
+                        dx2 = pa[0] - pb[0]
+                        dy2 = pa[1] - pb[1]
+                        if (dx2*dx2 + dy2*dy2) <= e2:
+                            _union(a, b)
+
+        # --- construire clusters -> point canonique (centroïde) ---
+        clusters = {}
+        for k in keys:
+            r = _find(k)
+            clusters.setdefault(r, []).append(k)
+
+        oldToNew = {}
+        newPts = {}
+        for r, lst in clusters.items():
+            # centroïde monde
+            sx = 0.0; sy = 0.0
+            for k in lst:
+                sx += coords[k][0]
+                sy += coords[k][1]
+            cx = sx / float(len(lst))
+            cy = sy / float(len(lst))
+            newKey = self._pt_key_eps((cx, cy), eps=eps)
+            newPts.setdefault(newKey, (float(cx), float(cy)))
+            for k in lst:
+                oldToNew[k] = newKey
+
+        # --- rebuild adj (en dédupliquant) ---
+        newAdj = {}
+        newAdjKeys = {}
+        for ku, neighPts in (adj or {}).items():
+            if ku not in oldToNew:
+                continue
+            nu = oldToNew[ku]
+            newAdj.setdefault(nu, [])
+            newAdjKeys.setdefault(nu, set())
+            for vpt in (neighPts or []):
+                # retrouver la key d'origine du voisin (même granularité que _build_boundary_graph)
+                kv = self._pt_key_eps(vpt)
+                if kv not in oldToNew:
+                    continue
+                nv = oldToNew[kv]
+                if nv == nu:
+                    continue
+                if nv in newAdjKeys[nu]:
+                    continue
+                newAdjKeys[nu].add(nv)
+                newAdj[nu].append(newPts.get(nv, (float(vpt[0]), float(vpt[1]))))
+
+        return {"adj": newAdj, "pts": newPts}
 
     def _incident_half_edges_at_vertex(self, graph, v, eps=EPS_WORLD):
         """
@@ -6911,6 +7242,250 @@ class TriangleViewerManual(tk.Tk):
 
         return outline
 
+
+    # ---------- CHEMIN : extraction liste de points ordonnée depuis l'outline ----------
+    def _outline_to_ordered_points(self, outline, start_world=None, orientation="cw", eps: float = EPS_WORLD):
+        """Convertit une liste de segments (p1,p2) en une liste ordonnée de points (non fermée).
+
+        - Utilise le graphe de frontière (même utilitaire que snap/assist) : _build_boundary_graph
+        - start_world : np.array([x,y]) monde, on prend le sommet de l'outline le plus proche
+        - orientation : "cw" (horaire) ou "ccw" (inverse)
+        """
+        if not outline:
+            return []
+
+        g = self._build_boundary_graph(outline)
+        pts_map = g.get("pts", {}) or {}
+        adj = g.get("adj", {}) or {}
+        if not pts_map:
+            return []
+
+        # IMPORTANT: toutes les clés manipulées pendant le parcours doivent utiliser la même granularité
+        # que celle utilisée pour construire le graphe (EPS_WORLD par défaut).
+        keyEps = float(eps)
+
+        # --- CHEMIN: lissage du graphe si la frontière est "polluée" (sommets quasi-identiques) ---
+        # On détecte le problème via les degrés != 2 (cycle cassé).
+        bad0 = [k for k, v in adj.items() if len(v) != 2]
+        if bad0:
+            # tolérance de snap dédiée chemin: plus large que EPS_WORLD, mais locale au CHEMIN
+            epsSnap = max(float(eps) * 50.0, 1e-5)
+            g2 = self._smooth_boundary_graph_for_chemin(g, epsSnap=epsSnap)
+            pts_map2 = g2.get("pts", {}) or {}
+            adj2 = g2.get("adj", {}) or {}
+            # n'accepter le lissage que s'il améliore réellement le cycle
+            bad1 = [k for k, v in adj2.items() if len(v) != 2]
+            if len(bad1) <= len(bad0) and pts_map2:
+                g = g2
+                pts_map = pts_map2
+                adj = adj2
+                keyEps = float(epsSnap)
+
+        # 1) choisir vertex départ : le plus proche de start_world si fourni, sinon un arbitraire
+        if start_world is not None:
+            sx, sy = float(start_world[0]), float(start_world[1])
+            best_k = None
+            best_d2 = None
+            for kk, p in pts_map.items():
+                px, py = float(p[0]), float(p[1])
+                d2 = (px - sx)*(px - sx) + (py - sy)*(py - sy)
+                if best_d2 is None or d2 < best_d2:
+                    best_d2 = d2
+                    best_k = kk
+            start_key = best_k
+        else:
+            start_key = next(iter(pts_map.keys()))
+
+        if start_key is None:
+            return []
+
+        # 2) vérif degrés (debug utile)
+        bad = [k for k,v in adj.items() if len(v) != 2]
+        if bad:
+            # On ne bloque pas ici : on tente quand même (certaines unions peuvent produire des sommets colinéaires)
+            print(f"[CHEMIN][WARN] sommets degré!=2 : {len(bad)} (ex: {bad[:5]})")
+
+        # 3) parcours du cycle
+        start_pt = pts_map[start_key]
+        neighs = adj.get(start_key, [])
+        if not neighs:
+            return []
+        prev_key = None
+        cur_key = start_key
+        cur_pt = pts_map[cur_key]
+        out_pts = [ (float(cur_pt[0]), float(cur_pt[1])) ]
+
+        # choisir un premier voisin (arbitraire)
+        next_pt = neighs[0]
+        next_key = self._pt_key_eps(next_pt, eps=keyEps)
+
+        guard = 0
+        while guard < 4096:
+            guard += 1
+            prev_key = cur_key
+            cur_key = next_key
+            cur_pt = pts_map.get(cur_key, (float(next_pt[0]), float(next_pt[1])))
+            out_pts.append((float(cur_pt[0]), float(cur_pt[1])))
+
+            # stop si on revient au départ (cycle fermé)
+            if cur_key == start_key:
+                break
+
+            neighs = adj.get(cur_key, [])
+            if not neighs:
+                break
+            # choisir le voisin différent du précédent
+            k0 = self._pt_key_eps(neighs[0], eps=keyEps)
+            k1 = self._pt_key_eps(neighs[1], eps=keyEps) if len(neighs) > 1 else None
+            if k1 is None:
+                next_key = k0
+            else:
+                next_key = (k1 if k0 == prev_key else k0)
+
+        # enlever le dernier si c'est un doublon de fermeture
+        if len(out_pts) >= 2:
+            x0,y0 = out_pts[0]
+            x1,y1 = out_pts[-1]
+            if abs(x0-x1) <= eps and abs(y0-y1) <= eps:
+                out_pts = out_pts[:-1]
+
+        # 4) orientation demandée (aire signée)
+        def signed_area(poly_pts):
+            if not poly_pts or len(poly_pts) < 3:
+                return 0.0
+            s = 0.0
+            n = len(poly_pts)
+            for i in range(n):
+                x1,y1 = poly_pts[i]
+                x2,y2 = poly_pts[(i+1) % n]
+                s += x1*y2 - x2*y1
+            return 0.5*s
+
+        want = str(orientation or "cw").strip().lower()
+        area = signed_area(out_pts)
+        is_ccw = (area > 0.0)
+        if (want == "cw" and is_ccw) or (want == "ccw" and (not is_ccw)):
+            out_pts = list(reversed(out_pts))
+
+        return out_pts
+
+    def _map_outline_points_to_vertices(self, gid: int, pts, eps: float = EPS_WORLD):
+        """Associe chaque point du contour à un nom de ville + triangles candidats (debug)."""
+        out = []
+        g = self.groups.get(gid) or {}
+        nodes = g.get("nodes", []) or []
+
+        # index sommets groupe : liste d'entrées (coord, name, tri_id, vkey)
+        verts = []
+        for nd in nodes:
+            tid = nd.get("tid")
+            if tid is None or not (0 <= tid < len(self._last_drawn)):
+                continue
+            t = self._last_drawn[tid]
+            tri_id = t.get("id", tid)
+            labels = t.get("labels", ("", "", ""))
+            P = t.get("pts", {})
+            for k, idx in (("O",0),("B",1),("L",2)):
+                w = P.get(k, None)
+                if w is None:
+                    continue
+                name = str(labels[idx] if len(labels) > idx else "")
+                verts.append((float(w[0]), float(w[1]), name, tri_id, str(k)))
+
+        # pour chaque point contour, trouver les sommets proches
+        e2 = float(eps) * float(eps)
+        # priorité si chevauchement : Base(B) > Lumière(L) > Ouverture(O)
+        vkeyPriority = {"L": 0, "B": 1, "O": 2}
+        for p in (pts or []):
+            px, py = float(p[0]), float(p[1])
+            cands = []
+            best = None  # (d2, prio, name, tri_id, vkey)
+            choices = []  # [{"tri":..,"vkey":..,"name":..}, ...]
+            for (vx, vy, name, tri_id, vkey) in verts:
+                d2 = (vx-px)*(vx-px) + (vy-py)*(vy-py)
+                # tolérance un peu plus large que eps (outline shapely peut bouger)
+                if d2 <= max(e2*25.0, 1e-12):
+                    cands.append(tri_id)
+                    choices.append({"tri": tri_id, "vkey": str(vkey), "name": str(name)})
+                    pr = int(vkeyPriority.get(str(vkey), 9))
+                    key = (float(d2), pr, str(name), tri_id, str(vkey))
+                    if best is None or key < best:
+                        best = key
+            # dédoublonner tri candidates
+            cands2 = []
+            for tid in cands:
+                if tid not in cands2:
+                    cands2.append(tid)
+            nm = best[2] if best and best[2] else "(intermédiaire)"
+            bestTri = best[3] if best else None
+            out.append({
+                "pt": (px, py),
+                "name": nm,
+                "triangles": cands2,
+                "choices": choices,
+                "bestTri": bestTri,
+            })
+        return out
+
+
+    def _chemin_allocate_points_two_per_triangle(self, gid: int, mapped_points: list):
+        """
+        Allocation logique des points partagés pour favoriser "au moins 2 points par triangle".
+        - mapped_points: [{"pt":(x,y), "name":str, "triangles":[tri_id,...]}, ...] (ordre du contour)
+        Retourne:
+          {
+            "order": [tri_id,...] (ordre des triangles dans le groupe),
+            "counts": {tri_id: n},
+            "owners": [ownerTriId or None] (par point, dans l'ordre),
+            "perTriangle": {tri_id: [idxPoint,...]} (index des points du contour attribués)
+          }
+        """
+        g = self.groups.get(int(gid)) or {}
+        nodes = g.get("nodes", []) or []
+        tri_order = []
+        for nd in nodes:
+            tid = nd.get("tid")
+            if tid is None or not (0 <= tid < len(self._last_drawn)):
+                continue
+            t = self._last_drawn[tid]
+            tri_id = t.get("id", tid)
+            if tri_id not in tri_order:
+                tri_order.append(tri_id)
+
+        order_index = {tri_id: i for i, tri_id in enumerate(tri_order)}
+        counts = {tri_id: 0 for tri_id in tri_order}
+        perTri = {tri_id: [] for tri_id in tri_order}
+        owners = []
+
+        for i, it in enumerate(mapped_points or []):
+            cands = list(it.get("triangles", []) or [])
+            if not cands:
+                owners.append(None)
+                continue
+
+            # Filtrer candidats connus dans le groupe
+            cands = [c for c in cands if c in order_index]
+            if not cands:
+                owners.append(None)
+                continue
+
+            # Choisir le triangle avec le moins de points alloués
+            # Tie-breaker: ordre du groupe
+            best = None  # (count, orderIdx, tri_id)
+            for tri_id in cands:
+                c = int(counts.get(tri_id, 0))
+                oi = int(order_index.get(tri_id, 10**9))
+                key = (c, oi, tri_id)
+                if best is None or key < best:
+                    best = key
+            owner = best[2] if best else cands[0]
+
+            owners.append(owner)
+            counts[owner] = int(counts.get(owner, 0)) + 1
+            perTri[owner].append(i)
+
+        return {"order": tri_order, "counts": counts, "owners": owners, "perTriangle": perTri}
+
     # --- util: segments d'enveloppe (groupe ou triangle seul) ---
     def _outline_for_item(self, idx: int, eps: float | None = None):
         """
@@ -7489,6 +8064,26 @@ class TriangleViewerManual(tk.Tk):
             (P["O"][1] + P["B"][1] + P["L"][1]) / 3.0
         ], dtype=float)
 
+    def _point_in_tri_screen(self, x: float, y: float, a, b, c) -> bool:
+        """True si (x,y) est dans le triangle écran (a,b,c) (inclut bord)."""
+        ax, ay = float(a[0]), float(a[1])
+        bx, by = float(b[0]), float(b[1])
+        cx, cy = float(c[0]), float(c[1])
+
+        # Produit vectoriel 2D (p1->p2) x (p1->p3)
+        def cross(x1, y1, x2, y2, x3, y3):
+            return (x2 - x1) * (y3 - y1) - (y2 - y1) * (x3 - x1)
+
+        # Tests de même signe (tolérance légère pour les bords)
+        eps = 1e-9
+        c1 = cross(ax, ay, bx, by, x, y)
+        c2 = cross(bx, by, cx, cy, x, y)
+        c3 = cross(cx, cy, ax, ay, x, y)
+
+        has_neg = (c1 < -eps) or (c2 < -eps) or (c3 < -eps)
+        has_pos = (c1 > eps) or (c2 > eps) or (c3 > eps)
+        return not (has_neg and has_pos)
+
     def _hit_test(self, x, y):
         """Retourne ('center'|'vertex'|None, idx, extra) selon la zone cliquée.
         - 'vertex' si clic dans un disque autour d'un sommet
@@ -7509,7 +8104,15 @@ class TriangleViewerManual(tk.Tk):
                 dv2 = (x - vs[0])**2 + (y - vs[1])**2
                 if dv2 <= tol2:
                     return ("vertex", i, key)
-            # 2) puis le CENTRE (tolérance plus petite)
+
+            # 2) intérieur du triangle (hit réel)
+            Os = np.array(self._world_to_screen(P["O"]))
+            Bs = np.array(self._world_to_screen(P["B"]))
+            Ls = np.array(self._world_to_screen(P["L"]))
+            if self._point_in_tri_screen(float(x), float(y), Os, Bs, Ls):
+                return ("center", i, None)
+
+            # 3) fallback : clic proche du centre (utile si triangle très petit/degenerate)
             Cw = (P["O"] + P["B"] + P["L"]) / 3.0
             Cs = np.array(self._world_to_screen(Cw))
             ds2 = (x - Cs[0])**2 + (y - Cs[1])**2
@@ -7576,6 +8179,7 @@ class TriangleViewerManual(tk.Tk):
         if mode in ("center", "vertex"):
             self._ctx_target_idx = idx
             self._ctx_last_rclick = (event.x, event.y)
+            self._ctx_nearest_vertex_key = self._ctx_compute_nearest_vertex_key(idx, event.x, event.y)
 
             # "OL=0°" et "BL=0°" sont valables aussi sur un groupe :
             # on oriente tout le groupe en prenant le triangle cliqué comme référence.
@@ -7588,6 +8192,176 @@ class TriangleViewerManual(tk.Tk):
             self._rebuild_ctx_word_entries()
             self._ctx_menu.tk_popup(event.x_root, event.y_root)
             self._ctx_menu.grab_release()
+
+    def _ctx_compute_nearest_vertex_key(self, tri_idx: int, sx: float, sy: float) -> str:
+        """Retourne 'O'/'B'/'L' du sommet le plus proche du point écran (sx,sy)."""
+        if tri_idx is None or not (0 <= int(tri_idx) < len(self._last_drawn)):
+            return "L"
+        tri = self._last_drawn[int(tri_idx)]
+        pts = tri.get("_pick_pts") or {}
+        best_k = None
+        best_d2 = None
+        for k in ("O", "B", "L"):
+            p = pts.get(k)
+            if not p:
+                continue
+            dx = float(sx) - float(p[0])
+            dy = float(sy) - float(p[1])
+            d2 = dx*dx + dy*dy
+            if best_d2 is None or d2 < best_d2:
+                best_d2 = d2
+                best_k = k
+        return best_k or "L"
+
+    def _ctx_create_chemin(self):
+        """Entrée menu: ouvrir la fenêtre de paramètres 'Créer un chemin…' (V1: GUI only)."""
+        if self._ctx_target_idx is None or not (0 <= self._ctx_target_idx < len(self._last_drawn)):
+            return
+        tri = self._last_drawn[self._ctx_target_idx]
+        tri_id = tri.get("id", "?")
+        labels = tri.get("labels", ("", "", ""))
+        label_str = f"{int(tri_id):02d}" if str(tri_id).isdigit() else str(tri_id)
+
+        k = str(self._ctx_nearest_vertex_key or "L").upper()
+        if k not in ("O", "B", "L"):
+            k = "L"
+
+        if k == "O":
+            city = str(labels[0] if len(labels) > 0 else "")
+        elif k == "B":
+            city = str(labels[1] if len(labels) > 1 else "")
+        else:
+            city = str(labels[2] if len(labels) > 2 else "")
+
+
+        dlg = DialogCreateCheminParams(self, triangle_label=label_str, vertex_key=k, vertex_city=city)
+        self.wait_window(dlg)
+        if not getattr(dlg, "result", None):
+            return
+
+        # --- V1 "Création du chemin" : extraire le contour du groupe et imprimer la liste ordonnée ---
+        res = dlg.result if isinstance(dlg.result, dict) else {}
+
+        gid = tri.get("group_id", None)
+        if gid is None:
+            messagebox.showerror("Chemin", "Triangle sans group_id : impossible de calculer le contour.")
+            return
+
+        # point de départ (coord monde) = sommet du triangle le plus proche du clic droit
+        start_world = np.array(tri["pts"][k], dtype=float)
+
+        outline = self._group_outline_segments(int(gid), eps=float(EPS_WORLD))
+        pts = self._outline_to_ordered_points(outline, start_world=start_world, orientation=str(res.get("orientation","cw")), eps=float(EPS_WORLD))
+        if not pts:
+            messagebox.showerror("Chemin", "Contour vide ou non ordonnable (outline).")
+            return
+
+        # mapping points -> ville + triangles candidats (debug)
+        mapped = self._map_outline_points_to_vertices(int(gid), pts, eps=float(EPS_WORLD))
+
+        # --- Déduplication CHEMIN (géométrique) ---
+        # Objectif: ne pas compter/traiter des points quasi-identiques (pollution shapely / chevauchements).
+        def _dedupMappedPoints(mappedList, epsDedup: float):
+            epsDedup = float(epsDedup)
+            if epsDedup <= 0.0:
+                return list(mappedList or [])
+            outL = []
+            lastKey = None
+            for it in (mappedList or []):
+                p = it.get("pt", None)
+                if not p:
+                    continue
+                k = self._pt_key_eps((float(p[0]), float(p[1])), eps=epsDedup)
+                if lastKey is not None and k == lastKey:
+                    continue
+                outL.append(it)
+                lastKey = k
+            return outL
+
+        mapped = _dedupMappedPoints(mapped, epsDedup=max(float(EPS_WORLD) * 50.0, 1e-5))
+
+        # --- Recalage du cycle sur le point de départ (start_world) ---
+        # Un contour est cyclique : après mapping+dedup, l'index 0 peut être "roté".
+        # On force donc le point le plus proche de start_world à être en position 0,
+        # ce qui rend la fermeture (append mapped[0]) cohérente.
+        if start_world is not None and mapped:
+            sx, sy = float(start_world[0]), float(start_world[1])
+            best_i = 0
+            best_d2 = None
+            for i, it in enumerate(mapped):
+                p = it.get("pt", None)
+                if not p:
+                    continue
+                dx = float(p[0]) - sx
+                dy = float(p[1]) - sy
+                d2 = dx*dx + dy*dy
+                if best_d2 is None or d2 < best_d2:
+                    best_d2 = d2
+                    best_i = i
+            if best_i != 0:
+                mapped = list(mapped[best_i:]) + list(mapped[:best_i])
+
+        # --- Fermeture + contrainte "nombre impair" ---
+        # On ne ferme que si on n'est PAS en mode "limit" (sinon on autorise un chemin non fermé).
+        if not bool(res.get("limit", False)):
+            if len(mapped) >= 2 and (len(mapped) % 2 == 0):
+                mapped = list(mapped) + [mapped[0]]
+
+        # Limite optionnelle (maxPoints impaire) APRES dedup
+        if bool(res.get("limit", False)):
+            mp = int(res.get("maxPoints", 0))
+            if mp > 0:
+                if mp % 2 == 0:
+                    mp += 1
+                mapped = list(mapped)[:mp]
+
+        # réaligner pts sur mapped (cohérence logs + traitements)
+        pts = [it.get("pt") for it in (mapped or []) if it.get("pt") is not None]
+ 
+        print("\n" + "="*80)
+        print(f"[CHEMIN] gid={gid} triangle={label_str} start={k} city={city} orientation={res.get('orientation','cw')} limit={res.get('limit',False)} maxPoints={res.get('maxPoints',None)}")
+        print(f"[CHEMIN] outline segments: {len(outline)} | ordered points: {len(pts)}")
+        print("-"*80)
+        for i, it in enumerate(mapped):
+            nm = it.get("name","")
+            tri_ids = it.get("triangles", [])
+            p = it.get("pt", (None,None))
+            print(f"{i+1:02d}. {nm:20s}  tri={tri_ids}   p=({p[0]:.3f},{p[1]:.3f})")
+
+        # allocation logique (sert uniquement à produire une liste "définitive" lisible)
+        alloc = self._chemin_allocate_points_two_per_triangle(int(gid), mapped)
+        owners = list(alloc.get("owners", []) or [])
+
+        def _fmt_best_or_choices(it):
+            """Affiche le triangle associé au choix retenu (bestTri). Si absent, fallback sur candidats."""
+            bt = it.get("bestTri", None)
+            if bt is not None:
+                return f"(T{int(bt):02d})"
+            tris = list(it.get("triangles", []) or [])
+            tris2 = []
+            for t in tris:
+                if t not in tris2:
+                    tris2.append(t)
+            if not tris2:
+                return "(T?)"
+            if len(tris2) == 1:
+                return f"(T{int(tris2[0]):02d})"
+            return "(" + "|".join([f"T{int(t):02d}" for t in tris2]) + ")"
+
+        print("="*80)
+        print(f"[CHEMIN] gid={int(gid)} triangle={label_str} start={k} city={city} orientation={res.get('orientation','cw')} limit={bool(res.get('limit',False))} maxPoints={int(res.get('maxPoints',0))}")
+        print(f"[CHEMIN] outline segments: {len(outline)} | ordered points: {len(mapped)}")
+        print("-"*80)
+        # LISTE DEFINITIVE (lisible)
+        for i, it in enumerate(mapped, start=1):
+            nm = str(it.get('name', '') or '')
+            suffix = _fmt_best_or_choices(it)
+            print(f"{i:02d}. {nm} {suffix}")
+        print("="*80)
+
+        self.status.config(text=f"Chemin: contour gid={gid} ({len(pts)} points) imprimé console")
+ 
+
 
     def _is_point_in_clock(self, sx: float, sy: float) -> bool:
         """True si (sx,sy) est dans le disque du compas (coords canvas)."""
