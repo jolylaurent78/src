@@ -122,36 +122,28 @@ class ScenarioAssemblage:
         self.created_at: _dt.datetime = _dt.datetime.now()
 
 
-
 # =============================================================================
-# TopologyModel v4.3 (Core) – Modèle objet V1 (sans Tk) – IDs lisibles (Phase 2)
+# TopologyModel v4.3 (Core) – Modèle objet V1 (sans Tk)
 # =============================================================================
 #
-# Convention d’identifiants lisibles :
-# - Element (triangle instance) : "<scenarioId>:T<triRank:02d>"         ex: "S1:T01"
-# - Node atomique (par sommet) : "<scenarioId>:T<triRank:02d}:N<idx>"   ex: "S1:T01:N0"
-# - Group (DSU)                : "<scenarioId>:G<k:03d>"                ex: "S1:G001"
-# - Attachment                 : "<scenarioId>:A<k:03d>"                ex: "S1:A003"
-#
-# Remarques :
-# - Les IDs sont des strings pour une lisibilité maximale (TopoDump XML).
-# - La règle “plus récent gagne” utilise createdOrder (int monotone interne),
-#   et PAS l’ordre lexicographique des IDs.
-# - t est fourni par l’UI en référentiel monde (km).
-# - fusionDistanceKm (km) pilote la fusion de points sur une arête :
+# Objectifs de cette V1 (v4.3):
+# - Introduire les classes du modèle (World/Group/Element/Vertex/Edge/Node/Attachment).
+# - Implémenter la fusion non destructive (DSU) des nodes et des groupes.
+# - Implémenter la politique de fusion des points sur une arête en km:
 #       abs(t1 - t2) * edgeLengthKm <= fusionDistanceKm  => fusion
-#   et on conserve le t du point canonique (référence contour).
+#   et conserver le t du point canonique (référence contour).
+# - Implémenter l'export manuel TopoDump XML par scénario.
 #
-# Couverture V1 :
-# - vertex↔vertex
-# - vertex↔edge (t obligatoire)
-# - edge↔edge (mapping "direct"|"reverse") + coverage total [0,1] sur les deux arêtes
+# Hors périmètre V1:
+# - Calcul complet du boundary (frontière). Une API est posée, mais le calcul
+#   sera itéré ensuite. La règle "mono-cycle sinon bug" est néanmoins posée
+#   dans validate() via un placeholder.
 #
-# Dégrouper/Undo (MVP) :
-# - suppression d’attaches + rebuild complet depuis la liste des attachments.
+# Notes:
+# - Le paramètre t est toujours fourni côté UI et exprimé en référentiel monde.
+# - Les unités monde sont les kilomètres.
 #
 
-import re
 import xml.etree.ElementTree as _ET
 
 
@@ -168,6 +160,7 @@ class TopologyNodeType:
     V1 :
     - La règle de priorité L > B > O est figée par la spec v4.2.
     """
+    # Types de nodes (métier). Priorité: L > B > O.
     OUVERTURE = "O"
     BASE = "B"
     LUMIERE = "L"
@@ -178,7 +171,7 @@ class TopologyNodeType:
             return 3
         if node_type == TopologyNodeType.BASE:
             return 2
-        return 1
+        return 1  # O par défaut
 
 
 class TopologyFeatureType:
@@ -219,9 +212,10 @@ class TopologyFeatureRef:
     V1 :
     - Utilisée comme brique de base pour les attachments et l’export TopoDump.
     """
-    def __init__(self, feature_type: str, element_id: str, index: int, t: float | None = None):
+    # Référence typée vers un Vertex ou une Edge (et éventuellement un t).
+    def __init__(self, feature_type: str, element_id: int, index: int, t: Optional[float] = None):
         self.feature_type = str(feature_type)
-        self.element_id = str(element_id)
+        self.element_id = int(element_id)
         self.index = int(index)
         self.t = float(t) if t is not None else None
 
@@ -248,11 +242,12 @@ class TopologyAttachment:
     - Supporte vertex↔vertex, vertex↔edge et edge↔edge (mapping direct|reverse).
     - La reconstruction (rebuild) depuis la liste d’attaches est la stratégie de référence.
     """
-    def __init__(self, attachment_id: str, kind: str,
+    # Trace métier d'une intention binaire.
+    def __init__(self, attachment_id: int, kind: str,
                  feature_a: TopologyFeatureRef, feature_b: TopologyFeatureRef,
-                 params: dict | None = None, source: str = "manual"):
-        self.attachment_id = str(attachment_id)
-        self.kind = str(kind)
+                 params: Optional[Dict[str, object]] = None, source: str = "manual"):
+        self.attachment_id = int(attachment_id)
+        self.kind = str(kind)  # "vertex-edge" | "vertex-vertex" | "edge-edge"
         self.feature_a = feature_a
         self.feature_b = feature_b
         self.params = dict(params) if params is not None else {}
@@ -274,12 +269,15 @@ class TopologyVertex:
     V1 :
     - Les unions (DSU) opèrent au niveau TopologyWorld via node_id (atomique) -> node canonique.
     """
-    def __init__(self, element_id: str, vertex_index: int, label: str, node_id: str, node_type: str):
-        self.element_id = str(element_id)
+    def __init__(self, element_id: int, vertex_index: int, label: str, node_id: int, node_type: str):
+        self.element_id = int(element_id)
         self.vertex_index = int(vertex_index)
         self.label = str(label)
-        self.node_id = str(node_id)
-        self.node_type = str(node_type)
+        self.node_id = int(node_id)          # node atomique (origine)
+        self.node_type = str(node_type)      # O/B/L (type métier du node initial)
+
+    def vertex_id(self) -> Tuple[int, int]:
+        return (self.element_id, self.vertex_index)
 
 
 class TopologyEdgePoint:
@@ -297,9 +295,12 @@ class TopologyEdgePoint:
     - Les points (0.0 et 1.0) existent toujours (extrémités).
     - Les insertions respectent la politique de fusion en km.
     """
-    def __init__(self, t: float, node_id: str):
+    def __init__(self, t: float, node_id: int):
         self.t = float(t)
-        self.node_id = str(node_id)
+        self.node_id = int(node_id)  # node atomique (origine)
+
+    def to_tuple(self):
+        return (self.t, self.node_id)
 
 
 class TopologyCoverageInterval:
@@ -341,24 +342,26 @@ class TopologyEdge:
     - Implémente la recherche de candidat de fusion à partir de fusionDistanceKm (km) et edgeLengthKm.
     - Le calcul complet du boundary sera implémenté ultérieurement.
     """
-    def __init__(self, element_id: str, edge_index: int, v_start: TopologyVertex, v_end: TopologyVertex,
+    # Arête paramétrique (Option B): points internes + intervalles de couverture.
+    def __init__(self, element_id: int, edge_index: int, v_start: TopologyVertex, v_end: TopologyVertex,
                  edge_length_km: float):
-        self.element_id = str(element_id)
+        self.element_id = int(element_id)
         self.edge_index = int(edge_index)
         self.v_start = v_start
         self.v_end = v_end
         self.edge_length_km = float(edge_length_km)
 
-        self.points_on_edge: list[TopologyEdgePoint] = [
+        # pointsOnEdge triés par t: inclure implicitement les extrémités
+        self.points_on_edge: List[TopologyEdgePoint] = [
             TopologyEdgePoint(0.0, v_start.node_id),
             TopologyEdgePoint(1.0, v_end.node_id),
         ]
-        self.coverages: list[TopologyCoverageInterval] = []
+        self.coverages: List[TopologyCoverageInterval] = []
 
-    def edge_id(self) -> str:
-        return f"{self.element_id}:E{self.edge_index}"
+    def edge_id(self) -> Tuple[int, int]:
+        return (self.element_id, self.edge_index)
 
-    def edge_label_key(self) -> tuple[str, str]:
+    def edge_label_key(self) -> Tuple[str, str]:
         a = self.v_start.label
         b = self.v_end.label
         return (a, b) if a <= b else (b, a)
@@ -366,16 +369,23 @@ class TopologyEdge:
     def labels_display(self) -> str:
         return f"{self.v_start.label}–{self.v_end.label}"
 
-    def find_fusion_candidate_index(self, t_new: float, fusion_distance_km: float, node_rank_fn) -> int | None:
+    def find_fusion_candidate_index(self, t_new: float, fusion_distance_km: float,
+                                    node_rank_fn) -> Optional[int]:
+        # Retourne l'index d'un point existant à fusionner, si deltaKm <= fusionDistanceKm.
+        # En cas de multiples candidats, choisit le point dont le node canonique est prioritaire
+        # (type puis plus récent) via node_rank_fn(canonicalNodeId)->(rankType, canonicalId).
         if self.edge_length_km <= 0:
             return None
+
         candidates = []
         for i, p in enumerate(self.points_on_edge):
             delta_km = abs(float(t_new) - float(p.t)) * self.edge_length_km
             if delta_km <= float(fusion_distance_km):
                 candidates.append(i)
+
         if not candidates:
             return None
+
         best_i = candidates[0]
         best_key = node_rank_fn(self.points_on_edge[best_i].node_id)
         for i in candidates[1:]:
@@ -385,50 +395,14 @@ class TopologyEdge:
                 best_i = i
         return best_i
 
-    def insert_point_sorted(self, t_new: float, node_id: str):
-        self.points_on_edge.append(TopologyEdgePoint(float(t_new), str(node_id)))
+    def insert_point_sorted(self, t_new: float, node_id: int):
+        t_new = float(t_new)
+        for p in self.points_on_edge:
+            if p.t == t_new and p.node_id == int(node_id):
+                return
+        self.points_on_edge.append(TopologyEdgePoint(t_new, int(node_id)))
         self.points_on_edge.sort(key=lambda p: p.t)
 
-
-class TopologyPose2D:
-    """Pose 2D d'un élément dans le référentiel monde (rotation + translation).
-
-    Rôle :
-    - Porter la transformation Monde <- Local, sous forme (R, T) :
-        p_world = R @ p_local + T
-    - Être la SEULE représentation des coordonnées monde persistées dans le modèle.
-      Les coordonnées monde des sommets/points sont toujours dérivées via cette pose.
-
-    Ne fait PAS :
-    - Ne modifie pas la géométrie intrinsèque (longueurs / angles) de l'élément.
-    - Ne décide pas de la pose (elle est calculée/ajustée par l'UI ou les règles d'attachments).
-    """
-    def __init__(self, R: np.ndarray | None = None, T: np.ndarray | None = None):
-        self.R = np.array(R, float) if R is not None else np.eye(2, dtype=float)
-        self.T = np.array(T, float) if T is not None else np.zeros(2, dtype=float)
-
-    def theta_rad(self) -> float:
-        # R = [[c, -s],[s, c]]
-        return float(math.atan2(self.R[1, 0], self.R[0, 0]))
-
-    def to_dict(self) -> dict:
-        return {
-            "R": self.R.tolist(),
-            "T": self.T.tolist(),
-            "thetaRad": self.theta_rad(),
-        }
-
-    def compose(self, other: "TopologyPose2D") -> "TopologyPose2D":
-        """Compose deux poses : self ∘ other.
-        Si p' = other(p) et p'' = self(p'), alors compose() retourne la pose p'' = (self ∘ other)(p).
-        """
-        R = self.R @ other.R
-        T = (self.R @ other.T) + self.T
-        return TopologyPose2D(R=R, T=T)
-
-    @staticmethod
-    def identity() -> "TopologyPose2D":
-        return TopologyPose2D(R=np.eye(2, dtype=float), T=np.zeros(2, dtype=float))
 
 class TopologyElement:
     """Élément topologique : polygone (triangle = cas particulier n=3).
@@ -451,113 +425,83 @@ class TopologyElement:
     - edge_lengths_km peut être fourni (recommandé). À défaut, une valeur par défaut est posée
       et remplacée ensuite par la géométrie monde.
     """
-    def __init__(self, element_id: str, name: str,
-                 vertex_labels: list[str], vertex_types: list[str],
-                 edge_lengths_km: list[float],
-                 intrinsic_sides_km: dict[str, float] | None = None,
-                 local_frame: dict | None = None,
-                 vertex_local_xy: dict[int, tuple[float, float]] | None = None,
-                 meta: dict | None = None):
-        self.element_id = str(element_id)
+    # Polygone (triangle = n=3). Les sommets sont ordonnés (cycle).
+    def __init__(self, element_id: int, name: str, vertex_labels: List[str], vertex_types: List[str],
+                 edge_lengths_km: Optional[List[float]] = None, meta: Optional[Dict] = None,
+                 intrinsic_sides_km: Optional[Dict[str, float]] = None,
+                 pose_R: Optional[np.ndarray] = None, pose_T: Optional[np.ndarray] = None):
+        self.element_id = int(element_id)
         self.name = str(name)
         self.meta = dict(meta) if meta is not None else {}
 
+        # --- v4.3: géométrie intrinsèque + pose monde (sans Tk) ---
+        # intrinsic_sides_km (optionnel, triangle) : {"OB":..., "OL":..., "BL":...} en km.
+        # Si fourni, peut servir à reconstruire un repère local (O=(0,0), B=(OB,0), L=(x,y)).
+        self.intrinsic_sides_km: Dict[str, float] = dict(intrinsic_sides_km) if intrinsic_sides_km is not None else {}
+
+        # Pose monde (rotation + translation) appliquée au repère local pour obtenir des coordonnées monde.
+        # Ces paramètres sont optionnels et servent uniquement à dériver des coordonnées monde si besoin.
+        self.pose_R = np.array(pose_R, float) if pose_R is not None else None
+        self.pose_T = np.array(pose_T, float) if pose_T is not None else None
+
         if len(vertex_labels) < 3:
             raise ValueError("TopologyElement: un polygone doit avoir au moins 3 sommets")
-        if len(vertex_labels) != len(vertex_types):
+
+        if len(vertex_types) != len(vertex_labels):
             raise ValueError("TopologyElement: vertex_types doit avoir la même taille que vertex_labels")
-        if len(edge_lengths_km) != len(vertex_labels):
-            raise ValueError("TopologyElement: edge_lengths_km doit avoir la même taille que les sommets")
 
         self.vertex_labels = [str(x) for x in vertex_labels]
         self.vertex_types = [str(x) for x in vertex_types]
-        self.edge_lengths_km = [float(x) for x in edge_lengths_km]
 
-        self.intrinsic_sides_km: dict[str, float] = dict(intrinsic_sides_km) if intrinsic_sides_km is not None else {}
+        n = len(vertex_labels)
+        if edge_lengths_km is None:
+            # V1: longueur inconnue => 1km par défaut (sera remplacé par la géométrie)
+            self.edge_lengths_km = [1.0] * n
+        else:
+            if len(edge_lengths_km) != n:
+                raise ValueError("TopologyElement: edge_lengths_km doit avoir la même taille que les sommets")
+            self.edge_lengths_km = [float(x) for x in edge_lengths_km]
 
-        # --- Repère local (coordonnées relatives) ---
-        # Convention recommandée (v4.3+):
-        # - origine au sommet Ouverture (O) -> (0,0)
-        # - axe X aligné sur le segment O->B (si présent)
-        # Les coordonnées locales sont déterministes et dérivées de la géométrie intrinsèque.
-        self.local_frame: dict = dict(local_frame) if local_frame is not None else {
-            "origin": TopologyNodeType.OUVERTURE,
-            "xAxis": "O->B",
-            "units": "km",
-        }
-
-        # vertex_local_xy : coordonnées relatives des sommets (par index), exprimées dans local_frame.
-        # Ex: { idxO:(0,0), idxB:(OB,0), idxL:(x,y) }
-        self.vertex_local_xy: dict[int, tuple[float, float]] = dict(vertex_local_xy) if vertex_local_xy is not None else {}
-
-        if not self.vertex_local_xy:
-            self._try_build_default_local_coords()
-
-        self.vertexes: list[TopologyVertex] = []
-        self.edges: list[TopologyEdge] = []
-
-    def _try_build_default_local_coords(self):
-        """Construit des coordonnées locales canoniques si l'élément est un triangle O/B/L.
-
-        Stratégie V1 :
-        - On détecte les indices des sommets de type O, B, L.
-        - On reconstruit les longueurs OB, OL, BL depuis edge_lengths_km (cycle).
-        - On pose O=(0,0), B=(OB,0), L=(x,y) (y>=0) via la loi des cosinus.
-
-        Si l'élément n'est pas un triangle O/B/L (hors-scope V1), la méthode ne fait rien.
-        Si l'élément EST un triangle O/B/L mais que les longueurs nécessaires sont absentes,
-        c'est un problème de données et on lève une exception explicite (pas de masquage).
-        """
-        if len(self.vertex_labels) != 3:
-            return
-
-        # Hors-scope V1 : si on n'a pas exactement un O, un B et un L, on ne force pas.
-        if (TopologyNodeType.OUVERTURE not in self.vertex_types) or \
-           (TopologyNodeType.BASE not in self.vertex_types) or \
-           (TopologyNodeType.LUMIERE not in self.vertex_types):
-            return
-
-        # indices par type (première occurrence)
-        idxO = self.vertex_types.index(TopologyNodeType.OUVERTURE)
-        idxB = self.vertex_types.index(TopologyNodeType.BASE)
-        idxL = self.vertex_types.index(TopologyNodeType.LUMIERE)
-
-        # map des longueurs par paire non orientée (triangle)
-        n = 3
-        pair_len: dict[frozenset, float] = {}
-        for i in range(n):
-            j = (i + 1) % n
-            pair_len[frozenset((i, j))] = float(self.edge_lengths_km[i])
-
-        def d(i, j) -> float:
-            return float(pair_len.get(frozenset((i, j)), 0.0))
-
-        OB = d(idxO, idxB)
-        OL = d(idxO, idxL)
-        BL = d(idxB, idxL)
-        if OB <= 0 or OL <= 0 or BL <= 0:
-            raise ValueError(
-                f"TopologyElement({self.element_id}): longueurs invalides pour repère local O/B/L "
-                f"(OB={OB}, OL={OL}, BL={BL})"
-            )
-
-        P = _build_local_triangle(OB=OB, OL=OL, BL=BL)
-
-        # Convention import historique : si orient == "CW", miroir par rapport à l'axe X local.
-        # (équivalent à P["L"][1] *= -1 dans l'ancien code Tk)
-        orient = str(self.meta.get("orient", "")).strip().upper()
-        if orient == "CW":
-            P["L"][1] = -float(P["L"][1])
-
-        # Remap vers les indices réels
-        self.vertex_local_xy[idxO] = (float(P["O"][0]), float(P["O"][1]))
-        self.vertex_local_xy[idxB] = (float(P["B"][0]), float(P["B"][1]))
-        self.vertex_local_xy[idxL] = (float(P["L"][0]), float(P["L"][1]))
-
-        return
+        # Remplies par le World lors de l'ajout (création des nodes atomiques)
+        self.vertexes: List[TopologyVertex] = []
+        self.edges: List[TopologyEdge] = []
 
     def n_vertices(self) -> int:
         return len(self.vertex_labels)
+
+    def build_local_points_triangle(self) -> Optional[Dict[str, np.ndarray]]:
+        """Construit un repère local O/B/L à partir des longueurs intrinsèques (triangle uniquement).
+
+        Retourne un dict {"O":(x,y), "B":(x,y), "L":(x,y)} en km, ou None si non applicable.
+        """
+        if self.n_vertices() != 3:
+            return None
+        if not self.intrinsic_sides_km:
+            return None
+        OB = float(self.intrinsic_sides_km.get("OB", 0.0))
+        OL = float(self.intrinsic_sides_km.get("OL", 0.0))
+        BL = float(self.intrinsic_sides_km.get("BL", 0.0))
+        if OB <= 0 or OL <= 0 or BL <= 0:
+            return None
+        return _build_local_triangle(OB=OB, OL=OL, BL=BL)
+
+    def build_world_points_triangle(self) -> Optional[Dict[str, np.ndarray]]:
+        """Dérive des coordonnées monde (km) depuis le repère local et la pose monde.
+
+        - Nécessite build_local_points_triangle() et (pose_R, pose_T).
+        - Ne dépend pas de Tk.
+        """
+        local_pts = self.build_local_points_triangle()
+        if local_pts is None:
+            return None
+        if self.pose_R is None or self.pose_T is None:
+            return None
+        R = np.array(self.pose_R, float)
+        T = np.array(self.pose_T, float)
+        out = {}
+        for k in ("O", "B", "L"):
+            out[k] = (R @ np.array(local_pts[k], float)) + T
+        return out
 
 
 class TopologyGroup:
@@ -574,10 +518,10 @@ class TopologyGroup:
     V1 :
     - Structure légère : l’objectif est d’avoir un conteneur stable pour l’export TopoDump.
     """
-    def __init__(self, group_id: str):
-        self.group_id = str(group_id)
-        self.element_ids: list[str] = []
-        self.attachment_ids: list[str] = []
+    def __init__(self, group_id: int):
+        self.group_id = int(group_id)
+        self.element_ids: List[int] = []
+        self.attachment_ids: List[int] = []
 
 
 class TopologyWorld:
@@ -602,158 +546,152 @@ class TopologyWorld:
     - Applique vertex↔vertex, vertex↔edge et edge↔edge (mapping direct|reverse) au niveau DSU + coverages.
     - Dégrouper/undo = suppression d’attaches puis rebuild complet (petits scénarios).
     """
-    def __init__(self, scenario_id: str):
-        self.scenario_id = str(scenario_id)
+    # Racine métier: détient les éléments, groups, nodes et DSU (nodes & groupes).
+    def __init__(self):
+        # Paramètres métier globaux (v4.2)
         self.fusion_distance_km: float = 1.0
 
-        self.groups: dict[str, TopologyGroup] = {}
-        self.elements: dict[str, TopologyElement] = {}
-        self.element_to_group: dict[str, str] = {}
-        self.attachments: dict[str, TopologyAttachment] = {}
+        # Indices
+        self.groups: Dict[int, TopologyGroup] = {}
+        self.elements: Dict[int, TopologyElement] = {}
+        self.element_to_group: Dict[int, int] = {}  # elementId -> groupId atomique
+        self.attachments: Dict[int, TopologyAttachment] = {}
 
-        # Poses monde (absolues) par groupe : Monde <- Groupe
-        # L'IHM manipule des groupes (déplacement / rotation), donc la vérité "monde" est ici.
-        self.group_poses: dict[str, TopologyPose2D] = {}
+        # DSU nodes (non destructif)
+        self._node_parent: Dict[int, int] = {}
+        self._node_type: Dict[int, str] = {}
+        self._node_members: Dict[int, List[int]] = {}
 
-        self._node_parent: dict[str, str] = {}
-        self._node_type: dict[str, str] = {}
-        self._node_members: dict[str, list[str]] = {}
-        self._node_created_order: dict[str, int] = {}
+        # DSU groups (non destructif)
+        self._group_parent: Dict[int, int] = {}
+        self._group_members: Dict[int, List[int]] = {}
 
-        self._group_parent: dict[str, str] = {}
-        self._group_members: dict[str, list[str]] = {}
-        self._group_created_order: dict[str, int] = {}
+        # Id factory monotone (plus grand = plus récent)
+        self._next_group_id: int = 1
+        self._next_node_id: int = 1
+        self._next_attachment_id: int = 1
 
-        self._created_counter_nodes = 0
-        self._created_counter_groups = 0
-        self._created_counter_attachments = 0
-
-    # --- IDs helpers ---
-    @staticmethod
-    def format_element_id(scenario_id: str, tri_rank_1based: int) -> str:
-        return f"{scenario_id}:T{int(tri_rank_1based):02d}"
-
-    @staticmethod
-    def parse_tri_rank_from_element_id(element_id: str) -> int | None:
-        m = re.search(r":T(\d+)$", str(element_id))
-        if not m:
-            return None
-        return int(m.group(1))
-
-    def format_node_id(self, element_id: str, vertex_index: int) -> str:
-        tri = self.parse_tri_rank_from_element_id(element_id)
-        if tri is None:
-            return f"{self.scenario_id}:{element_id}:N{int(vertex_index)}"
-        return f"{self.scenario_id}:T{tri:02d}:N{int(vertex_index)}"
-
-    def new_group_id(self) -> str:
-        self._created_counter_groups += 1
-        gid = f"{self.scenario_id}:G{self._created_counter_groups:03d}"
-        self._group_created_order[gid] = self._created_counter_groups
+    # --- Id generation ---
+    def new_group_id(self) -> int:
+        gid = self._next_group_id
+        self._next_group_id += 1
         return gid
 
-    def new_attachment_id(self) -> str:
-        self._created_counter_attachments += 1
-        return f"{self.scenario_id}:A{self._created_counter_attachments:03d}"
+    def new_node_id(self) -> int:
+        nid = self._next_node_id
+        self._next_node_id += 1
+        return nid
+
+    def new_attachment_id(self) -> int:
+        aid = self._next_attachment_id
+        self._next_attachment_id += 1
+        return aid
 
     # --- DSU nodes ---
-    def create_node_atomic(self, node_id: str, node_type: str) -> str:
-        node_id = str(node_id)
-        self._created_counter_nodes += 1
-        self._node_parent[node_id] = node_id
-        self._node_type[node_id] = str(node_type)
-        self._node_members[node_id] = [node_id]
-        self._node_created_order[node_id] = self._created_counter_nodes
-        return node_id
+    def _node_rank_key(self, node_id: int) -> Tuple[int, int]:
+        n0 = int(node_id)
+        c = self.find_node(n0)
+        t = self._node_type.get(c, TopologyNodeType.OUVERTURE)
+        return (TopologyNodeType.rank(t), c)
 
-    def find_node(self, node_id: str) -> str:
-        node_id = str(node_id)
+    def create_node_atomic(self, node_type: str) -> int:
+        nid = self.new_node_id()
+        self._node_parent[nid] = nid
+        self._node_type[nid] = str(node_type)
+        self._node_members[nid] = [nid]
+        return nid
+
+    def find_node(self, node_id: int) -> int:
+        node_id = int(node_id)
         parent = self._node_parent.get(node_id, node_id)
         if parent != node_id:
             self._node_parent[node_id] = self.find_node(parent)
         return self._node_parent.get(node_id, node_id)
 
-    def _node_rank_key(self, node_id: str) -> tuple[int, int, str]:
-        c = self.find_node(node_id)
-        t = self._node_type.get(c, TopologyNodeType.OUVERTURE)
-        created = self._node_created_order.get(c, 0)
-        return (TopologyNodeType.rank(t), created, c)
-
-    def union_nodes(self, a: str, b: str) -> str:
-        ra = self.find_node(a)
-        rb = self.find_node(b)
+    def union_nodes(self, a: int, b: int) -> int:
+        ra = self.find_node(int(a))
+        rb = self.find_node(int(b))
         if ra == rb:
             return ra
-        canonical = ra if self._node_rank_key(ra) >= self._node_rank_key(rb) else rb
+
+        key_a = self._node_rank_key(ra)
+        key_b = self._node_rank_key(rb)
+        canonical = ra if key_a >= key_b else rb
         other = rb if canonical == ra else ra
+
         self._node_parent[other] = canonical
+
         mem = self._node_members.get(canonical, [canonical])
         mem_other = self._node_members.get(other, [other])
-        self._node_members[canonical] = mem + [x for x in mem_other if x not in mem]
+        merged = mem + [x for x in mem_other if x not in mem]
+        self._node_members[canonical] = merged
+
         return canonical
 
-    def node_members(self, node_id: str) -> list[str]:
-        c = self.find_node(node_id)
+    def node_members(self, node_id: int) -> List[int]:
+        c = self.find_node(int(node_id))
         return list(self._node_members.get(c, [c]))
 
-    def node_type(self, node_id: str) -> str:
-        c = self.find_node(node_id)
+    def node_type(self, node_id: int) -> str:
+        c = self.find_node(int(node_id))
         return self._node_type.get(c, TopologyNodeType.OUVERTURE)
 
     # --- DSU groups ---
-    def create_group_atomic(self) -> str:
+    def create_group_atomic(self) -> int:
         gid = self.new_group_id()
         self._group_parent[gid] = gid
         self._group_members[gid] = [gid]
         self.groups[gid] = TopologyGroup(gid)
-        self.group_poses[gid] = TopologyPose2D.identity()
         return gid
 
-    def find_group(self, group_id: str) -> str:
-        group_id = str(group_id)
+    def find_group(self, group_id: int) -> int:
+        group_id = int(group_id)
         parent = self._group_parent.get(group_id, group_id)
         if parent != group_id:
             self._group_parent[group_id] = self.find_group(parent)
         return self._group_parent.get(group_id, group_id)
 
-    def _group_rank_key(self, group_id: str) -> tuple[int, str]:
-        c = self.find_group(group_id)
-        created = self._group_created_order.get(c, 0)
-        return (created, c)
-
-    def union_groups(self, a: str, b: str) -> str:
-        ra = self.find_group(a)
-        rb = self.find_group(b)
+    def union_groups(self, a: int, b: int) -> int:
+        ra = self.find_group(int(a))
+        rb = self.find_group(int(b))
         if ra == rb:
             return ra
-        canonical = ra if self._group_rank_key(ra) >= self._group_rank_key(rb) else rb
+
+        canonical = ra if ra >= rb else rb  # plus récent (max)
         other = rb if canonical == ra else ra
+
         self._group_parent[other] = canonical
+
         mem = self._group_members.get(canonical, [canonical])
         mem_other = self._group_members.get(other, [other])
-        self._group_members[canonical] = mem + [x for x in mem_other if x not in mem]
+        merged = mem + [x for x in mem_other if x not in mem]
+        self._group_members[canonical] = merged
+
         if canonical in self.groups and other in self.groups:
             self.groups[canonical].element_ids.extend(self.groups[other].element_ids)
             self.groups[canonical].attachment_ids.extend(self.groups[other].attachment_ids)
+
         return canonical
 
-    def group_members(self, group_id: str) -> list[str]:
-        c = self.find_group(group_id)
+    def group_members(self, group_id: int) -> List[int]:
+        c = self.find_group(int(group_id))
         return list(self._group_members.get(c, [c]))
 
-    # --- Elements ---
-    def add_element_as_new_group(self, element: TopologyElement) -> str:
+    # --- Elements / construction ---
+    def add_element_as_new_group(self, element: TopologyElement) -> int:
         if element.element_id in self.elements:
             raise ValueError(f"TopologyWorld: elementId déjà présent: {element.element_id}")
+
         gid = self.create_group_atomic()
+        group = self.groups[gid]
+
         self.elements[element.element_id] = element
         self.element_to_group[element.element_id] = gid
-        self.groups[gid].element_ids.append(element.element_id)
+        group.element_ids.append(element.element_id)
 
         element.vertexes = []
         for i, (lab, typ) in enumerate(zip(element.vertex_labels, element.vertex_types)):
-            nid = self.format_node_id(element.element_id, i)
-            self.create_node_atomic(nid, typ)
+            nid = self.create_node_atomic(typ)
             element.vertexes.append(TopologyVertex(element.element_id, i, lab, nid, typ))
 
         n = element.n_vertices()
@@ -761,167 +699,84 @@ class TopologyWorld:
         for i in range(n):
             v0 = element.vertexes[i]
             v1 = element.vertexes[(i + 1) % n]
-            element.edges.append(TopologyEdge(element.element_id, i, v0, v1, element.edge_lengths_km[i]))
+            elen = element.edge_lengths_km[i]
+            element.edges.append(TopologyEdge(element.element_id, i, v0, v1, elen))
+
         return gid
 
-    def get_edge(self, element_id: str, edge_index: int) -> TopologyEdge:
-        return self.elements[str(element_id)].edges[int(edge_index)]
+    def get_edge(self, element_id: int, edge_index: int) -> TopologyEdge:
+        return self.elements[int(element_id)].edges[int(edge_index)]
 
-    def get_vertex(self, element_id: str, vertex_index: int) -> TopologyVertex:
-        return self.elements[str(element_id)].vertexes[int(vertex_index)]
+    def get_vertex(self, element_id: int, vertex_index: int) -> TopologyVertex:
+        return self.elements[int(element_id)].vertexes[int(vertex_index)]
 
-    def get_group_of_element(self, element_id: str) -> str:
-        gid0 = self.element_to_group.get(str(element_id))
+    def get_group_of_element(self, element_id: int) -> int:
+        """Retourne le groupId canonique auquel appartient un élément."""
+        gid0 = self.element_to_group.get(int(element_id))
         if gid0 is None:
             raise ValueError(f"Element sans groupe: {element_id}")
-        return self.find_group(gid0)
+        return self.find_group(int(gid0))
 
-    # --- poses monde (absolues) au niveau groupe ---
-    def set_group_pose(self, group_id: str, R: np.ndarray | None = None, T: np.ndarray | None = None):
-        """Assigne la pose monde d'un groupe (Monde <- Groupe)."""
-        gid = self.find_group(str(group_id))
-        self.group_poses[gid] = TopologyPose2D(R=R, T=T)
+    def _edge_endpoints_atomic_nodes(self, edge: TopologyEdge) -> Tuple[int, int]:
+        """Retourne (nodeStartAtomic, nodeEndAtomic) pour une arête orientée."""
+        return (int(edge.v_start.node_id), int(edge.v_end.node_id))
 
-    def get_group_pose(self, group_id: str) -> TopologyPose2D | None:
-        gid = self.find_group(str(group_id))
-        return self.group_poses.get(gid)
+        # --- PointsOnEdge insertion with fusion policy (km) ---
+        def add_or_fuse_point_on_edge(self, edge_ref: TopologyFeatureRef, t_new: float, node_id_new: int) -> Tuple[int, float]:
+            if edge_ref.feature_type != TopologyFeatureType.EDGE:
+                raise ValueError("add_or_fuse_point_on_edge: edgeRef attendu")
 
-    def get_element_world_pose(self, element_id: str) -> TopologyPose2D:
-        """Pose monde dérivée d'un élément.
-        V1 : un élément est porté par le repère de son groupe => pose = groupPose.
-        (Une pose élément dans le groupe pourra être ajoutée plus tard si nécessaire.)
+            edge = self.get_edge(edge_ref.element_id, edge_ref.index)
+            t_new = float(t_new)
+
+            idx = edge.find_fusion_candidate_index(
+                t_new=t_new,
+                fusion_distance_km=self.fusion_distance_km,
+                node_rank_fn=lambda nid: self._node_rank_key(self.find_node(nid))
+            )
+
+            if idx is None:
+                edge.insert_point_sorted(t_new, int(node_id_new))
+                return (self.find_node(int(node_id_new)), t_new)
+
+            existing = edge.points_on_edge[idx]
+            canon = self.union_nodes(existing.node_id, int(node_id_new))
+
+            # garder le t du point canonique (le point existant choisi)
+            t_keep = float(existing.t)
+            existing.node_id = canon
+            edge.points_on_edge.sort(key=lambda p: p.t)
+
+            return (canon, t_keep)
+
+    # --- Attachments : application + stockage (v4.3) ---
+    def apply_attachment(self, attachment: TopologyAttachment) -> int:
+        """Applique UNE attache au modèle (DSU + pointsOnEdge + coverages).
+
+        Retourne le groupId canonique résultant.
         """
-        gid = self.get_group_of_element(str(element_id))
-        pose = self.get_group_pose(gid)
-        return pose if pose is not None else TopologyPose2D.identity()
+        kind = str(attachment.kind)
 
-    # ------------------------------------------------------------------
-    # Pose Edge↔Edge (V1) : calcule la pose ABSOLUE (R,T) du groupe mobile
-    # pour aligner une arête mobile sur une arête cible.
-    # - mapping="direct" : (start_m -> start_t) et (end_m -> end_t)
-    # - mapping="reverse": (start_m -> end_t) et (end_m -> start_t)
-    # Contrat :
-    #   - retourne (R_abs, T_abs) : Monde <- GroupeMobile
-    #   - aucune modif de state (pur calcul)
-    # ------------------------------------------------------------------
-    def compute_pose_edge_to_edge(
-        self,
-        group_id_m: str,
-        element_id_m: str,
-        edge_index_m: int,
-        group_id_t: str,
-        element_id_t: str,
-        edge_index_t: int,
-        mapping: str = "direct",
-    ) -> tuple[np.ndarray, np.ndarray]:
-        gid_m = self.find_group(str(group_id_m))
-        gid_t = self.find_group(str(group_id_t))
-
-        pose_m = self.get_group_pose(gid_m) or TopologyPose2D.identity()
-        pose_t = self.get_group_pose(gid_t) or TopologyPose2D.identity()
-
-        e_m = self.get_edge(str(element_id_m), int(edge_index_m))
-        e_t = self.get_edge(str(element_id_t), int(edge_index_t))
-
-        # Endpoints en LOCAL (repère groupe) via vertex_local_xy
-        el_m = self.elements[str(element_id_m)]
-        el_t = self.elements[str(element_id_t)]
-
-        def _v_local(el, vidx: int) -> np.ndarray:
-            xy = el.vertex_local_xy.get(int(vidx))
-            if xy is None:
-                raise ValueError(f"compute_pose_edge_to_edge: vertex_local_xy manquant (element={el.element_id} idx={vidx})")
-            return np.array([float(xy[0]), float(xy[1])], dtype=float)
-
-        # Edge orientée : v_start -> v_end
-        m0_local = _v_local(el_m, e_m.v_start.vertex_index)
-        m1_local = _v_local(el_m, e_m.v_end.vertex_index)
-        t0_local = _v_local(el_t, e_t.v_start.vertex_index)
-        t1_local = _v_local(el_t, e_t.v_end.vertex_index)
-
-        # En WORLD via pose de groupe actuelle
-        m0 = (pose_m.R @ m0_local) + pose_m.T
-        m1 = (pose_m.R @ m1_local) + pose_m.T
-        t0 = (pose_t.R @ t0_local) + pose_t.T
-        t1 = (pose_t.R @ t1_local) + pose_t.T
-
-        mapping = str(mapping or "direct").strip().lower()
-        if mapping == "reverse":
-            # cible inversée : start/end swap
-            t0, t1 = t1, t0
-        elif mapping != "direct":
-            raise ValueError(f"compute_pose_edge_to_edge: mapping invalide: {mapping}")
-
-        # Rotation monde autour de m0 pour aligner (m0->m1) sur (t0->t1)
-        vm = np.array(m1 - m0, dtype=float)
-        vt = np.array(t1 - t0, dtype=float)
-        ang_m = float(math.atan2(float(vm[1]), float(vm[0])))
-        ang_t = float(math.atan2(float(vt[1]), float(vt[0])))
-        dtheta = ang_t - ang_m
-        c, s = float(math.cos(dtheta)), float(math.sin(dtheta))
-        Rw = np.array([[c, -s], [s, c]], dtype=float)
-
-        # WorldTransform : x' = Rw x + offset  (équiv. rotation autour m0 + translation)
-        # offset = t0 - Rw@m0
-        offset = np.array(t0, dtype=float) - (Rw @ np.array(m0, dtype=float))
-
-        # Composer sur la pose actuelle du groupe mobile
-        # newPose = (Rw, offset) ∘ pose_m
-        R_abs = Rw @ pose_m.R
-        T_abs = (Rw @ pose_m.T) + offset
-        return (R_abs, T_abs)
-
-    def apply_attachments(self, attachments: list[TopologyAttachment]) -> str:
-        """Applique une liste d'attachments (transaction simple V1) et retourne le gid canonique final."""
-        gid_last: str | None = None
-        for att in list(attachments or []):
-            gid_last = self.apply_attachment(att)
-        return str(gid_last) if gid_last is not None else ""
-
-
-    def _edge_endpoints_atomic_nodes(self, edge: TopologyEdge) -> tuple[str, str]:
-        return (edge.v_start.node_id, edge.v_end.node_id)
-
-    # --- points on edge ---
-    def add_or_fuse_point_on_edge(self, edge_ref: TopologyFeatureRef, t_new: float, node_id_new: str) -> tuple[str, float]:
-        edge = self.get_edge(edge_ref.element_id, edge_ref.index)
-        idx = edge.find_fusion_candidate_index(
-            t_new=float(t_new),
-            fusion_distance_km=self.fusion_distance_km,
-            node_rank_fn=lambda nid: self._node_rank_key(self.find_node(nid))
-        )
-        if idx is None:
-            edge.insert_point_sorted(float(t_new), str(node_id_new))
-            return (self.find_node(str(node_id_new)), float(t_new))
-        existing = edge.points_on_edge[idx]
-        canon = self.union_nodes(existing.node_id, str(node_id_new))
-        t_keep = float(existing.t)  # garder t du point canonique choisi
-        existing.node_id = canon
-        edge.points_on_edge.sort(key=lambda p: p.t)
-        return (canon, t_keep)
-
-    # --- attachments ---
-    def record_attachment(self, attachment: TopologyAttachment, group_id: str | None = None):
-        self.attachments[attachment.attachment_id] = attachment
-        if group_id is not None:
-            self.groups[self.find_group(group_id)].attachment_ids.append(attachment.attachment_id)
-
-    def apply_attachment(self, attachment: TopologyAttachment) -> str:
+        # Déterminer les groupes impliqués (canonique) à partir des éléments référencés
         gA = self.get_group_of_element(attachment.feature_a.element_id)
         gB = self.get_group_of_element(attachment.feature_b.element_id)
         gC = self.union_groups(gA, gB) if gA != gB else gA
 
-        kind = str(attachment.kind)
         if kind == "vertex-vertex":
+            if attachment.feature_a.feature_type != TopologyFeatureType.VERTEX or attachment.feature_b.feature_type != TopologyFeatureType.VERTEX:
+                raise ValueError("vertex-vertex attend deux vertexRef")
             vA = self.get_vertex(attachment.feature_a.element_id, attachment.feature_a.index)
             vB = self.get_vertex(attachment.feature_b.element_id, attachment.feature_b.index)
             self.union_nodes(vA.node_id, vB.node_id)
 
         elif kind == "vertex-edge":
+            # Le paramètre t est fourni par l’UI (référentiel monde). On le prend dans params["t"] ou featureRef.t
             if attachment.feature_a.feature_type == TopologyFeatureType.VERTEX and attachment.feature_b.feature_type == TopologyFeatureType.EDGE:
-                vRef, eRef = attachment.feature_a, attachment.feature_b
+                vRef = attachment.feature_a
+                eRef = attachment.feature_b
             elif attachment.feature_a.feature_type == TopologyFeatureType.EDGE and attachment.feature_b.feature_type == TopologyFeatureType.VERTEX:
-                vRef, eRef = attachment.feature_b, attachment.feature_a
+                vRef = attachment.feature_b
+                eRef = attachment.feature_a
             else:
                 raise ValueError("vertex-edge attend un vertexRef et un edgeRef")
 
@@ -929,13 +784,17 @@ class TopologyWorld:
             if t is None:
                 t = vRef.t if vRef.t is not None else eRef.t
             if t is None:
-                raise ValueError("vertex-edge: paramètre t manquant")
+                raise ValueError("vertex-edge: paramètre t manquant (UI doit fournir t)")
 
             v = self.get_vertex(vRef.element_id, vRef.index)
-            canon_node, _ = self.add_or_fuse_point_on_edge(eRef, float(t), v.node_id)
+            # Ajout/fusion du point sur l’arête (politique km). Puis union du node du vertex avec celui du point.
+            canon_node, _t_keep = self.add_or_fuse_point_on_edge(edge_ref=eRef, t_new=float(t), node_id_new=v.node_id)
             self.union_nodes(v.node_id, canon_node)
 
         elif kind == "edge-edge":
+            # mapping : "direct" | "reverse"
+            if attachment.feature_a.feature_type != TopologyFeatureType.EDGE or attachment.feature_b.feature_type != TopologyFeatureType.EDGE:
+                raise ValueError("edge-edge attend deux edgeRef")
             eA = self.get_edge(attachment.feature_a.element_id, attachment.feature_a.index)
             eB = self.get_edge(attachment.feature_b.element_id, attachment.feature_b.index)
 
@@ -944,34 +803,47 @@ class TopologyWorld:
             b0, b1 = self._edge_endpoints_atomic_nodes(eB)
 
             if mapping == "direct":
-                self.union_nodes(a0, b0); self.union_nodes(a1, b1)
+                self.union_nodes(a0, b0)
+                self.union_nodes(a1, b1)
             elif mapping == "reverse":
-                self.union_nodes(a0, b1); self.union_nodes(a1, b0)
+                self.union_nodes(a0, b1)
+                self.union_nodes(a1, b0)
             else:
-                raise ValueError(f"edge-edge: mapping invalide: {mapping}")
+                raise ValueError(f"edge-edge: mapping invalide: {mapping} (attendu 'direct'|'reverse')")
 
+            # Coverage total sur les deux arêtes : elles deviennent internes (exclusion du boundary)
             eA.coverages.append(TopologyCoverageInterval(0.0, 1.0))
             eB.coverages.append(TopologyCoverageInterval(0.0, 1.0))
 
         else:
             raise ValueError(f"Attachment kind non supporté: {kind}")
 
+        # Stocker l'attache dans le monde et l'associer au groupe canonique
         self.record_attachment(attachment, group_id=gC)
         return gC
 
-    def rebuild_from_attachments(self, attachments: list[TopologyAttachment]):
+    def rebuild_from_attachments(self, attachments: List[TopologyAttachment]):
+        """Reconstruit la topologie depuis une liste d’attaches (stratégie MVP).
+
+        Note: dans cette V1, on suppose que les éléments ont déjà été ajoutés au world.
+        La reconstruction réinitialise uniquement l'état topo mutable (DSU, pointsOnEdge, coverages, attachments).
+        """
+        # Reset DSU nodes/groups + attachments + edge points/coverages
         self.attachments = {}
         for g in self.groups.values():
             g.attachment_ids = []
 
+        # Reset DSU nodes (chaque node atomique redevient canonique) et membres
         for nid in list(self._node_parent.keys()):
             self._node_parent[nid] = nid
             self._node_members[nid] = [nid]
 
+        # Reset DSU groups
         for gid in list(self._group_parent.keys()):
             self._group_parent[gid] = gid
             self._group_members[gid] = [gid]
 
+        # Reset edges pointsOnEdge/coverages
         for el in self.elements.values():
             for edge in el.edges:
                 edge.points_on_edge = [
@@ -980,26 +852,41 @@ class TopologyWorld:
                 ]
                 edge.coverages = []
 
+        # Re-apply
         for att in sorted(attachments, key=lambda a: a.attachment_id):
             self.apply_attachment(att)
 
-    # --- export ---
-    def validate_world(self) -> list[str]:
-        errors: list[str] = []
+    # --- Attachments (V1: stockage) ---
+    def record_attachment(self, attachment: TopologyAttachment, group_id: Optional[int] = None):
+        self.attachments[attachment.attachment_id] = attachment
+        if group_id is not None:
+            g = self.groups[self.find_group(int(group_id))]
+            g.attachment_ids.append(attachment.attachment_id)
+
+    # --- Validation (V1) ---
+    def validate_world(self) -> List[str]:
+        errors: List[str] = []
+
         for el in self.elements.values():
             for edge in el.edges:
                 last_t = -1.0
-                for p in sorted(edge.points_on_edge, key=lambda p: p.t):
+                for p in edge.points_on_edge:
                     if not (0.0 <= p.t <= 1.0):
                         errors.append(f"Edge {edge.edge_id()}: t hors bornes: {p.t}")
                     if p.t < last_t:
                         errors.append(f"Edge {edge.edge_id()}: pointsOnEdge non triés")
                     last_t = p.t
+
                 for c in edge.coverages:
+                    if not (0.0 <= c.t0 <= 1.0 and 0.0 <= c.t1 <= 1.0):
+                        errors.append(f"Edge {edge.edge_id()}: coverage hors bornes [{c.t0},{c.t1}]")
                     if c.t0 >= c.t1:
                         errors.append(f"Edge {edge.edge_id()}: coverage dégénéré [{c.t0},{c.t1}]")
+
+        # Boundary mono-cycle: placeholder (sera validé quand computeBoundary sera implémentée)
         return errors
 
+    # --- TopoDump XML export (manuel, par scénario) ---
     def export_topo_dump_xml(self, scenario_id: str, path: str, orientation: str = "cw") -> str:
         root = _ET.Element("TopoDump", {
             "version": "4.3",
@@ -1010,78 +897,53 @@ class TopologyWorld:
 
         groups_el = _ET.SubElement(root, "Groups")
         for gid in sorted(self.groups.keys()):
-            if gid != self.find_group(gid):
+            gcanon = self.find_group(gid)
+            if gid != gcanon:
                 continue
             g = self.groups[gid]
             grp = _ET.SubElement(groups_el, "Group", {
-                "id": gid,
+                "id": str(gid),
                 "elements": str(len(g.element_ids)),
                 "attachments": str(len(g.attachment_ids)),
-                "originGroups": ",".join(sorted(self.group_members(gid))),
+                "originGroups": ",".join(map(str, sorted(self.group_members(gid))))
             })
             errs = self.validate_world()
             _ET.SubElement(grp, "Validate", {"errors": str(len(errs)), "warnings": "0"})
 
-            # --- Pose monde (absolue) du groupe ---
-            pose = self.get_group_pose(gid)
-            if pose is not None:
-                pe = _ET.SubElement(grp, "WorldPose", {
-                    "thetaRad": f"{pose.theta_rad():.9f}",
-                    "tx": f"{float(pose.T[0]):.6f}",
-                    "ty": f"{float(pose.T[1]):.6f}",
-                })
-                r = pose.R
-                _ET.SubElement(pe, "R", {
-                    "r00": f"{float(r[0,0]):.9f}", "r01": f"{float(r[0,1]):.9f}",
-                    "r10": f"{float(r[1,0]):.9f}", "r11": f"{float(r[1,1]):.9f}",
-                })
-
         nodes_el = _ET.SubElement(root, "Nodes")
         canonical_nodes = sorted({self.find_node(nid) for nid in self._node_parent.keys()})
         for cn in canonical_nodes:
+            members = sorted(self.node_members(cn))
             _ET.SubElement(nodes_el, "Node", {
-                "id": cn,
-                "type": self.node_type(cn),
-                "origins": ",".join(sorted(self.node_members(cn))),
-                "createdOrder": str(self._node_created_order.get(self.find_node(cn), 0)),
+                "id": str(cn),
+                "type": str(self.node_type(cn)),
+                "origins": ",".join(map(str, members)),
             })
 
         elements_el = _ET.SubElement(root, "Elements")
         for eid in sorted(self.elements.keys()):
             el = self.elements[eid]
             elx = _ET.SubElement(elements_el, "Element", {
-                "id": el.element_id,
-                "name": el.name,
+                "id": str(el.element_id),
+                "name": str(el.name),
                 "n": str(el.n_vertices()),
             })
-
-            # --- Coordonnées locales (relatives) ---
-            orient = str(el.meta.get("orient", "")).strip().upper()
-            lc = _ET.SubElement(elx, "LocalCoords", {
-                "frameOrigin": str(el.local_frame.get("origin", TopologyNodeType.OUVERTURE)),
-                "xAxis": str(el.local_frame.get("xAxis", "O->B")),
-                "units": str(el.local_frame.get("units", "km")),
-                "orient": orient if orient else "CCW",
-            })
-            for vidx in sorted(el.vertex_local_xy.keys()):
-                x, y = el.vertex_local_xy[vidx]
-                _ET.SubElement(lc, "P", {"idx": str(vidx), "x": f"{float(x):.6f}", "y": f"{float(y):.6f}"})
 
             vx = _ET.SubElement(elx, "Vertices")
             for v in el.vertexes:
                 _ET.SubElement(vx, "V", {
                     "idx": str(v.vertex_index),
                     "label": v.label,
-                    "node": self.find_node(v.node_id),
-                    "nodeOrigin": v.node_id,
-                    "type": v.node_type,
+                    "node": str(self.find_node(v.node_id)),
+                    "nodeOrigin": str(v.node_id),
+                    "type": str(v.node_type),
                 })
 
             ex = _ET.SubElement(elx, "Edges")
             for e in el.edges:
                 a, b = e.edge_label_key()
-                edge_el = _ET.SubElement(ex, "Edge", {
-                    "id": e.edge_id(),
+                edge = _ET.SubElement(ex, "Edge", {
+                    "id": f"({e.element_id},{e.edge_index})",
                     "idx": str(e.edge_index),
                     "from": str(e.v_start.vertex_index),
                     "to": str(e.v_end.vertex_index),
@@ -1089,14 +951,14 @@ class TopologyWorld:
                     "edgeLabelKey": f"{a}|{b}",
                     "lengthKm": f"{e.edge_length_km:.3f}",
                 })
-                pts = _ET.SubElement(edge_el, "Points")
+                pts = _ET.SubElement(edge, "Points")
                 for pnt in sorted(e.points_on_edge, key=lambda p: p.t):
                     _ET.SubElement(pts, "P", {
                         "t": f"{pnt.t:.6f}",
-                        "node": self.find_node(pnt.node_id),
-                        "nodeOrigin": pnt.node_id,
+                        "node": str(self.find_node(pnt.node_id)),
+                        "nodeOrigin": str(pnt.node_id),
                     })
-                covs = _ET.SubElement(edge_el, "Coverages")
+                covs = _ET.SubElement(edge, "Coverages")
                 for c in sorted(e.coverages, key=lambda c: (c.t0, c.t1)):
                     _ET.SubElement(covs, "C", {"t0": f"{c.t0:.6f}", "t1": f"{c.t1:.6f}"})
 
@@ -1104,7 +966,7 @@ class TopologyWorld:
         for aid in sorted(self.attachments.keys()):
             a = self.attachments[aid]
             att = _ET.SubElement(atts_el, "Attachment", {
-                "id": a.attachment_id,
+                "id": str(a.attachment_id),
                 "kind": a.kind,
                 "source": a.source,
                 "featureA": a.feature_a.to_string(),
@@ -1115,7 +977,9 @@ class TopologyWorld:
                 _ET.SubElement(params_el, "Param", {"name": str(k), "value": str(a.params[k])})
 
         boundary_el = _ET.SubElement(root, "Boundary", {"orientation": str(orientation)})
-        _ET.SubElement(boundary_el, "Note").text = "Boundary non implémentée en V1 (IDs lisibles) (sera ajoutée en itération suivante)."
+        _ET.SubElement(boundary_el, "Note").text = "Boundary non implémentée en V1 (v4.3) (sera ajoutée en itération suivante)."
 
-        _ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
+        tree = _ET.ElementTree(root)
+        tree.write(path, encoding="utf-8", xml_declaration=True)
         return path
+

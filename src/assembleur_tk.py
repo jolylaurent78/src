@@ -47,6 +47,8 @@ from src.assembleur_core import (
     _pose_params,
     _apply_R_T_on_P,
     ScenarioAssemblage,
+    TopologyWorld, TopologyElement, TopologyNodeType,
+    TopologyAttachment, TopologyFeatureRef, TopologyFeatureType,
 )
 
 from src.assembleur_sim import (
@@ -338,6 +340,14 @@ class TriangleViewerManual(tk.Tk):
         self.title("Assembleur de Triangles — Mode Manuel")
         self.geometry("1200x700")
 
+        # -----------------------------
+        # 1 TopologyWorld par scénario
+        # - IDs scénarios lisibles : SM1/SM2... (manuels), SA1/SA2... (autos)
+        # - Tk reste centré sur ses objets graphiques ; on annote simplement avec les IDs topo.
+        # -----------------------------
+        self._topo_next_manual_id = 1
+        self._topo_next_auto_id = 1
+
         # état de vue
         # Référence STABLE pour l'anti-chevauchement en simulation.
         # IMPORTANT : ne doit pas bouger quand on fait un "fit à l'écran" (qui modifie self.zoom
@@ -461,10 +471,14 @@ class TriangleViewerManual(tk.Tk):
         # Sous-répertoire dédié aux cartes (fond + fichiers de calibration)
         self.maps_dir = os.path.join(self.data_dir, "maps")
         self.scenario_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "scenario"))
+        # Exports (artefacts diffables / validation)
+        self.exports_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "exports"))
+        self.topo_xml_dir = os.path.join(self.exports_dir, "TopoXML")
         # Répertoire des icônes
         self.images_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "images"))
         os.makedirs(self.scenario_dir, exist_ok=True)
         os.makedirs(self.maps_dir, exist_ok=True)
+        os.makedirs(self.topo_xml_dir, exist_ok=True)
         # === Config (persistance des paramètres) ===
         self.config_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "config"))
         self.config_path = os.path.join(self.config_dir, "assembleur_config.json")
@@ -513,6 +527,9 @@ class TriangleViewerManual(tk.Tk):
         manual.view_state = self._capture_view_state()
         manual.map_state = self._capture_map_state()
         self.scenarios.append(manual)
+
+        # Initialiser la topologie du scénario manuel de base
+        self._ensureScenarioTopo(manual)
 
         # --- Horloge (overlay fixe) : état par défaut ---
         # hour peut être un float (si l'aiguille des heures avance avec les minutes)
@@ -579,6 +596,91 @@ class TriangleViewerManual(tk.Tk):
         self.dico = None
         self._init_dictionary()
         self._build_dico_grid()
+
+
+    # ======================================================================
+    #  Topologie (bridge minimal Tk -> Core)
+    # ======================================================================
+    def _sync_group_pose_to_core(self, ui_gid: int):
+        scen = self._get_active_scenario()
+        if scen is None or getattr(scen, "topoWorld", None) is None:
+            return
+
+        grp = self.groups.get(ui_gid)
+        if not grp:
+            return
+
+        core_gid = grp.get("topoGroupId")
+        if not core_gid:
+            return
+
+        nodes = grp.get("nodes", [])
+        if not nodes:
+            return
+
+        tid = nodes[0]["tid"]
+        tri = self._last_drawn[tid]
+        Pw = tri.get("pts") or tri.get("world_pts")
+        if Pw is None:
+            return
+
+        O = np.array(Pw["O"], dtype=float)
+        B = np.array(Pw["B"], dtype=float)
+
+        v = B - O
+        theta = float(math.atan2(v[1], v[0]))
+        c, s = math.cos(theta), math.sin(theta)
+
+        R = np.array([[c, -s], [s, c]], dtype=float)
+        T = np.array([float(O[0]), float(O[1])], dtype=float)
+
+        scen.topoWorld.set_group_pose(core_gid, R=R, T=T)
+
+    def _ensureScenarioTopo(self, scen: ScenarioAssemblage) -> None:
+        """Garantit que le scénario possède un topoScenarioId + un TopologyWorld.
+
+        Décision : 1 world par scénario (pas global).
+        - manuels : SM1, SM2...
+        - autos   : SA1, SA2...
+        """
+        if scen is None:
+            return
+        if getattr(scen, "topoWorld", None) is not None and getattr(scen, "topoScenarioId", None):
+            return
+
+        src = str(getattr(scen, "source_type", "manual") or "manual").strip().lower()
+        if src == "auto":
+            sid = f"SA{self._topo_next_auto_id}"
+            self._topo_next_auto_id += 1
+        else:
+            sid = f"SM{self._topo_next_manual_id}"
+            self._topo_next_manual_id += 1
+
+        scen.topoScenarioId = sid
+        scen.topoWorld = TopologyWorld(sid)
+
+    def _get_active_scenario(self) -> ScenarioAssemblage | None:
+        if not getattr(self, "scenarios", None):
+            return None
+        idx = int(getattr(self, "active_scenario_index", 0) or 0)
+        if idx < 0 or idx >= len(self.scenarios):
+            return None
+        return self.scenarios[idx]
+
+    def _on_export_topodump_key(self, event=None):
+        """Export TopoDump_<scenarioId>.xml du scénario actif (F11/F12)."""
+        scen = self._get_active_scenario()
+        if scen is None:
+            return
+        self._ensureScenarioTopo(scen)
+        sid = str(getattr(scen, "topoScenarioId", "") or "").strip()
+        world = getattr(scen, "topoWorld", None)
+        if not sid or world is None:
+            return
+        out_name = f"TopoDump_{sid}.xml"
+        out_path = os.path.join(self.topo_xml_dir, out_name)
+        world.export_topo_dump_xml(sid, out_path, orientation="cw")
+        self.status.config(text=f"TopoDump exporté : {out_name}")
 
     # ---------- Dictionnaire : init ----------
     def _init_dictionary(self):
@@ -3562,6 +3664,7 @@ class TriangleViewerManual(tk.Tk):
         new_scen = ScenarioAssemblage(name=name, source_type="manual")
         new_scen.last_drawn = clone_last_drawn_world(getattr(scen, "last_drawn", None))
         new_scen.groups = clone_groups(getattr(scen, "groups", None))
+        self._ensureScenarioTopo(new_scen)
 
         # copier quelques métadonnées utiles
         for attr in ("algo_id", "tri_ids", "status"):
@@ -3605,6 +3708,9 @@ class TriangleViewerManual(tk.Tk):
 
         scen = self.scenarios[index]
         self.active_scenario_index = index
+
+        # Assurer la topologie (1 world par scénario)
+        self._ensureScenarioTopo(scen)
 
         # Rattacher les structures géométriques du scénario courant
         self._last_drawn = scen.last_drawn
@@ -3720,6 +3826,7 @@ class TriangleViewerManual(tk.Tk):
         # Scénario vide : nouvelles structures indépendantes
         scen.last_drawn = []
         scen.groups = {}
+        self._ensureScenarioTopo(scen)
 
         self.scenarios.append(scen)
         # Bascule sur ce nouveau scénario
@@ -3787,6 +3894,7 @@ class TriangleViewerManual(tk.Tk):
         dup.last_drawn = copy.deepcopy(src.last_drawn)
         dup.groups = copy.deepcopy(src.groups)
         dup.status = src.status
+        self._ensureScenarioTopo(dup)
 
         self.scenarios.append(dup)
         self._refresh_scenario_listbox()
@@ -3899,6 +4007,10 @@ class TriangleViewerManual(tk.Tk):
         # (bind_all pour capter même si le focus clavier n'est pas explicitement sur le canvas)
         self.bind_all("<F9>", self._toggle_skip_overlap_highlight)
         self.bind_all("<F10>", self._toggle_debug_snap_assist)
+
+        # Export TopoDump (manuel, snapshot volontaire)
+        self.bind_all("<F11>", self._on_export_topodump_key)
+
         # Premier rendu de l'horloge (overlay)
         self._draw_clock_overlay()
 
@@ -6518,6 +6630,35 @@ class TriangleViewerManual(tk.Tk):
         if getattr(self, "_debug_snap_assist", False):
             print(msg)
 
+    def _dbgPoseCompare(self, label: str, R_tk, T_tk, R_core, T_core) -> None:
+        """Trace console (F10) pour comparer une pose Tk vs Core.
+
+        Affiche theta + translation + deltas. Aucun effet si F10 (snap assist) est OFF.
+        """
+        if not getattr(self, "_debug_snap_assist", False):
+            return
+        try:
+            import numpy as np
+            R_tk = np.array(R_tk, dtype=float)
+            T_tk = np.array(T_tk, dtype=float)
+            R_core = np.array(R_core, dtype=float)
+            T_core = np.array(T_core, dtype=float)
+
+            theta_tk = float(math.atan2(R_tk[1, 0], R_tk[0, 0]))
+            theta_core = float(math.atan2(R_core[1, 0], R_core[0, 0]))
+            dtheta = theta_core - theta_tk
+            dT = T_core - T_tk
+
+            self._dbgSnap(
+                f"[POSE-CHECK]{(' ' + str(label)) if label else ''}\n"
+                f"  Tk   : theta={theta_tk:+.6f}  T=({T_tk[0]:+.6f},{T_tk[1]:+.6f})\n"
+                f"  Core : theta={theta_core:+.6f}  T=({T_core[0]:+.6f},{T_core[1]:+.6f})\n"
+                f"  Δ    : dTheta={dtheta:+.6e}  dT=({dT[0]:+.6e},{dT[1]:+.6e})"
+            )
+        except Exception as e:
+            # Debug ne doit jamais casser le flow.
+            self._dbgSnap(f"[POSE-CHECK]{(' ' + str(label)) if label else ''}: erreur print: {e}")
+
     # --- helpers: mode déconnexion (CTRL) + curseur ---
     def _on_ctrl_down(self, event=None):
         # Pendant une mesure d'azimut du compas, CTRL sert uniquement à désactiver le snap.
@@ -6951,6 +7092,10 @@ class TriangleViewerManual(tk.Tk):
                         v = np.array(Orig[k], dtype=float) - pivot
                         Pt[k] = (R @ v) + pivot
             self._recompute_group_bbox(gid)
+            # Sync immédiate : Core = vérité persistée (pose monde du groupe)
+            # NOTE: scénarios auto utilisent auto_geom_state (transform global), on ne force pas la pose groupe.
+            if not sel.get("auto_geom"):
+                self._sync_group_pose_to_core(gid)
             self._redraw_from(self._last_drawn)
             self._sel["last_angle"] = cur_angle
             return
@@ -7696,6 +7841,12 @@ class TriangleViewerManual(tk.Tk):
             return
         tri = self._drag["triangle"]
         Pw = self._drag["world_pts"]
+
+        # --- Topologie (Core) : créer element + groupe singleton + pose monde au niveau groupe ---
+        scen = self._get_active_scenario()
+        if scen is not None:
+            self._ensureScenarioTopo(scen)
+
         # 1) Ajout de l'item dans le document
         self._last_drawn.append({
             "labels": tri["labels"],
@@ -7704,6 +7855,79 @@ class TriangleViewerManual(tk.Tk):
             "mirrored": tri.get("mirrored", False),
         })
         new_tid = len(self._last_drawn) - 1
+
+
+        # Annoter l'objet Tk : elementId topo (si possible)
+        scen = self._get_active_scenario()
+        if scen is not None and getattr(scen, "topoWorld", None) is not None:
+            sid = str(getattr(scen, "topoScenarioId", "") or "")
+            tri_rank = tri.get("id", None)
+            # tri_rank attendu : 1..32 (rang importé)
+            if tri_rank is not None:
+                try:
+                    tri_rank_i = int(tri_rank)
+                except Exception:
+                    tri_rank_i = None
+            else:
+                tri_rank_i = None
+
+            # Construire l'élément topo uniquement si on a un tri_rank valide
+            if tri_rank_i is not None and tri_rank_i >= 1:
+                element_id = TopologyWorld.format_element_id(sid, tri_rank_i)
+
+                # ------------------------------------------------------------
+                # Intrinsèque : on prend les longueurs + sens (orient) depuis self.df
+                # (et non depuis les coords monde Pw).
+                # Colonnes attendues dans df : len_OB, len_OL, len_BL, orient, B, L
+                # O est fixé à "Bourges" dans ton modèle actuel (voir _triangle_from_index()).
+                # ------------------------------------------------------------
+                if tri_rank_i - 1 < 0 or tri_rank_i - 1 >= len(self.df):
+                    raise ValueError(f"Topology: triRank hors df: {tri_rank_i} (len(df)={len(self.df)})")
+
+                row = self.df.iloc[tri_rank_i - 1]
+                len_OB = float(row["len_OB"])
+                len_OL = float(row["len_OL"])
+                len_BL = float(row["len_BL"])
+                orient = str(row.get("orient", "")).strip().upper()
+
+                # labels/types : O/B/L dans l’ordre topo.
+                # (convention projet actuelle : O="Bourges", B=row["B"], L=row["L"])
+                v_labels = ["Bourges", str(row["B"]), str(row["L"])]
+                v_types = [TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE]
+
+                # Longueurs d’arêtes dans l’ordre du cycle O->B, B->L, L->O
+                edge_lengths_km = [len_OB, len_BL, len_OL]
+
+                # element (coordonnées locales canonisées par le core)
+                el = TopologyElement(
+                    element_id=element_id,
+                    name=f"Triangle {tri_rank_i:02d}",
+                    vertex_labels=v_labels,
+                    vertex_types=v_types,
+                    edge_lengths_km=edge_lengths_km,
+                    meta={"orient": orient},
+                )
+
+                # Ajouter au core (nouveau groupe singleton)
+                world = scen.topoWorld
+                core_gid = world.add_element_as_new_group(el)
+
+                # Pose monde du groupe : local O=(0,0), B=(OB,0) -> world O,B
+                # Rotation pour aligner l'axe x local sur le segment O->B monde ; translation = O monde.
+                O = np.array(Pw["O"], dtype=float)
+                B = np.array(Pw["B"], dtype=float)
+                v = B - O
+                ang = float(math.atan2(float(v[1]), float(v[0])))
+                c, s = float(math.cos(ang)), float(math.sin(ang))
+                R = np.array([[c, -s], [s, c]], dtype=float)
+                T = np.array([float(O[0]), float(O[1])], dtype=float)
+                world.set_group_pose(core_gid, R=R, T=T)
+
+                # Annotation Tk (pont UI↔Core)
+                self._last_drawn[new_tid]["topoElementId"] = element_id
+                self._last_drawn[new_tid]["topoGroupId"] = core_gid
+
+
         # 2) Création d'un groupe singleton
         self._ensure_group_fields(self._last_drawn[new_tid])
         gid = self._new_group_id()
@@ -7715,6 +7939,13 @@ class TriangleViewerManual(tk.Tk):
         self._last_drawn[new_tid]["group_id"]  = gid
         self._last_drawn[new_tid]["group_pos"] = 0
         self._recompute_group_bbox(gid)
+
+        # Lier group UI -> group Core (si disponible)
+        if scen is not None and getattr(scen, "topoWorld", None) is not None:
+            core_gid = self._last_drawn[new_tid].get("topoGroupId", None)
+            if core_gid:
+                self.groups[gid]["topoGroupId"] = core_gid
+
         # 3) UI
         self._redraw_from(self._last_drawn)
         self.status.config(text=f"Triangle déposé → Groupe #{gid} créé.")
@@ -9506,6 +9737,8 @@ class TriangleViewerManual(tk.Tk):
                 P = self._last_drawn[tid]["pts"]
                 for k in ("O","B","L"):
                     P[k] = np.array([P[k][0] + d[0], P[k][1] + d[1]], dtype=float)
+        # Sync immédiate : Core = vérité persistée (pose monde du groupe)
+        self._sync_group_pose_to_core(gid)
         self._recompute_group_bbox(gid)
 
     def _on_canvas_left_down(self, event):
@@ -10173,6 +10406,134 @@ class TriangleViewerManual(tk.Tk):
                 # Translation finale pour amener A -> U
                 # (après rotation autour de A, A reste à A)
                 delta = U - A
+
+                # ==========================================================
+                # Core EDGE↔EDGE (release-only)
+                # - Tk demande (R,T) absolu au Core
+                # - (F10) compare avec le calcul Tk (à partir de R/delta + pose actuelle)
+                # - Tk set_group_pose()
+                # - Tk apply_attachments([edge-edge])
+                # ==========================================================
+                scen = self._get_active_scenario()
+                world = getattr(scen, "topoWorld", None) if scen is not None else None
+
+                def _edge_code_to_index(code: str) -> int | None:
+                    code = str(code or "").upper()
+                    if code == "OB": return 0
+                    if code == "BL": return 1
+                    if code == "LO": return 2
+                    return None
+
+                def _edge_start_vkey(code: str) -> str | None:
+                    code = str(code or "").upper()
+                    if code == "OB": return "O"
+                    if code == "BL": return "B"
+                    if code == "LO": return "L"
+                    return None
+
+                core_R_abs = None
+                core_T_abs = None
+                new_core_gid = None
+
+                # On ne fait le Core que si on a bien 2 groupes distincts et les IDs topo.
+                tgt_gid = self._last_drawn[idx_t].get("group_id", None)
+                mob_gid = self._sel.get("gid")
+                if (world is not None and mob_gid is not None and tgt_gid is not None and tgt_gid != mob_gid):
+                    g_ui_m = self.groups.get(mob_gid)
+                    g_ui_t = self.groups.get(tgt_gid)
+                    core_gid_m = g_ui_m.get("topoGroupId") if g_ui_m else None
+                    core_gid_t = g_ui_t.get("topoGroupId") if g_ui_t else None
+
+                    tri_m = self._last_drawn[choice[0]]
+                    tri_t = self._last_drawn[idx_t]
+                    element_id_m = tri_m.get("topoElementId", None)
+                    element_id_t = tri_t.get("topoElementId", None)
+
+                    if core_gid_m and core_gid_t and element_id_m and element_id_t:
+                        # Déduire les arêtes (codes) depuis les 2 sommets utilisés (A,B) et (U,V)
+                        def _vkey_from_point(P, pt, eps=EPS_WORLD):
+                            x, y = float(pt[0]), float(pt[1])
+                            for kk in ("O","B","L"):
+                                if abs(float(P[kk][0]) - x) <= eps and abs(float(P[kk][1]) - y) <= eps:
+                                    return kk
+                            return None
+
+                        def _edge_from_vkeys(a, b):
+                            if not a or not b or a == b:
+                                return None
+                            s = {a, b}
+                            if s == {"O","B"}: return "OB"
+                            if s == {"B","L"}: return "BL"
+                            if s == {"L","O"}: return "LO"
+                            return None
+
+                        Pm_now = self._last_drawn[choice[0]]["pts"]
+                        Pt_now = self._last_drawn[idx_t]["pts"]
+
+                        vkey_A = _vkey_from_point(Pm_now, m_a)
+                        vkey_B = _vkey_from_point(Pm_now, m_b)
+                        vkey_U = _vkey_from_point(Pt_now, t_a)
+                        vkey_V = _vkey_from_point(Pt_now, t_b)
+
+                        edge_m_code = _edge_from_vkeys(vkey_A, vkey_B)
+                        edge_t_code = _edge_from_vkeys(vkey_U, vkey_V)
+
+                        em = _edge_code_to_index(edge_m_code)
+                        et = _edge_code_to_index(edge_t_code)
+
+                        if em is not None and et is not None:
+                            # mapping pour le Core (dépend de l'orientation des edges dans le modèle)
+                            # mapping = direct si (A est start de l'edge_m) == (U est start de l'edge_t)
+                            start_m = _edge_start_vkey(edge_m_code)
+                            start_t = _edge_start_vkey(edge_t_code)
+                            mob_is_start = (vkey_A == start_m)
+                            tgt_is_start = (vkey_U == start_t)
+                            mapping = "direct" if (mob_is_start == tgt_is_start) else "reverse"
+
+                            # 1) Pose absolue Core (Monde <- GroupeMobile)
+                            (core_R_abs, core_T_abs) = world.compute_pose_edge_to_edge(
+                                core_gid_m, element_id_m, em,
+                                core_gid_t, element_id_t, et,
+                                mapping=mapping
+                            )
+
+                            # 2) (F10) comparaison Tk vs Core
+                            if getattr(self, "_debug_snap_assist", False):
+                                pose_old = world.get_group_pose(core_gid_m)
+                                if pose_old is not None:
+                                    # WorldTransform (Rw, offset) depuis Tk: rotation autour A + translation delta
+                                    # offset = (A + delta) - R@A = U - R@A (car delta = U-A)
+                                    offset = (A + delta) - (R @ A)
+                                    tk_R_abs = (R @ pose_old.R)
+                                    tk_T_abs = (R @ pose_old.T) + offset
+                                    th_tk = float(math.atan2(tk_R_abs[1,0], tk_R_abs[0,0]))
+                                    th_c  = float(math.atan2(core_R_abs[1,0], core_R_abs[0,0]))
+                                    dth = th_c - th_tk
+                                    dT = np.array(core_T_abs, float) - np.array(tk_T_abs, float)
+                                    self._dbgSnap(
+                                        "[POSE-CHECK][EDGE-EDGE]\n"
+                                        f"  Tk   : theta={th_tk:+.6f}  T=({tk_T_abs[0]:+.6f},{tk_T_abs[1]:+.6f})\n"
+                                        f"  Core : theta={th_c:+.6f}  T=({core_T_abs[0]:+.6f},{core_T_abs[1]:+.6f})\n"
+                                        f"  Δ    : dTheta={dth:+.6e}  dT=({dT[0]:+.6e},{dT[1]:+.6e})  mapping={mapping}  edges=({edge_m_code},{edge_t_code})"
+                                    )
+
+                            # 3) Appliquer la pose Core (vérité persistée)
+                            world.set_group_pose(core_gid_m, R=core_R_abs, T=core_T_abs)
+
+                            # 4) Attachment edge-edge (topologie)
+                            att = TopologyAttachment(
+                                attachment_id=world.new_attachment_id(),
+                                kind="edge-edge",
+                                feature_a=TopologyFeatureRef(TopologyFeatureType.EDGE, element_id_m, em),
+                                feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE, element_id_t, et),
+                                params={"mapping": mapping},
+                                source="manual",
+                            )
+                            new_core_gid = world.apply_attachments([att])
+
+                            # Associer le gid Core résultant au groupe UI survivant (mob_gid)
+                            if new_core_gid:
+                                self.groups[mob_gid]["topoGroupId"] = new_core_gid
 
                 # Appliquer (rotation autour de A) + translation à tous
                 gid = self._sel.get("gid")
