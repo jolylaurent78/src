@@ -5,8 +5,10 @@ Noyau 'pur' (sans Tk) : géométrie + structures de base.
 import math
 import datetime as _dt
 from typing import Optional, List, Dict, Tuple
+import re
 
 import numpy as np
+from dataclasses import dataclass
 
 from shapely.geometry import Polygon as _ShPoly, LineString as _ShLine, Point as _ShPoint
 from shapely.ops import unary_union as _sh_union
@@ -34,6 +36,7 @@ def _tri_shape(P: Dict[str, np.ndarray]):
                     tuple(map(float, P["L"]))])
     # 'buffer(0)' nettoie les très petites imprécisions numériques
     return poly.buffer(0)
+
 
 def _group_shape_from_nodes(nodes, last_drawn):
     """Union BRUTE des triangles listés dans 'nodes' (sans rétrécissement)."""
@@ -430,6 +433,42 @@ class TopologyPose2D:
     def identity() -> "TopologyPose2D":
         return TopologyPose2D(R=np.eye(2, dtype=float), T=np.zeros(2, dtype=float))
 
+
+class TopologyElementPose2D:
+    """Pose 2D d'un élément : rotation (det=+1) + translation + réflexion locale.
+
+    Décision de modèle (session) :
+    - Les coordonnées locales des éléments (vertex_local_xy) ne sont jamais modifiées.
+    - La pose monde est portée par l'élément (pas par les groupes).
+
+    Convention stable (local -> world) :
+      - si mirrored == False : p_world = R @ p_local + T
+      - si mirrored == True  : p_world = R @ (M @ p_local) + T
+        avec M = diag(-1, +1) dans le repère local.
+
+    Note : on impose R ~ rotation pure (det ~ +1) et on stocke toute réflexion
+    dans le flag mirrored.
+    """
+
+    def __init__(self, R: np.ndarray | None = None, T: np.ndarray | None = None, mirrored: bool = False):
+        self.R = np.array(R, float) if R is not None else np.eye(2, dtype=float)
+        self.T = np.array(T, float) if T is not None else np.zeros(2, dtype=float)
+        self.mirrored = bool(mirrored)
+
+    @staticmethod
+    def identity() -> "TopologyElementPose2D":
+        return TopologyElementPose2D(R=np.eye(2, dtype=float), T=np.zeros(2, dtype=float), mirrored=False)
+
+    @staticmethod
+    def mirror_matrix() -> np.ndarray:
+        return np.array([[1.0, 0.0], [0.0, -1.0]], dtype=float)
+
+    def local_to_world(self, p_local: np.ndarray) -> np.ndarray:
+        p = np.array(p_local, dtype=float)
+        if self.mirrored:
+            p = self.mirror_matrix() @ p
+        return (self.R @ p) + self.T
+
 class TopologyElement:
     """Élément topologique : polygone (triangle = cas particulier n=3).
 
@@ -495,6 +534,24 @@ class TopologyElement:
 
         self.vertexes: list[TopologyVertex] = []
         self.edges: list[TopologyEdge] = []
+
+        # --- Pose monde (par élément) ---
+        # IMPORTANT: les coordonnées locales (vertex_local_xy) restent figées.
+        # La position/orientation en monde est exclusivement portée par cette pose.
+        self.pose: TopologyElementPose2D = TopologyElementPose2D.identity()
+
+    # --- Pose API (élément) ---
+    def get_pose(self) -> tuple[np.ndarray, np.ndarray, bool]:
+        return (np.array(self.pose.R, float), np.array(self.pose.T, float), bool(self.pose.mirrored))
+
+    def set_pose(self, R: np.ndarray, T: np.ndarray, mirrored: bool | None = None) -> None:
+        self.pose.R = np.array(R, float)
+        self.pose.T = np.array(T, float)
+        if mirrored is not None:
+            self.pose.mirrored = bool(mirrored)
+
+    def localToWorld(self, p_local: np.ndarray | tuple[float, float]) -> np.ndarray:
+        return self.pose.local_to_world(np.array(p_local, dtype=float))
 
     def _try_build_default_local_coords(self):
         """Construit des coordonnées locales canoniques si l'élément est un triangle O/B/L.
@@ -579,6 +636,43 @@ class TopologyGroup:
         self.element_ids: list[str] = []
         self.attachment_ids: list[str] = []
 
+@dataclass
+class ConceptNodeInfo:
+    concept_id: str
+    members: set[str]
+    sumx: float = 0.0
+    sumy: float = 0.0
+    count: int = 0
+
+    def add_occ(self, x: float, y: float) -> None:
+        self.sumx += float(x)
+        self.sumy += float(y)
+        self.count += 1
+
+    def world_xy(self) -> tuple[float, float]:
+        if self.count <= 0:
+            return (0.0, 0.0)
+        return (self.sumx / self.count, self.sumy / self.count)
+
+
+@dataclass
+class ConceptEdgeInfo:
+    a: str
+    b: str
+    occurrences: list[dict]
+
+@dataclass
+class ConceptGroupCache:
+    """Cache du modèle conceptuel pour un groupe canonique."""
+    valid: bool = False
+    nodes: dict[str, ConceptNodeInfo] = None
+    edges: dict[tuple[str, str], ConceptEdgeInfo] = None
+
+    def __post_init__(self) -> None:
+        if self.nodes is None:
+            self.nodes = {}
+        if self.edges is None:
+            self.edges = {}
 
 class TopologyWorld:
     """Racine métier du modèle topologique (Core, sans Tk).
@@ -606,14 +700,18 @@ class TopologyWorld:
         self.scenario_id = str(scenario_id)
         self.fusion_distance_km: float = 1.0
 
+        # Repère "monde" pour les calculs d'azimut (0°=Nord, sens horaire).
+        # - True  : Y augmente vers le bas (repère image/écran)  -> dyNord = -dy
+        # - False : Y augmente vers le Nord (repère carto)        -> dyNord =  dy
+        self.worldYAxisDown: bool = False
+
+        # --- cache topo conceptuelle (PAR GROUPE) ---
+        self._concept_by_gid: dict[str, ConceptGroupCache] = {}
+
         self.groups: dict[str, TopologyGroup] = {}
         self.elements: dict[str, TopologyElement] = {}
         self.element_to_group: dict[str, str] = {}
         self.attachments: dict[str, TopologyAttachment] = {}
-
-        # Poses monde (absolues) par groupe : Monde <- Groupe
-        # L'IHM manipule des groupes (déplacement / rotation), donc la vérité "monde" est ici.
-        self.group_poses: dict[str, TopologyPose2D] = {}
 
         self._node_parent: dict[str, str] = {}
         self._node_type: dict[str, str] = {}
@@ -628,6 +726,215 @@ class TopologyWorld:
         self._created_counter_groups = 0
         self._created_counter_attachments = 0
 
+    # ------------------------------------------------------------------
+    # Topologie conceptuelle (MVP)
+    # - concept node = find_node(canon)
+    # - position concept node = moyenne des occurrences monde (points_on_edge)
+    # - concept edge = segment entre 2 concept nodes consécutifs sur une arête
+    # ------------------------------------------------------------------
+    def invalidateConceptCache(self, group_id: str | None = None) -> None:
+        """Invalide le cache conceptuel.
+        - group_id=None : tous les groupes
+        - group_id!=None : uniquement le groupe canonique correspondant
+        """
+        if group_id is None:
+            for c in self._concept_by_gid.values():
+                c.valid = False
+            return
+        gid = self.find_group(str(group_id))
+        c = self._concept_by_gid.get(gid)
+        if c is not None:
+            c.valid = False
+
+    def toConceptNodeId(self, node_id: str) -> str:
+        return self.find_node(str(node_id))
+
+    def _concept_cache(self, group_id: str) -> ConceptGroupCache:
+        gid = self.find_group(str(group_id))
+        c = self._concept_by_gid.get(gid)
+        if c is None:
+            c = ConceptGroupCache()
+            self._concept_by_gid[gid] = c
+        return c
+
+    @staticmethod
+    def _element_id_from_atomic_node_id(node_id: str) -> str | None:
+        s = str(node_id)
+        if ":N" not in s:
+            return None
+        return s.rsplit(":N", 1)[0]
+
+    def _infer_group_for_node(self, node_id: str) -> str | None:
+        cn = self.find_node(str(node_id))
+        mem = self.node_members(cn)
+        if not mem:
+            return None
+        eid = self._element_id_from_atomic_node_id(mem[0])
+        if not eid:
+            return None
+        return self.element_to_group.get(str(eid))
+
+    def _iter_group_elements(self, group_id: str) -> list["TopologyElement"]:
+        gid = self.find_group(str(group_id))
+        g = self.groups.get(gid)
+        if g is None:
+            return []
+        out: list[TopologyElement] = []
+        for eid in g.element_ids:
+            el = self.elements.get(str(eid))
+            if el is not None:
+                out.append(el)
+        return out
+
+    def _buildConceptCacheForGroup(self, group_id: str) -> None:
+        gid = self.find_group(str(group_id))
+        c = self._concept_cache(gid)
+
+        nodes: dict[str, ConceptNodeInfo] = {}
+        edges: dict[tuple[str, str], ConceptEdgeInfo] = {}
+
+        for el in self._iter_group_elements(gid):
+            for edge in getattr(el, "edges", []):
+                pts = list(getattr(edge, "points_on_edge", []))
+                if not pts:
+                    continue
+                pts.sort(key=lambda p: float(p.t))
+
+                # nodes : occurrences monde
+                for p in pts:
+                    cn = self.find_node(str(p.node_id))
+                    info = nodes.get(cn)
+                    if info is None:
+                        info = ConceptNodeInfo(concept_id=cn, members=set(self.node_members(cn)))
+                        nodes[cn] = info
+                    p_local = self._localPointOnEdge(el, edge, float(p.t))
+                    p_world = el.localToWorld(p_local)
+                    info.add_occ(p_world[0], p_world[1])
+
+                # edges : segments consécutifs canonisés
+                canon_seq: list[tuple[float, str]] = []
+                last_cn = None
+                for p in pts:
+                    cn = self.find_node(str(p.node_id))
+                    if cn == last_cn:
+                        continue
+                    canon_seq.append((float(p.t), cn))
+                    last_cn = cn
+
+                for (t0, n0), (t1, n1) in zip(canon_seq[:-1], canon_seq[1:]):
+                    if n0 == n1:
+                        continue
+                    k = (n0, n1) if n0 < n1 else (n1, n0)
+                    ce = edges.get(k)
+                    if ce is None:
+                        ce = ConceptEdgeInfo(a=k[0], b=k[1], occurrences=[])
+                        edges[k] = ce
+                    ce.occurrences.append({
+                        "elementId": str(el.element_id),
+                        "edgeId": str(edge.edge_id()),
+                        "t0": float(t0),
+                        "t1": float(t1),
+                    })
+
+        c.nodes = nodes
+        c.edges = edges
+        c.valid = True
+
+    def buildConceptCacheIfNeeded(self, group_id: str) -> None:
+        gid = self.find_group(str(group_id))
+        c = self._concept_cache(gid)
+        if not c.valid:
+            self._buildConceptCacheForGroup(gid)
+
+    def getConceptNodeWorldXY(self, node_id: str, group_id: str | None = None) -> tuple[float, float]:
+        gid = group_id if group_id is not None else self._infer_group_for_node(node_id)
+        if gid is None:
+            return (0.0, 0.0)
+        self.buildConceptCacheIfNeeded(gid)
+        cn = self.find_node(str(node_id))
+        c = self._concept_cache(gid)
+        info = c.nodes.get(cn)
+        if info is None:
+            return (0.0, 0.0)
+        return info.world_xy()
+
+
+    def getConceptRays(self, node_id: str, group_id: str | None = None) -> list[dict]:
+        """Rays conceptuels au node canonique, LIMITÉS AU GROUPE."""
+        gid = group_id if group_id is not None else self._infer_group_for_node(node_id)
+        if gid is None:
+            return []
+        self.buildConceptCacheIfNeeded(gid)
+        cn = self.find_node(str(node_id))
+        p0 = self.getConceptNodeWorldXY(cn, gid)
+        c = self._concept_cache(gid)
+        out: list[dict] = []
+        for (a, b), ce in c.edges.items():
+            if cn != a and cn != b:
+                continue
+            other = b if cn == a else a
+            p1 = self.getConceptNodeWorldXY(other, gid)
+            dx = float(p1[0] - p0[0])
+            dy = float(p1[1] - p0[1])
+            out.append({
+                "fromNode": cn,
+                "toNode": other,
+                "fromLabel": self.getNodeLabel(cn),
+                "toLabel": self.getNodeLabel(other),
+                "dx": dx,
+                "dy": dy,
+                "azimutDeg": self.azimutDegFromDxDy(dx, dy),
+                "occurrences": list(ce.occurrences),
+            })
+        out.sort(key=lambda r: (float(r.get("azimutDeg", 0.0)), str(r.get("toNode", ""))))
+        return out
+
+
+    # --- Parcours du graphe conceptuel (par groupe) ---
+    def getConceptEdgesForNode(self, node_id: str, group_id: str | None = None) -> list[dict]:
+        """Liste des edges conceptuels incidentes à un concept node (par groupe)."""
+        gid = group_id if group_id is not None else self._infer_group_for_node(node_id)
+        if gid is None:
+            return []
+        self.buildConceptCacheIfNeeded(gid)
+        cn = self.find_node(str(node_id))
+        c = self._concept_cache(gid)
+        out: list[dict] = []
+        for (a, b), ce in c.edges.items():
+            if cn != a and cn != b:
+                continue
+            other = b if cn == a else a
+            out.append({
+                "a": a, "b": b,
+                "this": cn,
+                "other": other,
+                "occurrences": list(ce.occurrences),
+            })
+        return out
+
+    def getConceptNeighborNodes(self, node_id: str, group_id: str | None = None) -> list[str]:
+        """Liste des concept nodes voisins (ids canoniques) connectés à node_id (par groupe)."""
+        edges = self.getConceptEdgesForNode(node_id, group_id)
+        neigh = [e["other"] for e in edges]
+        # unique + stable
+        seen = set()
+        out = []
+        for n in neigh:
+            if n in seen:
+                continue
+            seen.add(n)
+            out.append(n)
+        return out
+
+    def getConceptNodeType(self, node_id: str) -> str:
+        """Type conceptuel: 'M' si mélange de types, sinon type unique."""
+        cn = self.find_node(str(node_id))
+        mem = self.node_members(cn)
+        if not mem:
+            return str(self.node_type(cn))
+        types = {str(self.node_type(m)) for m in mem}
+        return "M" if len(types) > 1 else next(iter(types))
+
     # --- IDs helpers ---
     @staticmethod
     def format_element_id(scenario_id: str, tri_rank_1based: int) -> str:
@@ -639,6 +946,33 @@ class TopologyWorld:
         if not m:
             return None
         return int(m.group(1))
+
+
+    # Azimut (C7) – Référence unique
+    def azimutDegFromDxDy(self, dx: float, dy: float) -> float:
+        """Calcule l'azimut standard (0°=Nord, sens horaire) à partir d'un delta.
+
+        Convention :
+        - dx = Est  (x2 - x1)
+        - dy = variation sur l'axe Y du repère monde courant.
+
+        IMPORTANT : si `self.worldYAxisDown` est True (repère image/écran), alors
+        `dy` pointe vers le Sud quand il est positif. On convertit donc en dyNord = -dy
+        avant d'appliquer la formule de référence.
+
+        Retour : angle normalisé dans [0..360).
+        """
+        dx = float(dx)
+        dy = float(dy)
+        dy_north = -dy if bool(getattr(self, "worldYAxisDown", True)) else dy
+        a = math.degrees(math.atan2(dx, dy_north))  # atan2(E, N)
+        return float((a + 360.0) % 360.0)
+
+    def azimutDegFromPoints(self, p0_world: np.ndarray, p1_world: np.ndarray) -> float:
+        """Azimut standard de p0 vers p1 (0°=Nord, sens horaire)."""
+        dx = float(p1_world[0] - p0_world[0])
+        dy = float(p1_world[1] - p0_world[1])
+        return self.azimutDegFromDxDy(dx, dy)
 
     def format_node_id(self, element_id: str, vertex_index: int) -> str:
         tri = self.parse_tri_rank_from_element_id(element_id)
@@ -690,6 +1024,7 @@ class TopologyWorld:
         mem = self._node_members.get(canonical, [canonical])
         mem_other = self._node_members.get(other, [other])
         self._node_members[canonical] = mem + [x for x in mem_other if x not in mem]
+        self.invalidateConceptCache(None)
         return canonical
 
     def node_members(self, node_id: str) -> list[str]:
@@ -706,8 +1041,16 @@ class TopologyWorld:
         self._group_parent[gid] = gid
         self._group_members[gid] = [gid]
         self.groups[gid] = TopologyGroup(gid)
-        self.group_poses[gid] = TopologyPose2D.identity()
         return gid
+
+    def rebuildGroupElementLists(self) -> None:
+        for g in self.groups.values():
+            g.element_ids = []
+        for eid, gid in self.element_to_group.items():
+            gidc = self.find_group(gid)
+            if gidc in self.groups:
+                if eid not in self.groups[gidc].element_ids:
+                    self.groups[gidc].element_ids.append(eid)
 
     def find_group(self, group_id: str) -> str:
         group_id = str(group_id)
@@ -735,6 +1078,7 @@ class TopologyWorld:
         if canonical in self.groups and other in self.groups:
             self.groups[canonical].element_ids.extend(self.groups[other].element_ids)
             self.groups[canonical].attachment_ids.extend(self.groups[other].attachment_ids)
+        self.invalidateConceptCache(canonical)
         return canonical
 
     def group_members(self, group_id: str) -> list[str]:
@@ -762,6 +1106,8 @@ class TopologyWorld:
             v0 = element.vertexes[i]
             v1 = element.vertexes[(i + 1) % n]
             element.edges.append(TopologyEdge(element.element_id, i, v0, v1, element.edge_lengths_km[i]))
+
+        self.invalidateConceptCache(gid)
         return gid
 
     def get_edge(self, element_id: str, edge_index: int) -> TopologyEdge:
@@ -776,24 +1122,117 @@ class TopologyWorld:
             raise ValueError(f"Element sans groupe: {element_id}")
         return self.find_group(gid0)
 
-    # --- poses monde (absolues) au niveau groupe ---
-    def set_group_pose(self, group_id: str, R: np.ndarray | None = None, T: np.ndarray | None = None):
-        """Assigne la pose monde d'un groupe (Monde <- Groupe)."""
-        gid = self.find_group(str(group_id))
-        self.group_poses[gid] = TopologyPose2D(R=R, T=T)
+    # --- API pose par élément (session) ---
+    def getElementPose(self, element_id: str) -> tuple[np.ndarray, np.ndarray, bool]:
+        """Retourne (R, T, mirrored) pour un élément."""
+        el = self.elements.get(str(element_id))
+        if el is None:
+            raise ValueError(f"Element inconnu: {element_id}")
+        return el.get_pose()
 
-    def get_group_pose(self, group_id: str) -> TopologyPose2D | None:
+    def setElementPose(self, element_id: str, R: np.ndarray, T: np.ndarray, mirrored: bool | None = None) -> None:
+        """Assigne la pose d'un élément (R,T,mirrored)."""
+        el = self.elements.get(str(element_id))
+        if el is None:
+            raise ValueError(f"Element inconnu: {element_id}")
+        el.set_pose(R=R, T=T, mirrored=mirrored)
+        # pose change -> positions monde changent -> cache conceptuel invalide
+        self.invalidateConceptCache(self.element_to_group.get(str(element_id)))
+
+    # ------------------------------------------------------------------
+    # Flip (symétrie axiale) au niveau GROUPE (mais appliquée aux poses d'éléments)
+    # - groupes = topologiques
+    # - LocalCoords intacts
+    # - on met à jour (R,T,mirrored) pour chaque élément du groupe
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _closest_rotation(R: np.ndarray) -> np.ndarray:
+        """Projette une matrice 2x2 proche d'une rotation sur SO(2) (det=+1)."""
+        U, _S, Vt = np.linalg.svd(np.array(R, float))
+        R2 = U @ Vt
+        # Forcer det=+1
+        if float(np.linalg.det(R2)) < 0.0:
+            U[:, -1] *= -1.0
+            R2 = U @ Vt
+        return np.array(R2, float)
+
+    @staticmethod
+    def _reflection_matrix(axis_dir: np.ndarray) -> np.ndarray:
+        """Matrice de réflexion (2D) par rapport à une droite passant par l'origine, dirigée par axis_dir."""
+        u = np.array(axis_dir, float)
+        n = float(np.hypot(u[0], u[1]))
+        if n < 1e-12:
+            raise ValueError("flipGroup: axisDir dégénéré")
+        u /= n
+        # S = 2*u*u^T - I
+        I = np.eye(2, dtype=float)
+        uuT = np.outer(u, u)
+        return (2.0 * uuT) - I
+
+    def flipGroup(self, group_id: str, axisPoint: np.ndarray, axisDir: np.ndarray) -> None:
+        """Applique une symétrie axiale à tous les éléments du groupe.
+
+        Contrat:
+        - géométrie monde: x' = S*(x - p) + p  (p = axisPoint, S = reflection(axisDir))
+        - mise à jour des poses éléments uniquement
+        - LocalCoords inchangés
+        """
         gid = self.find_group(str(group_id))
-        return self.group_poses.get(gid)
+        g = self.groups.get(gid)
+        if g is None:
+            return
+
+        p = np.array(axisPoint, float).reshape((2,))
+        S = self._reflection_matrix(axisDir)
+        b = p - (S @ p)  # translation affine pour une droite passant par p
+
+        M = TopologyElementPose2D.mirror_matrix()
+
+        for eid in list(g.element_ids):
+            el = self.elements.get(str(eid))
+            if el is None:
+                continue
+            R, T, mirrored = el.get_pose()
+            R = np.array(R, float)
+            T = np.array(T, float).reshape((2,))
+
+            # A = rotation * (miroir local si mirrored)
+            A = R @ (M if mirrored else np.eye(2, dtype=float))
+
+            # Après réflexion monde: x' = S*(A p + T) + b = (S A) p + (S T + b)
+            A2 = S @ A
+            T2 = (S @ T) + b
+
+            # Re-factorisation A2 en (R', mirrored') avec R' rotation pure det=+1
+            detA2 = float(np.linalg.det(A2))
+            if detA2 < 0.0:
+                mirrored2 = True
+                R2_raw = A2 @ M  # car A2 = R2 * M  => R2 = A2 * M
+            else:
+                mirrored2 = False
+                R2_raw = A2
+
+            R2 = self._closest_rotation(R2_raw)
+            el.set_pose(R=R2, T=T2, mirrored=mirrored2)
+
+
+    def elementLocalToWorld(self, element_id: str, p_local: np.ndarray | tuple[float, float]) -> np.ndarray:
+        el = self.elements.get(str(element_id))
+        if el is None:
+            raise ValueError(f"Element inconnu: {element_id}")
+        return el.localToWorld(p_local)
 
     def get_element_world_pose(self, element_id: str) -> TopologyPose2D:
         """Pose monde dérivée d'un élément.
-        V1 : un élément est porté par le repère de son groupe => pose = groupPose.
-        (Une pose élément dans le groupe pourra être ajoutée plus tard si nécessaire.)
+
+        NOTE compat : TopologyPose2D ne porte pas mirrored.
+        - si mirrored==False : retourne (R,T) tel quel
+        - si mirrored==True  : retourne (R@M, T) (det négatif)
         """
-        gid = self.get_group_of_element(str(element_id))
-        pose = self.get_group_pose(gid)
-        return pose if pose is not None else TopologyPose2D.identity()
+        R, T, mirrored = self.getElementPose(str(element_id))
+        if mirrored:
+            R = np.array(R, float) @ TopologyElementPose2D.mirror_matrix()
+        return TopologyPose2D(R=R, T=T)
 
     # ------------------------------------------------------------------
     # Pose Edge↔Edge (V1) : calcule la pose ABSOLUE (R,T) du groupe mobile
@@ -814,61 +1253,71 @@ class TopologyWorld:
         edge_index_t: int,
         mapping: str = "direct",
     ) -> tuple[np.ndarray, np.ndarray]:
-        gid_m = self.find_group(str(group_id_m))
-        gid_t = self.find_group(str(group_id_t))
+        """Calcule une pose ABSOLUE (R,T) pour l'ÉLÉMENT mobile afin d'aligner une arête mobile sur une arête cible.
 
-        pose_m = self.get_group_pose(gid_m) or TopologyPose2D.identity()
-        pose_t = self.get_group_pose(gid_t) or TopologyPose2D.identity()
+        NOTE: les groupes sont topologiques (pas de pose groupe).
+        - Cette fonction sert uniquement de helper géométrique éventuel côté UI/tests.
+        - Elle ne modifie aucun state.
 
+        Contrat:
+        - retourne (R_abs, T_abs) tel que:
+            world = (R_abs @ (M? @ p_local)) + T_abs
+            avec mirrored supposé False (si mirrored est nécessaire, c'est à l'UI de le gérer).
+
+        mapping:
+        - "direct"  : start_m -> start_t  et end_m -> end_t
+        - "reverse" : start_m -> end_t    et end_m -> start_t
+        """
+        # On ignore group_id_* (compat API), tout est porté par les poses d'éléments.
         e_m = self.get_edge(str(element_id_m), int(edge_index_m))
         e_t = self.get_edge(str(element_id_t), int(edge_index_t))
 
-        # Endpoints en LOCAL (repère groupe) via vertex_local_xy
         el_m = self.elements[str(element_id_m)]
         el_t = self.elements[str(element_id_t)]
 
-        def _v_local(el, vidx: int) -> np.ndarray:
+        def _v_local(el: TopologyElement, vidx: int) -> np.ndarray:
             xy = el.vertex_local_xy.get(int(vidx))
             if xy is None:
-                raise ValueError(f"compute_pose_edge_to_edge: vertex_local_xy manquant (element={el.element_id} idx={vidx})")
+                raise ValueError(
+                    f"compute_pose_edge_to_edge: vertex_local_xy manquant (element={el.element_id} idx={vidx})"
+                )
             return np.array([float(xy[0]), float(xy[1])], dtype=float)
 
-        # Edge orientée : v_start -> v_end
-        m0_local = _v_local(el_m, e_m.v_start.vertex_index)
-        m1_local = _v_local(el_m, e_m.v_end.vertex_index)
-        t0_local = _v_local(el_t, e_t.v_start.vertex_index)
-        t1_local = _v_local(el_t, e_t.v_end.vertex_index)
+        # Endpoints LOCAL (mobile)
+        p0m = _v_local(el_m, e_m.v_start.vertex_index)
+        p1m = _v_local(el_m, e_m.v_end.vertex_index)
 
-        # En WORLD via pose de groupe actuelle
-        m0 = (pose_m.R @ m0_local) + pose_m.T
-        m1 = (pose_m.R @ m1_local) + pose_m.T
-        t0 = (pose_t.R @ t0_local) + pose_t.T
-        t1 = (pose_t.R @ t1_local) + pose_t.T
+        # Endpoints WORLD (cible) via pose élément
+        p0t = _v_local(el_t, e_t.v_start.vertex_index)
+        p1t = _v_local(el_t, e_t.v_end.vertex_index)
+        w0t = self.elementLocalToWorld(str(element_id_t), p0t)
+        w1t = self.elementLocalToWorld(str(element_id_t), p1t)
 
-        mapping = str(mapping or "direct").strip().lower()
-        if mapping == "reverse":
-            # cible inversée : start/end swap
-            t0, t1 = t1, t0
-        elif mapping != "direct":
+        if str(mapping).lower() == "direct":
+            W0, W1 = w0t, w1t
+        elif str(mapping).lower() == "reverse":
+            W0, W1 = w1t, w0t
+        else:
             raise ValueError(f"compute_pose_edge_to_edge: mapping invalide: {mapping}")
 
-        # Rotation monde autour de m0 pour aligner (m0->m1) sur (t0->t1)
-        vm = np.array(m1 - m0, dtype=float)
-        vt = np.array(t1 - t0, dtype=float)
-        ang_m = float(math.atan2(float(vm[1]), float(vm[0])))
-        ang_t = float(math.atan2(float(vt[1]), float(vt[0])))
-        dtheta = ang_t - ang_m
-        c, s = float(math.cos(dtheta)), float(math.sin(dtheta))
-        Rw = np.array([[c, -s], [s, c]], dtype=float)
+        vL = (p1m - p0m)
+        vW = (W1 - W0)
 
-        # WorldTransform : x' = Rw x + offset  (équiv. rotation autour m0 + translation)
-        # offset = t0 - Rw@m0
-        offset = np.array(t0, dtype=float) - (Rw @ np.array(m0, dtype=float))
+        nL = float(np.linalg.norm(vL))
+        nW = float(np.linalg.norm(vW))
+        if nL <= 1e-12 or nW <= 1e-12:
+            raise ValueError("compute_pose_edge_to_edge: arête dégénérée (norme ~0)")
 
-        # Composer sur la pose actuelle du groupe mobile
-        # newPose = (Rw, offset) ∘ pose_m
-        R_abs = Rw @ pose_m.R
-        T_abs = (Rw @ pose_m.T) + offset
+        angL = float(np.arctan2(vL[1], vL[0]))
+        angW = float(np.arctan2(vW[1], vW[0]))
+        dtheta = angW - angL
+
+        c = float(np.cos(dtheta)); s = float(np.sin(dtheta))
+        R_abs = np.array([[c, -s],
+                        [s,  c]], dtype=float)
+
+        # T : amener p0m sur W0
+        T_abs = np.array(W0, dtype=float) - (R_abs @ np.array(p0m, dtype=float))
         return (R_abs, T_abs)
 
     def apply_attachments(self, attachments: list[TopologyAttachment]) -> str:
@@ -892,12 +1341,15 @@ class TopologyWorld:
         )
         if idx is None:
             edge.insert_point_sorted(float(t_new), str(node_id_new))
+            self.invalidateConceptCache(self.element_to_group.get(str(edge_ref.element_id)))
             return (self.find_node(str(node_id_new)), float(t_new))
+
         existing = edge.points_on_edge[idx]
         canon = self.union_nodes(existing.node_id, str(node_id_new))
         t_keep = float(existing.t)  # garder t du point canonique choisi
         existing.node_id = canon
         edge.points_on_edge.sort(key=lambda p: p.t)
+        self.invalidateConceptCache(self.element_to_group.get(str(edge_ref.element_id)))
         return (canon, t_keep)
 
     # --- attachments ---
@@ -983,6 +1435,243 @@ class TopologyWorld:
         for att in sorted(attachments, key=lambda a: a.attachment_id):
             self.apply_attachment(att)
 
+    def removeElementsAndRebuild(self, element_ids: list[str]) -> None:
+        """Supprime des éléments du world (et tout ce qui les référence), puis rebuild depuis les attachments restants.
+
+        - Purge les attachments dont featureA/featureB référence un élément supprimé.
+        - Reconstruit un world propre avec les éléments restants.
+        - Rejoue les attachments conservés (IDs conservés).
+        """
+        removed = {str(eid) for eid in (element_ids or []) if str(eid).strip()}
+        if not removed:
+            return
+
+        # 1) éléments conservés (snapshot complet)
+        kept_elements: list[TopologyElement] = []
+        kept_poses: dict[str, tuple[np.ndarray, np.ndarray, bool]] = {}
+        for eid, el in list(self.elements.items()):
+            if str(eid) in removed:
+                continue
+            kept_elements.append(el)
+            kept_poses[str(eid)] = el.get_pose()
+
+        # 2) attachments conservés
+        kept_atts: list[TopologyAttachment] = []
+        for att in self.attachments.values():
+            a = str(att.feature_a.element_id)
+            b = str(att.feature_b.element_id)
+            if a in removed or b in removed:
+                continue
+            kept_atts.append(att)
+
+        # 3) rebuild dans un nouveau world (propre)
+        neww = TopologyWorld(self.scenario_id)
+        neww.fusion_distance_km = float(getattr(self, "fusion_distance_km", 1.0))
+
+        # éviter collisions si on recrée des attachments plus tard
+        # (on se cale sur le max Axxx existant)
+        max_att_num = 0
+        for att in kept_atts:
+            m = re.search(r":A(\d+)$", str(att.attachment_id))
+            if m:
+                max_att_num = max(max_att_num, int(m.group(1)))
+        neww._created_counter_attachments = max_att_num
+
+        # re-créer les éléments (ne pas réutiliser les instances : on veut un état clean)
+        for old in kept_elements:
+            eid = str(old.element_id)
+            R, T, mirrored = kept_poses.get(eid, (np.eye(2), np.zeros(2), False))
+
+            clone = TopologyElement(
+                element_id=eid,
+                name=str(old.name),
+                vertex_labels=list(old.vertex_labels),
+                vertex_types=list(old.vertex_types),
+                edge_lengths_km=list(old.edge_lengths_km),
+                intrinsic_sides_km=dict(getattr(old, "intrinsic_sides_km", {}) or {}),
+                local_frame=dict(getattr(old, "local_frame", {}) or {}),
+                vertex_local_xy=dict(getattr(old, "vertex_local_xy", {}) or {}),
+                meta=dict(getattr(old, "meta", {}) or {}),
+            )
+            neww.add_element_as_new_group(clone)
+            neww.setElementPose(eid, R=R, T=T, mirrored=mirrored)
+
+        # rejouer les attachments conservés (IDs conservés)
+        for att in sorted(kept_atts, key=lambda a: str(a.attachment_id)):
+            neww.apply_attachment(att)
+
+        # on reconstruit les références aux groupes (sur le nouveau world)
+        neww.rebuildGroupElementLists()
+        neww.invalidateConceptCache(None)
+
+        # 4) swap in-place (les refs Tk vers scen.topoWorld restent valides)
+        self.__dict__.clear()
+        self.__dict__.update(neww.__dict__)
+
+    # ------------------------------------------------------------------
+    # Helpers "Tooltip" (Core)
+    # ------------------------------------------------------------------
+    def _parseElementAndVertexIndexFromNodeId(self, node_id: str) -> tuple[str, int] | None:
+        """Parse un node_id atomique '<scenario>:Txx:Nn' -> (element_id, vertex_index)."""
+        m = re.search(r"^(.*):N(\d+)$", str(node_id))
+        if not m:
+            return None
+        return (str(m.group(1)), int(m.group(2)))
+
+    def getAtomicNodeLabel(self, node_id: str) -> str:
+        """Retourne le label *métier* (ville) d'un node atomique.
+        Fallback: 'N0', 'N1', ...
+        """
+        parsed = self._parseElementAndVertexIndexFromNodeId(str(node_id))
+        if parsed is None:
+            return str(node_id).split(":")[-1]
+        element_id, vidx = parsed
+        el = self.elements.get(element_id)
+        if el is None:
+            return f"N{vidx}"
+        # v4.3 : labels portés par TopologyVertex / vertex_labels
+        if hasattr(el, "vertexes") and el.vertexes and 0 <= vidx < len(el.vertexes):
+            return str(el.vertexes[vidx].label)
+        if hasattr(el, "vertex_labels") and 0 <= vidx < len(el.vertex_labels):
+            return str(el.vertex_labels[vidx])
+        return f"N{vidx}"
+
+    def getNodeLabel(self, node_id: str) -> str:
+        """Label métier d'un node (canonique ou atomique).
+        - si node_id est canonique (DSU), agrège les labels de ses membres.
+        """
+        nid = str(node_id)
+        if nid not in self._node_parent:
+            return self.getAtomicNodeLabel(nid)
+        c = self.find_node(nid)
+        uniq = sorted({self.getAtomicNodeLabel(m) for m in self.node_members(c)})
+        if len(uniq) == 0:
+            return self.getAtomicNodeLabel(nid)
+        if len(uniq) == 1:
+            return uniq[0]
+        return "|".join([str(x) for x in uniq])
+
+    def _parseTriangleIdFromNodeId(self, node_id: str) -> str:
+        """Retourne 'Txx' à partir d'un node_id atomique '<scenario>:Txx:Nn'."""
+        m = re.search(r":T(\d+):N\d+$", str(node_id))
+        if m:
+            return f"T{int(m.group(1)):02d}"
+        return "T??"
+
+    def getNodeDisplayTriplet(self, node_id: str) -> tuple[str, str, str]:
+        """Triplet (type, triangleId, label) pour debug/tooltip.
+        - Pour un node canonique, triangleId peut être ambigu -> 'T*' si >1.
+        """
+        nid = str(node_id)
+        typ = str(self.node_type(nid))
+        if nid in self._node_parent:
+            c = self.find_node(nid)
+            tris = sorted({self._parseTriangleIdFromNodeId(m) for m in self.node_members(c)})
+            tri = tris[0] if len(tris) == 1 else "T*"
+            return (typ, tri, self.getNodeLabel(c))
+        return (typ, self._parseTriangleIdFromNodeId(nid), self.getAtomicNodeLabel(nid))
+
+    def getConnectedPointsTriplets(self, node_id: str) -> list[tuple[str, str, str]]:
+        """Liste (type, triangleId, nodeLabel) pour tous les points connectés via ATTACHMENTS.
+
+        IMPORTANT: nodeLabel = label métier (ville), pas 'N0/N1/N2'.
+        """
+        c = self.find_node(str(node_id))
+        out: list[tuple[str, str, str]] = []
+        for nid in sorted(self.node_members(c)):
+            typ = str(self.node_type(str(nid)))
+            tri_id = self._parseTriangleIdFromNodeId(str(nid))
+            lab = self.getAtomicNodeLabel(str(nid))
+            out.append((typ, tri_id, lab))
+        return out
+
+    def _localPointOnEdge(self, el: "TopologyElement", edge: "TopologyEdge", t: float) -> np.ndarray:
+        """Point local sur une arête (interpolation linéaire) via vertex_local_xy."""
+        v0 = int(edge.v_start.vertex_index)
+        v1 = int(edge.v_end.vertex_index)
+        p0 = el.vertex_local_xy.get(v0) if hasattr(el, "vertex_local_xy") else None
+        p1 = el.vertex_local_xy.get(v1) if hasattr(el, "vertex_local_xy") else None
+        if p0 is None or p1 is None:
+            raise ValueError(
+                f"_localPointOnEdge: vertex_local_xy manquant (element={el.element_id} v0={v0} v1={v1})"
+            )
+        t = float(t)
+        x = (1.0 - t) * float(p0[0]) + t * float(p1[0])
+        y = (1.0 - t) * float(p0[1]) + t * float(p1[1])
+        return np.array([x, y], dtype=float)
+
+    def getNodeHalfRaysAzimuts(self, node_id: str) -> list[dict]:
+        """Demi-droites incidentes à un node topo + azimut.
+
+        Ajoute aussi: fromLabel/toLabel (labels métier) pour debug.
+        """
+        c = self.find_node(str(node_id))
+        rays: list[dict] = []
+
+        for el in self.elements.values():
+            if not hasattr(el, "edges"):
+                continue
+            for edge in el.edges:
+                pts = []
+                for p in getattr(edge, "points_on_edge", []):
+                    tn = float(p.t)
+                    cn = self.find_node(str(p.node_id))
+                    pts.append((tn, cn))
+                pts.sort(key=lambda x: x[0])
+
+                for (t0, n0), (t1, n1) in zip(pts[:-1], pts[1:]):
+                    if n0 == n1:
+                        continue
+                    p0_local = self._localPointOnEdge(el, edge, t0)
+                    p1_local = self._localPointOnEdge(el, edge, t1)
+                    p0_world = el.localToWorld(p0_local)
+                    p1_world = el.localToWorld(p1_local)
+
+                    if n0 == c:
+                        dx = float(p1_world[0] - p0_world[0])
+                        dy = float(p1_world[1] - p0_world[1])
+                        rays.append({
+                            "elementId": str(el.element_id),
+                            "edgeId": str(edge.edge_id()),
+                            "fromNode": str(n0),
+                            "toNode": str(n1),
+                            "fromLabel": self.getNodeLabel(n0),
+                            "toLabel": self.getNodeLabel(n1),
+                            "tFrom": float(t0),
+                            "tTo": float(t1),
+                            "dx": dx,
+                            "dy": dy,
+                            "azimutDeg": self.azimutDegFromDxDy(dx, dy),
+                        })
+                    if n1 == c:
+                        dx = float(p0_world[0] - p1_world[0])
+                        dy = float(p0_world[1] - p1_world[1])
+                        rays.append({
+                            "elementId": str(el.element_id),
+                            "edgeId": str(edge.edge_id()),
+                            "fromNode": str(n1),
+                            "toNode": str(n0),
+                            "fromLabel": self.getNodeLabel(n1),
+                            "toLabel": self.getNodeLabel(n0),
+                            "tFrom": float(t1),
+                            "tTo": float(t0),
+                            "dx": dx,
+                            "dy": dy,
+                            "azimutDeg": self.azimutDegFromDxDy(dx, dy),
+                        })
+
+        seen = set()
+        uniq: list[dict] = []
+        for r in rays:
+            key = (r["edgeId"], round(float(r["tFrom"]), 9), round(float(r["tTo"]), 9), r["toNode"])
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(r)
+        uniq.sort(key=lambda r: (float(r.get("azimutDeg", 0.0)), str(r.get("edgeId", ""))))
+        return uniq
+
+
     # --- export ---
     def validate_world(self) -> list[str]:
         errors: list[str] = []
@@ -1022,20 +1711,6 @@ class TopologyWorld:
             errs = self.validate_world()
             _ET.SubElement(grp, "Validate", {"errors": str(len(errs)), "warnings": "0"})
 
-            # --- Pose monde (absolue) du groupe ---
-            pose = self.get_group_pose(gid)
-            if pose is not None:
-                pe = _ET.SubElement(grp, "WorldPose", {
-                    "thetaRad": f"{pose.theta_rad():.9f}",
-                    "tx": f"{float(pose.T[0]):.6f}",
-                    "ty": f"{float(pose.T[1]):.6f}",
-                })
-                r = pose.R
-                _ET.SubElement(pe, "R", {
-                    "r00": f"{float(r[0,0]):.9f}", "r01": f"{float(r[0,1]):.9f}",
-                    "r10": f"{float(r[1,0]):.9f}", "r11": f"{float(r[1,1]):.9f}",
-                })
-
         nodes_el = _ET.SubElement(root, "Nodes")
         canonical_nodes = sorted({self.find_node(nid) for nid in self._node_parent.keys()})
         for cn in canonical_nodes:
@@ -1046,13 +1721,82 @@ class TopologyWorld:
                 "createdOrder": str(self._node_created_order.get(self.find_node(cn), 0)),
             })
 
+        # --- ConceptModels (debug) : un par GROUPE ---
+        # DSU nodes = global, mais on exporte un sous-graphe conceptuel par groupe canonique,
+        # indispensable pour calculer/valider un contour de groupe.
+        cm_all = _ET.SubElement(root, "ConceptModels")
+        for gid in sorted(self.groups.keys()):
+            if gid != self.find_group(gid):
+                continue
+            self.buildConceptCacheIfNeeded(gid)
+            ccache = self._concept_cache(gid)
+
+            cm = _ET.SubElement(cm_all, "ConceptModel", {"version": "1.0", "group": str(gid)})
+            cns = _ET.SubElement(cm, "ConceptNodes")
+            for cid in sorted(ccache.nodes.keys()):
+                xy = ccache.nodes[cid].world_xy()
+                cn_el = _ET.SubElement(cns, "ConceptNode", {
+                    "id": str(cid),
+                    "type": str(self.getConceptNodeType(cid)),
+                    "x": f"{float(xy[0]):.6f}",
+                    "y": f"{float(xy[1]):.6f}",
+                })
+                mem_el = _ET.SubElement(cn_el, "Members")
+                for mid in sorted(self.node_members(cid)):
+                    _ET.SubElement(mem_el, "M", {
+                        "id": str(mid),
+                        "type": str(self.node_type(mid)),
+                        "tri": str(self._parseTriangleIdFromNodeId(str(mid))),
+                        "label": str(self.getAtomicNodeLabel(str(mid))),
+                    })
+
+            ces = _ET.SubElement(cm, "ConceptEdges")
+            for (a, b) in sorted(ccache.edges.keys()):
+                p0 = ccache.nodes[a].world_xy() if a in ccache.nodes else (0.0, 0.0)
+                p1 = ccache.nodes[b].world_xy() if b in ccache.nodes else (0.0, 0.0)
+                dx = float(p1[0] - p0[0])
+                dy = float(p1[1] - p0[1])
+                dist = float(math.hypot(dx, dy))
+                az = self.azimutDegFromDxDy(dx, dy)
+                ce_el = _ET.SubElement(ces, "ConceptEdge", {
+                    "a": str(a),
+                    "b": str(b),
+                    "distanceKm": f"{dist:.6f}",
+                    "azimutDeg": f"{az:.6f}",
+                })
+                occ_el = _ET.SubElement(ce_el, "Occurrences")
+                for occ in ccache.edges[(a, b)].occurrences:
+                    _ET.SubElement(occ_el, "O", {
+                        "element": str(occ.get("elementId", "")),
+                        "edge": str(occ.get("edgeId", "")),
+                        "t0": f"{float(occ.get('t0', 0.0)):.6f}",
+                        "t1": f"{float(occ.get('t1', 0.0)):.6f}",
+                    })
+
+
         elements_el = _ET.SubElement(root, "Elements")
         for eid in sorted(self.elements.keys()):
             el = self.elements[eid]
+            # Lien explicite Element -> Groupe (dump-only, info-only)
+            gid = self.get_group_of_element(el.element_id)
             elx = _ET.SubElement(elements_el, "Element", {
                 "id": el.element_id,
                 "name": el.name,
                 "n": str(el.n_vertices()),
+                "group": str(gid),
+            })
+
+            # --- Pose monde (par élément) ---
+            # Fallback implicite: identité si non renseigné.
+            R, T, mirrored = el.get_pose()
+            ep = _ET.SubElement(elx, "ElementPose", {
+                "mirrored": "1" if mirrored else "0",
+                "tx": f"{float(T[0]):.6f}",
+                "ty": f"{float(T[1]):.6f}",
+            })
+            _ET.SubElement(ep, "R", {
+                "r00": f"{float(R[0,0]):.9f}", "r01": f"{float(R[0,1]):.9f}",
+                "r10": f"{float(R[1,0]):.9f}", "r11": f"{float(R[1,1]):.9f}",
             })
 
             # --- Coordonnées locales (relatives) ---

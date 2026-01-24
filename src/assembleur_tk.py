@@ -3,10 +3,10 @@ import os
 import json
 import datetime as _dt
 import math
+import numpy as np
 import re
 import copy
 import io
-import numpy as np
 import pandas as pd
 from typing import Optional, List, Dict, Tuple, Type
 from pyproj import Transformer
@@ -65,6 +65,13 @@ from src.assembleur_sim import (
 )
 
 import src.assembleur_io as _assembleur_io
+
+# --- Tk split: mixins (découpage assembleur_tk.py) ---
+from src.assembleur_tk_mixin_dictionary import TriangleViewerDictionaryMixin
+from src.assembleur_tk_mixin_frontier import TriangleViewerFrontierGraphMixin
+from src.assembleur_tk_mixin_bg import TriangleViewerBackgroundMapMixin
+from src.assembleur_tk_mixin_clockarc import TriangleViewerClockArcMixin
+
 
 # --- Dictionnaire (chargement livre.txt) ---
 from src.DictionnaireEnigmes import DictionnaireEnigmes
@@ -326,7 +333,13 @@ class DialogCreateCheminParams(tk.Toplevel):
 
 
 # ---------- Application (MANUEL — sans algorithmes) ----------
-class TriangleViewerManual(tk.Tk):
+class TriangleViewerManual(
+    TriangleViewerDictionaryMixin,
+    TriangleViewerFrontierGraphMixin,
+    TriangleViewerBackgroundMapMixin,
+    TriangleViewerClockArcMixin,
+    tk.Tk,
+):
     """
     Version épurée pour travail manuel :
       - Chargement Excel
@@ -601,40 +614,146 @@ class TriangleViewerManual(tk.Tk):
     # ======================================================================
     #  Topologie (bridge minimal Tk -> Core)
     # ======================================================================
-    def _sync_group_pose_to_core(self, ui_gid: int):
+    def _sync_group_elements_pose_to_core(self, ui_gid: int) -> None:
+        """Synchronise les poses (R,T,mirrored) de TOUS les éléments du groupe UI vers le Core.
+
+        Important:
+        - Tk manipule la géométrie au niveau groupe (déplacement/rotation).
+        - Le Core ne porte AUCUNE pose de groupe : les groupes sont topologiques.
+        - La vérité géométrique persistable est donc : pose par élément.
+        """
         scen = self._get_active_scenario()
-        if scen is None or getattr(scen, "topoWorld", None) is None:
+        world = getattr(scen, "topoWorld", None) if scen is not None else None
+        if world is None:
             return
 
         grp = self.groups.get(ui_gid)
         if not grp:
             return
 
-        core_gid = grp.get("topoGroupId")
-        if not core_gid:
-            return
-
         nodes = grp.get("nodes", [])
         if not nodes:
             return
 
-        tid = nodes[0]["tid"]
-        tri = self._last_drawn[tid]
-        Pw = tri.get("pts") or tri.get("world_pts")
-        if Pw is None:
+        # Modèle "pose" :
+        # - mirrored est réservé AU FLIP utilisateur (fonction _ctx_flip_selected).
+        # - La pose initiale d'un triangle ne doit PAS activer mirrored.
+        # - L'orientation CW/CCW provenant de l'Excel doit être résolue en amont
+        #   (normalisation des coordonnées locales), pas ici.
+        M = np.array([[1.0, 0.0], [0.0, -1.0]], dtype=float)
+
+        for node in nodes:
+            tid = int(node.get("tid", -1))
+            if not (0 <= tid < len(self._last_drawn)):
+                continue
+
+            tri = self._last_drawn[tid]
+            element_id = tri.get("topoElementId", None)
+            if not element_id:
+                continue
+
+            Pw = tri.get("pts") or tri.get("world_pts")
+            if Pw is None:
+                continue
+
+            # World: O,B,L (nécessaire pour capturer le handedness après un flip legacy)
+            Ow = np.array(Pw["O"], dtype=float)
+            Bw = np.array(Pw["B"], dtype=float)
+            Lw = np.array(Pw["L"], dtype=float)
+
+            # Local: O,B depuis le Core (coordonnées locales figées)
+            el = world.elements.get(str(element_id))
+            if el is None:
+                continue
+
+            pO = np.array(el.vertex_local_xy.get(0, (0.0, 0.0)), dtype=float)
+            pB = np.array(el.vertex_local_xy.get(1, (0.0, 0.0)), dtype=float)
+            pL = np.array(el.vertex_local_xy.get(2, (0.0, 0.0)), dtype=float)
+
+            # mirrored = état "flip" uniquement (par défaut False à la pose initiale)
+            mirrored = bool(tri.get("poseMirrored", False))
+
+            # local effectif : si flip, on applique une réflexion locale M (le Core appliquera aussi mirrored)
+            # NB: On fit R,T sur X' = M@X afin d'obtenir Y ≈ R @ (M @ X) + T.
+            pO2 = (M @ pO) if mirrored else pO
+            pB2 = (M @ pB) if mirrored else pB
+            pL2 = (M @ pL) if mirrored else pL
+
+            # Fit orthonormal 2D sur 3 points (Kabsch) — R DOIT être une rotation (det=+1)
+            X = np.stack([pO2, pB2, pL2], axis=0)  # (3,2)
+            Y = np.stack([Ow,  Bw,  Lw ], axis=0)  # (3,2)
+            Xc = X - X.mean(axis=0)
+            Yc = Y - Y.mean(axis=0)
+            H = Xc.T @ Yc
+            U, _S, Vt = np.linalg.svd(H)
+            R = (Vt.T @ U.T)
+            # Forcer R ∈ SO(2) (det=+1). La réflexion est portée uniquement par `mirrored`.
+            if np.linalg.det(R) < 0.0:
+                Vt[1, :] *= -1.0
+                R = (Vt.T @ U.T)
+            T = Y.mean(axis=0) - (R @ X.mean(axis=0))
+
+            world.setElementPose(str(element_id), R=R, T=T, mirrored=mirrored)
+
+    def _sync_element_pose_to_core(self, tid: int) -> None:
+        """Sync la pose monde d'un SEUL élément Core à partir des points monde UI (Tk).
+
+        Objectif:
+        - éviter l'approximation "angle(O->B) + T=O"
+        - fitter proprement (O,B,L) pour obtenir R (rotation pure det=+1) + T
+        - mirrored est réservé au flip utilisateur (poseMirrored) et n'est pas déduit d'orient Excel ici.
+        """
+        if not (0 <= int(tid) < len(self._last_drawn)):
+            return
+        tri = self._last_drawn[int(tid)]
+        element_id = tri.get("topoElementId", None)
+        if not element_id:
+            return
+        scen = self._get_active_scenario()
+        if scen is None or getattr(scen, "topoWorld", None) is None:
+            return
+        world = scen.topoWorld
+        el = world.elements.get(str(element_id), None)
+        if el is None:
             return
 
-        O = np.array(Pw["O"], dtype=float)
-        B = np.array(Pw["B"], dtype=float)
+        Pw = tri.get("pts", None)
+        if not isinstance(Pw, dict) or not all(k in Pw for k in ("O", "B", "L")):
+            return
 
-        v = B - O
-        theta = float(math.atan2(v[1], v[0]))
-        c, s = math.cos(theta), math.sin(theta)
+        # Points monde UI
+        Ow = np.array(Pw["O"], dtype=float)
+        Bw = np.array(Pw["B"], dtype=float)
+        Lw = np.array(Pw["L"], dtype=float)
 
-        R = np.array([[c, -s], [s, c]], dtype=float)
-        T = np.array([float(O[0]), float(O[1])], dtype=float)
+        # Points locaux "référence" issus du core (coords locales du triangle)
+        pO = np.array(el.vertex_local_xy.get(0, (0.0, 0.0)), dtype=float)
+        pB = np.array(el.vertex_local_xy.get(1, (0.0, 0.0)), dtype=float)
+        pL = np.array(el.vertex_local_xy.get(2, (0.0, 0.0)), dtype=float)
 
-        scen.topoWorld.set_group_pose(core_gid, R=R, T=T)
+        # mirrored = flip utilisateur uniquement
+        mirrored = bool(tri.get("poseMirrored", False))
+        M = np.array([[1.0, 0.0], [0.0, -1.0]], dtype=float)
+        pO2 = (M @ pO) if mirrored else pO
+        pB2 = (M @ pB) if mirrored else pB
+        pL2 = (M @ pL) if mirrored else pL
+
+        # Fit orthonormal 2D sur 3 points (Kabsch) — forcer det(R)=+1 (rotation pure)
+        X = np.stack([pO2, pB2, pL2], axis=0)  # (3,2)
+        Y = np.stack([Ow,  Bw,  Lw ], axis=0)  # (3,2)
+        Xc = X - X.mean(axis=0)
+        Yc = Y - Y.mean(axis=0)
+        H = Xc.T @ Yc
+        U, _S, Vt = np.linalg.svd(H)
+        R = (Vt.T @ U.T)
+        if np.linalg.det(R) < 0.0:
+            Vt[1, :] *= -1.0
+            R = (Vt.T @ U.T)
+        T = Y.mean(axis=0) - (R @ X.mean(axis=0))
+
+        #  On pose toujours un triangle avec mirrored = 0. L'état a déjà été pris en compte dans les coordonnées locales
+        world.setElementPose(str(element_id), R=R, T=T, mirrored=mirrored)
+
 
     def _ensureScenarioTopo(self, scen: ScenarioAssemblage) -> None:
         """Garantit que le scénario possède un topoScenarioId + un TopologyWorld.
@@ -683,744 +802,6 @@ class TriangleViewerManual(tk.Tk):
         self.status.config(text=f"TopoDump exporté : {out_name}")
 
     # ---------- Dictionnaire : init ----------
-    def _init_dictionary(self):
-        """Construit le dictionnaire en lisant ../data/livre.txt (si présent)."""
-        try:
-            if DictionnaireEnigmes is None:
-                raise ImportError("Module DictionnaireEnigmes introuvable")
-            livre_path = os.path.join(self.data_dir, "livre.txt")
-            if not os.path.isfile(livre_path):
-                self.status.config(text="Dico: fichier 'livre.txt' non trouvé dans ../data")
-                return
-            self.dico = DictionnaireEnigmes(livre_path)  # charge tout le livre
-            nb_lignes = len(self.dico)
-            self.status.config(text=f"Dico chargé: {nb_lignes} lignes depuis {livre_path}")
-        except Exception as e:
-            self.status.config(text=f"Dico: échec de chargement — {e}")
-
-
-    # ---------- Dictionnaire : affichage dans le panneau bas ----------
-    def _build_dico_grid(self):
-        """
-        Construit/affiche la grille tksheet du dictionnaire dans self.dicoPanel.
-        N’opère que si self.dico est chargé et tksheet disponible.
-        """
-
-        # Le panneau bas doit exister (créé dans _build_canvas)
-        if not hasattr(self, "dicoPanel"):
-            return
-        # Nettoyer le contenu existant (placeholder, ancienne grille…)
-        for child in list(self.dicoPanel.children.values()):
-            child.destroy()
-
-        # Vérifs
-        if self.dico is None:
-            tk.Label(self.dicoPanel, text="Dictionnaire non chargé",
-                     bg="#f3f3f3", anchor="w").pack(fill="x", padx=8, pady=6)
-            return
-
-        # ===== Paramètres Dico (N) + référentiel logique (volatile) =====
-        # On affiche toujours 2N colonnes correspondant à j ∈ [-N .. N-1].
-        # Le "0 logique" doit correspondre au premier mot du livre (j=0),
-        # donc à la colonne physique c = N (pas à la colonne 0).
-        nb_mots_max = int(self.dico.nbMotMax())
-        self._dico_nb_mots_max = int(nb_mots_max)
- 
-        # Origine logique = cellule physique (row0,col0) qui correspond à (0,0) logique.
-        # Par défaut / reset : (0, N) physique => 0 logique sur le 1er mot du livre.
-        if not hasattr(self, "_dico_origin_cell") or self._dico_origin_cell is None:
-            self._dico_origin_cell = (0, int(nb_mots_max))
-
-        # Mode de référence (volatile, RAM) :
-        #   None      -> mode ABS
-        #   "origin"  -> relatif normal (addition)
-        #   "target"  -> relatif inversé (soustraction)
-        # Compat : si une origine non-default existe sans mode, on considère "origin".
-        if not hasattr(self, "_dico_ref_mode"):
-            default_origin = (0, int(nb_mots_max))
-            self._dico_ref_mode = "origin" if tuple(self._dico_origin_cell) != tuple(default_origin) else None
-
-        # --- Layout du panneau bas : [sidebar catégories] | [grille] ---
-        from tkinter import ttk
-        container = tk.Frame(self.dicoPanel, bg="#f3f3f3")
-        container.pack(fill="both", expand=True)
-        # colonne gauche (catégories + liste)
-        left = tk.Frame(container, width=180, bg="#f3f3f3", bd=1, relief=tk.GROOVE)
-        left.pack(side="left", fill="y")
-        left.pack_propagate(False)
-        # colonne droite (grille)
-        right = tk.Frame(container, bg="#f3f3f3")
-        right.pack(side="left", fill="both", expand=True)
-
-        # ===== Barre "catégories" =====
-        tk.Label(left, text="Catégorie :", anchor="w", bg="#f3f3f3").pack(anchor="w", padx=8, pady=(8,2))
-        cats = list(self.dico.getCategories())
-
-        # Préserver la catégorie sélectionnée lors d'un rebuild
-        cat_default = getattr(self, "_dico_cat_selected", None)
-        if cat_default not in (cats or []):
-            cat_default = (cats[0] if cats else "")
-        self._dico_cat_var = tk.StringVar(value=cat_default)
-        self._dico_cat_combo = ttk.Combobox(left, state="readonly", values=cats, textvariable=self._dico_cat_var)
-        self._dico_cat_combo.pack(fill="x", padx=8, pady=(0,6))
-
-        # Liste des mots de la catégorie sélectionnée
-        lb_frame = tk.Frame(left, bg="#f3f3f3"); lb_frame.pack(fill="both", expand=True, padx=6, pady=(0,8))
-        self._dico_cat_list = tk.Listbox(lb_frame, exportselection=False)
-        self._dico_cat_list.pack(side="left", fill="both", expand=True)
-        sb = tk.Scrollbar(lb_frame, orient="vertical", command=self._dico_cat_list.yview)
-        sb.pack(side="right", fill="y")
-        self._dico_cat_list.configure(yscrollcommand=sb.set)
-
-        # Remplissage initial + binding de la combo
-        self._dico_cat_items = []
-        def _refresh_cat_list(*_):
-            cat = self._dico_cat_var.get()
-            self._dico_cat_selected = cat
-            self._dico_cat_list.delete(0, tk.END)
-            if not cat:
-                return
-
-            # getListeCategorie -> [(mot, enigme, indexMot), ...]
-            items = self.dico.getListeCategorie(cat)
-
-            # mémoriser pour la synchro avec la grille
-            self._dico_cat_items = list(items)
-            # Afficher: "mot — (eDisp, mDisp)" (index d’affichage)
-            # - Mode ABS (origine par défaut) : colonnes sans 0 (1=1er mot), lignes 1..10
-            # - Mode DELTA (origine cliquée) : colonnes/énigmes en delta avec 0 (pas d’énigmes négatives -> modulo 10)
-            nb_mots_max = self._dico_nb_mots_max if hasattr(self, "_dico_nb_mots_max") else self.dico.nbMotMax()
-            default_origin = (0, int(nb_mots_max))
-            r0, c0 = (self._dico_origin_cell or default_origin)
-            refMode = getattr(self, "_dico_ref_mode", None)
-            isDelta = (tuple((r0, c0)) != tuple(default_origin)) and (refMode in ("origin", "target"))
-            isTarget = (refMode == "target")
-
-            origin_indexMot = int(c0) - int(nb_mots_max)
-            for mot, e, m in items:
-                # Lignes : pas d’énigmes négatives
-                eLogRaw = int(e) - int(r0)
-                eLog = (-int(eLogRaw) % 10) if isTarget else (int(eLogRaw) % 10)
-                eDisp = int(eLog) if isDelta else (int(eLog) + 1)
-
-                # Colonnes : indexMot (absolu) ou delta                
-                mLog = int(m) - int(origin_indexMot)
-                if isDelta:
-                    mDisp = int(mLog)  # delta, 0 autorisé
-                else:
-                    # ABS : pas de colonne 0 ; 1 = 1er mot
-                    mDisp = int(mLog) if int(mLog) < 0 else (int(mLog) + 1)
-
-                self._dico_cat_list.insert(tk.END, f"{mot} — ({eDisp}, {mDisp})")
-
-        self._dico_cat_combo.bind("<<ComboboxSelected>>", _refresh_cat_list)
-        _refresh_cat_list()
-
-
-        # Synchronisation: clic/double-clic dans la liste -> centrer/sélectionner le mot dans la grille
-        def _goto_selected_word(event=None):
-            if not getattr(self, "dicoSheet", None):
-                return
-            sel = self._dico_cat_list.curselection()
-            if not sel:
-                return
-            i = int(sel[0])
-            mot, enigme, indexMot = self._dico_cat_items[i]
-
-            # convertir indexMot [-N..N) -> colonne [0..2N)
-            nb_mots_max = self._dico_nb_mots_max if hasattr(self, "_dico_nb_mots_max") else self.dico.nbMotMax()
-
-            col = int(indexMot) + int(nb_mots_max)
-            row = int(enigme)
-            # sélectionner et faire voir la cellule ; see() centre autant que possible
-            self.dicoSheet.select_cell(row, col, redraw=False)
-            self.dicoSheet.see(row=row, column=col)
-            # MAJ horloge (sélection indirecte via la liste)
-            self._update_clock_from_cell(row, col)
-
-
-        # Clic et double-clic compatibles
-        self._dico_cat_list.bind("<<ListboxSelect>>", _goto_selected_word)
-        self._dico_cat_list.bind("<Double-Button-1>", _goto_selected_word)
-
-        # ===== Grille (tksheet) =====
-        # Construire la matrice
-        # Deux modes d’affichage :
-        # - Mode ABS (origine par défaut (0, nbm)) : colonnes sans 0 (1=1er mot), lignes 1..10
-        # - Mode DELTA (origine cliquée) : colonnes/énigmes en delta avec 0 (lignes en modulo 10)
-        default_origin = (0, int(nb_mots_max))
-        r0, c0 = (self._dico_origin_cell or default_origin)
-        refMode = getattr(self, "_dico_ref_mode", None)
-        isDelta = (tuple((r0, c0)) != tuple(default_origin)) and (refMode in ("origin", "target"))
-        isTarget = (refMode == "target")
-
-        # Entêtes d'affichage
-        if isDelta:
-            # DELTA : 0 sur la colonne d’origine
-            headers = [-(int(c) - int(c0)) if isTarget else (int(c) - int(c0))
-                       for c in range(0, 2 * int(nb_mots_max))]
-        else:
-            # ABS : 1 = 1er mot (j=0), pas de colonne 0
-            # Physique c ∈ [0..2N-1] ↔ j = c - N ∈ [-N..N-1]
-            headers = []
-            for c in range(0, 2 * int(nb_mots_max)):
-                j = int(c) - int(nb_mots_max)
-                headers.append(int(j) if int(j) < 0 else (int(j) + 1))
-
-        data = []
-        for i in range(len(self.dico)):
-            try:
-                row = [self.dico[i][j] for j in range(-nb_mots_max, nb_mots_max)]
-            except Exception:
-                # en cas de dépassement, remplir de chaînes vides
-                row = ["" for _ in range(2 * nb_mots_max)]
-            data.append(row)
-
-
-        row_titles_raw = self.dico.getTitres()   # ["530", "780", ...]
-
-
-        # utilisé par le decryptor / compas (NE PAS TOUCHER)
-        self._dico_row_index = list(row_titles_raw)
-
-        # affichage UI : indexes
-        # - DELTA : lignes en modulo 10 (pas d'énigmes négatives), origine = 0
-        # - ABS   : 1..10
-        if isDelta:
-            row_index_display = [f'{((-(i - int(r0))) % 10) if isTarget else ((i - int(r0)) % 10)} - "{t}"'
-                                for i, t in enumerate(row_titles_raw)]
-        else:
-            row_index_display = [f'{(((i - int(r0)) % 10) + 1)} - "{t}"' for i, t in enumerate(row_titles_raw)]
-
-        # Créer la grille
-        self.dicoSheet = Sheet(
-            right,
-            data=data,
-            headers=headers,
-            row_index=row_index_display,
-            show_row_index=True,
-            height=max(120, getattr(self, "dico_panel_height", 220) - 10),
-            empty_vertical=0,
-        )
-        # NOTE: on désactive le menu contextuel interne TkSheet ("copy", etc.)
-        # car il entre en conflit avec notre menu "Définir comme origine (0,0)".
-        self.dicoSheet.enable_bindings((
-            "single_select","row_select","column_select",
-            "arrowkeys","copy","rc_select","double_click"
-        ))
-        self.dicoSheet.align_columns(columns="all", align="center")
-        self.dicoSheet.set_options(cell_align="center")
-        self.dicoSheet.pack(expand=True, fill="both")
-
-        # --- MAJ horloge sur sélection de cellule (événement unique & propre) ---
-        def _on_dico_cell_select(event=None):
-            # La sélection directe dans la grille doit toujours synchroniser le compas.
-            # Source unique de vérité : cellule actuellement sélectionnée
-            sel = self.dicoSheet.get_selected_cells()
-            r = c = None
-            if sel:
-                # tksheet peut renvoyer un set({(r,c), ...}) ou une liste([(r,c), ...])
-                if isinstance(sel, set):
-                    r, c = next(iter(sel))
-                elif isinstance(sel, (list, tuple)):
-                    r, c = sel[0]
-            if r is None or c is None:
-                # Secours léger : cellule "courante" si aucune sélection renvoyée
-                cur = self.dicoSheet.get_currently_selected()
-                if isinstance(cur, tuple) and len(cur) == 2 and cur[0] == "cell":
-                    r, c = cur[1]
-            if r is None or c is None:
-                return
-            self._update_clock_from_cell(int(r), int(c))
-
-        # Un seul binding tksheet, propre : "cell_select"
-        def _on_dico_double_click(event=None):
-            # On ne traite QUE si double-clic sur une cellule.
-            # (évite les pièges : header / row_index / vide)
-            cur = self.dicoSheet.get_currently_selected()
-            if not (isinstance(cur, tuple) and len(cur) == 2 and cur[0] == "cell"):
-                return
-            rr, cc = cur[1]
-            rr = int(rr); cc = int(cc)
-
-            # Toggle : même cellule => reset défaut (0 logique = 1er mot du livre)
-            nbm = int(getattr(self, "_dico_nb_mots_max", 50))
-            default_origin = (0, nbm)
-            self._dico_origin_cell = (rr, cc)
-            self._dico_ref_mode = "origin"
-            # Rebuild complet (robuste vis-à-vis des API TkSheet)
-            self._build_dico_grid()
-
-        self.dicoSheet.extra_bindings([
-            ("cell_select", _on_dico_cell_select),
-        ])
-
-        # IMPORTANT (TkSheet) :
-        # - Le widget qui reçoit réellement les clics est souvent MainTable (sheet.MT).
-        # - On bind donc en priorité sur MT, sinon fallback sur Sheet.
-        def _bind_to_sheet_widget(widget, sequence, callback):
-            if widget is None:
-                return
-            try:
-                widget.bind(sequence, callback, add="+")
-            except TypeError:
-                widget.bind(sequence, callback)
-
-        target_widget = getattr(self.dicoSheet, "MT", None) or self.dicoSheet
-        _bind_to_sheet_widget(target_widget, "<Double-Button-1>", _on_dico_double_click)
-
-        # ===== Menu contextuel clic-droit : "Set as (0,0)" =====
-        # (On n’utilise pas le menu popup interne de TkSheet, on ajoute le nôtre en Tk.Menu)
-        if not hasattr(self, "_ctx_menu_dico"):
-            self._ctx_menu_dico = tk.Menu(self, tearoff=0)
-            self._ctx_menu_dico.add_command(
-                label="Définir comme origine (0,0)",
-                command=lambda: self._dico_set_origin_from_context_cell()
-            )
-            self._ctx_menu_dico.add_command(
-                label="Définir comme cible (0,0)",
-                command=lambda: self._dico_set_target_from_context_cell()
-            )
-            self._ctx_menu_dico.add_command(
-                label="Réinitialiser origine (0,0)",
-                command=lambda: self._dico_reset_origin()
-            )
-            self._ctx_menu_dico.add_separator()
-            self._ctx_menu_dico.add_command(
-                label="Occurrence précédente",
-                command=lambda: self._dico_move_context_occurrence(-1),
-                state=tk.DISABLED,
-            )
-            self._ctx_dico_idx_prev = self._ctx_menu_dico.index("end")
-            self._ctx_menu_dico.add_command(
-                label="Occurrence suivante",
-                command=lambda: self._dico_move_context_occurrence(+1),
-                state=tk.DISABLED,
-            )
-            self._ctx_dico_idx_next = self._ctx_menu_dico.index("end")
-        # cellule visée par le clic-droit (row,col) en coordonnées TkSheet
-        self._dico_ctx_cell = None
-
-        def _dico_cell_from_event(event):
-            """Retourne (row, col) pour la cellule sous la souris (clic droit).
-            IMPORTANT (TkSheet) :
-            - identify_row/identify_column attendent un *event* Tk, pas un int.
-            - get_row_at_y/get_column_at_x attendent des coordonnées (x/y).
-            """
-            mt = getattr(self.dicoSheet, "MT", None)
-            x, y = int(getattr(event, "x", 0)), int(getattr(event, "y", 0))
-
-            def _call_rowcol(obj, meth_row: str, meth_col: str):
-                if not (obj is not None and hasattr(obj, meth_row) and hasattr(obj, meth_col)):
-                    return None
-
-                if meth_row.startswith("identify_"):
-                    r = getattr(obj, meth_row)(event)
-                    c = getattr(obj, meth_col)(event)
-                else:
-                    r = getattr(obj, meth_row)(y)
-                    c = getattr(obj, meth_col)(x)
-                if r is None or c is None:
-                    return None
-                return int(r), int(c)
-
-
-            # 1) Priorité à MainTable (MT) si présent
-            for meth_row, meth_col in (
-                ("identify_row", "identify_column"),
-                ("get_row_at_y", "get_column_at_x"),
-            ):
-                rc = _call_rowcol(mt, meth_row, meth_col)
-                if rc is not None:
-                    return rc
-                rc = _call_rowcol(self.dicoSheet, meth_row, meth_col)
-                if rc is not None:
-                    return rc
-            return None
-
-        def _on_dico_right_click(event=None):
-            # Sélectionner d’abord la cellule sous la souris puis ouvrir le menu
-            rc = _dico_cell_from_event(event) if event is not None else None
-            if rc:
-                rr, cc = rc
-                self._dico_ctx_cell = (int(rr), int(cc))
-                self.dicoSheet.select_cell(rr, cc, redraw=False)
-
-            # Activer/désactiver "précédent/suivant" selon la cellule visée
-            self._dico_update_occurrence_ctx_menu_state()
-
-            self._ctx_menu_dico.tk_popup(event.x_root, event.y_root)
-            self._ctx_menu_dico.grab_release()
-
-            # IMPORTANT: empêcher TkSheet de traiter aussi le clic-droit (sinon popup interne)
-            return "break"
-
-        _bind_to_sheet_widget(target_widget, "<Button-3>", _on_dico_right_click)
-
-        # --- Centrer l’affichage par défaut sur la colonne 0 ---
-        # Centre sur l'origine LOGIQUE (0,0) => cellule physique (r0,c0)
-        self.dicoSheet.select_cell(int(r0), int(c0), redraw=False)
-        self.dicoSheet.see(row=int(r0), column=int(c0))  # amène la colonne 0 logique dans la vue (le plus centré possible)
-
-
-        # La sélection du dico doit rester possible pour synchroniser le compas,
-        # même si aucun arc n'est disponible (le filtrage, lui, restera grisé).
-        self._dico_set_selection_enabled(True)
-
-        # Appliquer style origine + filtre (si actif)
-        self._dico_apply_origin_style()
-        if getattr(self, "_dico_filter_active", False):
-            self._dico_apply_filter_styles()
-
-        self.status.config(text="Dico affiché dans le panneau bas")
-
-    # ---------- DICO : origine logique via menu contextuel ----------
-    def _dico_set_origin_from_context_cell(self):
-        # Action "Set as (0,0)" : utiliser la cellule du clic-droit (robuste, sans dépendre de la sélection)
-        if not getattr(self, "_dico_ctx_cell", None):
-            return
-        rr, cc = self._dico_ctx_cell
-        rr = int(rr); cc = int(cc)
-        self._dico_origin_cell = (rr, cc)
-        self._dico_ref_mode = "origin"  # exclusif
-        self._build_dico_grid()
-
-    def _dico_set_target_from_context_cell(self):
-        # Action "Set as target (0,0)" : cellule du clic-droit
-        if not getattr(self, "_dico_ctx_cell", None):
-            return
-        rr, cc = self._dico_ctx_cell
-        rr = int(rr); cc = int(cc)
-        self._dico_origin_cell = (rr, cc)
-        self._dico_ref_mode = "target"  # exclusif
-        self._build_dico_grid()
-
-    # ---------- DICO : navigation par occurrences (même mot) ----------
-    def _dico_find_occurrence_in_row(self, row: int, col: int, direction: int):
-        """Retourne la colonne de la prochaine occurrence du même mot sur la même ligne.
-        direction = +1 (droite) ou -1 (gauche). Recherche dans la grille affichée uniquement.
-        """
-        if not getattr(self, "dicoSheet", None):
-            return None
-
-        nbm = int(getattr(self, "_dico_nb_mots_max", 0) or 0)
-        n_cols = int(2 * nbm) if nbm > 0 else 0
-        if n_cols <= 0:
-            return None
-
-        if row < 0 or row >= len(self.dico):
-            return None
-        if col < 0 or col >= n_cols:
-            return None
-
-        w0 = str(self.dicoSheet.get_cell_data(int(row), int(col))).strip()
-        if not w0:
-            return None
-
-        c = int(col) + int(direction)
-        while 0 <= c < n_cols:
-            w = str(self.dicoSheet.get_cell_data(int(row), int(c))).strip()
-            if w and w == w0:
-                return int(c)
-            c += int(direction)
-
-        return None
-
-    def _dico_update_occurrence_ctx_menu_state(self):
-        """Active/désactive 'Occurrence précédente/suivante' selon le mot cliqué."""
-        if not hasattr(self, "_ctx_menu_dico"):
-            return
-        if not hasattr(self, "_ctx_dico_idx_prev") or not hasattr(self, "_ctx_dico_idx_next"):
-            return
-
-        prev_state = tk.DISABLED
-        next_state = tk.DISABLED
-
-        rc = getattr(self, "_dico_ctx_cell", None)
-        if rc is not None and getattr(self, "dicoSheet", None):
-            rr, cc = int(rc[0]), int(rc[1])
-            if self._dico_find_occurrence_in_row(rr, cc, -1) is not None:
-                prev_state = tk.NORMAL
-            if self._dico_find_occurrence_in_row(rr, cc, +1) is not None:
-                next_state = tk.NORMAL
-
-        self._ctx_menu_dico.entryconfig(self._ctx_dico_idx_prev, state=prev_state)
-        self._ctx_menu_dico.entryconfig(self._ctx_dico_idx_next, state=next_state)
-
-    def _dico_move_context_occurrence(self, direction: int):
-        """Déplace la sélection vers l'occurrence précédente/suivante du même mot (même ligne)."""
-        if not getattr(self, "dicoSheet", None):
-            return
-
-        rc = getattr(self, "_dico_ctx_cell", None)
-        if rc is None:
-            return
-
-        rr, cc = int(rc[0]), int(rc[1])
-        new_c = self._dico_find_occurrence_in_row(rr, cc, int(direction))
-        if new_c is None:
-            self._dico_update_occurrence_ctx_menu_state()
-            return
-
-        # Mettre à jour le "contexte" pour permettre des clics successifs
-        self._dico_ctx_cell = (rr, int(new_c))
-
-        self.dicoSheet.select_cell(rr, int(new_c), redraw=False)
-        self.dicoSheet.see(row=rr, column=int(new_c))
-        self._update_clock_from_cell(rr, int(new_c))
-
-        self._dico_update_occurrence_ctx_menu_state()
-
-    def _dico_reset_origin(self):
-        # Origine par défaut = 1er mot du livre :
-        #  - ligne physique 0 (énigme 0)
-        #  - colonne physique nbm (car headers = [-nbm..0..+nbm])
-        nbm = int(getattr(self, "_dico_nb_mots_max", 50))
-        self._dico_origin_cell = (0, nbm)
-        self._dico_ref_mode = None   # retour ABS (donc style bleu)
-        self._build_dico_grid()
-
-
-    # ---------- DICO → Horloge ----------
-    def _update_clock_from_cell(self, row: int, col: int):
-        """Met à jour l'horloge à partir d'une cellule de la grille Dico.
-        La conversion (row,col)->(hour,minute,label) est déléguée au decryptor actif.
-        """
-        if not getattr(self, "dicoSheet", None):
-            return
-
- 
-        nbm = int(getattr(self, "_dico_nb_mots_max", 50))
-        row_titles = getattr(self, "_dico_row_index", [])
-        word = str(self.dicoSheet.get_cell_data(int(row), int(col))).strip()
-
- 
-        # Externalisation : conversion via decryptor
-        # --- Passage en référentiel LOGIQUE pour le compas/decryptor ---
-        nbm = int(getattr(self, "_dico_nb_mots_max", 50))
-
-        default_origin = (0, int(nbm))
-        r0, c0 = (self._dico_origin_cell or default_origin)
-        refMode = getattr(self, "_dico_ref_mode", None)
-        isDelta = (tuple((int(r0), int(c0))) != tuple(default_origin)) and (refMode in ("origin", "target"))
-        isTarget = (refMode == "target")
-        mode = "delta" if isDelta else "abs"
-
-        if isDelta:
-            # DELTA : 0 autorisé. Lignes en modulo 10 (pas d’énigmes négatives)
-            dr = (int(row) - int(r0)) % 10
-            dc = int(col) - int(c0)
-            rowVal = (-dr) % 10 if isTarget else dr
-            colVal = -dc if isTarget else dc
-        else:
-            # ABS : pas de 0. Lignes 1..10, Colonnes … -2, -1, 1, 2, …
-            rowVal = ((int(row) - int(r0)) % 10) + 1
-            j = int(col) - int(nbm)  # j ∈ [-nbm..nbm-1]
-            colVal = int(j) if int(j) < 0 else (int(j) + 1)
-
-        st = self.decryptor.clockStateFromDicoCell(
-            row=int(rowVal),
-            col=int(colVal),
-            nbMotsMax=int(nbm),
-            rowTitles=list(row_titles) if row_titles else None,
-            word=word,
-            mode=str(mode),
-        )
-
-        self._clock_state.update({"hour": float(st.hour), "minute": int(st.minute), "label": str(st.label)})
-        self._redraw_overlay_only()
-
-    # ---------- DICO : filtrage visuel par angle ----------
-    def _dico_apply_filter_styles(self):
-        """Applique le style (gras / gris) à l'ensemble du dictionnaire."""
-        if not getattr(self, "dicoSheet", None):
-            return
-        if not self._dico_filter_active:
-            return
-        if self._dico_filter_ref_angle_deg is None:
-            return
-
-        if not hasattr(self.dicoSheet, "highlight_cells"):
-            raise AttributeError("tksheet.Sheet.highlight_cells non disponible")
-
-        nbm = int(getattr(self, "_dico_nb_mots_max", 50))
-        row_titles = getattr(self, "_dico_row_index", [])
-        n_rows = int(len(self.dico)) if self.dico is not None else 0
-        n_cols = int(2 * nbm)
-
-        ref = float(self._dico_filter_ref_angle_deg) % 180.0
-        tol = float(getattr(self, "_dico_filter_tolerance_deg", 4.0))
-
-        default_origin = (0, int(nbm))
-        r0, c0 = (self._dico_origin_cell or default_origin)
-        refMode = getattr(self, "_dico_ref_mode", None)
-        isDelta = (tuple((int(r0), int(c0))) != tuple(default_origin)) and (refMode in ("origin", "target"))
-        isTarget = (refMode == "target")
-        mode = "delta" if isDelta else "abs"
-        for r in range(n_rows):
-            for c in range(n_cols):
-                word = str(self.dicoSheet.get_cell_data(r, c)).strip()
-                if not word:
-                    continue
-                # --- Passage en référentiel LOGIQUE pour l'angle ---
-                if isDelta:
-                    dr = (int(r) - int(r0)) % 10
-                    dc = int(c) - int(c0)
-                    rowVal = (-dr) % 10 if isTarget else dr
-                    colVal = -dc if isTarget else dc
-                else:
-                    rowVal = ((int(r) - int(r0)) % 10) + 1
-                    j = int(c) - int(nbm)
-                    colVal = int(j) if int(j) < 0 else (int(j) + 1)
-
-                # IMPORTANT:
-                #   Le filtre doit être cohérent avec ce que le compas affichera quand on clique une cellule.
-                #   Or le compas affiche Δ = angle entre aiguilles (heure/minute) calculé à partir de
-                #   clockStateFromDicoCell().
-                #   On n'utilise donc PAS deltaAngleFromDicoCell (qui peut avoir une convention différente)
-                #   mais exactement la même définition que l'overlay du compas.
-                st = self.decryptor.clockStateFromDicoCell(
-                    row=int(rowVal),
-                    col=int(colVal),
-                    nbMotsMax=int(nbm),
-                    rowTitles=list(row_titles) if row_titles else None,
-                    word=word,
-                    mode=str(mode),
-                )
-                hFloat = float(getattr(st, "hour", 0.0)) % 12.0
-                m = int(getattr(st, "minute", 0)) % 60
-                ang_hour = (hFloat * 30.0) % 360.0
-                ang_min = (m * 6.0) % 360.0
-                ang = float(self._clock_arc_compute_angle_deg(float(ang_hour), float(ang_min)))
-                ok = abs(ang - ref) <= tol
-                if ok:
-                    # Match: texte noir + fond légèrement marqué
-                    self.dicoSheet.highlight_cells(r, c, fg="#000000", bg="#E8E8E8")
-                else:
-                    # Non match: gris clair (pas de fond)
-                    self.dicoSheet.highlight_cells(r, c, fg="#B0B0B0")
-
-        # Priorité visuelle à l'origine
-        self._dico_apply_origin_style()
-
-        if hasattr(self.dicoSheet, "refresh"):
-            self.dicoSheet.refresh()
-
-    def _dico_clear_filter_styles(self):
-        """Réinitialise les styles appliqués par _dico_apply_filter_styles."""
-        if not getattr(self, "dicoSheet", None):
-            return
-        # Version récente : méthode dédiée
-        if hasattr(self.dicoSheet, "dehighlight_all"):
-            self.dicoSheet.dehighlight_all()
-        else:
-            # Fallback minimal si jamais (mais si tu mets à jour, tu ne passes jamais ici)
-            if hasattr(self.dicoSheet, "dehighlight_cells"):
-                self.dicoSheet.dehighlight_cells()
-        # Ré-appliquer l'origine après nettoyage
-        self._dico_apply_origin_style()
-        if hasattr(self.dicoSheet, "refresh"):
-            self.dicoSheet.refresh()
-
-    def _dico_apply_origin_style(self):
-        """Applique le style visuel de la cellule origine (0,0) logique."""
-        if not getattr(self, "dicoSheet", None):
-            return
-        if not hasattr(self.dicoSheet, "highlight_cells"):
-            return
-        r0, c0 = (self._dico_origin_cell or (0, 0))
-        refMode = getattr(self, "_dico_ref_mode", None)
-        bg = "#BFDFFF" if refMode != "target" else "#FFCCCC"
-        self.dicoSheet.highlight_cells(int(r0), int(c0), fg="#9A9A9A", bg=bg)
-
-    # ---------- DICO : lecture de la sélection courante ----------
-    def _get_selected_dico_word(self) -> Optional[Tuple[str, int, int]]:
-        """
-        Retourne (word, row, col) depuis la sélection de tksheet, ou None si rien.
-        """
-        if not getattr(self, "dicoSheet", None):
-            return None
-        sel = self.dicoSheet.get_selected_cells()
-        r = c = None
-        if sel:
-            if isinstance(sel, set):
-                r, c = next(iter(sel))
-            elif isinstance(sel, (list, tuple)):
-                r, c = sel[0]
-        if r is None or c is None:
-            cur = self.dicoSheet.get_currently_selected()
-            if isinstance(cur, tuple) and len(cur) == 2 and cur[0] == "cell":
-                r, c = cur[1]
-        if r is None or c is None:
-            return None
-        word = str(self.dicoSheet.get_cell_data(int(r), int(c))).strip()
-
-        if not word:
-            return None
-        return (word, int(r), int(c))
-
-    # ---------- Contexte : actions mot <-> triangle ----------
-    def _ctx_add_or_replace_word(self):
-        """Ajoute/remplace le mot sélectionné du dico sur le triangle ciblé."""
-        if self._ctx_target_idx is None or not (0 <= self._ctx_target_idx < len(self._last_drawn)):
-            return
-        tri = self._last_drawn[self._ctx_target_idx]
-        tri_id = int(tri.get("id"))
-        sel = self._get_selected_dico_word()
-        if not sel:
-            messagebox.showinfo("Association mot", "Aucun mot sélectionné dans le dictionnaire.")
-            return
-        word, row, col = sel
-        self._tri_words[tri_id] = {"word": word, "row": row, "col": col}
-        self._redraw_from(self._last_drawn)
-
-    def _ctx_clear_word(self):
-        """Efface l'association de mot du triangle ciblé, si présente."""
-        if self._ctx_target_idx is None or not (0 <= self._ctx_target_idx < len(self._last_drawn)):
-            return
-        tri = self._last_drawn[self._ctx_target_idx]
-        tri_id = int(tri.get("id"))
-        if tri_id in self._tri_words:
-            del self._tri_words[tri_id]
-            self._redraw_from(self._last_drawn)
-
-    def _rebuild_ctx_word_entries(self):
-        """Reconstruit la partie 'mot' du menu contextuel en fonction du triangle visé + sélection dico."""
-        # Nettoyer les deux entrées dynamiques existantes
-        # On supprime depuis la fin pour conserver l'index d'ancrage
-        end = self._ctx_menu.index("end")
-        while end > self._ctx_idx_words_start:
-            self._ctx_menu.delete(end)
-            end = self._ctx_menu.index("end")
-
-        # Recréer deux entrées selon contexte
-        label_add = "Ajouter…"
-        cmd_add = None
-        sel = self._get_selected_dico_word()
-        if sel:
-            label_add = f"Ajouter « {sel[0]} »"
-            cmd_add = self._ctx_add_or_replace_word
-        # Triangle ciblé ?
-        has_target = (self._ctx_target_idx is not None) and (0 <= self._ctx_target_idx < len(self._last_drawn))
-        exists = False
-        label_del = "Effacer…"
-        if has_target:
-            tri = self._last_drawn[self._ctx_target_idx]
-            tri_id = int(tri.get("id"))
-            if tri_id in self._tri_words:
-                exists = True
-                cur_word = self._tri_words[tri_id]["word"]
-                # si on a aussi une sélection, on préfère le verbe "Remplacer"
-                if sel:
-                    label_add = f"Remplacer par « {sel[0]} »"
-                label_del = f"Effacer « {cur_word} »"
-        # Ajouter les entrées (activées/désactivées selon contexte)
-        self._ctx_menu.add_command(label=label_add, command=cmd_add, state=("normal" if cmd_add and has_target else "disabled"))
-        self._ctx_menu.add_command(label=label_del, command=(self._ctx_clear_word if exists else None),
-                                   state=("normal" if exists else "disabled"))
-
-
-    # ---------- DEBUG: toggle du filtre d'intersection au highlight ----------
     def _toggle_skip_overlap_highlight(self, event=None):
         self.debug_skip_overlap_highlight = not self.debug_skip_overlap_highlight
         state = "IGNORE" if self.debug_skip_overlap_highlight else "APPLIQUE"
@@ -1537,19 +918,6 @@ class TriangleViewerManual(tk.Tk):
         self.autoLoadTrianglesFileAtStartup()
         self.autoLoadBackgroundAtStartup()
 
-    def _simulation_cancel_dictionary_filter(self):
-        """Annule le filtrage visuel du dictionnaire (styles)."""
-        was_active = bool(self._dico_filter_active) or (self._dico_filter_ref_angle_deg is not None)
-        self._dico_filter_active = False
-        self._dico_filter_ref_angle_deg = None
-        self._dico_clear_filter_styles()
-        self._update_compass_ctx_menu_and_dico_state()
-        if was_active:
-            self.status.config(text="Dico: filtrage annule")
-
-    # =========================
-    #  SIMULATION (AUTO ASSEMBLAGE)
-    # =========================
     def _simulation_get_tri_ids_first_n(self, n: int) -> List[int]:
         """Retourne les IDs logiques des n premiers triangles (ordre de la listbox)."""
         ids: List[int] = []
@@ -4785,15 +4153,6 @@ class TriangleViewerManual(tk.Tk):
         return placed
 
     # ====== FRONTIER GRAPH HELPERS (factorisation) ===============================================
-    def _edge_dir(self, a, b):
-        return (float(b[0]) - float(a[0]), float(b[1]) - float(a[1]))
-
-    def _ang_wrap(self, x):
-        import math
-        # wrap sur [-pi, pi]
-        x = (x + math.pi) % (2*math.pi) - math.pi
-        return x
-
     def _ang_of_vec(self, vx, vy):
         import math
         return math.atan2(vy, vx)
@@ -4801,315 +4160,6 @@ class TriangleViewerManual(tk.Tk):
     def _ang_diff(self, a, b):
         # plus petit écart absolu d’angle
         return abs(self._ang_wrap(a - b))
-
-    def _pt_key_eps(self, p, eps=EPS_WORLD):
-        # IMPORTANT:
-        # Toute la logique "boundary graph" doit utiliser la même granularité (EPS_WORLD),
-        # sinon on casse les lookup adjacence (graph["adj"]) et on se retrouve avec 0 demi-arêtes.
-        eps = float(eps) if eps is not None else float(EPS_WORLD)
-        if eps <= 0.0:
-            eps = float(EPS_WORLD)
-        return (
-            round(float(p[0]) / eps) * eps,
-            round(float(p[1]) / eps) * eps,
-        )
-
-    def _build_boundary_graph(self, outline):
-        """
-        Construire un graphe de frontière léger (half-edges) à partir de 'outline'
-        outline: liste de segments [(a,b), ...]
-        Retour: dict {
-            "adj": {key(point)-> [point_voisin,...]},
-            "pts": {key(point)-> point_float_tuple}
-        }
-        """
-        adj = {}
-        pts = {}
-        for a,b in (outline or []):
-            a = (float(a[0]), float(a[1])); b = (float(b[0]), float(b[1]))
-            ka, kb = self._pt_key_eps(a), self._pt_key_eps(b)
-            pts.setdefault(ka, a); pts.setdefault(kb, b)
-            adj.setdefault(ka, []).append(b)
-            adj.setdefault(kb, []).append(a)
-        return {"adj": adj, "pts": pts}
-
-
-    # ---------- CHEMIN : lissage du boundary graph (post-traitement) ----------
-    def _smooth_boundary_graph_for_chemin(self, graph, epsSnap: float):
-        """
-        Lisse un boundary graph *après* _build_boundary_graph(), sans modifier la fonction partagée.
-        Objectif: fusionner des sommets quasi-identiques (pollution shapely) pour restaurer un cycle (degré=2).
-
-        - graph: {"adj": {k:[pt,...]}, "pts": {k:(x,y)}}
-        - epsSnap: tolérance monde pour fusion (typiquement 1e-5..1e-4 dans tes cas)
-        """
-        if not graph or "pts" not in graph or "adj" not in graph:
-            return graph
-        eps = float(epsSnap) if epsSnap is not None else 0.0
-        if eps <= 0.0:
-            return graph
-
-        pts_map = graph.get("pts", {}) or {}
-        adj = graph.get("adj", {}) or {}
-        if len(pts_map) <= 1:
-            return graph
-
-        keys = list(pts_map.keys())
-        coords = {k: (float(pts_map[k][0]), float(pts_map[k][1])) for k in keys}
-        e2 = eps * eps
-
-        # --- bucketing sur grille eps (réduit drastiquement les comparaisons) ---
-        def _cell(p):
-            return (int(math.floor(float(p[0]) / eps)), int(math.floor(float(p[1]) / eps)))
-
-        buckets = {}
-        for k in keys:
-            c = _cell(coords[k])
-            buckets.setdefault(c, []).append(k)
-
-        # --- union-find minimal ---
-        parent = {k: k for k in keys}
-
-        def _find(a):
-            while parent[a] != a:
-                parent[a] = parent[parent[a]]
-                a = parent[a]
-            return a
-
-        def _union(a, b):
-            ra, rb = _find(a), _find(b)
-            if ra != rb:
-                parent[rb] = ra
-
-        # compare dans cellule + voisines
-        neighCells = [(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)]
-        for (cx, cy), lst in buckets.items():
-            if not lst:
-                continue
-            # comparer la liste avec celles des cellules voisines (évite doublons massifs)
-            for dx, dy in neighCells:
-                lst2 = buckets.get((cx + dx, cy + dy))
-                if not lst2:
-                    continue
-                for a in lst:
-                    pa = coords[a]
-                    for b in lst2:
-                        if a == b:
-                            continue
-                        pb = coords[b]
-                        dx2 = pa[0] - pb[0]
-                        dy2 = pa[1] - pb[1]
-                        if (dx2*dx2 + dy2*dy2) <= e2:
-                            _union(a, b)
-
-        # --- construire clusters -> point canonique (centroïde) ---
-        clusters = {}
-        for k in keys:
-            r = _find(k)
-            clusters.setdefault(r, []).append(k)
-
-        oldToNew = {}
-        newPts = {}
-        for r, lst in clusters.items():
-            # centroïde monde
-            sx = 0.0; sy = 0.0
-            for k in lst:
-                sx += coords[k][0]
-                sy += coords[k][1]
-            cx = sx / float(len(lst))
-            cy = sy / float(len(lst))
-            newKey = self._pt_key_eps((cx, cy), eps=eps)
-            newPts.setdefault(newKey, (float(cx), float(cy)))
-            for k in lst:
-                oldToNew[k] = newKey
-
-        # --- rebuild adj (en dédupliquant) ---
-        newAdj = {}
-        newAdjKeys = {}
-        for ku, neighPts in (adj or {}).items():
-            if ku not in oldToNew:
-                continue
-            nu = oldToNew[ku]
-            newAdj.setdefault(nu, [])
-            newAdjKeys.setdefault(nu, set())
-            for vpt in (neighPts or []):
-                # retrouver la key d'origine du voisin (même granularité que _build_boundary_graph)
-                kv = self._pt_key_eps(vpt)
-                if kv not in oldToNew:
-                    continue
-                nv = oldToNew[kv]
-                if nv == nu:
-                    continue
-                if nv in newAdjKeys[nu]:
-                    continue
-                newAdjKeys[nu].add(nv)
-                newAdj[nu].append(newPts.get(nv, (float(vpt[0]), float(vpt[1]))))
-
-        return {"adj": newAdj, "pts": newPts}
-
-    def _incident_half_edges_at_vertex(self, graph, v, eps=EPS_WORLD):
-        """
-        Renvoie les deux demi-arêtes (si existantes) qui partent de 'v' le long de la frontière.
-        Retour: liste de 0..2 éléments, chaque élément est ((ax,ay),(bx,by))
-        """
-        key = self._pt_key_eps(v)
-        neighs = graph["adj"].get(key, [])
-        out = []
-        for w in neighs:
-            out.append(( (float(v[0]),float(v[1])), (float(w[0]),float(w[1])) ))
-        # garder au maximum 2 (enveloppe standard) ; si plus, on trie par angle autour de v et on prend 2 extrêmes
-        if len(out) > 2:
-            import math
-            def ang(e):
-                (a,b)=e; vx,vy=self._edge_dir(a,b); return math.atan2(vy,vx)
-            out = sorted(out, key=ang)
-            # choisir deux qui maximisent l'écart angulaire (les bords de l'enveloppe)
-            # heuristique simple: prendre le premier et celui qui maximise |Δ|
-            a0 = out[0]; ang0 = ang(a0)
-            a1 = max(out[1:], key=lambda e: self._ang_diff(ang(e), ang0))
-            out = [a0,a1]
-        return out
-
-    def _incident_half_edges_at_point(self, graph, v, outline, eps=EPS_WORLD):
-        """Retourne 2 demi-arêtes incidentes au point `v` sur la frontière.
-
-        Cas gérés:
-     - `v` est un sommet du graphe de frontière -> _incident_half_edges_at_vertex
-        - `v` n'est pas un sommet mais tombe sur un segment de l'outline :
-          on retourne les 2 demi-segments (v->A) et (v->B) du segment (A,B).
-        """
-        v = (float(v[0]), float(v[1]))
-        out = self._incident_half_edges_at_vertex(graph, v, eps=eps)
-        if len(out) >= 2:
-            return out
-
-        # --- Fallback 1 : v est "près" d'un sommet de l'outline, mais ne match pas la clé d'adjacence ---
-        # Cas typique : le snap s'accroche à un noeud du triangle (coordonnées exactes),
-        # mais l'outline provient d'une union Shapely et ses sommets sont légèrement décalés.
-        # On cherche alors les arêtes de l'outline qui ont une extrémité à <= eps de v,
-        # et on retourne les demi-arêtes sortantes depuis ce sommet.
-        if outline:
-            px, py = float(v[0]), float(v[1])
-            cand = []
-            e2 = float(eps) * float(eps)
-            for (a, b) in outline:
-                ax, ay = float(a[0]), float(a[1])
-                bx, by = float(b[0]), float(b[1])
-                da2 = (px - ax) * (px - ax) + (py - ay) * (py - ay)
-                db2 = (px - bx) * (px - bx) + (py - by) * (py - by)
-                if da2 <= e2:
-                    cand.append(((ax, ay), (bx, by)))
-                if db2 <= e2:
-                    cand.append(((bx, by), (ax, ay)))
-
-            # Dédupliquer
-            uniq = []
-            seen = set()
-            for (a, b) in cand:
-                k = (round(a[0], 9), round(a[1], 9), round(b[0], 9), round(b[1], 9))
-                if k in seen:
-                    continue
-                seen.add(k)
-                uniq.append((a, b))
-
-            if len(uniq) >= 2:
-                out2 = [((u[0][0], u[0][1]), (u[1][0], u[1][1])) for u in uniq]
-                if len(out2) > 2:
-                    import math
-                    def ang(e):
-                        (a, b) = e
-                        vx, vy = self._edge_dir(a, b)
-                        return math.atan2(vy, vx)
-                    out2 = sorted(out2, key=ang)
-                    a0 = out2[0]
-                    ang0 = ang(a0)
-                    a1 = max(out2[1:], key=lambda e: self._ang_diff(ang(e), ang0))
-                    out2 = [a0, a1]
-                return out2[:2]
-
-        def _pt_seg_dist2(px, py, ax, ay, bx, by):
-            # distance^2 point-segment + projection t
-            vx, vy = bx - ax, by - ay
-            wx, wy = px - ax, py - ay
-            vv = vx * vx + vy * vy
-            if vv <= 1e-18:
-               # segment dégénéré
-                dx, dy = px - ax, py - ay
-                return (dx * dx + dy * dy, 0.0)
-            t = (wx * vx + wy * vy) / vv
-            if t < 0.0:
-                t = 0.0
-            elif t > 1.0:
-                t = 1.0
-            qx, qy = ax + t * vx, ay + t * vy
-            dx, dy = px - qx, py - qy
-            return (dx * dx + dy * dy, float(t))
-
-        px, py = float(v[0]), float(v[1])
-        best = None  # (dist2, (a,b))
-        for (a, b) in outline:
-            ax, ay = float(a[0]), float(a[1])
-            bx, by = float(b[0]), float(b[1])
-            d2, t = _pt_seg_dist2(px, py, ax, ay, bx, by)
-            # On veut vraiment "sur" le segment (tolérance). On accepte aussi les extrémités
-            # car certains noeuds "collés" ne matchent pas forcément la clé d'adjacence.
-            if d2 <= float(eps) * float(eps):
-                if best is None or d2 < best[0]:
-                    best = (d2, ((ax, ay), (bx, by)))
-
-        if best is None:
-            return out
-
-        (a, b) = best[1]
-        return [((px, py), (float(a[0]), float(a[1]))), ((px, py), (float(b[0]), float(b[1])))]
-
-    def _normalize_to_outline_granularity(self, outline, edges, eps=EPS_WORLD):
-        """
-        Décompose chaque segment incident en chaîne de micro-segments collés à l'outline (granularité identique),
-        en s'appuyant sur l'adjacence du graphe de frontière. Retourne une liste de segments.
-        """
-        g = self._build_boundary_graph(outline)
-        def almost(p,q):
-            return abs(p[0]-q[0])<=eps and abs(p[1]-q[1])<=eps
-        def dir_forward(u,v,w):
-            uvx,uvy = v[0]-u[0], v[1]-u[1]
-            uwx,uwy = w[0]-u[0], w[1]-u[1]
-            cross = abs(uvx*uwy - uvy*uwx)
-            dot   = (uvx*uwx + uvy*uwy)
-            return cross <= 1e-9 and dot > 0.0
-        out=[]
-        for (a,b) in (edges or []):
-            a=(float(a[0]),float(a[1])); b=(float(b[0]),float(b[1]))
-            cur=a; guard=0; chain=[]
-            while not almost(cur,b) and guard<2048:
-                neigh = g["adj"].get(self._pt_key_eps(cur), [])
-                nxt=None
-                for w in neigh:
-                    if dir_forward(cur,b,w):
-                        nxt=w; break
-                if nxt is None: break
-                chain.append((cur,nxt))
-                cur=nxt; guard+=1
-            if chain and almost(cur,b):
-                out.extend(chain)
-            else:
-                # fallback: garder le segment brut si pas décomposable finement
-                out.append((a,b))
-        return out
-
-
-
-    # ------------------------------
-    # Géométrie / utils divers
-    # ------------------------------
-    def _ang_of_vec(self, vx, vy):
-        import math
-        return math.atan2(vy, vx)
- 
-    def _ang_diff(self, a, b):
-        # plus petit écart absolu d’angle
-        return abs(self._ang_wrap(a - b))
-         
 
     def _refresh_listbox_from_df(self):
         """Recharge la listbox des triangles depuis self.df (sans filtrage)."""
@@ -5353,1030 +4403,6 @@ class TriangleViewerManual(tk.Tk):
         if getattr(self, "canvas", None):
             self.canvas.delete("clock_snap_target")
 
-
-    def _clock_update_snap_target(self, sx: float, sy: float):
-        """Calcule le sommet de triangle le plus proche du curseur (en écran/canvas) et l'affiche en rouge."""
-        prev = getattr(self, "_clock_snap_target", None)
-        # Pas de triangles -> rien à viser
-        if not getattr(self, "_last_drawn", None):
-            self._clock_clear_snap_target()
-            # Si on quitte un ancrage (plus de snap), on perd aussi l'arc persisté + dico
-            if prev is not None and self._clock_arc_is_available():
-                self._clock_arc_clear_last()
-            return
-
-        w = self._screen_to_world(sx, sy)
-        v_world = np.array([float(w[0]), float(w[1])], dtype=float)
-
-        found = self._find_nearest_vertex(v_world, exclude_idx=None, exclude_gid=None)
-        if found is None:
-            self._clock_clear_snap_target()
-            if prev is not None and self._clock_arc_is_available():
-                self._clock_arc_clear_last()
-            return
-
-        idx, vkey, wbest = found
-        # Si on change de noeud (idx/vkey), l'arc mesuré n'est plus valide => on reset arc + dico
-        if prev is not None:
-            prev_key = (int(prev.get("idx")), str(prev.get("vkey")))
-            new_key = (int(idx), str(vkey))
-            if prev_key is not None and new_key != prev_key and self._clock_arc_is_available():
-                self._clock_arc_clear_last()
-        self._clock_snap_target = {"idx": int(idx), "vkey": str(vkey), "world": np.array(wbest, dtype=float)}
-
-        # Auto-mesure : si on vient de s'accrocher à un nouveau noeud,
-        # on calcule automatiquement l'angle entre les 2 segments EXTÉRIEURS
-        # incidents à ce noeud (sur le contour du groupe).
-        prev_key = (int(prev.get("idx")), str(prev.get("vkey"))) if isinstance(prev, dict) else None
-        new_key = (int(idx), str(vkey))
-
-
-        if new_key is not None and new_key != prev_key:
-            self._clock_arc_auto_measure_from_snap()
-
-        # Marqueur visuel : un anneau rouge autour du sommet
-        if getattr(self, "canvas", None):
-            self.canvas.delete("clock_snap_target")
-            px, py = self._world_to_screen(wbest)
-            r = 10  # rayon px fixe
-            self.canvas.create_oval(px - r, py - r, px + r, py + r,
-                                    outline="#FF0000", width=3,
-                                    fill="", tags="clock_snap_target")
-            self.canvas.tag_raise("clock_snap_target")
-
-
-    def _clock_arc_auto_get_two_neighbors(self, idx: int, v_world, outline_eps=None):
-        """Helper commun (compas) : retourne 2 voisins (w1, w2) sur le contour (outline)
-        incident au point v_world.
-
-        Objectif : éviter la duplication entre _clock_arc_auto_measure_from_snap() et
-        _clock_arc_auto_from_snap_target().
-
-        - outline_eps=None : utiliser l'outline par défaut (ne pas changer le comportement)
-        - outline_eps=float : forcer un eps spécifique lors du calcul de l'outline
-
-        Retourne (w1, w2) en coordonnées monde (np.array), ou None.
-        """
-        idx = int(idx)
-        v_world = np.array(v_world, dtype=float)
-        if not (0 <= idx < len(self._last_drawn)):
-            return None
-
-        # Outline = contour du groupe auquel appartient idx
-        if outline_eps is None:
-            outline = self._outline_for_item(idx) or []
-        else:
-            outline = self._outline_for_item(idx, eps=float(outline_eps)) or []
-        if not outline:
-            return None
-
-        # 2 segments extérieurs incidents à v_world
-        g = self._build_boundary_graph(outline)
-        tol_world = max(
-            float(EPS_WORLD),
-            float(getattr(self, "stroke_px", 2.0)) / max(float(getattr(self, "zoom", 1.0)), 1e-9)
-        )
-        inc = self._incident_half_edges_at_point(g, v_world, outline, eps=tol_world) or []
-        if len(inc) < 2:
-            return None
-
-        w1 = np.array(inc[0][1], dtype=float)
-        w2 = np.array(inc[1][1], dtype=float)
-
-        return (w1, w2)
-
-
-    def _clock_arc_auto_measure_from_snap(self):
-        """Si le compas est accroché à un noeud, calcule automatiquement l'angle (arc) entre
-        les 2 arêtes **EXTÉRIEURES** incidentes à ce noeud (c'est-à-dire sur l'outline du groupe).
-        La mesure est persistée dans self._clock_arc_last (comme la mesure manuelle)."""
-        # NOTE: ici on calcule justement la mesure persistée.
-        # Ne PAS dépendre de _clock_arc_is_available(), sinon la fonction ne se déclenche jamais.
-        if not getattr(self, "canvas", None):
-            return
-        if not getattr(self, "show_clock_overlay", None) or not self.show_clock_overlay.get():
-            return
-        tgt = getattr(self, "_clock_snap_target", None)
-        if not (isinstance(tgt, dict) and tgt.get("world") is not None):
-            # Plus d'ancrage : ne pas garder une mesure invalide
-            self._clock_arc_clear_last()
-            return
-
-        idx = int(tgt.get("idx"))
-        v_world = np.array(tgt.get("world"), dtype=float)
-
-
-        # IMPORTANT (compas) : on veut des sommets "tels quels" (pas l'eps de rendu),
-        # sinon le buffer décale légèrement les sommets et v_world ne tombe plus sur un sommet du graphe.
-        neigh = self._clock_arc_auto_get_two_neighbors(idx, v_world, outline_eps=EPS_WORLD)
-        if not neigh:
-            self._clock_arc_clear_last()
-            return
-
-        w1, w2 = neigh
-
-        # Point d'ancrage = centre du compas = noeud snap
-        cx, cy = self._world_to_screen(v_world)
-        # Forcer le centre sur le noeud ancré (overlay cohérent)
-        self._clock_cx = float(cx)
-        self._clock_cy = float(cy)
-
-        # Azimuts vers les 2 voisins (en écran)
-        sx1, sy1 = self._world_to_screen(w1)
-        sx2, sy2 = self._world_to_screen(w2)
-        az1 = float(self._clock_compute_azimuth_deg(int(sx1), int(sy1)))
-        az2 = float(self._clock_compute_azimuth_deg(int(sx2), int(sy2)))
-        angle_deg = float(self._clock_arc_compute_angle_deg(az1, az2))
-
-        # Persister : même format que la mesure manuelle
-        self._clock_arc_last = {"az1": az1, "az2": az2, "angle": angle_deg}
-        self._clock_arc_last_angle_deg = float(angle_deg)
-
-        # Rafraîchir l'overlay (et donc le filtre dico s'il est activé)
-        self._draw_clock_overlay()
-
-        # Rafraîchir l'overlay + états UI (menu compas / dico)
-        self._update_compass_ctx_menu_and_dico_state()
-        self._redraw_overlay_only()
-        self.status.config(text=f"Arc auto (EXT) : {angle_deg:0.0f}°")
-
-    # ==========================
-    # Calibration fond (3 points)
-    # ==========================
-
-    def _bg_calibrate_start(self):
-        """Démarre un calibrage du fond en cliquant 3 points (villes) définis dans un fichier JSON.
-
-        Fichier attendu (dans ../data/maps) :
-            <nom_de_la_carte>.calib_points.json
-        Exemple :
-            {
-              "points": [
-                {"name": "Paris", "lat": 48.8566, "lon": 2.3522},
-                {"name": "Lyon",  "lat": 45.7640, "lon": 4.8357},
-                {"name": "Marseille", "lat": 43.2965, "lon": 5.3698}
-              ]
-            }
-
-        Résultat sauvegardé (dans ../data/maps) :
-            <nom_de_la_carte>.json
-        """
-        if not self._bg or not self._bg.get("path"):
-            messagebox.showwarning("Calibration", "Aucun fond SVG chargé. Charge d'abord une carte.")
-            return
-
-        svg_path = str(self._bg.get("path"))
-        base = os.path.splitext(os.path.basename(svg_path))[0]
-        cfg_path = os.path.join(self.maps_dir, f"{base}.calib_points.json")
-
-        if not os.path.isfile(cfg_path):
-            messagebox.showerror(
-                "Calibration",
-                "Fichier de points de calibration introuvable.\n\n"
-                f"Attendu :\n  {cfg_path}\n\n"
-                "Crée ce fichier avec 3 villes (name/lat/lon) puis relance."
-            )
-            return
-
-        try:
-            with open(cfg_path, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-        except Exception as e:
-            messagebox.showerror("Calibration", f"Impossible de lire {cfg_path}\n\n{e}")
-            return
-
-        pts = cfg.get("points") if isinstance(cfg, dict) else None
-        if not isinstance(pts, list) or len(pts) != 3:
-            messagebox.showerror(
-                "Calibration",
-                "Le fichier de calibration doit contenir exactement 3 points :\n"
-                '  {"points":[{"name":..,"lat":..,"lon":..}, ... x3]}'
-            )
-            return
-
-        for i, p in enumerate(pts):
-            if not isinstance(p, dict) or ("lat" not in p) or ("lon" not in p):
-                messagebox.showerror(
-                    "Calibration",
-                    f"Point #{i+1} invalide : chaque point doit contenir au moins 'lat' et 'lon'."
-                )
-                return
-
-        self._bg_calib_points_cfg = {"path": cfg_path, "points": pts, "svg": svg_path}
-        self._bg_calib_clicked_world = []
-        self._bg_calib_step = 0
-        self._bg_calib_active = True
-
-        name0 = str(pts[0].get("name") or "Point 1")
-        self.status.config(
-            text=(
-                f"Calibration carte : CTRL+clic sur {name0} (1/3) | "
-                "clic/drag = pan | molette = zoom | ESC = annuler"
-            )
-        )
-        self.canvas.configure(cursor="crosshair")
-
-    def _bg_calibrate_cancel(self):
-        if not getattr(self, "_bg_calib_active", False):
-            return
-        self._bg_calib_active = False
-        self._bg_calib_points_cfg = None
-        self._bg_calib_clicked_world = []
-        self._bg_calib_step = 0
-        self.canvas.configure(cursor="")
-        self.status.config(text="Calibration annulée.")
-
-    def _bg_calibrate_handle_click(self, event):
-        """Enregistre un clic de calibration (en coordonnées monde)."""
-        if not getattr(self, "_bg_calib_active", False):
-            return "continue"
-
-        # Pendant la calibration, on veut pouvoir pan/zoom pour viser précisément.
-        # On valide donc un point UNIQUEMENT sur CTRL+clic.
-        # Sans CTRL, le clic gauche redevient un "pan start".
-        if not getattr(self, "_ctrl_down", False):
-            self._on_pan_start(event)
-            return "break"
-
-        cfg = self._bg_calib_points_cfg or {}
-        pts = cfg.get("points") or []
-        if len(pts) != 3:
-            self._bg_calibrate_cancel()
-            return "break"
-
-        w = self._screen_to_world(event.x, event.y)
-
-
-        self._bg_calib_clicked_world.append((float(w[0]), float(w[1])))
-        self._bg_calib_step += 1
-
-        if self._bg_calib_step < 3:
-            nxt = pts[self._bg_calib_step]
-            name = str(nxt.get("name") or f"Point {self._bg_calib_step+1}")
-            self.status.config(text=f"Calibration carte : clique sur {name} ({self._bg_calib_step+1}/3) — ESC pour annuler.")
-            # petit feedback visuel
-            self._redraw_from(self._last_drawn)
-            return "break"
-
-        # 3 clics : calcul + sauvegarde
-        try:
-            self._bg_calibrate_finish()
-        except Exception as e:
-            messagebox.showerror("Calibration", f"Échec du calibrage :\n\n{e}")
-            self._bg_calibrate_cancel()
-            return "break"
-
-        self._bg_calib_active = False
-        self.canvas.configure(cursor="")
-
-        self._redraw_from(self._last_drawn)
-        return "break"
-
-    def _bg_calibrate_finish(self):
-        cfg = self._bg_calib_points_cfg or {}
-        pts = cfg.get("points") or []
-        svg_path = cfg.get("svg") or (self._bg.get("path") if self._bg else None)
-        if len(pts) != 3 or len(self._bg_calib_clicked_world) != 3 or not svg_path:
-            raise RuntimeError("Données de calibration incomplètes.")
-
-        # GPS -> Lambert93 (m) -> km
-        transformer = Transformer.from_crs("EPSG:4326", "EPSG:2154", always_xy=True)
-        lambert_km = []
-        for p in pts:
-            lon = float(p["lon"])
-            lat = float(p["lat"])
-            x_m, y_m = transformer.transform(lon, lat)
-            lambert_km.append((x_m / 1000.0, y_m / 1000.0))
-
-        world = self._bg_calib_clicked_world
-
-        # Résolution affine : (xw,yw) -> (xl,yl)
-        # xl = a*xw + b*yw + c
-        # yl = d*xw + e*yw + f
-        A = []
-        B = []
-        for (xw, yw), (xl, yl) in zip(world, lambert_km):
-            A.append([xw, yw, 1, 0, 0, 0])
-            A.append([0, 0, 0, xw, yw, 1])
-            B.append(xl)
-            B.append(yl)
-
-        A = np.array(A, dtype=float)
-        B = np.array(B, dtype=float)
-        params = np.linalg.solve(A, B)  # 6 paramètres exacts (3 points)
-        a, b, c, d, e, f = [float(v) for v in params.tolist()]
-
-        det = a * e - b * d
-        if abs(det) < 1e-12:
-            raise RuntimeError("Points de calibration dégénérés (transformée non inversible).")
-
-        # inverse (Lambert km -> monde)
-        inv_a = e / det
-        inv_b = -b / det
-        inv_d = -d / det
-        inv_e = a / det
-        inv_c = -(inv_a * c + inv_b * f)
-        inv_f = -(inv_d * c + inv_e * f)
-
-        # Sauvegarde
-        base = os.path.splitext(os.path.basename(str(svg_path)))[0]
-        out_path = os.path.join(self.maps_dir, f"{base}.json")
-
-        payload = {
-            "type": "bg_calibration_3points",
-            "date": _dt.datetime.now().isoformat(timespec="seconds"),
-            "svgPath": str(svg_path),
-            "bgWorldRectAtCalibration": (
-                {
-                    "x0": float(self._bg.get("x0")),
-                    "y0": float(self._bg.get("y0")),
-                    "w":  float(self._bg.get("w")),
-                    "h":  float(self._bg.get("h")),
-                }
-                if (self._bg is not None and all(k in self._bg for k in ("x0","y0","w","h")))
-                else None
-            ),
-            "points": [
-                {
-                    "name": str(p.get("name") or f"Point {i+1}"),
-                    "lat": float(p["lat"]),
-                    "lon": float(p["lon"]),
-                    "lambert93Km": [lambert_km[i][0], lambert_km[i][1]],
-                    "worldClicked": [world[i][0], world[i][1]],
-                }
-                for i, p in enumerate(pts)
-            ],
-            "affineWorldToLambertKm": [a, b, c, d, e, f],
-            "affineLambertKmToWorld": [inv_a, inv_b, inv_c, inv_d, inv_e, inv_f],
-        }
-
-        os.makedirs(self.maps_dir, exist_ok=True)
-        with open(out_path, "w", encoding="utf-8") as f_out:
-            json.dump(payload, f_out, ensure_ascii=False, indent=2)
-
-        self.status.config(text=f"Calibration enregistrée : {out_path}")
-
-    # =========================
-    # Fond SVG en coordonnées monde
-    # =========================
-
-    def _bg_clear(self, persist: bool = True):
-        self._bg = None
-        self._bg_base_pil = None
-        self._bg_photo = None
-        self._bg_resizing = None
-        self._bg_calib_data = None
-        self._bg_scale_base_w = None
-
-        if persist:
-            self._persistBackgroundConfig()
-        self._redraw_from(self._last_drawn)
-
-    def _bg_try_load_calibration(self, svg_path: str):
-        """Charge data/maps/<carte>.json si présent (calibration 3 points).
-        Objectif: disposer de affineLambertKmToWorld pour convertir (Lambert93 km) -> coordonnées monde.
-        """
-        try:
-            base = os.path.splitext(os.path.basename(str(svg_path)))[0]
-            calib_path = os.path.join(self.maps_dir, f"{base}.json")
-            if not os.path.isfile(calib_path):
-                self._bg_calib_data = None
-                self._bg_scale_base_w = None
-                return
-
-            with open(calib_path, "r", encoding="utf-8") as f_in:
-                data = json.load(f_in)
-
-            aff = data.get("affineLambertKmToWorld")
-            if not (isinstance(aff, list) and len(aff) == 6):
-                self._bg_calib_data = None
-                return
-
-            # Normaliser en float
-            data["affineLambertKmToWorld"] = [float(v) for v in aff]
-
-            # Optionnel mais recommandé: inverse monde -> Lambert93 (km)
-            aff_inv = data.get("affineWorldToLambertKm")
-            if isinstance(aff_inv, list):
-                if len(aff_inv) != 6:
-                    raise ValueError("affineWorldToLambertKm doit contenir 6 valeurs")
-                data["affineWorldToLambertKm"] = [float(v) for v in aff_inv]
-
-            self._bg_calib_data = data
-
-            # Référence d'échelle pour l'affichage :
-            # - si le JSON contient la géométrie monde du fond au moment de la calibration,
-            #   on s'y réfère (=> le "x1" est stable et cohérent entre sessions)
-            # - sinon, fallback : largeur actuelle au moment du chargement.
-
-            rect = data.get("bgWorldRectAtCalibration") if isinstance(data, dict) else None
-            if isinstance(rect, dict) and ("w" in rect):
-                self._bg_scale_base_w = float(rect.get("w"))
-            elif self._bg is not None:
-                self._bg_scale_base_w = float(self._bg.get("w"))
-            else:
-                self._bg_scale_base_w = None
-
-        except Exception:
-            # best-effort
-            self._bg_calib_data = None
-            self._bg_scale_base_w = None
-
-    def _bg_load_svg_dialog(self):
-        path = filedialog.askopenfilename(
-            title="Choisir une carte (SVG/PNG/JPG)",
-            initialdir=getattr(self, "maps_dir", None) or None,
-            filetypes=[
-                ("Cartes", "*.svg *.png *.jpg *.jpeg"),
-                ("SVG", "*.svg"),
-                ("PNG", "*.png"),
-                ("JPG", "*.jpg *.jpeg"),
-                ("Tous fichiers", "*.*"),
-            ],
-        )
-        if not path:
-            return
-        self._bg_set_map(path)
-
-    def _bg_set_map(self, path: str, rect_override: dict | None = None, persist: bool = True):
-        """Charge une carte (fond) depuis un fichier .svg ou une image raster (.png/.jpg/.jpeg).
-
-        - SVG : rasterisation (svglib/reportlab/pypdfium2) comme avant
-        - PNG/JPG/JPEG : chargement direct via Pillow
-
-        Note : on conserve les clés de config 'bgSvgPath/bgWorldRect' pour compatibilité.
-        """
-        ext = os.path.splitext(str(path))[1].lower()
-        if ext == ".svg":
-            return self._bg_set_svg(path, rect_override=rect_override, persist=persist)
-        if ext in (".png", ".jpg", ".jpeg"):
-            return self._bg_set_png(path, rect_override=rect_override, persist=persist)
-
-        messagebox.showerror(
-            "Format non supporté",
-            f"Carte non supportée: {path}\nFormats acceptés: .svg, .png, .jpg, .jpeg"
-        )
-
-    def _bg_set_png(self, png_path: str, rect_override: dict | None = None, persist: bool = True):
-        if (Image is None or ImageTk is None):
-            messagebox.showerror(
-                "Dépendances manquantes",
-                "Pour afficher un fond PNG, installe :\n"
-                "  - pillow\n\n"
-                "pip install pillow"
-            )
-            return
-
-        try:
-            pil0 = Image.open(png_path).convert("RGBA")
-        except Exception as e:
-            messagebox.showerror("Erreur image", f"Impossible de charger l'image :\n{e}")
-            return
-
-        # aspect depuis l'image
-        w0, h0 = pil0.size
-        aspect = float(w0) / float(h0) if h0 else 1.0
-        aspect = max(1e-6, aspect)
-
-
-        # base normalisée : max 4096 sur le plus grand côté (comme SVG)
-        max_dim = 4096
-        w0, h0 = pil0.size
-        if w0 <= 0 or h0 <= 0:
-            raise ValueError("image vide")
-        if max(w0, h0) > max_dim:
-            if w0 >= h0:
-                W = int(max_dim)
-                H = max(1, int(round(W / aspect)))
-            else:
-                H = int(max_dim)
-                W = max(1, int(round(H * aspect)))
-            pil0 = pil0.resize((W, H), Image.LANCZOS)
-
-
-        # Si on a une géométrie sauvegardée (monde), on la réapplique telle quelle
-        if isinstance(rect_override, dict) and all(k in rect_override for k in ("x0", "y0", "w", "h")):
-            x0 = float(rect_override.get("x0", 0.0))
-            y0 = float(rect_override.get("y0", 0.0))
-            w  = float(rect_override.get("w", 1.0))
-            h  = float(rect_override.get("h", 1.0))
-            if w > 1e-9 and h > 1e-9:
-                self._bg = {"path": png_path, "x0": x0, "y0": y0, "w": w, "h": h, "aspect": aspect}
-                self._bg_base_pil = pil0
-                self._bg_try_load_calibration(png_path)
-                if self._bg_calib_data is not None:
-                    print(f"[BG] Calibration chargée : {os.path.splitext(os.path.basename(str(png_path)))[0]}.json")
-
-                if persist:
-                    self._persistBackgroundConfig()
-
-                self._redraw_from(self._last_drawn)
-
-                if persist:
-                    print(f"[Fond image] Fichier chargé: {os.path.basename(str(png_path))} ({png_path})")
-                return
-
-
-        # Position/taille initiale : calée sur bbox des triangles si dispo, sinon vue écran
-        if self._last_drawn:
-            xs, ys = [], []
-            for t in self._last_drawn:
-                P = t["pts"]
-                for k in ("O", "B", "L"):
-                    xs.append(float(P[k][0])); ys.append(float(P[k][1]))
-            xmin, xmax = min(xs), max(xs)
-            ymin, ymax = min(ys), max(ys)
-        else:
-            cw = max(2, int(self.canvas.winfo_width() or 2))
-            ch = max(2, int(self.canvas.winfo_height() or 2))
-            x0, yTop = self._screen_to_world(0, 0)
-            x1, yBot = self._screen_to_world(cw, ch)
-            xmin, xmax = (min(x0, x1), max(x0, x1))
-            ymin, ymax = (min(yBot, yTop), max(yBot, yTop))
-
-        cx = 0.5 * (xmin + xmax)
-        cy = 0.5 * (ymin + ymax)
-        bw = max(1e-6, (xmax - xmin) * 1.10)
-        bh = max(1e-6, (ymax - ymin) * 1.10)
-
-        # Ajuster pour conserver le ratio
-        if (bw / bh) > aspect:
-            w = bw
-            h = w / aspect
-        else:
-            h = bh
-            w = h * aspect
-
-        self._bg = {"path": png_path, "x0": cx - w/2, "y0": cy - h/2, "w": w, "h": h, "aspect": aspect}
-        self._bg_base_pil = pil0
-
-        self._bg_try_load_calibration(png_path)
-        if self._bg_calib_data is not None:
-            print(f"[BG] Calibration chargée : {os.path.splitext(os.path.basename(str(png_path)))[0]}.json")
-
-        if persist:
-            self._persistBackgroundConfig()
-            print(f"[Fond PNG] Fichier chargé: {os.path.basename(str(png_path))} ({png_path})")
-
-        self._redraw_from(self._last_drawn)
-
-    def _bg_set_svg(self, svg_path: str, rect_override: dict | None = None, persist: bool = True):
-        if (Image is None or ImageTk is None or svg2rlg is None
-                or renderPDF is None or _rl_canvas is None or pdfium is None):
-            messagebox.showerror(
-                "Dépendances manquantes",
-                "Pour afficher un fond SVG (svglib/reportlab, sans Cairo), installe :\n"
-                "  - pillow\n  - svglib\n  - reportlab\n  - pypdfium2\n\n"
-                "pip install pillow svglib reportlab pypdfium2"
-            )
-            return
-
-        aspect = self._bg_parse_aspect(svg_path)
-        # Si on a une géométrie sauvegardée (monde), on la réapplique telle quelle
-        if isinstance(rect_override, dict) and all(k in rect_override for k in ("x0", "y0", "w", "h")):
-            x0 = float(rect_override.get("x0", 0.0))
-            y0 = float(rect_override.get("y0", 0.0))
-            w  = float(rect_override.get("w", 1.0))
-            h  = float(rect_override.get("h", 1.0))
-            if w > 1e-9 and h > 1e-9:
-                self._bg = {"path": svg_path, "x0": x0, "y0": y0, "w": w, "h": h, "aspect": aspect}
-                # Raster base "normalisée" (taille fixe, ratio respecté)
-                self._bg_base_pil = self._bg_render_base(svg_path, aspect, max_dim=4096)
-                if self._bg_base_pil is not None:
-                    print(f"[Fond SVG] Fichier chargé: {os.path.basename(str(svg_path))} ({svg_path})")
-                # calibration associée (si fichier data/<carte>.json existe)
-                self._bg_try_load_calibration(svg_path)
-                if self._bg_calib_data is not None:
-                    print(f"[BG] Calibration chargée : {os.path.basename(str(svg_path))}.json")
-
-                if persist:
-                    self._persistBackgroundConfig()
-                self._redraw_from(self._last_drawn)
-                return
-
-
-        # Position/taille initiale : calée sur bbox des triangles si dispo, sinon vue écran
-        if self._last_drawn:
-            xs, ys = [], []
-            for t in self._last_drawn:
-                P = t["pts"]
-                for k in ("O", "B", "L"):
-                    xs.append(float(P[k][0])); ys.append(float(P[k][1]))
-            xmin, xmax = min(xs), max(xs)
-            ymin, ymax = min(ys), max(ys)
-        else:
-            # bbox monde visible
-            cw = max(2, int(self.canvas.winfo_width() or 2))
-            ch = max(2, int(self.canvas.winfo_height() or 2))
-            x0, yTop = self._screen_to_world(0, 0)
-            x1, yBot = self._screen_to_world(cw, ch)
-            xmin, xmax = (min(x0, x1), max(x0, x1))
-            ymin, ymax = (min(yBot, yTop), max(yBot, yTop))
-
-        cx = 0.5 * (xmin + xmax)
-        cy = 0.5 * (ymin + ymax)
-        bw = max(1e-6, (xmax - xmin) * 1.10)
-        bh = max(1e-6, (ymax - ymin) * 1.10)
-
-        # Ajuster pour conserver le ratio du SVG
-        if (bw / bh) > aspect:
-            w = bw
-            h = w / aspect
-        else:
-            h = bh
-            w = h * aspect
-
-        self._bg = {"path": svg_path, "x0": cx - w/2, "y0": cy - h/2, "w": w, "h": h, "aspect": aspect}
-
-        # Raster base "normalisée" (taille fixe, ratio respecté)
-        self._bg_base_pil = self._bg_render_base(svg_path, aspect, max_dim=4096)
-
-        # calibration associée (si fichier data/<carte>.json existe)
-        if self._bg_calib_data is not None:
-            print(f"[BG] Calibration chargée : {os.path.basename(str(svg_path))}.json")
-        self._bg_try_load_calibration(svg_path)
-
-        if persist:
-            self._persistBackgroundConfig()
-            if self._bg_base_pil is not None:
-                print(f"[Fond SVG] Fichier chargé: {os.path.basename(str(svg_path))} ({svg_path})")
-
-        self._redraw_from(self._last_drawn)
-
-    def _bg_parse_aspect(self, svg_path: str) -> float:
-        s = open(svg_path, "r", encoding="utf-8", errors="ignore").read(8192)
-
-        # viewBox="minx miny width height"
-        m = re.search(r'viewBox\s*=\s*["\']\s*([-\d\.eE]+)\s+([-\d\.eE]+)\s+([-\d\.eE]+)\s+([-\d\.eE]+)\s*["\']', s)
-        if m:
-            vw = float(m.group(3)); vh = float(m.group(4))
-            if abs(vh) > 1e-12:
-                return max(1e-6, vw / vh)
-
-        # width="xxx" height="yyy" (units possible)
-        mw = re.search(r'width\s*=\s*["\']\s*([-\d\.eE]+)', s)
-        mh = re.search(r'height\s*=\s*["\']\s*([-\d\.eE]+)', s)
-        if mw and mh:
-            w = float(mw.group(1)); h = float(mh.group(1))
-            if abs(h) > 1e-12:
-                return max(1e-6, w / h)
-
-        return 1.0
-
-    def _bg_render_base(self, svg_path: str, aspect: float, max_dim: int = 4096):
-        # base normalisée : max_dim sur le plus grand côté
-        if aspect >= 1.0:
-            W = int(max_dim)
-            H = max(1, int(round(W / aspect)))
-        else:
-            H = int(max_dim)
-            W = max(1, int(round(H * aspect)))
-
-        try:
-            drawing = svg2rlg(svg_path) if svg2rlg is not None else None
-            if drawing is None:
-                raise RuntimeError("svg2rlg() a retourné None")
-
-            # --- IMPORTANT : éviter le SVG tronqué ---
-            # svglib peut produire un Drawing dont le contenu a un bounding-box décalé (xmin/ymin != 0),
-            # ou des width/height non représentatifs. On normalise sur getBounds() quand c'est possible.
-            xmin = ymin = 0.0
-            bw = bh = 0.0
-            if hasattr(drawing, "getBounds"):
-                b = drawing.getBounds()
-                if b and len(b) == 4:
-                    xmin, ymin, xmax, ymax = map(float, b)
-                    bw = max(0.0, xmax - xmin)
-                    bh = max(0.0, ymax - ymin)
-
-
-            # Dimensions de référence : d'abord le bounding-box, sinon width/height svglib
-            dw = float(bw) if bw > 1e-9 else float(getattr(drawing, "width", 0) or 0)
-            dh = float(bh) if bh > 1e-9 else float(getattr(drawing, "height", 0) or 0)
-            if dw <= 0 or dh <= 0:
-                # fallback: utiliser le ratio calculé, avec une base arbitraire
-                dw = float(W)
-                dh = float(H)
-
-            # Si le contenu est décalé (xmin/ymin), on le ramène à l'origine avant le scale.
-            if bw > 1e-9 and bh > 1e-9:
-                if hasattr(drawing, "translate"):
-                    drawing.translate(-xmin, -ymin)
-
-
-            # svglib exprime en "points" (1/72 inch). En rasterisant à 72dpi,
-            # 1 point ~= 1 pixel. On scale le dessin puis on force le canvas aux dims voulues.
-            sx = float(W) / dw
-            sy = float(H) / dh
-            
-            # On applique les deux échelles pour respecter EXACTEMENT W/H (le ratio vient déjà de 'aspect')
-            drawing.scale(sx, sy)
-            drawing.width = float(W)
-            drawing.height = float(H)
-
-
-            # Rasterisation sans Cairo : SVG -> PDF (reportlab) -> bitmap (pypdfium2)
-            if renderPDF is None or _rl_canvas is None or pdfium is None:
-                raise RuntimeError("Rasterisation SVG indisponible : pip install svglib reportlab pypdfium2")
-
-            buf = io.BytesIO()
-            c = _rl_canvas.Canvas(buf, pagesize=(W, H))
-            renderPDF.draw(drawing, c, 0, 0)
-            c.showPage()
-            c.save()
-            pdf_bytes = buf.getvalue()
-
-            doc = pdfium.PdfDocument(pdf_bytes)
-            page = doc[0]
-            bitmap = page.render(scale=1)  # ~72 dpi : 1 point ≈ 1 pixel
-            pil = bitmap.to_pil().convert("RGBA")
-            doc.close()
-
-            if pil.size != (W, H):
-                pil = pil.resize((W, H), Image.LANCZOS)
-            return pil
-        except Exception as e:
-            messagebox.showerror("Erreur SVG", f"Impossible de rasteriser le SVG (svglib/reportlab):\n{e}")
-            return None
-
-    def _bg_draw_world_layer(self):
-        """Dessine le fond en 'monde' : on recadre la base en fonction pan/zoom et on l'affiche en plein canvas."""
-        if not self._bg or self._bg_base_pil is None or Image is None or ImageTk is None:
-            return
-
-        cw = int(self.canvas.winfo_width() or 0)
-        ch = int(self.canvas.winfo_height() or 0)
-        if cw <= 2 or ch <= 2:
-            self.update_idletasks()
-            cw = int(self.canvas.winfo_width() or 0)
-            ch = int(self.canvas.winfo_height() or 0)
-
-        if cw <= 2 or ch <= 2:
-            return
-
-        bx0 = float(self._bg["x0"]); by0 = float(self._bg["y0"])
-        bw = float(self._bg["w"]);  bh = float(self._bg["h"])
-        bx1 = bx0 + bw; by1 = by0 + bh
-
-        # Vue monde actuelle (canvas entier)
-        xA, yTop = self._screen_to_world(0, 0)
-        xB, yBot = self._screen_to_world(cw, ch)
-        vx0, vx1 = (min(xA, xB), max(xA, xB))
-        vy0, vy1 = (min(yBot, yTop), max(yBot, yTop))
-
-        # Intersection vue <-> fond
-        ix0 = max(vx0, bx0); ix1 = min(vx1, bx1)
-        iy0 = max(vy0, by0); iy1 = min(vy1, by1)
-        if ix0 >= ix1 or iy0 >= iy1:
-            return
-
-        baseW, baseH = self._bg_base_pil.size
-
-        # Crop dans l'image base
-        left  = int((ix0 - bx0) / bw * baseW)
-        right = int((ix1 - bx0) / bw * baseW)
-        # y base : 0 en haut, donc on inverse
-        upper = int((by1 - iy1) / bh * baseH)  # iy1 = top
-        lower = int((by1 - iy0) / bh * baseH)  # iy0 = bottom
-
-        # clamp
-        left = max(0, min(baseW-1, left))
-        right = max(left+1, min(baseW, right))
-        upper = max(0, min(baseH-1, upper))
-        lower = max(upper+1, min(baseH, lower))
-
-        crop = self._bg_base_pil.crop((left, upper, right, lower))
-
-        # Où coller sur l'écran
-        sx0, syTop = self._world_to_screen((ix0, iy1))
-        sx1, syBot = self._world_to_screen((ix1, iy0))
-        wpx = int(round(sx1 - sx0))
-        hpx = int(round(syBot - syTop))
-        if wpx <= 1 or hpx <= 1:
-            return
-
-        crop = crop.resize((wpx, hpx), Image.LANCZOS)
-
-        # IMPORTANT: fond blanc pour éviter un rendu gris quand la carte est semi-transparente
-        # (Tk peut composer les pixels transparents sur un fond non-blanc selon la plateforme).
-        out = Image.new("RGBA", (cw, ch), (255, 255, 255, 255))
-        px = int(round(sx0)); py = int(round(syTop))
-
-        # clip paste
-        paste_x0 = max(0, px)
-        paste_y0 = max(0, py)
-        paste_x1 = min(cw, px + wpx)
-        paste_y1 = min(ch, py + hpx)
-        if paste_x1 <= paste_x0 or paste_y1 <= paste_y0:
-            return
-
-        src_x0 = paste_x0 - px
-        src_y0 = paste_y0 - py
-        src_x1 = src_x0 + (paste_x1 - paste_x0)
-        src_y1 = src_y0 + (paste_y1 - paste_y0)
-
-        crop2 = crop.crop((src_x0, src_y0, src_x1, src_y1))
-        # Appliquer l'opacité utilisateur (0..100) sur l'alpha du fond
-        op = int(float(self.map_opacity.get()))
-
-        op = max(0, min(100, op))
-        if op <= 0:
-            return
-        if op < 100:
-            if crop2.mode != "RGBA":
-                crop2 = crop2.convert("RGBA")
-            r, g, b, a = crop2.split()
-            a = a.point(lambda p: int(p * op / 100))
-            crop2.putalpha(a)
-        out.paste(crop2, (paste_x0, paste_y0), crop2)
-
-        self._bg_photo = ImageTk.PhotoImage(out)
-        self.canvas.create_image(0, 0, anchor="nw", image=self._bg_photo, tags=("bg_world",))
-        self.canvas.tag_lower("bg_world")
-
-    def _bg_corners_world(self):
-        if not self._bg:
-            return None
-        x0 = float(self._bg["x0"]); y0 = float(self._bg["y0"])
-        w = float(self._bg["w"]);  h = float(self._bg["h"])
-        return {
-            "bl": (x0,     y0),
-            "br": (x0 + w, y0),
-            "tl": (x0,     y0 + h),
-            "tr": (x0 + w, y0 + h),
-        }
-
-    def _bg_corners_screen(self):
-        c = self._bg_corners_world()
-        if not c:
-            return None
-        return {k: self._world_to_screen(v) for k, v in c.items()}
-
-    def _bg_draw_resize_handles(self):
-        if not self._bg or not self.bg_resize_mode.get():
-            return
-        c = self._bg_corners_screen()
-        if not c:
-            return
-        tl = c["tl"]; br = c["br"]
-
-        self.canvas.create_rectangle(tl[0], tl[1], br[0], br[1], outline="gray30", dash=(3, 2), width=1, tags=("bg_ui",))
-
-        r = 6
-        for k in ("tl", "tr", "bl", "br"):
-            x, y = c[k]
-            self.canvas.create_rectangle(x-r, y-r, x+r, y+r, outline="gray10", fill="white", width=1, tags=("bg_ui",))
-
-    def _bg_hit_test_handle(self, sx: float, sy: float):
-        c = self._bg_corners_screen()
-        if not c:
-            return None
-        r = 8
-        for k in ("tl", "tr", "bl", "br"):
-            x, y = c[k]
-            if (sx - x)*(sx - x) + (sy - y)*(sy - y) <= r*r:
-                return k
-        return None
-
-    def _bg_start_resize(self, handle: str, sx: int, sy: int):
-        # handle: tl,tr,bl,br ; corner opposée fixe
-        opp = {"tl": "br", "br": "tl", "tr": "bl", "bl": "tr"}[handle]
-        corners = self._bg_corners_world()
-        fx, fy = corners[opp]
-        mx, my = self._screen_to_world(sx, sy)
-        self._bg_resizing = {
-            "handle": handle,
-            "fixed": (fx, fy),
-            "start_mouse": (mx, my),
-            "start_rect": (float(self._bg["x0"]), float(self._bg["y0"]), float(self._bg["w"]), float(self._bg["h"])),
-        }
-
-    def _bg_start_move(self, sx: int, sy: int):
-        """Démarre un déplacement du fond (mode resize actif mais pas sur une poignée)."""
-        if not self._bg:
-            return
-        mx, my = self._screen_to_world(sx, sy)
-        self._bg_moving = {
-            "start_mouse": (float(mx), float(my)),
-            "start_xy": (float(self._bg.get("x0", 0.0)), float(self._bg.get("y0", 0.0))),
-        }
-
-    def _bg_update_move(self, sx: int, sy: int):
-        if not getattr(self, "_bg_moving", None) or not self._bg:
-            return
-        mx, my = self._screen_to_world(sx, sy)
-        smx, smy = self._bg_moving["start_mouse"]
-        x0, y0 = self._bg_moving["start_xy"]
-        dx = float(mx - smx)
-        dy = float(my - smy)
-        self._bg["x0"] = float(x0 + dx)
-        self._bg["y0"] = float(y0 + dy)
-
-    def _bg_update_resize(self, sx: int, sy: int):
-        if not self._bg_resizing or not self._bg:
-            return
-        aspect = float(self._bg["aspect"])
-        fx, fy = self._bg_resizing["fixed"]
-        mx, my = self._screen_to_world(sx, sy)
-
-        dx = mx - fx
-        dy = my - fy
-        w0 = abs(dx)
-        h0 = abs(dy)
-        if w0 < 1e-6 or h0 < 1e-6:
-            return
-
-        # Conserver ratio : choisir la dominante (horizontal vs vertical)
-        if (w0 / h0) > aspect:
-            w = w0
-            h = w / aspect
-        else:
-            h = h0
-            w = h * aspect
-
-        w = max(1e-3, w)
-        h = max(1e-3, h)
-
-        # Recomposer x0/y0 selon le quadrant (fixed est la corner opposée)
-        # On place le rectangle de sorte que fixed reste fixe
-        x0 = fx if dx >= 0 else (fx - w)
-        y0 = fy if dy >= 0 else (fy - h)
-
-        self._bg["x0"] = float(x0)
-        self._bg["y0"] = float(y0)
-        self._bg["w"]  = float(w)
-        self._bg["h"]  = float(h)
-
-        # Afficher l'échelle relative (x1, x1/3.15, x2.49...) pendant le resize
-        self._bg_update_scale_status()
-
-    def _bg_compute_scale_factor(self) -> float | None:
-        """Retourne le scale *carte vs triangles*.
-
-        On veut comparer :
-          - l'échelle "monde" des triangles (1 unité monde == 1 km)
-          - l'échelle "monde" implicite de la carte via la calibration 3 points.
-
-        La calibration fournit affineLambertKmToWorld (km -> monde) :
-            xw = a*xkm + b*ykm + c
-            yw = d*xkm + e*ykm + f
-
-        Les colonnes (a,d) et (b,e) donnent la taille en unités monde pour 1 km (Est / Nord).
-        On moyenne les deux normes pour obtenir un facteur global.
-
-        Si le fond a été redimensionné depuis la calibration, on applique le ratio (w_cur / w_ref).
-        """
-        if not self._bg:
-            return None
-
-        data = getattr(self, "_bg_calib_data", None)
-        if not (isinstance(data, dict) and "affineLambertKmToWorld" in data):
-            return getattr(self, "_bg_scale_factor_override", None)
-
-        aff = data.get("affineLambertKmToWorld")
-        if not (isinstance(aff, list) and len(aff) == 6):
-            return getattr(self, "_bg_scale_factor_override", None)
-
-        a, b, c, d, e, f = [float(v) for v in aff]
-
-        # Taille en unités monde pour 1 km (axes Est / Nord)
-        import math
-        norm_e = math.hypot(a, d)
-        norm_n = math.hypot(b, e)
-        base_norm = 0.5 * (norm_e + norm_n)
-
-        if base_norm <= 1e-12:
-            return None
-
-        # Ratio de redimensionnement du fond (si on a une référence)
-        ratio = 1.0
-        if self._bg_scale_base_w is not None:
-            base_w = float(self._bg_scale_base_w)
-            cur_w = float(self._bg.get("w"))
-            if base_w > 1e-12 and cur_w > 1e-12:
-                ratio = cur_w / base_w
-
-        s = base_norm * ratio
-        self._bg_scale_factor_override = s
-        return s
-
-    def _bg_format_scale(self, s: float | None) -> str:
-        if s is None:
-            return "x?"
-        if abs(s - 1.0) < 1e-3:
-            return "x1"
-        if s >= 1.0:
-            return f"x{s:.2f}"
-        # plus petit que la référence -> x1/k
-        k = 1.0 / max(1e-12, s)
-        return f"x1/{k:.2f}"
-
-    def _bg_update_scale_status(self):
-        # On n'affiche l'échelle que si le mode redimensionnement est actif.
-        if not self.bg_resize_mode.get() or not self._bg:
-            return
-        s = self._bg_compute_scale_factor()
-        self.status.config(text=f"Échelle carte : {self._bg_format_scale(s)}")
 
     def _world_to_screen(self, p):
         x = self.offset[0] + float(p[0]) * self.zoom
@@ -7092,10 +5118,7 @@ class TriangleViewerManual(tk.Tk):
                         v = np.array(Orig[k], dtype=float) - pivot
                         Pt[k] = (R @ v) + pivot
             self._recompute_group_bbox(gid)
-            # Sync immédiate : Core = vérité persistée (pose monde du groupe)
-            # NOTE: scénarios auto utilisent auto_geom_state (transform global), on ne force pas la pose groupe.
-            if not sel.get("auto_geom"):
-                self._sync_group_pose_to_core(gid)
+
             self._redraw_from(self._last_drawn)
             self._sel["last_angle"] = cur_angle
             return
@@ -7113,6 +5136,35 @@ class TriangleViewerManual(tk.Tk):
             # position monde du sommet visé
             P0 = self._last_drawn[idx]["pts"]
             v_world = np.array(P0[vkey], dtype=float) if vkey in ("O","B","L") else None
+
+            # --- C7 debug core (prints only, ne touche pas au tooltip legacy) ---
+            scen = self._get_active_scenario()
+            topoWorld = getattr(scen, "topoWorld", None)
+            
+            if topoWorld is not None and v_world is not None and vkey in ("O", "B", "L"):
+                vkey_to_n = {"O": 0, "B": 1, "L": 2}
+                triNum = int(self._last_drawn[idx].get("id", idx + 1))
+                nodeId = f"{getattr(scen, 'topoScenarioId', getattr(scen, 'scenarioId', 'SM?'))}:T{triNum:02d}:N{vkey_to_n[vkey]}"
+                last = getattr(self, "_dbg_tip_last_node", None)
+                if nodeId != last:
+                    self._dbg_tip_last_node = nodeId
+                    print(f"[C7][TOOLTIP][NODE] {nodeId} vkey={vkey} triNum={triNum}")
+
+                    trip = topoWorld.getConnectedPointsTriplets(nodeId)
+                    if trip:
+                        s = " ".join([f"{t}:{lab}({tri})" for (t, tri, lab) in trip])
+                        print(f"  [C7][ATTACH] {len(trip)} -> {s}")
+                    else:
+                        print("  [C7][ATTACH] 0")
+
+                    rays = topoWorld.getNodeHalfRaysAzimuts(nodeId)
+                    if rays:
+                        print(f"  [C7][RAYS] {len(rays)}")
+                        for r in rays:
+                            az = float(r.get("azimutDeg", 0.0))
+                            print(f"    -> {r.get('toNode')} az={az:0.2f}° edge={r.get('edgeId')} t={float(r.get('tFrom',0.0)):0.3f}->{float(r.get('tTo',0.0)):0.3f}")
+                    else:
+                        print("  [C7][RAYS] 0")
 
             lines = []
             if v_world is not None:
@@ -7769,10 +5821,196 @@ class TriangleViewerManual(tk.Tk):
             "tgt_outline": [(tuple(a), tuple(b)) for (a, b) in (tgt_outline or [])],
         }
 
+        # --- NOTE: _edge_choice est la "source de vérité" pour le release ---
+        # Contrainte: d'autres appels attendent que choice[4] soit déballable en (m_a,m_b,t_a,t_b).
+        # On encapsule donc ces 4 points dans un petit objet séquence (len==4) qui porte aussi les identités réelles.
+        class _EdgeChoiceEpts:
+            __slots__ = ("mA", "mB", "tA", "tB",
+                         "src_owner_tid", "src_edge", "dst_owner_tid", "dst_edge",
+                         "src_vkey_at_mA", "src_vkey_at_mB", "dst_vkey_at_tA", "dst_vkey_at_tB",
+                         "src_edge_labels", "dst_edge_labels", "kind", "t")
+
+            def __init__(self, mA, mB, tA, tB,
+                         src_owner_tid=None, src_edge=None, dst_owner_tid=None, dst_edge=None,
+                         src_vkey_at_mA=None, src_vkey_at_mB=None, dst_vkey_at_tA=None, dst_vkey_at_tB=None,
+                         src_edge_labels=None, dst_edge_labels=None, kind=None, t=None):
+                self.mA = tuple(mA); self.mB = tuple(mB); self.tA = tuple(tA); self.tB = tuple(tB)
+                self.src_owner_tid = src_owner_tid
+                self.src_edge = src_edge
+                self.dst_owner_tid = dst_owner_tid
+                self.dst_edge = dst_edge
+                self.src_vkey_at_mA = src_vkey_at_mA
+                self.src_vkey_at_mB = src_vkey_at_mB
+                self.dst_vkey_at_tA = dst_vkey_at_tA
+                self.dst_vkey_at_tB = dst_vkey_at_tB
+                self.src_edge_labels = src_edge_labels
+                self.dst_edge_labels = dst_edge_labels
+                self.kind = kind
+                self.t = t
+
+            # --- compat: unpack (m_a,m_b,t_a,t_b) ---
+            def __len__(self):
+                return 4
+
+            def __iter__(self):
+                yield self.mA
+                yield self.mB
+                yield self.tA
+                yield self.tB
+
+            def __getitem__(self, i):
+                if i == 0: return self.mA
+                if i == 1: return self.mB
+                if i == 2: return self.tA
+                if i == 3: return self.tB
+                raise IndexError(i)
+
+        def _edge_code_from_vkeys(a, b):
+            if not a or not b or a == b:
+                return None
+            s = {a, b}
+            if s == {"O", "B"}: return "OB"
+            if s == {"B", "L"}: return "BL"
+            if s == {"L", "O"}: return "LO"
+            return None
+
+        def _find_owner_edge_for_segment(gid: int, A, B, eps=EPS_WORLD):
+            # Cherche, dans le groupe, quel triangle porte le segment (A,B) et quelle arête locale c'est.
+            if gid is None:
+                return (None, None)
+            Ax, Ay = float(A[0]), float(A[1])
+            Bx, By = float(B[0]), float(B[1])
+
+            def _pt_eq(P, k, x, y):
+                return abs(float(P[k][0]) - x) <= eps and abs(float(P[k][1]) - y) <= eps
+
+            for nd in (self._group_nodes(gid) or []):
+                tid = nd.get("tid")
+                if tid is None or not (0 <= tid < len(self._last_drawn)):
+                    continue
+                P = self._last_drawn[tid].get("pts")
+                if not P:
+                    continue
+                for (a, b) in (("O", "B"), ("B", "L"), ("L", "O")):
+                    # match non orienté
+                    if (_pt_eq(P, a, Ax, Ay) and _pt_eq(P, b, Bx, By)) or (_pt_eq(P, a, Bx, By) and _pt_eq(P, b, Ax, Ay)):
+                        return (tid, _edge_code_from_vkeys(a, b))
+            return (None, None)
+
+        def _edge_vkeys_from_code(edge_code: str):
+            e = str(edge_code or "").upper().strip()
+            if e == "OB": return ("O", "B")
+            if e == "BL": return ("B", "L")
+            if e == "LO": return ("L", "O")
+            return (None, None)
+
+        def _edge_labels_for(owner_tid: int, edge_code: str):
+            """Retourne (labA, labB) selon l'ordre des vkeys de l'arête, ou None si impossible."""
+            if owner_tid is None or not (0 <= int(owner_tid) < len(self._last_drawn)):
+                return None
+            tri = self._last_drawn[int(owner_tid)]
+            labels = tri.get("labels", None)
+            if labels is None:
+                return None
+            a, b = _edge_vkeys_from_code(edge_code)
+            if not a or not b:
+                return None
+            idx = {"O": 0, "B": 1, "L": 2}
+            ia, ib = idx.get(a, None), idx.get(b, None)
+            if ia is None or ib is None:
+                return None
+            la = labels[ia] if ia < len(labels) else ""
+            lb = labels[ib] if ib < len(labels) else ""
+            return (str(la).strip(), str(lb).strip())
+
+
+        def _project_t_on_segment(P, A, B):
+            # t ∈ [0,1] : projection de P sur AB (clamp). Calcul côté UI pendant l'assist.
+            px, py = float(P[0]), float(P[1])
+            ax, ay = float(A[0]), float(A[1])
+            bx, by = float(B[0]), float(B[1])
+            vx, vy = (bx - ax), (by - ay)
+            vv = vx * vx + vy * vy
+            if vv <= 1e-18:
+                return 0.0
+            wx, wy = (px - ax), (py - ay)
+            t = (wx * vx + wy * vy) / vv
+            if t < 0.0: t = 0.0
+            elif t > 1.0: t = 1.0
+            return float(t)
+
         self._edge_choice = None
         if best:
             (mA, mB), (tA, tB) = best[1], best[2]
-            self._edge_choice = (mob_idx, vkey_m, tgt_idx, tgt_vkey, (tuple(mA), tuple(mB), tuple(tA), tuple(tB)))
+
+            # Identités réelles (owner_tid + edge) au moment de l'assist
+            src_owner_tid, src_edge = _find_owner_edge_for_segment(gid_m, mA, mB)
+            dst_owner_tid, dst_edge = _find_owner_edge_for_segment(gid_t, tA, tB)
+
+            # Fallback: garder au minimum l'edge du triangle de départ si non déterminé
+            if src_owner_tid is None:
+                src_owner_tid = int(mob_idx)
+            if dst_owner_tid is None:
+                dst_owner_tid = int(tgt_idx)
+
+            # Labels des 2 arêtes (source/cible) → décision fiable Edge-Edge vs Vertex-Edge
+            src_edge_labels = _edge_labels_for(src_owner_tid, src_edge)
+            dst_edge_labels = _edge_labels_for(dst_owner_tid, dst_edge)
+
+            # Par défaut: vertex-edge (si labels indisponibles, on ne "devine" pas au release)
+            kind = "vertex-edge"
+            if src_edge_labels and dst_edge_labels:
+                # Edge-Edge si [A,B] vs [B,A]
+                if (src_edge_labels[0] == dst_edge_labels[1]) and (src_edge_labels[1] == dst_edge_labels[0]):
+                    kind = "edge-edge"
+                if (src_edge_labels[0] == dst_edge_labels[0]) and (src_edge_labels[1] == dst_edge_labels[1]):
+                    kind = "edge-edge"
+
+            # t: UNIQUEMENT en vertex-edge (sinon None)
+            t_param = None
+            if kind == "vertex-edge":
+                t_param = _project_t_on_segment(vm, tA, tB)
+
+            # --- TOPOL: associer chaque point (mA/mB/tA/tB) à l'endpoint vkey correspondant ---
+            # Sans cette info, on ne peut PAS décider "direct/reverse" de manière topologique.
+            def _edge_code_to_vkeys(edge_code: str):
+                c = str(edge_code or "").upper()
+                if c == "OB": return ("O", "B")
+                if c == "BL": return ("B", "L")
+                if c == "LO": return ("L", "O")
+                return (None, None)
+
+            def _closest_vkey(p_xy, v0, v1, Pdict):
+                if v0 is None or v1 is None:
+                    return None
+                p = _to_np(p_xy)
+                p0 = _to_np(Pdict[v0])
+                p1 = _to_np(Pdict[v1])
+                d0 = float((p[0]-p0[0])**2 + (p[1]-p0[1])**2)
+                d1 = float((p[0]-p1[0])**2 + (p[1]-p1[1])**2)
+                return v0 if d0 <= d1 else v1
+
+            src_vkey_at_mA = src_vkey_at_mB = None
+            dst_vkey_at_tA = dst_vkey_at_tB = None
+            sv0, sv1 = _edge_code_to_vkeys(src_edge)
+            dv0, dv1 = _edge_code_to_vkeys(dst_edge)
+            if sv0 and sv1 and dv0 and dv1:
+                src_vkey_at_mA = _closest_vkey(mA, sv0, sv1, Pm)
+                src_vkey_at_mB = _closest_vkey(mB, sv0, sv1, Pm)
+                dst_vkey_at_tA = _closest_vkey(tA, dv0, dv1, Pt)
+                dst_vkey_at_tB = _closest_vkey(tB, dv0, dv1, Pt)
+
+            epts = _EdgeChoiceEpts(tuple(mA), tuple(mB), tuple(tA), tuple(tB),
+                                   src_owner_tid=src_owner_tid, src_edge=src_edge,
+                                   dst_owner_tid=dst_owner_tid, dst_edge=dst_edge,
+                                   src_vkey_at_mA=src_vkey_at_mA, src_vkey_at_mB=src_vkey_at_mB,
+                                   dst_vkey_at_tA=dst_vkey_at_tA, dst_vkey_at_tB=dst_vkey_at_tB,
+                                   src_edge_labels=src_edge_labels, dst_edge_labels=dst_edge_labels,
+                                   kind=kind,
+                                   t=t_param)
+
+            # Contrainte compat: structure inchangée (5 items) ; epts est "unpackable" en 4 points.
+            self._edge_choice = (mob_idx, vkey_m, tgt_idx, tgt_vkey, epts)
 
         # Ajout des contours pour le debug (bleu)
         mob_outline = [(tuple(a), tuple(b)) for (a,b) in self._outline_for_item(mob_idx)]
@@ -7890,6 +6128,13 @@ class TriangleViewerManual(tk.Tk):
                 len_BL = float(row["len_BL"])
                 orient = str(row.get("orient", "")).strip().upper()
 
+
+                # --- Orientation source (définition triangle) ---
+                # On l'enregistre côté Tk, et on en déduit le miroir de POSE (pas le miroir visuel Tk).
+                # Convention: poseMirrored=False.. utilsé uniquement pour le flip 
+                self._last_drawn[new_tid]["orient"] = orient
+                self._last_drawn[new_tid]["poseMirrored"] = False
+
                 # labels/types : O/B/L dans l’ordre topo.
                 # (convention projet actuelle : O="Bourges", B=row["B"], L=row["L"])
                 v_labels = ["Bourges", str(row["B"]), str(row["L"])]
@@ -7912,21 +6157,12 @@ class TriangleViewerManual(tk.Tk):
                 world = scen.topoWorld
                 core_gid = world.add_element_as_new_group(el)
 
-                # Pose monde du groupe : local O=(0,0), B=(OB,0) -> world O,B
-                # Rotation pour aligner l'axe x local sur le segment O->B monde ; translation = O monde.
-                O = np.array(Pw["O"], dtype=float)
-                B = np.array(Pw["B"], dtype=float)
-                v = B - O
-                ang = float(math.atan2(float(v[1]), float(v[0])))
-                c, s = float(math.cos(ang)), float(math.sin(ang))
-                R = np.array([[c, -s], [s, c]], dtype=float)
-                T = np.array([float(O[0]), float(O[1])], dtype=float)
-                world.set_group_pose(core_gid, R=R, T=T)
-
                 # Annotation Tk (pont UI↔Core)
                 self._last_drawn[new_tid]["topoElementId"] = element_id
                 self._last_drawn[new_tid]["topoGroupId"] = core_gid
 
+                # Pose monde de l'ELEMENT : fit rigoureux sur (O,B,L) (pas l'approx O->B)
+                self._sync_element_pose_to_core(new_tid)
 
         # 2) Création d'un groupe singleton
         self._ensure_group_fields(self._last_drawn[new_tid])
@@ -8689,10 +6925,6 @@ class TriangleViewerManual(tk.Tk):
         self._update_compass_ctx_menu_and_dico_state()
         self.status.config(text=f"Dico filtré (angle ref={float(ref):0.0f}°, tol=±{float(self._dico_filter_tolerance_deg):0.0f}°)")
 
-    def _clock_arc_is_available(self) -> bool:
-        """True si une mesure d'arc persistee est disponible (et affichee tant que le compas reste sur le meme noeud)."""
-        return (getattr(self, '_clock_arc_last_angle_deg', None) is not None) and isinstance(getattr(self, '_clock_arc_last', None), dict)
-
     def _update_compass_ctx_menu_and_dico_state(self):
         """Synchronise le menu compas et l'état de filtrage du dico selon la dispo de l'arc.
 
@@ -8726,237 +6958,6 @@ class TriangleViewerManual(tk.Tk):
         """Alias historique -> _update_compass_ctx_menu_and_dico_state."""
         self._update_compass_ctx_menu_and_dico_state()
 
-    def _dico_clear_selection(self, refresh: bool = True):
-        """Supprime toute selection visible dans la TkSheet du dictionnaire."""
-        if not getattr(self, 'dicoSheet', None):
-            return
-
-        if hasattr(self.dicoSheet, 'deselect'):
-            self.dicoSheet.deselect('all')
-        else:
-            if refresh and hasattr(self.dicoSheet, 'refresh'):
-                self.dicoSheet.refresh()
-            return
-
-        for meth in ('deselect_all', 'delete_selection', 'dehighlight_all'):
-            if hasattr(self.dicoSheet, meth):
-                getattr(self.dicoSheet, meth)()
-                break
-
-        if refresh and hasattr(self.dicoSheet, 'refresh'):
-            self.dicoSheet.refresh()
-
-    def _dico_set_selection_enabled(self, enabled: bool):
-        """(De)sactive la selection utilisateur sur la TkSheet du dictionnaire.
-
-        Objectif : quand le menu contextuel 'Filtrer le dictionnaire' est grise
-        (pas d'arc mesure/affiche), on desactive aussi la selection dans la grille.
-
-        Implementation :
-        - si tksheet expose disable_bindings/enable_bindings, on s'appuie dessus;
-        - sinon, on garde un garde-fou cote callback 'cell_select'."""
-        if not getattr(self, 'dicoSheet', None):
-            # On memorise quand meme l'etat pour le callback, meme si le widget n'existe pas.
-            self._dico_selection_enabled = bool(enabled)
-            return
-
-        self._dico_selection_enabled = bool(enabled)
-
-        # 1) Desactiver/activer les bindings principaux de selection
-        # NB: on ne touche pas a 'copy' et au popup menu pour rester neutre.
-        bindings = ('single_select', 'row_select', 'column_select', 'rc_select', 'arrowkeys')
-        if hasattr(self.dicoSheet, 'disable_bindings') and hasattr(self.dicoSheet, 'enable_bindings'):
-            if self._dico_selection_enabled:
-                self.dicoSheet.enable_bindings(bindings)
-            else:
-                self.dicoSheet.disable_bindings(bindings)
-
-        # 2) Si on desactive, on efface aussi la selection courante (visuellement)
-        if not self._dico_selection_enabled:
-            self._dico_clear_selection(refresh=False)
-
-        if hasattr(self.dicoSheet, 'refresh'):
-            self.dicoSheet.refresh()
-
-    def _clock_arc_handle_click(self, sx: int, sy: int):
-        """Gestion des clics gauche dans le mode 'arc d'angle'."""
-        if not getattr(self, "_clock_arc_active", False):
-            return
-
-        # Snap sur noeud (CTRL = pas de snap)
-        sx2, sy2 = self._clock_apply_optional_snap(int(sx), int(sy), enable_snap=True)
-
-        az_abs = float(self._clock_compute_azimuth_deg(sx2, sy2))
-
-        if int(getattr(self, "_clock_arc_step", 0)) == 0:
-            self._clock_arc_p1 = (int(sx2), int(sy2), float(az_abs))
-            self._clock_arc_step = 1
-            self.status.config(text="Mesurer un arc d'angle : sélectionne le point P2 (clic gauche), ESC pour annuler. (Snap noeuds, CTRL = désactiver snap)")
-            # Premier rendu immédiat (au même point)
-            self._clock_arc_update_preview(int(sx2), int(sy2))
-            return
-
-        # step==1 : valider P2 et conclure
-        self._clock_arc_p2 = (int(sx2), int(sy2), float(az_abs))
-        az1 = float(self._clock_arc_p1[2])
-        az2 = float(self._clock_arc_p2[2])
-        angle_deg = float(self._clock_arc_compute_angle_deg(az1, az2))
-
-        # Persister la mesure : on l'affichera lors des redraw de l'overlay.
-        self._clock_arc_last = {"az1": az1, "az2": az2, "angle": angle_deg}
-        self._clock_arc_last_angle_deg = float(angle_deg)
-        self._update_compass_ctx_menu_and_dico_state()
-
-        # Sortir du mode interactif en nettoyant uniquement le preview
-        self._clock_arc_cancel(silent=True)
-        self._redraw_overlay_only()
-        self.status.config(text=f"Arc mesuré : {angle_deg:0.0f}°")
-
-    def _clock_arc_update_preview(self, sx: int, sy: int):
-        """Met à jour le preview (2 rayons + arc + label) pendant la sélection de P2."""
-        if not getattr(self, "_clock_arc_active", False):
-            return
-        if int(getattr(self, "_clock_arc_step", 0)) != 1:
-            return
-        if self._clock_arc_p1 is None:
-            return
-        if not hasattr(self, "canvas") or self.canvas is None:
-            return
-
-        cx = float(getattr(self, "_clock_cx", 0.0))
-        cy = float(getattr(self, "_clock_cy", 0.0))
-        R  = float(getattr(self, "_clock_R", getattr(self, "_clock_radius", 69)))
-
-        # Snap P2 si activé
-        sx2, sy2 = self._clock_apply_optional_snap(int(sx), int(sy), enable_snap=True)
-        az2 = float(self._clock_compute_azimuth_deg(sx2, sy2))
-        az1 = float(self._clock_arc_p1[2])
-
-        # 2 rayons (centre->P1 et centre->P2)
-        x1, y1 = int(self._clock_arc_p1[0]), int(self._clock_arc_p1[1])
-        if self._clock_arc_line1_id is None:
-            self._clock_arc_line1_id = self.canvas.create_line(
-                cx, cy, x1, y1, width=2, dash=(4, 3),
-                fill="#202020", tags=("clock_overlay", "clock_arc_preview")
-            )
-        else:
-            self.canvas.coords(self._clock_arc_line1_id, cx, cy, x1, y1)
-
-        if self._clock_arc_line2_id is None:
-            self._clock_arc_line2_id = self.canvas.create_line(
-                cx, cy, sx2, sy2, width=2, dash=(4, 3),
-                fill="#202020", tags=("clock_overlay", "clock_arc_preview")
-            )
-        else:
-            self.canvas.coords(self._clock_arc_line2_id, cx, cy, sx2, sy2)
-
-        # Arc (plus petit arc entre az1 et az2)
-        start_deg_tk, extent_deg_tk, angle_deg, mid_az = self._clock_arc_compute_tk_arc(az1, az2)
-
-        bbox = (cx - R, cy - R, cx + R, cy + R)
-        if self._clock_arc_arc_id is None:
-            self._clock_arc_arc_id = self.canvas.create_arc(
-                *bbox,
-                start=float(start_deg_tk),
-                extent=float(extent_deg_tk),
-                style="arc",
-                width=2,
-                outline="#202020",
-                tags=("clock_overlay", "clock_arc_preview")
-            )
-        else:
-            self.canvas.coords(self._clock_arc_arc_id, *bbox)
-            self.canvas.itemconfig(self._clock_arc_arc_id, start=float(start_deg_tk), extent=float(extent_deg_tk))
-
-        # Texte angle, placé près du milieu de l'arc (légèrement à l'extérieur)
-        tx, ty = self._clock_point_on_circle(mid_az, R * 1.08)
-        label = f"{angle_deg:0.0f}°"
-        if self._clock_arc_text_id is None:
-            self._clock_arc_text_id = self.canvas.create_text(
-                tx, ty, text=label, anchor="center",
-                fill="#202020", font=("Arial", 12, "bold"),
-                tags=("clock_overlay", "clock_arc_preview")
-            )
-        else:
-            self.canvas.itemconfig(self._clock_arc_text_id, text=label)
-            self.canvas.coords(self._clock_arc_text_id, tx, ty)
-
-    def _clock_arc_cancel(self, silent: bool=False):
-        if not getattr(self, "_clock_arc_active", False):
-            return
-        self._clock_arc_active = False
-        self._clock_arc_step = 0
-        self._clock_arc_p1 = None
-        self._clock_arc_p2 = None
-
-        # Nettoyage items (pas de try/except silencieux : on veut voir les erreurs)
-        for attr in ("_clock_arc_line1_id", "_clock_arc_line2_id", "_clock_arc_arc_id", "_clock_arc_text_id"):
-            item_id = getattr(self, attr, None)
-            if item_id is not None and getattr(self, "canvas", None):
-                self.canvas.delete(item_id)
-            setattr(self, attr, None)
-
-        self._clock_clear_snap_target()
-        if not silent:
-            self.status.config(text="Mesure d'arc annulée.")
-
-    def _clock_arc_clear_last(self):
-        """Efface la dernière mesure persistée (appelé notamment quand le compas bouge)."""
-        # Si le dico était filtré sur la base de cet arc, on doit annuler le filtrage
-        # dès que l'arc n'est plus disponible (changement de noeud compas).
-        if bool(getattr(self, "_dico_filter_active", False)) or (getattr(self, "_dico_filter_ref_angle_deg", None) is not None):
-            # Réutilise l'action standard de l'app (menu simulation "Annuler filtrage")
-            if hasattr(self, "_simulation_cancel_dictionary_filter"):
-                self._simulation_cancel_dictionary_filter()
-            else:
-                # fallback minimal (au cas où)
-                self._dico_filter_active = False
-                self._dico_filter_ref_angle_deg = None
-                self._dico_clear_filter_styles()
-
-        self._clock_arc_last = None
-        self._clock_arc_last_angle_deg = None
-        self._update_compass_ctx_menu_and_dico_state()
-
-    def _clock_arc_auto_from_snap_target(self, snap_tgt: dict) -> bool:
-        """Calcule automatiquement un arc (EXT) quand le compas s'accroche à un noeud.
-
-        Objectif : reproduire "Mesure un arc d'angle" sans interaction utilisateur,
-       en utilisant les 2 directions de frontière *extérieures* au point d'accroche.
-
-        Retourne True si une mesure a été calculée/persistée.
-
-        Remarques:
-        - Le point d'accroche peut être un sommet *ou* un point sur une arête (noeud connecté à une arête).
-        - En cas d'ambiguïté (>2 arêtes incidentes), on applique la même heuristique que
-          _incident_half_edges_at_vertex (2 extrêmes angulaires).
-        """
-        if not isinstance(snap_tgt, dict) or snap_tgt.get("world") is None:
-            return False
-
-        idx = int(snap_tgt.get("idx"))
-        v_world = snap_tgt.get("world")
-        if not (0 <= idx < len(self._last_drawn)):
-            return False
-
-        neigh = self._clock_arc_auto_get_two_neighbors(idx, v_world, outline_eps=None)
-        if not neigh:
-            return False
-
-        w1, w2 = neigh
-
-        # Récupérer 2 directions (azimuts) depuis le point d'ancrage
-        az1 = float(self._azimuth_world_deg(v_world, w1))
-        az2 = float(self._azimuth_world_deg(v_world, w2))
-        angle_deg = float(self._clock_arc_compute_angle_deg(az1, az2))
-
-        self._clock_arc_last = {"az1": az1, "az2": az2, "angle": angle_deg}
-        self._clock_arc_last_angle_deg = float(angle_deg)
-        self._update_compass_ctx_menu_and_dico_state()
-        self.status.config(text=f"Arc auto (EXT) : {angle_deg:0.0f}°")
-        return True
-
-
     def _azimuth_world_deg(self, a, b) -> float:
         """Azimut absolu en degrés (0°=Nord, 90°=Est) entre 2 points monde."""
         import math
@@ -8967,92 +6968,6 @@ class TriangleViewerManual(tk.Tk):
         ang = math.degrees(math.atan2(dx, dy)) % 360.0
         return float(ang)
 
-
-    def _clock_arc_draw_last(self, cx: float, cy: float, R: float):
-        """Dessine la dernière mesure persistée (si présente) dans l'overlay."""
-        last = getattr(self, "_clock_arc_last", None)
-        if not isinstance(last, dict):
-            return
-        if not getattr(self, "canvas", None):
-            return
-
-        az1 = float(last.get("az1"))
-        az2 = float(last.get("az2"))
-        start_deg_tk, extent_deg_tk, angle_deg, mid_az = self._clock_arc_compute_tk_arc(az1, az2)
-
-        # 2 rayons (centre->az1 et centre->az2)
-        x1, y1 = self._clock_point_on_circle(az1, R)
-        x2, y2 = self._clock_point_on_circle(az2, R)
-        self.canvas.create_line(
-            cx, cy, x1, y1, width=2, dash=(4, 3),
-            fill="#202020", tags=("clock_overlay", "clock_arc_persist")
-        )
-        self.canvas.create_line(
-            cx, cy, x2, y2, width=2, dash=(4, 3),
-            fill="#202020", tags=("clock_overlay", "clock_arc_persist")
-        )
-
-        # Arc
-        bbox = (cx - R, cy - R, cx + R, cy + R)
-        self.canvas.create_arc(
-            *bbox,
-            start=float(start_deg_tk),
-            extent=float(extent_deg_tk),
-            style="arc",
-            width=2,
-            outline="#202020",
-            tags=("clock_overlay", "clock_arc_persist"),
-        )
-
-        # Texte angle
-        tx, ty = self._clock_point_on_circle(mid_az, R * 1.08)
-        self.canvas.create_text(
-            tx, ty,
-            text=f"{float(angle_deg):0.0f}°",
-            anchor="center",
-            fill="#202020",
-            font=("Arial", 12, "bold"),
-            tags=("clock_overlay", "clock_arc_persist"),
-        )
-
-    def _clock_arc_compute_angle_deg(self, az1: float, az2: float) -> float:
-        """Retourne le plus petit angle (0..180) entre deux azimuts."""
-        d = (float(az2) - float(az1)) % 360.0
-        if d > 180.0:
-            d = 360.0 - d
-        return float(d)
-
-    def _clock_arc_compute_tk_arc(self, az1: float, az2: float):
-        """Prépare les paramètres Tk (start/extent) pour dessiner le plus petit arc entre az1 et az2.
-
-        Retourne (start_deg_tk, extent_deg_tk, angle_deg, mid_az).
-        - start/extent sont dans le repère Tk (0° à 3h, CCW+)
-        - mid_az est l'azimut (0°=Nord, horaire) au milieu de l'arc choisi, utile pour placer le label.
-        """
-        a1 = float(az1) % 360.0
-        a2 = float(az2) % 360.0
-
-        # delta horaire (cw) de a1 vers a2
-        d_cw = (a2 - a1) % 360.0
-        d_ccw = (a1 - a2) % 360.0  # delta si on va anti-horaire
-
-        # Choisir le plus petit arc
-        if d_cw <= d_ccw:
-            # arc horaire de taille d_cw : Tk extent doit être négatif
-            angle = d_cw
-            start_az = a1
-            mid_az = (a1 + angle * 0.5) % 360.0
-            start_tk = (90.0 - start_az) % 360.0
-            extent_tk = -angle
-        else:
-            # arc anti-horaire de taille d_ccw : Tk extent positif
-            angle = d_ccw
-            start_az = a1
-            mid_az = (a1 - angle * 0.5) % 360.0
-            start_tk = (90.0 - start_az) % 360.0
-            extent_tk = angle
-
-        return (float(start_tk), float(extent_tk), float(angle), float(mid_az))
 
     def _clock_point_on_circle(self, az_deg: float, radius: float):
         """Point écran (sx,sy) à un azimut donné autour du centre du compas."""
@@ -9345,6 +7260,19 @@ class TriangleViewerManual(tk.Tk):
             if not confirm:
                 return
 
+        # 0) TOPO : capturer les elementId Core AVANT toute modif de _last_drawn
+        scen = self._get_active_scenario()
+        world = getattr(scen, "topoWorld", None) if scen is not None else None
+        removed_element_ids = []
+        if world is not None:
+            # tids du groupe (dans l'ordre inverse, comme le reste du code)
+            _tids = sorted({nd["tid"] for nd in g["nodes"] if "tid" in nd}, reverse=True)
+            for tid in _tids:
+                if 0 <= tid < len(self._last_drawn):
+                    eid = self._last_drawn[tid].get("topoElementId")
+                    if eid:
+                        removed_element_ids.append(str(eid))
+
         # 1) Réinsertion listbox (avant de modifier _last_drawn)
         removed_tids = sorted({nd["tid"] for nd in g["nodes"] if "tid" in nd}, reverse=True)
         removed_set  = set(removed_tids)
@@ -9363,6 +7291,10 @@ class TriangleViewerManual(tk.Tk):
         # IMPORTANT : on remplace le contenu de la liste en place
         # pour ne pas casser la référence scen.last_drawn.
         self._last_drawn[:] = keep
+
+        # 2bis) TOPO : supprimer les éléments Core + purge des attaches + rebuild
+        if world is not None and removed_element_ids:
+            world.removeElementsAndRebuild(list(removed_element_ids))
 
         # 3) Supprimer le groupe et remapper les autres
         if gid in self.groups:
@@ -9708,6 +7640,9 @@ class TriangleViewerManual(tk.Tk):
             # Toggle du flag 'mirrored' pour l'affichage "S"
             self._last_drawn[tid]["mirrored"] = not self._last_drawn[tid].get("mirrored", False)
 
+        # Alimente la topo Core (poses éléments) depuis l’état graphique legacy (après flip)
+        self._sync_group_elements_pose_to_core(gid)
+
         # BBox groupe puis redraw
         self._recompute_group_bbox(gid)
         self._redraw_from(self._last_drawn)
@@ -9738,7 +7673,7 @@ class TriangleViewerManual(tk.Tk):
                 for k in ("O","B","L"):
                     P[k] = np.array([P[k][0] + d[0], P[k][1] + d[1]], dtype=float)
         # Sync immédiate : Core = vérité persistée (pose monde du groupe)
-        self._sync_group_pose_to_core(gid)
+        self._sync_group_elements_pose_to_core(gid)
         self._recompute_group_bbox(gid)
 
     def _on_canvas_left_down(self, event):
@@ -10003,94 +7938,6 @@ class TriangleViewerManual(tk.Tk):
             # clic ailleurs : pan au clic gauche
             self._on_pan_start(event)
 
-    def _record_group_after_last_snap(self, idx_m: int, vkey_m: str, idx_t: int, vkey_t: str):
-        """Enregistre le chaînage entre deux **groupes** après un snap.
-
-        Contrat (groups/nodes):
-          - edge_in  : arête partagée avec le précédent (None si tête)
-          - edge_out : arête partagée avec le suivant   (None si queue)
-
-        IMPORTANT:
-          - Le snap assisté calcule une paire d'arêtes (mobile/cible) et la mémorise dans self._edge_choice.
-          - vkey_m/vkey_t (sommet cliqué) n'est **pas** un identifiant stable de jonction: on ne l'utilise plus ici.
-        """
-        tri_m = self._last_drawn[idx_m]
-        tri_t = self._last_drawn[idx_t]
-        gid_m = tri_m.get("group_id")
-        gid_t = tri_t.get("group_id")
-
-        # Rien à faire si mêmes groupes (collage interne non géré ici)
-        if not gid_m or not gid_t or gid_m == gid_t:
-            return
-
-        # --- récupérer la paire d'arêtes choisie par l'assist ---
-        choice = getattr(self, "_edge_choice", None)
-        if not choice or len(choice) < 5:
-            raise RuntimeError("Snap sans _edge_choice (invariant cassé : assist/record)")
-        (cm_idx_m, _cm_vkey_m, cm_idx_t, _cm_vkey_t, epts) = choice
-        if int(cm_idx_m) != int(idx_m) or int(cm_idx_t) != int(idx_t):
-            raise RuntimeError("Incohérence _edge_choice vs indices record (invariant cassé)")
-        (mA, mB, tA, tB) = epts
-
-        def _almost_eq(a, b, eps=EPS_WORLD):
-            return abs(float(a[0]) - float(b[0])) <= eps and abs(float(a[1]) - float(b[1])) <= eps
-
-        def _edge_name_from_world_pts(P, A, B):
-            pairs = {
-                "OB": (P["O"], P["B"]),
-                "BL": (P["B"], P["L"]),
-                "LO": (P["L"], P["O"]),
-            }
-            for name, (p1, p2) in pairs.items():
-                if (_almost_eq(p1, A) and _almost_eq(p2, B)) or (_almost_eq(p1, B) and _almost_eq(p2, A)):
-                    return name
-            return None
-
-        edge_m = _edge_name_from_world_pts(tri_m["pts"], mA, mB)
-        edge_t = _edge_name_from_world_pts(tri_t["pts"], tA, tB)
-        if not edge_m or not edge_t:
-            raise RuntimeError(f"Impossible de déterminer les arêtes (mob={edge_m}, tgt={edge_t}) depuis _edge_choice")
-
-
-        nodes_m = self.groups[gid_m]["nodes"]
-        nodes_t = self.groups[gid_t]["nodes"]
-        head_m, tail_m = nodes_m[0], nodes_m[-1]
-        head_t, tail_t = nodes_t[0], nodes_t[-1]
-
-        # Cas A : queue(m) -> tête(t)
-        if tri_m["group_pos"] == len(nodes_m) - 1 and tri_t["group_pos"] == 0:
-            tail_m["edge_out"] = edge_m
-            head_t["edge_in"]  = edge_t
-
-            # concat t à la suite de m
-            nodes_m.extend(nodes_t)
-            for i, nd in enumerate(nodes_m):
-                tid = nd["tid"]
-                self._last_drawn[tid]["group_id"]  = gid_m
-                self._last_drawn[tid]["group_pos"] = i
-            # supprimer l'ancien groupe t
-            del self.groups[gid_t]
-            self._recompute_group_bbox(gid_m)
-            return
-
-        # Cas B : tête(m) -> queue(t)
-        if tri_m["group_pos"] == 0 and tri_t["group_pos"] == len(nodes_t) - 1:
-            tail_t["edge_out"] = edge_t
-            head_m["edge_in"]  = edge_m
-
-            # concat m après t
-            nodes_t.extend(nodes_m)
-            for i, nd in enumerate(nodes_t):
-                tid = nd["tid"]
-                self._last_drawn[tid]["group_id"]  = gid_t
-                self._last_drawn[tid]["group_pos"] = i
-            del self.groups[gid_m]
-            self._recompute_group_bbox(gid_t)
-            return
-
-        # Autres combinaisons (tête↔tête, queue↔queue, insertion interne) non gérées ici.
-        return
-
     def _on_canvas_left_move(self, event):
         # Horloge : drag en cours -> on déplace le centre et on redessine l’overlay
         if getattr(self, "_clock_dragging", False):
@@ -10288,83 +8135,7 @@ class TriangleViewerManual(tk.Tk):
             return
 
         mode = self._sel.get("mode")
-        if mode == "vertex":
-            idx = self._sel["idx"]
-            vkey = self._sel["vkey"]
-
-            # On a nécessairement choisi la meilleure arête dans _update_edge_highlights
-            choice = getattr(self, "_edge_choice", None)
-
-            # Nettoie correctement l'aide visuelle (liste d'ids + choix)
-            self._clear_edge_highlights()
-
-            if not choice or choice[0] != idx or choice[1] != vkey:
-                # rien à coller -> simple fin de drag
-                self._sel = None
-                self._redraw_from(self._last_drawn)
-                return
-
-            # si CTRL est enfoncé AU RELÂCHEMENT, on ne colle pas.
-            # (On garde l'aide visuelle pendant le drag si CTRL a été pressé après le clic.)
-
-            # DEBUG : état du snap au relâchement
-            ctrl_state = bool(getattr(event, "state", 0) & 0x0004)
-            self._dbgSnap(
-                f"[snap] release(vertex) ctrl_down={getattr(self,'_ctrl_down',False)} ctrl_state={ctrl_state} choice={'OK' if choice else 'None'}"
-            )
-
-            if getattr(self, "_ctrl_down", False):
-                self._sel = None
-                self._reset_assist()
-                self._redraw_from(self._last_drawn)
-                self.status.config(text="Dépôt sans collage (CTRL).")
-                return
-
-
-            # Déroulé du collage (rotation+translation) sur le TRIANGLE seul
-            (_, _, idx_t, vkey_t, (m_a, m_b, t_a, t_b)) = choice
-            tri_m = self._last_drawn[idx]
-            Pm = tri_m["pts"]
-
-            A = np.array(m_a, dtype=float)  # mobile: sommet saisi
-            B = np.array(m_b, dtype=float)  # mobile: voisin qui définit l'arête
-            U = np.array(t_a, dtype=float)  # cible: point où coller
-            V = np.array(t_b, dtype=float)  # cible: deuxième point de l'arête
-
-            # azimuts via helper unifié
-            ang_m = self._ang_of_vec(B[0] - A[0], B[1] - A[1])
-            ang_t = self._ang_of_vec(V[0] - U[0], V[1] - U[1])
-            dtheta = ang_t - ang_m
-
-            R = np.array([[np.cos(dtheta), -np.sin(dtheta)],
-                        [np.sin(dtheta),  np.cos(dtheta)]], dtype=float)
-
-            new_pts = {}
-            for k in ("O", "B", "L"):
-                p = np.array(Pm[k], dtype=float)
-                p_rot = A + (R @ (p - A))
-                new_pts[k] = p_rot
-
-            # 2) translation pour amener A -> U
-            delta = U - new_pts[vkey]
-            for k in ("O", "B", "L"):
-                new_pts[k] = new_pts[k] + delta
-
-            # Applique la géométrie
-            for k in ("O", "B", "L"):
-                Pm[k][0] = float(new_pts[k][0])
-                Pm[k][1] = float(new_pts[k][1])
-
-            # Enregistre/étend les groupes (métadonnées & invariants)
-            self._record_group_after_last_snap(idx, vkey, idx_t, vkey_t)
-            # fin d'opération : on purge les aides et la sélection
-            self._sel = None
-            self._reset_assist()
-            self._redraw_from(self._last_drawn)
-            self.status.config(text="Triangles collés (sommets et arêtes alignés).")
-            return
-
-        elif mode == "move_group":
+        if mode == "move_group":
             # Collage du GROUPE quand on l'a déplacé PAR SOMMET (ancre=vertex)
             # et que l'aide de collage était active (pas en déconnexion).
             anchor = self._sel.get("anchor")
@@ -10388,8 +8159,10 @@ class TriangleViewerManual(tk.Tk):
                 and choice[0] == anchor.get("tid")
                 and choice[1] == anchor.get("vkey")):
 
-                # Déballage du choix d'arête: (mob_idx,vkey_m,tgt_idx,vkey_t,(m_a,m_b,t_a,t_b))
-                (_, _, idx_t, vkey_t, (m_a, m_b, t_a, t_b)) = choice
+                # Déballage du choix d'arête: (mob_idx,vkey_m,tgt_idx,vkey_t,epts)
+                # epts est un objet séquence (mA,mB,tA,tB) enrichi pendant l'assist
+                (_, _, idx_t, vkey_t, epts) = choice
+                (m_a, m_b, t_a, t_b) = epts
 
                 A = np.array(m_a, dtype=float)  # sommet mobile saisi (dans le groupe)
                 B = np.array(m_b, dtype=float)  # voisin côté mobile (définit l'arête)
@@ -10407,134 +8180,6 @@ class TriangleViewerManual(tk.Tk):
                 # (après rotation autour de A, A reste à A)
                 delta = U - A
 
-                # ==========================================================
-                # Core EDGE↔EDGE (release-only)
-                # - Tk demande (R,T) absolu au Core
-                # - (F10) compare avec le calcul Tk (à partir de R/delta + pose actuelle)
-                # - Tk set_group_pose()
-                # - Tk apply_attachments([edge-edge])
-                # ==========================================================
-                scen = self._get_active_scenario()
-                world = getattr(scen, "topoWorld", None) if scen is not None else None
-
-                def _edge_code_to_index(code: str) -> int | None:
-                    code = str(code or "").upper()
-                    if code == "OB": return 0
-                    if code == "BL": return 1
-                    if code == "LO": return 2
-                    return None
-
-                def _edge_start_vkey(code: str) -> str | None:
-                    code = str(code or "").upper()
-                    if code == "OB": return "O"
-                    if code == "BL": return "B"
-                    if code == "LO": return "L"
-                    return None
-
-                core_R_abs = None
-                core_T_abs = None
-                new_core_gid = None
-
-                # On ne fait le Core que si on a bien 2 groupes distincts et les IDs topo.
-                tgt_gid = self._last_drawn[idx_t].get("group_id", None)
-                mob_gid = self._sel.get("gid")
-                if (world is not None and mob_gid is not None and tgt_gid is not None and tgt_gid != mob_gid):
-                    g_ui_m = self.groups.get(mob_gid)
-                    g_ui_t = self.groups.get(tgt_gid)
-                    core_gid_m = g_ui_m.get("topoGroupId") if g_ui_m else None
-                    core_gid_t = g_ui_t.get("topoGroupId") if g_ui_t else None
-
-                    tri_m = self._last_drawn[choice[0]]
-                    tri_t = self._last_drawn[idx_t]
-                    element_id_m = tri_m.get("topoElementId", None)
-                    element_id_t = tri_t.get("topoElementId", None)
-
-                    if core_gid_m and core_gid_t and element_id_m and element_id_t:
-                        # Déduire les arêtes (codes) depuis les 2 sommets utilisés (A,B) et (U,V)
-                        def _vkey_from_point(P, pt, eps=EPS_WORLD):
-                            x, y = float(pt[0]), float(pt[1])
-                            for kk in ("O","B","L"):
-                                if abs(float(P[kk][0]) - x) <= eps and abs(float(P[kk][1]) - y) <= eps:
-                                    return kk
-                            return None
-
-                        def _edge_from_vkeys(a, b):
-                            if not a or not b or a == b:
-                                return None
-                            s = {a, b}
-                            if s == {"O","B"}: return "OB"
-                            if s == {"B","L"}: return "BL"
-                            if s == {"L","O"}: return "LO"
-                            return None
-
-                        Pm_now = self._last_drawn[choice[0]]["pts"]
-                        Pt_now = self._last_drawn[idx_t]["pts"]
-
-                        vkey_A = _vkey_from_point(Pm_now, m_a)
-                        vkey_B = _vkey_from_point(Pm_now, m_b)
-                        vkey_U = _vkey_from_point(Pt_now, t_a)
-                        vkey_V = _vkey_from_point(Pt_now, t_b)
-
-                        edge_m_code = _edge_from_vkeys(vkey_A, vkey_B)
-                        edge_t_code = _edge_from_vkeys(vkey_U, vkey_V)
-
-                        em = _edge_code_to_index(edge_m_code)
-                        et = _edge_code_to_index(edge_t_code)
-
-                        if em is not None and et is not None:
-                            # mapping pour le Core (dépend de l'orientation des edges dans le modèle)
-                            # mapping = direct si (A est start de l'edge_m) == (U est start de l'edge_t)
-                            start_m = _edge_start_vkey(edge_m_code)
-                            start_t = _edge_start_vkey(edge_t_code)
-                            mob_is_start = (vkey_A == start_m)
-                            tgt_is_start = (vkey_U == start_t)
-                            mapping = "direct" if (mob_is_start == tgt_is_start) else "reverse"
-
-                            # 1) Pose absolue Core (Monde <- GroupeMobile)
-                            (core_R_abs, core_T_abs) = world.compute_pose_edge_to_edge(
-                                core_gid_m, element_id_m, em,
-                                core_gid_t, element_id_t, et,
-                                mapping=mapping
-                            )
-
-                            # 2) (F10) comparaison Tk vs Core
-                            if getattr(self, "_debug_snap_assist", False):
-                                pose_old = world.get_group_pose(core_gid_m)
-                                if pose_old is not None:
-                                    # WorldTransform (Rw, offset) depuis Tk: rotation autour A + translation delta
-                                    # offset = (A + delta) - R@A = U - R@A (car delta = U-A)
-                                    offset = (A + delta) - (R @ A)
-                                    tk_R_abs = (R @ pose_old.R)
-                                    tk_T_abs = (R @ pose_old.T) + offset
-                                    th_tk = float(math.atan2(tk_R_abs[1,0], tk_R_abs[0,0]))
-                                    th_c  = float(math.atan2(core_R_abs[1,0], core_R_abs[0,0]))
-                                    dth = th_c - th_tk
-                                    dT = np.array(core_T_abs, float) - np.array(tk_T_abs, float)
-                                    self._dbgSnap(
-                                        "[POSE-CHECK][EDGE-EDGE]\n"
-                                        f"  Tk   : theta={th_tk:+.6f}  T=({tk_T_abs[0]:+.6f},{tk_T_abs[1]:+.6f})\n"
-                                        f"  Core : theta={th_c:+.6f}  T=({core_T_abs[0]:+.6f},{core_T_abs[1]:+.6f})\n"
-                                        f"  Δ    : dTheta={dth:+.6e}  dT=({dT[0]:+.6e},{dT[1]:+.6e})  mapping={mapping}  edges=({edge_m_code},{edge_t_code})"
-                                    )
-
-                            # 3) Appliquer la pose Core (vérité persistée)
-                            world.set_group_pose(core_gid_m, R=core_R_abs, T=core_T_abs)
-
-                            # 4) Attachment edge-edge (topologie)
-                            att = TopologyAttachment(
-                                attachment_id=world.new_attachment_id(),
-                                kind="edge-edge",
-                                feature_a=TopologyFeatureRef(TopologyFeatureType.EDGE, element_id_m, em),
-                                feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE, element_id_t, et),
-                                params={"mapping": mapping},
-                                source="manual",
-                            )
-                            new_core_gid = world.apply_attachments([att])
-
-                            # Associer le gid Core résultant au groupe UI survivant (mob_gid)
-                            if new_core_gid:
-                                self.groups[mob_gid]["topoGroupId"] = new_core_gid
-
                 # Appliquer (rotation autour de A) + translation à tous
                 gid = self._sel.get("gid")
                 g = self.groups.get(gid)
@@ -10549,6 +8194,108 @@ class TriangleViewerManual(tk.Tk):
                                 p_fin = p_rot + delta
                                 P[k][0] = float(p_fin[0])
                                 P[k][1] = float(p_fin[1])
+
+                # ------------------------------------------------------------
+                # Topologie Core (intention) : edge-edge OU vertex-edge
+                # -> décision déjà prise pendant l'assist (epts.kind / epts.t / labels / edges)
+                # -> pose Core = sync depuis Tk (pas de compute_pose_* ici)
+                # ------------------------------------------------------------
+                new_core_gid = None
+                scen = self._get_active_scenario()
+                if scen is not None:
+                    self._ensureScenarioTopo(scen)
+                world = getattr(scen, "topoWorld", None) if scen is not None else None
+
+                tgt_gid = self._last_drawn[idx_t].get("group_id", None)
+                mob_gid = self._sel.get("gid")
+                if world is not None and mob_gid is not None and tgt_gid is not None and tgt_gid != mob_gid:
+                    tri_m = self._last_drawn[int(anchor.get("tid"))]
+                    tri_t = self._last_drawn[int(idx_t)]
+                    element_id_m = tri_m.get("topoElementId", None)
+                    element_id_t = tri_t.get("topoElementId", None)
+
+                    if element_id_m and element_id_t:
+                        # La pose Core doit refléter ce que Tk a effectivement appliqué
+                        self._sync_group_elements_pose_to_core(mob_gid)
+
+                        edge_code_to_index = {"OB": 0, "BL": 1, "LO": 2}
+                        vkey_to_index = {"O": 0, "B": 1, "L": 2}
+
+                        kind = str(getattr(epts, "kind", "") or "").strip().lower()
+                        if kind not in ("edge-edge", "vertex-edge"):
+                            kind = "edge-edge"  # compat
+
+                        attachments_to_apply: list[TopologyAttachment] = []
+
+                        if kind == "edge-edge":
+                            em = edge_code_to_index.get(str(getattr(epts, "src_edge", "") or "").upper(), None)
+                            et = edge_code_to_index.get(str(getattr(epts, "dst_edge", "") or "").upper(), None)
+                            if em is not None and et is not None:
+                                # mapping edge-edge : décision TOPOL (vkey aux endpoints), pas géométrie / labels
+                                sA = getattr(epts, "src_vkey_at_mA", None)
+                                sB = getattr(epts, "src_vkey_at_mB", None)
+                                dA = getattr(epts, "dst_vkey_at_tA", None)
+                                dB = getattr(epts, "dst_vkey_at_tB", None)
+
+                                if sA and sB and dA and dB:
+                                    if (sA == dA) and (sB == dB):
+                                        mapping = "direct"
+                                    elif (sA == dB) and (sB == dA):
+                                        mapping = "reverse"
+
+                                attachments_to_apply.append(
+                                    TopologyAttachment(
+                                        attachment_id=world.new_attachment_id(),
+                                        kind="edge-edge",
+                                        feature_a=TopologyFeatureRef(TopologyFeatureType.EDGE, element_id_m, int(em)),
+                                        feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE, element_id_t, int(et)),
+                                        params={"mapping": mapping},
+                                        source="manual",
+                                    )
+                                )
+
+                        else:
+                            # vertex-edge : sommet (anchor.vkey) -> arête cible (epts.dst_edge) avec t mémorisé
+                            vm = vkey_to_index.get(str(anchor.get("vkey")), None)
+                            et = edge_code_to_index.get(str(getattr(epts, "dst_edge", "") or "").upper(), None)
+                            t_param = getattr(epts, "t", None)
+                            if vm is not None and et is not None:
+                                if t_param is None:
+                                    raise RuntimeError("vertex-edge choisi pendant l’assist mais t absent dans _edge_choice")
+                                attachments_to_apply.append(
+                                    TopologyAttachment(
+                                        attachment_id=world.new_attachment_id(),
+                                        kind="vertex-edge",
+                                        feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, element_id_m, int(vm)),
+                                        feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE,   element_id_t, int(et)),
+                                        params={"t": float(t_param)},
+                                        source="manual",
+                                    )
+                                )
+
+                                # --- 2e contrainte (décision Tk) : vertex-vertex ---
+                                # Règle simple : en vertex-edge, on colle TOUJOURS mA ↔ tA
+                                # - mA = vertex manipulé (anchor.vkey) -> vm
+                                # - tA = endpoint cible choisi côté edge (dst_vkey_at_tA) -> vtA
+                                dA = getattr(epts, "dst_vkey_at_tA", None)
+                                if dA is not None:
+                                    vtA = vkey_to_index.get(str(dA), None)
+                                    if vtA is not None:
+                                        attachments_to_apply.append(
+                                            TopologyAttachment(
+                                                attachment_id=world.new_attachment_id(),
+                                                kind="vertex-vertex",
+                                                feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, element_id_m, int(vm)),
+                                                feature_b=TopologyFeatureRef(TopologyFeatureType.VERTEX, element_id_t, int(vtA)),
+                                                params={},
+                                                source="manual",
+                                            )
+                                        )
+                        if attachments_to_apply:
+                            new_core_gid = world.apply_attachments(attachments_to_apply)
+
+                        if new_core_gid:
+                            self.groups[mob_gid]["topoGroupId"] = new_core_gid
 
                 # ====== FUSION DE GROUPE APRÈS COLLAGE (groupe ↔ groupe uniquement) ======
                 tgt_gid = self._last_drawn[idx_t].get("group_id", None)
@@ -10659,6 +8406,10 @@ class TriangleViewerManual(tk.Tk):
                                 if 0 <= tid2 < len(self._last_drawn):
                                     self._last_drawn[tid2]["group_id"]  = mob_gid
                                     self._last_drawn[tid2]["group_pos"] = i
+                                    if new_core_gid:
+                                        self._last_drawn[tid2]["topoGroupId"] = new_core_gid
+                            if new_core_gid:
+                                self.groups[mob_gid]["topoGroupId"] = new_core_gid
                             self._recompute_group_bbox(mob_gid)
                             self.status.config(text=f"Groupes fusionnés avec lien: #{tgt_gid} → #{mob_gid}.")
                     else:
@@ -10666,7 +8417,10 @@ class TriangleViewerManual(tk.Tk):
                         self.status.config(text=f"Groupe collé (même groupe #{mob_gid}).")
                 # ====== /FUSION ======
 
-
+            # Sync Core : pose par élément (pas de pose groupe)
+            gid_sync = self._sel.get("gid") if isinstance(self._sel, dict) else None
+            if gid_sync is not None:
+                self._sync_group_elements_pose_to_core(int(gid_sync))
 
             # Fin (pas de snap : simple dépôt à la dernière position)
             # AUTO: persister position/rotation globale (carte, ordre)
@@ -10677,24 +8431,24 @@ class TriangleViewerManual(tk.Tk):
             self._redraw_from(self._last_drawn)
             return
 
-        elif mode == "rotate":
-            # AUTO: persister position/rotation globale (carte, ordre)
-            if isinstance(self._sel, dict) and self._sel.get("auto_geom") and self.auto_geom_state is not None:
-                self._simulationPersistCurrentAutoPlacement(save=True)
-            self._sel = None
-            self._reset_assist()
-            self.status.config(text="Rotation validée.")
-            self._redraw_from(self._last_drawn)
-            return
 
-        # Autres modes : on nettoie juste
-        # AUTO rotate_group : persister la rotation globale (carte, ordre)
+        # NOTE: rotate_group : commit la pose au relâchement (pas pendant le drag)
+        if mode == "rotate_group":
+            gid_sync = self._sel.get("gid") if isinstance(self._sel, dict) else None
+            if gid_sync is not None:
+                # NOTE: scénarios auto utilisent auto_geom_state (transform global), on ne force pas la pose groupe.
+                # Il faudra revor ce point quadn on fait l'implémentation du mode auto
+                if not self._sel.get("auto_geom"):
+                    self._sync_group_elements_pose_to_core(int(gid_sync))
+
         if isinstance(self._sel, dict) and self._sel.get("mode") == "rotate_group" and self._sel.get("auto_geom") and self.auto_geom_state is not None:
             self._simulationPersistCurrentAutoPlacement(save=True)
+        
+        # Autres modes : on nettoie juste 
         self._sel = None
         self._reset_assist()
         self._redraw_from(self._last_drawn)
-
+        return
 
     def _on_mousewheel(self, event):
         # Normalize wheel delta across platforms
