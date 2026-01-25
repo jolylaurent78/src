@@ -141,9 +141,7 @@ class ScenarioAssemblage:
 # - La règle “plus récent gagne” utilise createdOrder (int monotone interne),
 #   et PAS l’ordre lexicographique des IDs.
 # - t est fourni par l’UI en référentiel monde (km).
-# - fusionDistanceKm (km) pilote la fusion de points sur une arête :
-#       abs(t1 - t2) * edgeLengthKm <= fusionDistanceKm  => fusion
-#   et on conserve le t du point canonique (référence contour).
+# - Les points internes sont purement conceptuels (pas de points physiques sur les arêtes).
 #
 # Couverture V1 :
 # - vertex↔vertex
@@ -285,26 +283,6 @@ class TopologyVertex:
         self.node_type = str(node_type)
 
 
-class TopologyEdgePoint:
-    """Point repéré sur une arête paramétrique (Option B).
-
-    Rôle :
-    - Représenter un point 'sur l’arête' via un paramètre t ∈ [0,1] et un node atomique associé.
-    - Servir à la construction du contour (boundary) et à la validation des inserts (tri par t).
-
-    Ne fait PAS :
-    - Ne contient aucune géométrie : t est un paramètre adimensionnel, référencé monde côté UI.
-    - Ne fait aucune canonisation : TopologyWorld résout node atomique -> node canonique.
-
-    V1 :
-    - Les points (0.0 et 1.0) existent toujours (extrémités).
-    - Les insertions respectent la politique de fusion en km.
-    """
-    def __init__(self, t: float, node_id: str):
-        self.t = float(t)
-        self.node_id = str(node_id)
-
-
 class TopologyCoverageInterval:
     """Intervalle de couverture sur une arête (portion interne), exprimé en t.
 
@@ -327,21 +305,19 @@ class TopologyCoverageInterval:
 
 
 class TopologyEdge:
-    """Arête paramétrique d’un élément (Option B) : points internes + coverages.
+    """Arête paramétrique d’un élément (Option A) : endpoints + coverages.
 
     Rôle :
-    - Représenter une arête orientée (v_start -> v_end) avec :
-      - une liste de pointsOnEdge triés par t (incluant les extrémités),
-      - des coverages (intervalles internes) pour le calcul du boundary.
+    - Représenter une arête orientée (v_start -> v_end) avec des endpoints uniquement.
     - Fournir des clés de matching (edgeLabelKey) à partir des labels de sommets.
-    - Appliquer la politique de fusion des points sur l’arête (sélection du candidat).
+    - Porter des coverages (intervalles internes) pour le calcul du boundary.
 
     Ne fait PAS :
     - Ne fait pas de DSU : la canonisation des nodes est dans TopologyWorld.
     - Ne dépend pas du canvas Tk ; aucune logique d’affichage.
 
     V1 :
-    - Implémente la recherche de candidat de fusion à partir de fusionDistanceKm (km) et edgeLengthKm.
+    - Les split points sont strictement conceptuels (pas de points physiques).
     - Le calcul complet du boundary sera implémenté ultérieurement.
     """
     def __init__(self, element_id: str, edge_index: int, v_start: TopologyVertex, v_end: TopologyVertex,
@@ -352,10 +328,6 @@ class TopologyEdge:
         self.v_end = v_end
         self.edge_length_km = float(edge_length_km)
 
-        self.points_on_edge: list[TopologyEdgePoint] = [
-            TopologyEdgePoint(0.0, v_start.node_id),
-            TopologyEdgePoint(1.0, v_end.node_id),
-        ]
         self.coverages: list[TopologyCoverageInterval] = []
 
     def edge_id(self) -> str:
@@ -368,30 +340,6 @@ class TopologyEdge:
 
     def labels_display(self) -> str:
         return f"{self.v_start.label}–{self.v_end.label}"
-
-    def find_fusion_candidate_index(self, t_new: float, fusion_distance_km: float, node_rank_fn) -> int | None:
-        if self.edge_length_km <= 0:
-            return None
-        candidates = []
-        for i, p in enumerate(self.points_on_edge):
-            delta_km = abs(float(t_new) - float(p.t)) * self.edge_length_km
-            if delta_km <= float(fusion_distance_km):
-                candidates.append(i)
-        if not candidates:
-            return None
-        best_i = candidates[0]
-        best_key = node_rank_fn(self.points_on_edge[best_i].node_id)
-        for i in candidates[1:]:
-            key_i = node_rank_fn(self.points_on_edge[i].node_id)
-            if key_i > best_key:
-                best_key = key_i
-                best_i = i
-        return best_i
-
-    def insert_point_sorted(self, t_new: float, node_id: str):
-        self.points_on_edge.append(TopologyEdgePoint(float(t_new), str(node_id)))
-        self.points_on_edge.sort(key=lambda p: p.t)
-
 
 class TopologyPose2D:
     """Pose 2D d'un élément dans le référentiel monde (rotation + translation).
@@ -682,9 +630,7 @@ class TopologyWorld:
     - Implémenter les DSU non destructifs :
       - nodes : canonisation métier (L > B > O, puis plus récent ID max),
       - groupes : canonisation par plus récent (ID max).
-    - Appliquer la politique de fusion des points sur une arête en km :
-      abs(t1 - t2) * edgeLengthKm <= fusionDistanceKm  => fusion
-      et conserver le t du point canonique (référence contour).
+    - Gérer les attachments et la canonisation DSU (sans points physiques sur les arêtes).
     - Fournir un export TopoDump XML manuel (par scénario), lisible et diffable.
 
     Ne fait PAS :
@@ -729,7 +675,7 @@ class TopologyWorld:
     # ------------------------------------------------------------------
     # Topologie conceptuelle (MVP)
     # - concept node = find_node(canon)
-    # - position concept node = moyenne des occurrences monde (points_on_edge)
+    # - position concept node = moyenne des occurrences monde (conceptuelles)
     # - concept edge = segment entre 2 concept nodes consécutifs sur une arête
     # ------------------------------------------------------------------
     def invalidateConceptCache(self, group_id: str | None = None) -> None:
@@ -786,17 +732,24 @@ class TopologyWorld:
                 out.append(el)
         return out
 
-    def _buildConceptCacheForGroup(self, group_id: str) -> None:
-        gid = self.find_group(str(group_id))
-        c = self._concept_cache(gid)
+    def assertNoPhysicalSplitPoints(self) -> None:
+        for el in self.elements.values():
+            for edge in el.edges:
+                if hasattr(edge, "points_on_edge"):
+                    raise RuntimeError(
+                        f"[A1] Physical edge split points are forbidden: elementId={el.element_id} edgeId={edge.edge_id()}"
+                    )
 
-        nodes: dict[str, ConceptNodeInfo] = {}
-        edges: dict[tuple[str, str], ConceptEdgeInfo] = {}
+    def buildDerivedSplitPointsForPhysEdge(self, element_id: str, edge_index: int,
+                                           eps_t: float = 1e-9) -> list[dict]:
+        edge = self.get_edge(element_id, edge_index)
+        start_cn = self.find_node(str(edge.v_start.node_id))
+        end_cn = self.find_node(str(edge.v_end.node_id))
+        dp: list[dict] = [
+            {"t": 0.0, "nodeCanon": start_cn, "source": "endpoint"},
+            {"t": 1.0, "nodeCanon": end_cn, "source": "endpoint"},
+        ]
 
-        eps_t = float(getattr(self, "concept_split_epsilon_t", 1e-6))
-        group_elements = [el for el in self._iter_group_elements(gid)]
-        group_element_ids = {str(el.element_id) for el in group_elements}
-        edge_att_map: dict[tuple[str, int], list[tuple[float, str, str]]] = {}
         for att in self.attachments.values():
             if str(att.kind) != "vertex-edge":
                 continue
@@ -806,84 +759,99 @@ class TopologyWorld:
                 vRef, eRef = att.feature_b, att.feature_a
             else:
                 continue
-            if str(eRef.element_id) not in group_element_ids:
+            if str(eRef.element_id) != str(element_id) or int(eRef.index) != int(edge_index):
                 continue
-            t = att.params.get("t", None)
-            if t is None:
-                t = vRef.t if vRef.t is not None else eRef.t
-            if t is None:
+            t_val = att.params.get("t", None)
+            if t_val is None:
+                continue
+            t_val = float(t_val)
+            if abs(t_val) <= eps_t or abs(t_val - 1.0) <= eps_t:
+                continue
+            if t_val < 0.0 + eps_t or t_val > 1.0 - eps_t:
                 continue
             v = self.get_vertex(vRef.element_id, vRef.index)
             node_canon = self.find_node(v.node_id)
-            edge_key = (str(eRef.element_id), int(eRef.index))
-            edge_att_map.setdefault(edge_key, []).append(
-                (float(t), node_canon, f"vertex-edge:{att.attachment_id}")
-            )
+            if node_canon == start_cn or node_canon == end_cn:
+                continue
+            dp.append({
+                "t": t_val,
+                "nodeCanon": node_canon,
+                "source": "vertex-edge",
+                "attachmentId": att.attachment_id,
+            })
 
-        for el in group_elements:
+        dp.sort(key=lambda p: float(p.get("t", 0.0)))
+        merged: list[dict] = []
+        for sp in dp:
+            if not merged:
+                merged.append(sp)
+                continue
+            t_prev = float(merged[-1]["t"])
+            t_cur = float(sp["t"])
+            if abs(t_cur - t_prev) <= eps_t:
+                if str(sp["nodeCanon"]) != str(merged[-1]["nodeCanon"]):
+                    raise ValueError(
+                        f"[DP][{edge.edge_id()}] conflicting splitpoints at t={t_cur} "
+                        f"nodeA={merged[-1]['nodeCanon']} nodeB={sp['nodeCanon']}"
+                    )
+                continue
+            merged.append(sp)
+
+        if not merged:
+            raise ValueError(f"[DP][{edge.edge_id()}] DP missing endpoints")
+        if abs(float(merged[0]["t"]) - 0.0) > eps_t or abs(float(merged[-1]["t"]) - 1.0) > eps_t:
+            raise ValueError(f"[DP][{edge.edge_id()}] DP missing endpoints")
+        return merged
+
+    def buildConceptOccurrencesForPhysEdge(self, element_id: str, edge_index: int,
+                                           eps_t: float = 1e-9) -> list[dict]:
+        edge = self.get_edge(element_id, edge_index)
+        dp = self.buildDerivedSplitPointsForPhysEdge(element_id, edge_index, eps_t=eps_t)
+        occs: list[dict] = []
+        for i in range(len(dp) - 1):
+            t0 = float(dp[i]["t"])
+            t1 = float(dp[i + 1]["t"])
+            if t1 <= t0 + eps_t:
+                raise ValueError(f"[C1][{edge.edge_id()}] null segment in DP t0={t0} t1={t1}")
+            occs.append({
+                "elementId": str(edge.element_id),
+                "edgeId": str(edge.edge_id()),
+                "t0": t0,
+                "t1": t1,
+                "nodeCanon0": str(dp[i]["nodeCanon"]),
+                "nodeCanon1": str(dp[i + 1]["nodeCanon"]),
+            })
+        return occs
+
+    def _buildConceptCacheForGroup(self, group_id: str) -> None:
+        gid = self.find_group(str(group_id))
+        c = self._concept_cache(gid)
+
+        nodes: dict[str, ConceptNodeInfo] = {}
+        edges: dict[tuple[str, str], ConceptEdgeInfo] = {}
+
+        eps_t = float(getattr(self, "concept_split_epsilon_t", 1e-6))
+        for el in self._iter_group_elements(gid):
             for edge in getattr(el, "edges", []):
-                start_cn = self.find_node(str(edge.v_start.node_id))
-                end_cn = self.find_node(str(edge.v_end.node_id))
-                dp: list[tuple[float, str, str]] = [
-                    (0.0, start_cn, "endpoint"),
-                    (1.0, end_cn, "endpoint"),
-                ]
-                edge_key = (str(el.element_id), int(edge.edge_index))
-                for t, node_canon, tag in edge_att_map.get(edge_key, []):
-                    if float(t) <= eps_t or float(t) >= (1.0 - eps_t):
-                        continue
-                    if node_canon == start_cn or node_canon == end_cn:
-                        continue
-                    dp.append((float(t), node_canon, tag))
-                dp.sort(key=lambda p: float(p[0]))
-
-                merged: list[tuple[float, str, str]] = []
-                for t, node_canon, tag in dp:
-                    if not merged:
-                        merged.append((float(t), node_canon, tag))
-                        continue
-                    t_prev, node_prev, tag_prev = merged[-1]
-                    if abs(float(t) - float(t_prev)) < eps_t:
-                        if node_canon == node_prev:
-                            continue
-                        if tag_prev == "endpoint" and tag != "endpoint":
-                            continue
-                        if tag == "endpoint" and tag_prev != "endpoint":
-                            merged[-1] = (float(t), node_canon, tag)
-                        continue
-                    merged.append((float(t), node_canon, tag))
-
-                canon_seq: list[tuple[float, str, str]] = []
-                for t, node_canon, tag in merged:
-                    if canon_seq and canon_seq[-1][1] == node_canon:
-                        continue
-                    canon_seq.append((float(t), node_canon, tag))
-
-                if len(canon_seq) < 2:
-                    raise ValueError(f"Edge {edge.edge_id()}: concept points < 2")
-                if abs(float(canon_seq[0][0])) > eps_t or abs(float(canon_seq[-1][0]) - 1.0) > eps_t:
-                    t_list = [float(t) for t, _, _ in canon_seq]
-                    raise ValueError(f"Edge {edge.edge_id()}: invalid endpoints t={t_list}")
-                last_t = -1.0
-                for t, _, _ in canon_seq:
-                    if float(t) + eps_t < last_t:
-                        t_list = [float(t) for t, _, _ in canon_seq]
-                        raise ValueError(f"Edge {edge.edge_id()}: nonmonotonic t={t_list}")
-                    last_t = float(t)
+                dp = self.buildDerivedSplitPointsForPhysEdge(el.element_id, edge.edge_index, eps_t=eps_t)
 
                 # nodes : occurrences monde
-                for t, cn, _ in canon_seq:
+                for sp in dp:
+                    cn = str(sp["nodeCanon"])
                     info = nodes.get(cn)
                     if info is None:
                         info = ConceptNodeInfo(concept_id=cn, members=set(self.node_members(cn)))
                         nodes[cn] = info
-                    p_local = self._localPointOnEdge(el, edge, float(t))
+                    p_local = self._localPointOnEdge(el, edge, float(sp["t"]))
                     p_world = el.localToWorld(p_local)
                     info.add_occ(p_world[0], p_world[1])
 
-                # edges : segments consécutifs canonisés
-                canon_seq_nodes: list[tuple[float, str]] = [(t, cn) for t, cn, _ in canon_seq]
-                for (t0, n0), (t1, n1) in zip(canon_seq_nodes[:-1], canon_seq_nodes[1:]):
+                # edges : segments consecutifs canonises
+                for i in range(len(dp) - 1):
+                    n0 = str(dp[i]["nodeCanon"])
+                    n1 = str(dp[i + 1]["nodeCanon"])
+                    t0 = float(dp[i]["t"])
+                    t1 = float(dp[i + 1]["t"])
                     if n0 == n1:
                         continue
                     k = (n0, n1) if n0 < n1 else (n1, n0)
@@ -897,7 +865,6 @@ class TopologyWorld:
                         "t0": float(t0),
                         "t1": float(t1),
                     })
-
         c.nodes = nodes
         c.edges = edges
         c.valid = True
@@ -921,8 +888,8 @@ class TopologyWorld:
         return info.world_xy()
 
 
-    def getConceptRays(self, node_id: str, group_id: str | None = None) -> list[dict]:
-        """Rays conceptuels au node canonique, LIMITÉS AU GROUPE."""
+    def getConceptRays(self, node_id: str, group_id: str | None = None) -> list[tuple[str, str, float]]:
+        """Rays conceptuels au node canonique, LIMITES AU GROUPE."""
         gid = group_id if group_id is not None else self._infer_group_for_node(node_id)
         if gid is None:
             return []
@@ -930,7 +897,7 @@ class TopologyWorld:
         cn = self.find_node(str(node_id))
         p0 = self.getConceptNodeWorldXY(cn, gid)
         c = self._concept_cache(gid)
-        out: list[dict] = []
+        out: list[tuple[str, str, float]] = []
         for (a, b), ce in c.edges.items():
             if cn != a and cn != b:
                 continue
@@ -938,19 +905,10 @@ class TopologyWorld:
             p1 = self.getConceptNodeWorldXY(other, gid)
             dx = float(p1[0] - p0[0])
             dy = float(p1[1] - p0[1])
-            out.append({
-                "fromNode": cn,
-                "toNode": other,
-                "fromLabel": self.getNodeLabel(cn),
-                "toLabel": self.getNodeLabel(other),
-                "dx": dx,
-                "dy": dy,
-                "azimutDeg": self.azimutDegFromDxDy(dx, dy),
-                "occurrences": list(ce.occurrences),
-            })
-        out.sort(key=lambda r: (float(r.get("azimutDeg", 0.0)), str(r.get("toNode", ""))))
+            edge_id = f"{a}|{b}"
+            out.append((edge_id, other, self.azimutDegFromDxDy(dx, dy)))
+        out.sort(key=lambda r: (float(r[2]), str(r[1])))
         return out
-
 
     # --- Parcours du graphe conceptuel (par groupe) ---
     def getConceptEdgesForNode(self, node_id: str, group_id: str | None = None) -> list[dict]:
@@ -1394,26 +1352,6 @@ class TopologyWorld:
         return (edge.v_start.node_id, edge.v_end.node_id)
 
     # --- points on edge ---
-    def add_or_fuse_point_on_edge(self, edge_ref: TopologyFeatureRef, t_new: float, node_id_new: str) -> tuple[str, float]:
-        edge = self.get_edge(edge_ref.element_id, edge_ref.index)
-        idx = edge.find_fusion_candidate_index(
-            t_new=float(t_new),
-            fusion_distance_km=self.fusion_distance_km,
-            node_rank_fn=lambda nid: self._node_rank_key(self.find_node(nid))
-        )
-        if idx is None:
-            edge.insert_point_sorted(float(t_new), str(node_id_new))
-            self.invalidateConceptCache(self.element_to_group.get(str(edge_ref.element_id)))
-            return (self.find_node(str(node_id_new)), float(t_new))
-
-        existing = edge.points_on_edge[idx]
-        canon = self.union_nodes(existing.node_id, str(node_id_new))
-        t_keep = float(existing.t)  # garder t du point canonique choisi
-        existing.node_id = canon
-        edge.points_on_edge.sort(key=lambda p: p.t)
-        self.invalidateConceptCache(self.element_to_group.get(str(edge_ref.element_id)))
-        return (canon, t_keep)
-
     # --- attachments ---
     def _validate_attachment_p2(self, attachment: TopologyAttachment, eps_t: float = 1e-9) -> None:
         kind = str(getattr(attachment, "kind", "") or "")
@@ -1574,10 +1512,6 @@ class TopologyWorld:
 
         for el in self.elements.values():
             for edge in el.edges:
-                edge.points_on_edge = [
-                    TopologyEdgePoint(0.0, edge.v_start.node_id),
-                    TopologyEdgePoint(1.0, edge.v_end.node_id),
-                ]
                 edge.coverages = []
 
         for att in sorted(attachments, key=lambda a: a.attachment_id):
@@ -1699,6 +1633,39 @@ class TopologyWorld:
             return uniq[0]
         return "|".join([str(x) for x in uniq])
 
+    def getPhysicalNodeName(self, node_id: str) -> str:
+        node_type = self.getNodeTypeAtomic(node_id)
+        label = self.getAtomicNodeLabel(str(node_id))
+        tri = self._parseTriangleIdFromNodeId(str(node_id))
+        return f"{node_type}:{label}({tri})"
+
+    def getConceptNodeName(self, node_id: str) -> str:
+        cn = self.find_node(str(node_id))
+        member_ids = list(self.node_members(cn))
+        node_type = self.computeConceptNodeTypeOptionB(member_ids)
+        label = self.getNodeLabel(cn)
+        return f"{node_type}:{label}"
+
+    def getPhysicalNodesFromConceptNode(self, node_id: str) -> list[str]:
+        cn = self.find_node(str(node_id))
+        return list(self.node_members(cn))
+
+    def getNodeTypeAtomic(self, node_id: str) -> str:
+        try:
+            return str(self._node_type[str(node_id)])
+        except KeyError:
+            raise KeyError(
+                f"[EXPORT][ConceptNode] unknown nodeId={node_id} in getNodeTypeAtomic()"
+            )
+
+    def computeConceptNodeTypeOptionB(self, member_ids: list[str]) -> str:
+        types = {self.getNodeTypeAtomic(mid) for mid in member_ids}
+        if not types:
+            raise ValueError("[ConceptNode] empty members list")
+        if len(types) == 1:
+            return next(iter(types))
+        return "M"
+
     def _parseTriangleIdFromNodeId(self, node_id: str) -> str:
         """Retourne 'Txx' à partir d'un node_id atomique '<scenario>:Txx:Nn'."""
         m = re.search(r":T(\d+):N\d+$", str(node_id))
@@ -1760,12 +1727,8 @@ class TopologyWorld:
             if not hasattr(el, "edges"):
                 continue
             for edge in el.edges:
-                pts = []
-                for p in getattr(edge, "points_on_edge", []):
-                    tn = float(p.t)
-                    cn = self.find_node(str(p.node_id))
-                    pts.append((tn, cn))
-                pts.sort(key=lambda x: x[0])
+                dp = self.buildDerivedSplitPointsForPhysEdge(el.element_id, edge.edge_index)
+                pts = [(float(sp["t"]), str(sp["nodeCanon"])) for sp in dp]
 
                 for (t0, n0), (t1, n1) in zip(pts[:-1], pts[1:]):
                     if n0 == n1:
@@ -1823,26 +1786,111 @@ class TopologyWorld:
     # --- export ---
     def validate_world(self) -> list[str]:
         errors: list[str] = []
+        try:
+            self.assertNoPhysicalSplitPoints()
+        except RuntimeError as exc:
+            errors.append(str(exc))
         for aid in sorted(self.attachments.keys()):
             try:
                 self._validate_attachment_p2(self.attachments[aid])
             except ValueError as exc:
                 errors.append(str(exc))
+        eps_t = float(getattr(self, "concept_split_epsilon_t", 1e-9))
         for el in self.elements.values():
             for edge in el.edges:
-                last_t = -1.0
-                for p in sorted(edge.points_on_edge, key=lambda p: p.t):
-                    if not (0.0 <= p.t <= 1.0):
-                        errors.append(f"Edge {edge.edge_id()}: t hors bornes: {p.t}")
-                    if p.t < last_t:
-                        errors.append(f"Edge {edge.edge_id()}: pointsOnEdge non triés")
-                    last_t = p.t
                 for c in edge.coverages:
                     if c.t0 >= c.t1:
                         errors.append(f"Edge {edge.edge_id()}: coverage dégénéré [{c.t0},{c.t1}]")
+
+                gid = self.element_to_group.get(str(el.element_id))
+                if gid is None:
+                    continue
+                self.buildConceptCacheIfNeeded(gid)
+                ccache = self._concept_cache(gid)
+                edge_id = str(edge.edge_id())
+                occs = [
+                    occ for ce in ccache.edges.values()
+                    for occ in ce.occurrences
+                    if str(occ.get("elementId")) == str(el.element_id)
+                    and str(occ.get("edgeId")) == edge_id
+                ]
+                if not occs:
+                    errors.append(f"[C2][{edge_id}] no concept occurrences (no coverage)")
+                    continue
+
+                norm_occs: list[tuple[float, float]] = []
+                for k, occ in enumerate(occs):
+                    try:
+                        t0 = float(occ.get("t0", None))
+                        t1 = float(occ.get("t1", None))
+                    except Exception:
+                        errors.append(
+                            f"[C2][{edge_id}] occ#{k} t0/t1 not float t0={occ.get('t0')} t1={occ.get('t1')}"
+                        )
+                        continue
+                    if t0 < -eps_t or t0 > 1.0 + eps_t or t1 < -eps_t or t1 > 1.0 + eps_t:
+                        errors.append(
+                            f"[C2][{edge_id}] occ#{k} out of [0,1] t0={t0} t1={t1}"
+                        )
+                        continue
+                    if abs(t0) <= eps_t:
+                        t0 = 0.0
+                    if abs(t1 - 1.0) <= eps_t:
+                        t1 = 1.0
+                    if t1 <= t0 + eps_t:
+                        errors.append(
+                            f"[C2][{edge_id}] occ#{k} null/neg segment t0={t0} t1={t1}"
+                        )
+                        continue
+                    norm_occs.append((t0, t1))
+
+                norm_occs.sort(key=lambda v: (v[0], v[1]))
+                if norm_occs:
+                    if abs(norm_occs[0][0] - 0.0) > eps_t:
+                        errors.append(
+                            f"[C2][{edge_id}] coverage does not start at 0 (t0={norm_occs[0][0]})"
+                        )
+                    if abs(norm_occs[-1][1] - 1.0) > eps_t:
+                        errors.append(
+                            f"[C2][{edge_id}] coverage does not end at 1 (t1={norm_occs[-1][1]})"
+                        )
+                    for i in range(1, len(norm_occs)):
+                        prev_t1 = norm_occs[i - 1][1]
+                        cur_t0 = norm_occs[i][0]
+                        gap = cur_t0 - prev_t1
+                        if gap > eps_t:
+                            errors.append(
+                                f"[C2][{edge_id}] GAP between occ#{i-1} and occ#{i} prev.t1={prev_t1} cur.t0={cur_t0}"
+                            )
+                        elif gap < -eps_t:
+                            errors.append(
+                                f"[C2][{edge_id}] OVERLAP between occ#{i-1} and occ#{i} prev.t1={prev_t1} cur.t0={cur_t0}"
+                            )
+
+                    try:
+                        dp_points = self.buildDerivedSplitPointsForPhysEdge(el.element_id, edge.edge_index, eps_t=eps_t)
+                    except ValueError as exc:
+                        errors.append(str(exc))
+                        continue
+                    dp = [float(sp["t"]) for sp in dp_points]
+                    if len(dp) < 2:
+                        errors.append(f"[C2+][{edge_id}] occ count mismatch occs={len(norm_occs)} dp={len(dp)}")
+                    else:
+                        if len(norm_occs) != len(dp) - 1:
+                            errors.append(
+                                f"[C2+][{edge_id}] occ count mismatch occs={len(norm_occs)} dp={len(dp)}"
+                            )
+                        else:
+                            for i in range(len(norm_occs)):
+                                t0, t1 = norm_occs[i]
+                                if abs(t0 - dp[i]) > eps_t or abs(t1 - dp[i + 1]) > eps_t:
+                                    errors.append(
+                                        f"[C2+][{edge_id}] split mismatch i={i} occ=({t0},{t1}) dp=({dp[i]},{dp[i+1]})"
+                                    )
         return errors
 
     def export_topo_dump_xml(self, scenario_id: str, path: str, orientation: str = "cw") -> str:
+        self.assertNoPhysicalSplitPoints()
         root = _ET.Element("TopoDump", {
             "version": "4.3",
             "units": "km",
@@ -1888,17 +1936,19 @@ class TopologyWorld:
             cns = _ET.SubElement(cm, "ConceptNodes")
             for cid in sorted(ccache.nodes.keys()):
                 xy = ccache.nodes[cid].world_xy()
+                member_ids = sorted(self.node_members(cid))
+                concept_type = self.computeConceptNodeTypeOptionB(member_ids)
                 cn_el = _ET.SubElement(cns, "ConceptNode", {
                     "id": str(cid),
-                    "type": str(self.getConceptNodeType(cid)),
+                    "type": str(concept_type),
                     "x": f"{float(xy[0]):.6f}",
                     "y": f"{float(xy[1]):.6f}",
                 })
                 mem_el = _ET.SubElement(cn_el, "Members")
-                for mid in sorted(self.node_members(cid)):
+                for mid in member_ids:
                     _ET.SubElement(mem_el, "M", {
                         "id": str(mid),
-                        "type": str(self.node_type(mid)),
+                        "type": str(self.getNodeTypeAtomic(mid)),
                         "tri": str(self._parseTriangleIdFromNodeId(str(mid))),
                         "label": str(self.getAtomicNodeLabel(str(mid))),
                     })

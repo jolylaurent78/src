@@ -5148,23 +5148,14 @@ class TriangleViewerManual(
                 last = getattr(self, "_dbg_tip_last_node", None)
                 if nodeId != last:
                     self._dbg_tip_last_node = nodeId
-                    print(f"[C7][TOOLTIP][NODE] {nodeId} vkey={vkey} triNum={triNum}")
+                    phys_nodes = topoWorld.getPhysicalNodesFromConceptNode(nodeId)
+                    phys_names = [topoWorld.getPhysicalNodeName(nid) for nid in phys_nodes]
+                    print(f"Phys: {', '.join(phys_names)}")
 
-                    trip = topoWorld.getConnectedPointsTriplets(nodeId)
-                    if trip:
-                        s = " ".join([f"{t}:{lab}({tri})" for (t, tri, lab) in trip])
-                        print(f"  [C7][ATTACH] {len(trip)} -> {s}")
-                    else:
-                        print("  [C7][ATTACH] 0")
-
-                    rays = topoWorld.getNodeHalfRaysAzimuts(nodeId)
-                    if rays:
-                        print(f"  [C7][RAYS] {len(rays)}")
-                        for r in rays:
-                            az = float(r.get("azimutDeg", 0.0))
-                            print(f"    -> {r.get('toNode')} az={az:0.2f}° edge={r.get('edgeId')} t={float(r.get('tFrom',0.0)):0.3f}->{float(r.get('tTo',0.0)):0.3f}")
-                    else:
-                        print("  [C7][RAYS] 0")
+                    rays = topoWorld.getConceptRays(nodeId)
+                    for _, other_node_id, az in rays:
+                        other_name = topoWorld.getConceptNodeName(other_node_id)
+                        print(f"-> {other_name} @ {float(az):0.2f}°")
 
             lines = []
             if v_world is not None:
