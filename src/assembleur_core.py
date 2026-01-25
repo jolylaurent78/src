@@ -793,35 +793,97 @@ class TopologyWorld:
         nodes: dict[str, ConceptNodeInfo] = {}
         edges: dict[tuple[str, str], ConceptEdgeInfo] = {}
 
-        for el in self._iter_group_elements(gid):
+        eps_t = float(getattr(self, "concept_split_epsilon_t", 1e-6))
+        group_elements = [el for el in self._iter_group_elements(gid)]
+        group_element_ids = {str(el.element_id) for el in group_elements}
+        edge_att_map: dict[tuple[str, int], list[tuple[float, str, str]]] = {}
+        for att in self.attachments.values():
+            if str(att.kind) != "vertex-edge":
+                continue
+            if att.feature_a.feature_type == TopologyFeatureType.VERTEX and att.feature_b.feature_type == TopologyFeatureType.EDGE:
+                vRef, eRef = att.feature_a, att.feature_b
+            elif att.feature_a.feature_type == TopologyFeatureType.EDGE and att.feature_b.feature_type == TopologyFeatureType.VERTEX:
+                vRef, eRef = att.feature_b, att.feature_a
+            else:
+                continue
+            if str(eRef.element_id) not in group_element_ids:
+                continue
+            t = att.params.get("t", None)
+            if t is None:
+                t = vRef.t if vRef.t is not None else eRef.t
+            if t is None:
+                continue
+            v = self.get_vertex(vRef.element_id, vRef.index)
+            node_canon = self.find_node(v.node_id)
+            edge_key = (str(eRef.element_id), int(eRef.index))
+            edge_att_map.setdefault(edge_key, []).append(
+                (float(t), node_canon, f"vertex-edge:{att.attachment_id}")
+            )
+
+        for el in group_elements:
             for edge in getattr(el, "edges", []):
-                pts = list(getattr(edge, "points_on_edge", []))
-                if not pts:
-                    continue
-                pts.sort(key=lambda p: float(p.t))
+                start_cn = self.find_node(str(edge.v_start.node_id))
+                end_cn = self.find_node(str(edge.v_end.node_id))
+                dp: list[tuple[float, str, str]] = [
+                    (0.0, start_cn, "endpoint"),
+                    (1.0, end_cn, "endpoint"),
+                ]
+                edge_key = (str(el.element_id), int(edge.edge_index))
+                for t, node_canon, tag in edge_att_map.get(edge_key, []):
+                    if float(t) <= eps_t or float(t) >= (1.0 - eps_t):
+                        continue
+                    if node_canon == start_cn or node_canon == end_cn:
+                        continue
+                    dp.append((float(t), node_canon, tag))
+                dp.sort(key=lambda p: float(p[0]))
+
+                merged: list[tuple[float, str, str]] = []
+                for t, node_canon, tag in dp:
+                    if not merged:
+                        merged.append((float(t), node_canon, tag))
+                        continue
+                    t_prev, node_prev, tag_prev = merged[-1]
+                    if abs(float(t) - float(t_prev)) < eps_t:
+                        if node_canon == node_prev:
+                            continue
+                        if tag_prev == "endpoint" and tag != "endpoint":
+                            continue
+                        if tag == "endpoint" and tag_prev != "endpoint":
+                            merged[-1] = (float(t), node_canon, tag)
+                        continue
+                    merged.append((float(t), node_canon, tag))
+
+                canon_seq: list[tuple[float, str, str]] = []
+                for t, node_canon, tag in merged:
+                    if canon_seq and canon_seq[-1][1] == node_canon:
+                        continue
+                    canon_seq.append((float(t), node_canon, tag))
+
+                if len(canon_seq) < 2:
+                    raise ValueError(f"Edge {edge.edge_id()}: concept points < 2")
+                if abs(float(canon_seq[0][0])) > eps_t or abs(float(canon_seq[-1][0]) - 1.0) > eps_t:
+                    t_list = [float(t) for t, _, _ in canon_seq]
+                    raise ValueError(f"Edge {edge.edge_id()}: invalid endpoints t={t_list}")
+                last_t = -1.0
+                for t, _, _ in canon_seq:
+                    if float(t) + eps_t < last_t:
+                        t_list = [float(t) for t, _, _ in canon_seq]
+                        raise ValueError(f"Edge {edge.edge_id()}: nonmonotonic t={t_list}")
+                    last_t = float(t)
 
                 # nodes : occurrences monde
-                for p in pts:
-                    cn = self.find_node(str(p.node_id))
+                for t, cn, _ in canon_seq:
                     info = nodes.get(cn)
                     if info is None:
                         info = ConceptNodeInfo(concept_id=cn, members=set(self.node_members(cn)))
                         nodes[cn] = info
-                    p_local = self._localPointOnEdge(el, edge, float(p.t))
+                    p_local = self._localPointOnEdge(el, edge, float(t))
                     p_world = el.localToWorld(p_local)
                     info.add_occ(p_world[0], p_world[1])
 
                 # edges : segments consécutifs canonisés
-                canon_seq: list[tuple[float, str]] = []
-                last_cn = None
-                for p in pts:
-                    cn = self.find_node(str(p.node_id))
-                    if cn == last_cn:
-                        continue
-                    canon_seq.append((float(p.t), cn))
-                    last_cn = cn
-
-                for (t0, n0), (t1, n1) in zip(canon_seq[:-1], canon_seq[1:]):
+                canon_seq_nodes: list[tuple[float, str]] = [(t, cn) for t, cn, _ in canon_seq]
+                for (t0, n0), (t1, n1) in zip(canon_seq_nodes[:-1], canon_seq_nodes[1:]):
                     if n0 == n1:
                         continue
                     k = (n0, n1) if n0 < n1 else (n1, n0)
@@ -1353,12 +1415,92 @@ class TopologyWorld:
         return (canon, t_keep)
 
     # --- attachments ---
+    def _validate_attachment_p2(self, attachment: TopologyAttachment, eps_t: float = 1e-9) -> None:
+        kind = str(getattr(attachment, "kind", "") or "")
+        if kind not in ("vertex-vertex", "vertex-edge", "edge-edge"):
+            raise ValueError(f"[P2][Attachment] invalid type={kind} id={attachment.attachment_id}")
+
+        if attachment.feature_a is None or attachment.feature_b is None:
+            raise ValueError(f"[P2][Attachment] missing featureA/featureB type={kind} id={attachment.attachment_id}")
+
+        def require_vertex_ref(f, side: str) -> None:
+            if f.feature_type != TopologyFeatureType.VERTEX:
+                raise ValueError(
+                    f"[P2][Attachment] expected VertexRef for {side} got={f.feature_type} id={attachment.attachment_id}"
+                )
+            element = self.elements.get(str(f.element_id))
+            if element is None:
+                raise ValueError(
+                    f"[P2][Attachment] unknown element elementId={f.element_id} in feature{side} id={attachment.attachment_id}"
+                )
+            vidx = int(f.index)
+            if vidx < 0 or vidx >= len(element.vertexes):
+                raise ValueError(
+                    f"[P2][Attachment] unknown vertex vertexId=N{vidx} in elementId={element.element_id} feature{side} id={attachment.attachment_id}"
+                )
+
+        def require_edge_ref(f, side: str) -> None:
+            if f.feature_type != TopologyFeatureType.EDGE:
+                raise ValueError(
+                    f"[P2][Attachment] expected EdgeRef for {side} got={f.feature_type} id={attachment.attachment_id}"
+                )
+            element = self.elements.get(str(f.element_id))
+            if element is None:
+                raise ValueError(
+                    f"[P2][Attachment] unknown element elementId={f.element_id} in feature{side} id={attachment.attachment_id}"
+                )
+            eidx = int(f.index)
+            if eidx < 0 or eidx >= len(element.edges):
+                raise ValueError(
+                    f"[P2][Attachment] unknown edge edgeId=E{eidx} in elementId={element.element_id} feature{side} id={attachment.attachment_id}"
+                )
+
+        if kind == "vertex-vertex":
+            require_vertex_ref(attachment.feature_a, "A")
+            require_vertex_ref(attachment.feature_b, "B")
+            if attachment.params.get("t", None) is not None:
+                raise ValueError(
+                    f"[P2][Attachment] vertex-vertex must not have t (t={attachment.params.get('t')}) id={attachment.attachment_id}"
+                )
+            return
+
+        if kind == "edge-edge":
+            require_edge_ref(attachment.feature_a, "A")
+            require_edge_ref(attachment.feature_b, "B")
+            if attachment.params.get("t", None) is not None:
+                raise ValueError(
+                    f"[P2][Attachment] edge-edge must not have t (t={attachment.params.get('t')}) id={attachment.attachment_id}"
+                )
+            return
+
+        # vertex-edge
+        require_vertex_ref(attachment.feature_a, "A")
+        require_edge_ref(attachment.feature_b, "B")
+        if "t" not in attachment.params or attachment.params.get("t", None) is None:
+            raise ValueError(f"[P2][Attachment] vertex-edge missing t id={attachment.attachment_id}")
+        try:
+            t_val = float(attachment.params.get("t"))
+        except Exception:
+            raise ValueError(
+                f"[P2][Attachment] vertex-edge t not float (t={attachment.params.get('t')}) id={attachment.attachment_id}"
+            )
+        if t_val < -eps_t or t_val > 1.0 + eps_t:
+            raise ValueError(
+                f"[P2][Attachment] vertex-edge t out of [0,1] (t={t_val:.6f}) id={attachment.attachment_id}"
+            )
+        if abs(t_val) <= eps_t:
+            t_val = 0.0
+        elif abs(t_val - 1.0) <= eps_t:
+            t_val = 1.0
+        attachment.params["t"] = t_val
+
     def record_attachment(self, attachment: TopologyAttachment, group_id: str | None = None):
         self.attachments[attachment.attachment_id] = attachment
         if group_id is not None:
             self.groups[self.find_group(group_id)].attachment_ids.append(attachment.attachment_id)
 
     def apply_attachment(self, attachment: TopologyAttachment) -> str:
+        self._validate_attachment_p2(attachment)
         gA = self.get_group_of_element(attachment.feature_a.element_id)
         gB = self.get_group_of_element(attachment.feature_b.element_id)
         gC = self.union_groups(gA, gB) if gA != gB else gA
@@ -1384,8 +1526,14 @@ class TopologyWorld:
                 raise ValueError("vertex-edge: paramètre t manquant")
 
             v = self.get_vertex(vRef.element_id, vRef.index)
-            canon_node, _ = self.add_or_fuse_point_on_edge(eRef, float(t), v.node_id)
-            self.union_nodes(v.node_id, canon_node)
+            t_val = float(t)
+            eps = float(getattr(self, "vertex_edge_endpoint_epsilon", 1e-6))
+            if abs(t_val) <= eps:
+                e = self.get_edge(eRef.element_id, eRef.index)
+                self.union_nodes(v.node_id, e.v_start.node_id)
+            elif abs(t_val - 1.0) <= eps:
+                e = self.get_edge(eRef.element_id, eRef.index)
+                self.union_nodes(v.node_id, e.v_end.node_id)
 
         elif kind == "edge-edge":
             eA = self.get_edge(attachment.feature_a.element_id, attachment.feature_a.index)
@@ -1675,6 +1823,11 @@ class TopologyWorld:
     # --- export ---
     def validate_world(self) -> list[str]:
         errors: list[str] = []
+        for aid in sorted(self.attachments.keys()):
+            try:
+                self._validate_attachment_p2(self.attachments[aid])
+            except ValueError as exc:
+                errors.append(str(exc))
         for el in self.elements.values():
             for edge in el.edges:
                 last_t = -1.0
@@ -1834,11 +1987,20 @@ class TopologyWorld:
                     "lengthKm": f"{e.edge_length_km:.3f}",
                 })
                 pts = _ET.SubElement(edge_el, "Points")
-                for pnt in sorted(e.points_on_edge, key=lambda p: p.t):
+                phys_points = [
+                    (0.0, e.v_start.node_id),
+                    (1.0, e.v_end.node_id),
+                ]
+                t_list = [float(t) for t, _ in phys_points]
+                if len(phys_points) != 2 or any(t not in (0.0, 1.0) for t in t_list):
+                    raise ValueError(
+                        f"Edge {e.edge_id()}: invalid physical points (n={len(phys_points)} t={t_list})"
+                    )
+                for t_val, node_id in phys_points:
                     _ET.SubElement(pts, "P", {
-                        "t": f"{pnt.t:.6f}",
-                        "node": self.find_node(pnt.node_id),
-                        "nodeOrigin": pnt.node_id,
+                        "t": f"{float(t_val):.6f}",
+                        "node": self.find_node(node_id),
+                        "nodeOrigin": node_id,
                     })
                 covs = _ET.SubElement(edge_el, "Coverages")
                 for c in sorted(e.coverages, key=lambda c: (c.t0, c.t1)):

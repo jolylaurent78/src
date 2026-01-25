@@ -5828,12 +5828,12 @@ class TriangleViewerManual(
             __slots__ = ("mA", "mB", "tA", "tB",
                          "src_owner_tid", "src_edge", "dst_owner_tid", "dst_edge",
                          "src_vkey_at_mA", "src_vkey_at_mB", "dst_vkey_at_tA", "dst_vkey_at_tB",
-                         "src_edge_labels", "dst_edge_labels", "kind", "t")
+                         "src_edge_labels", "dst_edge_labels", "kind", "tRaw")
 
             def __init__(self, mA, mB, tA, tB,
                          src_owner_tid=None, src_edge=None, dst_owner_tid=None, dst_edge=None,
                          src_vkey_at_mA=None, src_vkey_at_mB=None, dst_vkey_at_tA=None, dst_vkey_at_tB=None,
-                         src_edge_labels=None, dst_edge_labels=None, kind=None, t=None):
+                         src_edge_labels=None, dst_edge_labels=None, kind=None, t_raw=None):
                 self.mA = tuple(mA); self.mB = tuple(mB); self.tA = tuple(tA); self.tB = tuple(tB)
                 self.src_owner_tid = src_owner_tid
                 self.src_edge = src_edge
@@ -5846,7 +5846,7 @@ class TriangleViewerManual(
                 self.src_edge_labels = src_edge_labels
                 self.dst_edge_labels = dst_edge_labels
                 self.kind = kind
-                self.t = t
+                self.tRaw = t_raw
 
             # --- compat: unpack (m_a,m_b,t_a,t_b) ---
             def __len__(self):
@@ -5875,15 +5875,62 @@ class TriangleViewerManual(
             return None
 
         def _find_owner_edge_for_segment(gid: int, A, B, eps=EPS_WORLD):
-            # Cherche, dans le groupe, quel triangle porte le segment (A,B) et quelle arête locale c'est.
+            """
+            Détermine, à partir d’un segment monde (A,B) détecté pendant le "snap assist",
+            quel triangle (tid) du groupe gid porte ce segment, et à quelle arête locale
+            (OB / BL / LO) il correspond.
+
+            Contexte d’usage
+            ---------------
+            Cette fonction est appelée dans _update_edge_highlights() après avoir trouvé
+            un "best" candidat de collage. Le couple (owner_tid, edge_code) est ensuite
+            utilisé pour :
+            - récupérer les labels de l’arête (src_edge_labels / dst_edge_labels),
+            - décider si l’assist est "edge-edge" ou "vertex-edge",
+            - dériver les vkeys aux extrémités (src_vkey_at_mA/mB, dst_vkey_at_tA/tB),
+            - construire les TopologyAttachment au relâché (release).
+
+            Entrées
+            -------
+            gid : identifiant du groupe UI (self.groups) dans lequel chercher.
+            A,B : points monde (x,y) du segment candidat, issus de l’assist.
+                A et B sont censés représenter les deux extrémités du segment d’arête
+                ciblé (dans le repère monde UI).
+            eps : tolérance monde (en unités monde) pour les comparaisons.
+
+            Sortie
+            ------
+            (owner_tid, edge_code) où :
+            - owner_tid est l’index du triangle dans self._last_drawn,
+            - edge_code ∈ {"OB","BL","LO"}.
+            Retourne (None, None) si aucun match n’est trouvé.
+
+            Hypothèse / Limite
+            ------------------
+            Version actuelle : on identifie l’arête en comparant (A,B) aux endpoints
+            (O,B,L) de chaque triangle du groupe. Cette logique suppose que (A,B)
+            correspond à l’arête entière (endpoints), pas à un sous-segment.
+            """
             if gid is None:
                 return (None, None)
+
             Ax, Ay = float(A[0]), float(A[1])
             Bx, By = float(B[0]), float(B[1])
 
-            def _pt_eq(P, k, x, y):
-                return abs(float(P[k][0]) - x) <= eps and abs(float(P[k][1]) - y) <= eps
+            def _proj_t_and_d2(P0x, P0y, P1x, P1y, Qx, Qy):
+                vx, vy = (P1x - P0x), (P1y - P0y)
+                wx, wy = (Qx - P0x), (Qy - P0y)
+                vv = vx*vx + vy*vy
+                if vv <= 1e-12:
+                    return (0.0, (Qx - P0x)**2 + (Qy - P0y)**2)
+                t = (wx*vx + wy*vy) / vv
+                if t < 0.0: t = 0.0
+                elif t > 1.0: t = 1.0
+                px, py = (P0x + t*vx), (P0y + t*vy)
+                dx, dy = (Qx - px), (Qy - py)
+                return (t, dx*dx + dy*dy)
 
+            best = None  # (score, tid, edge_code)
             for nd in (self._group_nodes(gid) or []):
                 tid = nd.get("tid")
                 if tid is None or not (0 <= tid < len(self._last_drawn)):
@@ -5891,11 +5938,23 @@ class TriangleViewerManual(
                 P = self._last_drawn[tid].get("pts")
                 if not P:
                     continue
+
+                # arêtes du triangle (non orientées)
                 for (a, b) in (("O", "B"), ("B", "L"), ("L", "O")):
-                    # match non orienté
-                    if (_pt_eq(P, a, Ax, Ay) and _pt_eq(P, b, Bx, By)) or (_pt_eq(P, a, Bx, By) and _pt_eq(P, b, Ax, Ay)):
-                        return (tid, _edge_code_from_vkeys(a, b))
-            return (None, None)
+                    P0x, P0y = float(P[a][0]), float(P[a][1])
+                    P1x, P1y = float(P[b][0]), float(P[b][1])
+
+                    tA, d2A = _proj_t_and_d2(P0x, P0y, P1x, P1y, Ax, Ay)
+                    tB, d2B = _proj_t_and_d2(P0x, P0y, P1x, P1y, Bx, By)
+
+                    if d2A <= eps*eps and d2B <= eps*eps:
+                        score = d2A + d2B
+                        if best is None or score < best[0]:
+                            best = (score, tid, _edge_code_from_vkeys(a, b))
+
+            if best is None:
+                return (None, None)
+            return (best[1], best[2])
 
         def _edge_vkeys_from_code(edge_code: str):
             e = str(edge_code or "").upper().strip()
@@ -5924,8 +5983,8 @@ class TriangleViewerManual(
             return (str(la).strip(), str(lb).strip())
 
 
-        def _project_t_on_segment(P, A, B):
-            # t ∈ [0,1] : projection de P sur AB (clamp). Calcul côté UI pendant l'assist.
+        def _project_t_on_segment_raw(P, A, B):
+            # t brut (non clampé) : projection de P sur AB.
             px, py = float(P[0]), float(P[1])
             ax, ay = float(A[0]), float(A[1])
             bx, by = float(B[0]), float(B[1])
@@ -5934,10 +5993,7 @@ class TriangleViewerManual(
             if vv <= 1e-18:
                 return 0.0
             wx, wy = (px - ax), (py - ay)
-            t = (wx * vx + wy * vy) / vv
-            if t < 0.0: t = 0.0
-            elif t > 1.0: t = 1.0
-            return float(t)
+            return float((wx * vx + wy * vy) / vv)
 
         self._edge_choice = None
         if best:
@@ -5967,9 +6023,9 @@ class TriangleViewerManual(
                     kind = "edge-edge"
 
             # t: UNIQUEMENT en vertex-edge (sinon None)
-            t_param = None
+            t_raw = None
             if kind == "vertex-edge":
-                t_param = _project_t_on_segment(vm, tA, tB)
+                t_raw = _project_t_on_segment_raw(mB, tA, tB)
 
             # --- TOPOL: associer chaque point (mA/mB/tA/tB) à l'endpoint vkey correspondant ---
             # Sans cette info, on ne peut PAS décider "direct/reverse" de manière topologique.
@@ -6006,8 +6062,7 @@ class TriangleViewerManual(
                                    src_vkey_at_mA=src_vkey_at_mA, src_vkey_at_mB=src_vkey_at_mB,
                                    dst_vkey_at_tA=dst_vkey_at_tA, dst_vkey_at_tB=dst_vkey_at_tB,
                                    src_edge_labels=src_edge_labels, dst_edge_labels=dst_edge_labels,
-                                   kind=kind,
-                                   t=t_param)
+                                   kind=kind, t_raw=t_raw)
 
             # Contrainte compat: structure inchangée (5 items) ; epts est "unpackable" en 4 points.
             self._edge_choice = (mob_idx, vkey_m, tgt_idx, tgt_vkey, epts)
@@ -8197,7 +8252,7 @@ class TriangleViewerManual(
 
                 # ------------------------------------------------------------
                 # Topologie Core (intention) : edge-edge OU vertex-edge
-                # -> décision déjà prise pendant l'assist (epts.kind / epts.t / labels / edges)
+                # -> décision déjà prise pendant l'assist (epts.kind / epts.tRaw / labels / edges)
                 # -> pose Core = sync depuis Tk (pas de compute_pose_* ici)
                 # ------------------------------------------------------------
                 new_core_gid = None
@@ -8221,28 +8276,31 @@ class TriangleViewerManual(
                         edge_code_to_index = {"OB": 0, "BL": 1, "LO": 2}
                         vkey_to_index = {"O": 0, "B": 1, "L": 2}
 
-                        kind = str(getattr(epts, "kind", "") or "").strip().lower()
+                        kind = str(epts.kind).strip().lower()
                         if kind not in ("edge-edge", "vertex-edge"):
-                            kind = "edge-edge"  # compat
+                            raise RuntimeError(f"kind inattendu: {kind}")
 
                         attachments_to_apply: list[TopologyAttachment] = []
 
                         if kind == "edge-edge":
-                            em = edge_code_to_index.get(str(getattr(epts, "src_edge", "") or "").upper(), None)
-                            et = edge_code_to_index.get(str(getattr(epts, "dst_edge", "") or "").upper(), None)
-                            if em is not None and et is not None:
-                                # mapping edge-edge : décision TOPOL (vkey aux endpoints), pas géométrie / labels
-                                sA = getattr(epts, "src_vkey_at_mA", None)
-                                sB = getattr(epts, "src_vkey_at_mB", None)
-                                dA = getattr(epts, "dst_vkey_at_tA", None)
-                                dB = getattr(epts, "dst_vkey_at_tB", None)
-
-                                if sA and sB and dA and dB:
-                                    if (sA == dA) and (sB == dB):
-                                        mapping = "direct"
-                                    elif (sA == dB) and (sB == dA):
-                                        mapping = "reverse"
-
+                            em = edge_code_to_index[str(epts.src_edge).upper()]
+                            et = edge_code_to_index[str(epts.dst_edge).upper()]
+                            # mapping topologique : direct/reverse selon les vkeys
+                            if (epts.src_vkey_at_mA == epts.dst_vkey_at_tA) and (epts.src_vkey_at_mB == epts.dst_vkey_at_tB):
+                                mapping = "direct"
+                            elif (epts.src_vkey_at_mA == epts.dst_vkey_at_tB) and (epts.src_vkey_at_mB == epts.dst_vkey_at_tA):
+                                mapping = "reverse"
+                            else:
+                                msg = (
+                                    "edge-edge: mapping indéterminable "
+                                    f"(mA={epts.src_vkey_at_mA} mB={epts.src_vkey_at_mB} "
+                                    f"tA={epts.dst_vkey_at_tA} tB={epts.dst_vkey_at_tB})"
+                                )
+                                if getattr(self, "_debug_snap_assist", False):
+                                    raise RuntimeError(msg)
+                                print(f"[ATTACH][edge-edge] {msg}")
+                                mapping = None
+                            if mapping is not None:
                                 attachments_to_apply.append(
                                     TopologyAttachment(
                                         attachment_id=world.new_attachment_id(),
@@ -8254,43 +8312,70 @@ class TriangleViewerManual(
                                     )
                                 )
 
-                        else:
-                            # vertex-edge : sommet (anchor.vkey) -> arête cible (epts.dst_edge) avec t mémorisé
-                            vm = vkey_to_index.get(str(anchor.get("vkey")), None)
-                            et = edge_code_to_index.get(str(getattr(epts, "dst_edge", "") or "").upper(), None)
-                            t_param = getattr(epts, "t", None)
-                            if vm is not None and et is not None:
-                                if t_param is None:
-                                    raise RuntimeError("vertex-edge choisi pendant l’assist mais t absent dans _edge_choice")
+                        elif kind == "vertex-edge":
+                            vmB = vkey_to_index[epts.src_vkey_at_mB]
+                            vmA = vkey_to_index[epts.src_vkey_at_mA]
+                            vtA = vkey_to_index[epts.dst_vkey_at_tA]
+                            vtB = vkey_to_index[epts.dst_vkey_at_tB]
+                            et_dst = edge_code_to_index[str(epts.dst_edge).upper()]
+                            et_src = edge_code_to_index[str(epts.src_edge).upper()]
+                            t_raw = epts.tRaw
+
+                            # tRaw < 0 : rejet (géométriquement impossible dans notre assemblage)
+                            if t_raw < 0.0:
+                                if getattr(self, "_debug_snap_assist", False):
+                                    print(f"[ATTACH][VE] reject tRaw={t_raw}")
+                                return
+
+                            if t_raw <= 1.0:
+                                # vertex-edge : on attache le sommet mB sur l’arête cible, paramétrée par tRaw
                                 attachments_to_apply.append(
                                     TopologyAttachment(
                                         attachment_id=world.new_attachment_id(),
                                         kind="vertex-edge",
-                                        feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, element_id_m, int(vm)),
-                                        feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE,   element_id_t, int(et)),
-                                        params={"t": float(t_param)},
+                                        feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, element_id_m, int(vmB)),
+                                        feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE,   element_id_t, int(et_dst)),
+                                        params={"t": float(t_raw)},
                                         source="manual",
                                     )
                                 )
 
-                                # --- 2e contrainte (décision Tk) : vertex-vertex ---
-                                # Règle simple : en vertex-edge, on colle TOUJOURS mA ↔ tA
-                                # - mA = vertex manipulé (anchor.vkey) -> vm
-                                # - tA = endpoint cible choisi côté edge (dst_vkey_at_tA) -> vtA
-                                dA = getattr(epts, "dst_vkey_at_tA", None)
-                                if dA is not None:
-                                    vtA = vkey_to_index.get(str(dA), None)
-                                    if vtA is not None:
-                                        attachments_to_apply.append(
-                                            TopologyAttachment(
-                                                attachment_id=world.new_attachment_id(),
-                                                kind="vertex-vertex",
-                                                feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, element_id_m, int(vm)),
-                                                feature_b=TopologyFeatureRef(TopologyFeatureType.VERTEX, element_id_t, int(vtA)),
-                                                params={},
-                                                source="manual",
-                                            )
-                                        )
+                                # vertex-vertex : 2e contrainte pour verrouiller mA ↔ tA
+                                attachments_to_apply.append(
+                                    TopologyAttachment(
+                                        attachment_id=world.new_attachment_id(),
+                                        kind="vertex-vertex",
+                                        feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, element_id_m, int(vmA)),
+                                        feature_b=TopologyFeatureRef(TopologyFeatureType.VERTEX, element_id_t, int(vtA)),
+                                        params={},
+                                        source="manual",
+                                    )
+                                )
+                            else:
+                                # tRaw > 1 : inversion (swap) + t_inv = 1/tRaw pour revenir dans [0,1]
+                                t_inv = 1.0 / float(t_raw)
+                                attachments_to_apply.append(
+                                    TopologyAttachment(
+                                        attachment_id=world.new_attachment_id(),
+                                        kind="vertex-edge",
+                                        feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, element_id_t, int(vtB)),
+                                        feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE,   element_id_m, int(et_src)),
+                                        params={"t": float(t_inv)},
+                                        source="manual",
+                                    )
+                                )
+                                attachments_to_apply.append(
+                                    TopologyAttachment(
+                                        attachment_id=world.new_attachment_id(),
+                                        kind="vertex-vertex",
+                                        feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, element_id_t, int(vtA)),
+                                        feature_b=TopologyFeatureRef(TopologyFeatureType.VERTEX, element_id_m, int(vmA)),
+                                        params={},
+                                        source="manual",
+                                    )
+                                )
+                        else:
+                            raise RuntimeError(f"kind inattendu: {kind}")
                         if attachments_to_apply:
                             new_core_gid = world.apply_attachments(attachments_to_apply)
 
