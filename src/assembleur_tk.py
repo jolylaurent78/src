@@ -6158,57 +6158,61 @@ class TriangleViewerManual(
             # Construire l'élément topo uniquement si on a un tri_rank valide
             if tri_rank_i is not None and tri_rank_i >= 1:
                 element_id = TopologyWorld.format_element_id(sid, tri_rank_i)
-
-                # ------------------------------------------------------------
-                # Intrinsèque : on prend les longueurs + sens (orient) depuis self.df
-                # (et non depuis les coords monde Pw).
-                # Colonnes attendues dans df : len_OB, len_OL, len_BL, orient, B, L
-                # O est fixé à "Bourges" dans ton modèle actuel (voir _triangle_from_index()).
-                # ------------------------------------------------------------
-                if tri_rank_i - 1 < 0 or tri_rank_i - 1 >= len(self.df):
-                    raise ValueError(f"Topology: triRank hors df: {tri_rank_i} (len(df)={len(self.df)})")
-
-                row = self.df.iloc[tri_rank_i - 1]
-                len_OB = float(row["len_OB"])
-                len_OL = float(row["len_OL"])
-                len_BL = float(row["len_BL"])
-                orient = str(row.get("orient", "")).strip().upper()
-
-
-                # --- Orientation source (définition triangle) ---
-                # On l'enregistre côté Tk, et on en déduit le miroir de POSE (pas le miroir visuel Tk).
-                # Convention: poseMirrored=False.. utilsé uniquement pour le flip 
-                self._last_drawn[new_tid]["orient"] = orient
-                self._last_drawn[new_tid]["poseMirrored"] = False
-
-                # labels/types : O/B/L dans l’ordre topo.
-                # (convention projet actuelle : O="Bourges", B=row["B"], L=row["L"])
-                v_labels = ["Bourges", str(row["B"]), str(row["L"])]
-                v_types = [TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE]
-
-                # Longueurs d’arêtes dans l’ordre du cycle O->B, B->L, L->O
-                edge_lengths_km = [len_OB, len_BL, len_OL]
-
-                # element (coordonnées locales canonisées par le core)
-                el = TopologyElement(
-                    element_id=element_id,
-                    name=f"Triangle {tri_rank_i:02d}",
-                    vertex_labels=v_labels,
-                    vertex_types=v_types,
-                    edge_lengths_km=edge_lengths_km,
-                    meta={"orient": orient},
-                )
-
-                # Ajouter au core (nouveau groupe singleton)
                 world = scen.topoWorld
-                core_gid = world.add_element_as_new_group(el)
+                world.beginTopoTransaction()
+                try:
 
-                # Annotation Tk (pont UI↔Core)
-                self._last_drawn[new_tid]["topoElementId"] = element_id
-                self._last_drawn[new_tid]["topoGroupId"] = core_gid
+                    # ------------------------------------------------------------
+                    # Intrinsèque : on prend les longueurs + sens (orient) depuis self.df
+                    # (et non depuis les coords monde Pw).
+                    # Colonnes attendues dans df : len_OB, len_OL, len_BL, orient, B, L
+                    # O est fixé à "Bourges" dans ton modèle actuel (voir _triangle_from_index()).
+                    # ------------------------------------------------------------
+                    if tri_rank_i - 1 < 0 or tri_rank_i - 1 >= len(self.df):
+                        raise ValueError(f"Topology: triRank hors df: {tri_rank_i} (len(df)={len(self.df)})")
 
-                # Pose monde de l'ELEMENT : fit rigoureux sur (O,B,L) (pas l'approx O->B)
-                self._sync_element_pose_to_core(new_tid)
+                    row = self.df.iloc[tri_rank_i - 1]
+                    len_OB = float(row["len_OB"])
+                    len_OL = float(row["len_OL"])
+                    len_BL = float(row["len_BL"])
+                    orient = str(row.get("orient", "")).strip().upper()
+
+
+                    # --- Orientation source (définition triangle) ---
+                    # On l'enregistre côté Tk, et on en déduit le miroir de POSE (pas le miroir visuel Tk).
+                    # Convention: poseMirrored=False.. utilsé uniquement pour le flip 
+                    self._last_drawn[new_tid]["orient"] = orient
+                    self._last_drawn[new_tid]["poseMirrored"] = False
+
+                    # labels/types : O/B/L dans l’ordre topo.
+                    # (convention projet actuelle : O="Bourges", B=row["B"], L=row["L"])
+                    v_labels = ["Bourges", str(row["B"]), str(row["L"])]
+                    v_types = [TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE]
+
+                    # Longueurs d’arêtes dans l’ordre du cycle O->B, B->L, L->O
+                    edge_lengths_km = [len_OB, len_BL, len_OL]
+
+                    # element (coordonnées locales canonisées par le core)
+                    el = TopologyElement(
+                        element_id=element_id,
+                        name=f"Triangle {tri_rank_i:02d}",
+                        vertex_labels=v_labels,
+                        vertex_types=v_types,
+                        edge_lengths_km=edge_lengths_km,
+                        meta={"orient": orient},
+                    )
+
+                    # Ajouter au core (nouveau groupe singleton)
+                    core_gid = world.add_element_as_new_group(el)
+
+                    # Annotation Tk (pont UI↔Core)
+                    self._last_drawn[new_tid]["topoElementId"] = element_id
+                    self._last_drawn[new_tid]["topoGroupId"] = core_gid
+
+                    # Pose monde de l'ELEMENT : fit rigoureux sur (O,B,L) (pas l'approx O->B)
+                    self._sync_element_pose_to_core(new_tid)
+                finally:
+                    world.commitTopoTransaction(orientation="cw")
 
         # 2) Création d'un groupe singleton
         self._ensure_group_fields(self._last_drawn[new_tid])
@@ -8250,7 +8254,7 @@ class TriangleViewerManual(
                 scen = self._get_active_scenario()
                 if scen is not None:
                     self._ensureScenarioTopo(scen)
-                world = getattr(scen, "topoWorld", None) if scen is not None else None
+                world = scen.topoWorld
 
                 tgt_gid = self._last_drawn[idx_t].get("group_id", None)
                 mob_gid = self._sel.get("gid")
@@ -8368,7 +8372,9 @@ class TriangleViewerManual(
                         else:
                             raise RuntimeError(f"kind inattendu: {kind}")
                         if attachments_to_apply:
+                            world.beginTopoTransaction()
                             new_core_gid = world.apply_attachments(attachments_to_apply)
+                            world.commitTopoTransaction(orientation="cw")
 
                         if new_core_gid:
                             self.groups[mob_gid]["topoGroupId"] = new_core_gid

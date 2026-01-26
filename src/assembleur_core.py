@@ -612,15 +612,23 @@ class ConceptEdgeInfo:
 @dataclass
 class ConceptGroupCache:
     """Cache du modèle conceptuel pour un groupe canonique."""
-    valid: bool = False
+    graphValid: bool = False
+    geomValid: bool = False
     nodes: dict[str, ConceptNodeInfo] = None
     edges: dict[tuple[str, str], ConceptEdgeInfo] = None
+    nodeOccurrencesByCid: dict[str, list[tuple[str, tuple[float, float]]]] = None
+    boundaryCycle: list[str] | None = None
+    boundaryEdges: set[tuple[str, str]] | None = None
+    boundaryIndex: dict[str, int] | None = None
+    boundaryOrientation: str | None = None
 
     def __post_init__(self) -> None:
         if self.nodes is None:
             self.nodes = {}
         if self.edges is None:
             self.edges = {}
+        if self.nodeOccurrencesByCid is None:
+            self.nodeOccurrencesByCid = {}
 
 class TopologyWorld:
     """Racine métier du modèle topologique (Core, sans Tk).
@@ -671,6 +679,9 @@ class TopologyWorld:
         self._created_counter_nodes = 0
         self._created_counter_groups = 0
         self._created_counter_attachments = 0
+        self._topoTxDepth = 0
+        self._topoTxTouchedGroups: set[str] = set()
+        self._topoTxOrientation = "cw"
 
     # ------------------------------------------------------------------
     # Topologie conceptuelle (MVP)
@@ -678,19 +689,57 @@ class TopologyWorld:
     # - position concept node = moyenne des occurrences monde (conceptuelles)
     # - concept edge = segment entre 2 concept nodes consécutifs sur une arête
     # ------------------------------------------------------------------
-    def invalidateConceptCache(self, group_id: str | None = None) -> None:
-        """Invalide le cache conceptuel.
-        - group_id=None : tous les groupes
-        - group_id!=None : uniquement le groupe canonique correspondant
-        """
+    def invalidateConceptGraph(self, group_id: str | None = None) -> None:
+        """Invalide le cache conceptuel (graph + geom)."""
         if group_id is None:
             for c in self._concept_by_gid.values():
-                c.valid = False
+                c.graphValid = False
+                c.geomValid = False
             return
         gid = self.find_group(str(group_id))
         c = self._concept_by_gid.get(gid)
         if c is not None:
-            c.valid = False
+            c.graphValid = False
+            c.geomValid = False
+
+    def invalidateConceptGeom(self, group_id: str | None = None) -> None:
+        """Invalide uniquement la géométrie conceptuelle (world coords)."""
+        if group_id is None:
+            for c in self._concept_by_gid.values():
+                c.geomValid = False
+            return
+        gid = self.find_group(str(group_id))
+        c = self._concept_by_gid.get(gid)
+        if c is not None:
+            c.geomValid = False
+
+    def beginTopoTransaction(self) -> None:
+        self._topoTxDepth += 1
+        if self._topoTxDepth == 1:
+            self._topoTxTouchedGroups.clear()
+
+    def commitTopoTransaction(self, orientation: str = "cw") -> None:
+        if self._topoTxDepth <= 0:
+            raise ValueError("[TopoTx] commit without begin")
+        self._topoTxDepth -= 1
+        if self._topoTxDepth > 0:
+            return
+        self._topoTxOrientation = str(orientation)
+        for gid in sorted(self._topoTxTouchedGroups):
+            self.recomputeConceptAndBoundary(gid, orientation=self._topoTxOrientation)
+        self._topoTxTouchedGroups.clear()
+        self._topoTxOrientation = "cw"
+
+    def _markTopoTouched(self, group_id: str) -> None:
+        gid = self.find_group(str(group_id))
+        if self._topoTxDepth > 0:
+            self._topoTxTouchedGroups.add(gid)
+
+    def recomputeConceptAndBoundary(self, group_id: str, orientation: str = "cw") -> None:
+        gid = self.find_group(str(group_id))
+        self.invalidateConceptGraph(gid)
+        self.ensureConceptGeom(gid)
+        self.computeBoundary(gid, orientation=str(orientation))
 
     def toConceptNodeId(self, node_id: str) -> str:
         return self.find_node(str(node_id))
@@ -701,6 +750,27 @@ class TopologyWorld:
         if c is None:
             c = ConceptGroupCache()
             self._concept_by_gid[gid] = c
+        return c
+
+    def _requireConceptCache(self, group_id: str) -> ConceptGroupCache:
+        gid = self.find_group(str(group_id))
+        c = self._concept_cache(gid)
+        if not c.graphValid:
+            raise ValueError(f"[ConceptCache] not computed (gid={gid})")
+        return c
+
+    def ensureConceptGraph(self, group_id: str) -> ConceptGroupCache:
+        gid = self.find_group(str(group_id))
+        c = self._concept_cache(gid)
+        if not c.graphValid:
+            self._buildConceptCacheForGroup(gid)
+        return c
+
+    def ensureConceptGeom(self, group_id: str) -> ConceptGroupCache:
+        gid = self.find_group(str(group_id))
+        c = self.ensureConceptGraph(gid)
+        if not c.geomValid:
+            self._refreshConceptGeom(gid)
         return c
 
     @staticmethod
@@ -829,13 +899,14 @@ class TopologyWorld:
 
         nodes: dict[str, ConceptNodeInfo] = {}
         edges: dict[tuple[str, str], ConceptEdgeInfo] = {}
+        node_occ: dict[str, list[tuple[str, tuple[float, float]]]] = {}
 
         eps_t = float(getattr(self, "concept_split_epsilon_t", 1e-6))
         for el in self._iter_group_elements(gid):
             for edge in getattr(el, "edges", []):
                 dp = self.buildDerivedSplitPointsForPhysEdge(el.element_id, edge.edge_index, eps_t=eps_t)
 
-                # nodes : occurrences monde
+                # nodes : occurrences locales (pour refresh geom)
                 for sp in dp:
                     cn = str(sp["nodeCanon"])
                     info = nodes.get(cn)
@@ -843,8 +914,9 @@ class TopologyWorld:
                         info = ConceptNodeInfo(concept_id=cn, members=set(self.node_members(cn)))
                         nodes[cn] = info
                     p_local = self._localPointOnEdge(el, edge, float(sp["t"]))
-                    p_world = el.localToWorld(p_local)
-                    info.add_occ(p_world[0], p_world[1])
+                    node_occ.setdefault(cn, []).append(
+                        (str(el.element_id), (float(p_local[0]), float(p_local[1])))
+                    )
 
                 # edges : segments consecutifs canonises
                 for i in range(len(dp) - 1):
@@ -867,21 +939,42 @@ class TopologyWorld:
                     })
         c.nodes = nodes
         c.edges = edges
-        c.valid = True
+        c.nodeOccurrencesByCid = node_occ
+        c.graphValid = True
+        c.geomValid = False
+        self._refreshConceptGeom(gid)
 
     def buildConceptCacheIfNeeded(self, group_id: str) -> None:
         gid = self.find_group(str(group_id))
         c = self._concept_cache(gid)
-        if not c.valid:
+        if not c.graphValid:
             self._buildConceptCacheForGroup(gid)
+
+    def _refreshConceptGeom(self, group_id: str) -> None:
+        gid = self.find_group(str(group_id))
+        c = self._concept_cache(gid)
+        for info in c.nodes.values():
+            info.sumx = 0.0
+            info.sumy = 0.0
+            info.count = 0
+        for cid, occs in c.nodeOccurrencesByCid.items():
+            info = c.nodes.get(cid)
+            if info is None:
+                continue
+            for element_id, local_xy in occs:
+                el = self.elements.get(str(element_id))
+                if el is None:
+                    raise ValueError(f"[ConceptGeom] unknown elementId={element_id} for cid={cid}")
+                p_world = el.localToWorld(np.array(local_xy, dtype=float))
+                info.add_occ(p_world[0], p_world[1])
+        c.geomValid = True
 
     def getConceptNodeWorldXY(self, node_id: str, group_id: str | None = None) -> tuple[float, float]:
         gid = group_id if group_id is not None else self._infer_group_for_node(node_id)
         if gid is None:
             return (0.0, 0.0)
-        self.buildConceptCacheIfNeeded(gid)
         cn = self.find_node(str(node_id))
-        c = self._concept_cache(gid)
+        c = self.ensureConceptGeom(gid)
         info = c.nodes.get(cn)
         if info is None:
             return (0.0, 0.0)
@@ -893,10 +986,9 @@ class TopologyWorld:
         gid = group_id if group_id is not None else self._infer_group_for_node(node_id)
         if gid is None:
             return []
-        self.buildConceptCacheIfNeeded(gid)
         cn = self.find_node(str(node_id))
         p0 = self.getConceptNodeWorldXY(cn, gid)
-        c = self._concept_cache(gid)
+        c = self.ensureConceptGeom(gid)
         out: list[tuple[str, str, float]] = []
         for (a, b), ce in c.edges.items():
             if cn != a and cn != b:
@@ -910,15 +1002,190 @@ class TopologyWorld:
         out.sort(key=lambda r: (float(r[2]), str(r[1])))
         return out
 
+    def computeBoundary(self, group_id: str, orientation: str = "cw") -> None:
+        orient = str(orientation).strip().lower()
+        if orient not in ("cw", "ccw"):
+            raise ValueError(f"[Boundary] invalid orientation={orientation}")
+        gid = self.find_group(str(group_id))
+        c = self.ensureConceptGeom(gid)
+
+        neighbors: dict[str, set[str]] = {}
+        for (a, b) in c.edges.keys():
+            neighbors.setdefault(a, set()).add(b)
+            neighbors.setdefault(b, set()).add(a)
+
+        if not neighbors:
+            c.boundaryCycle = []
+            c.boundaryEdges = set()
+            c.boundaryIndex = {}
+            c.boundaryOrientation = orient
+            return
+
+        def _angle(n0: str, n1: str) -> float:
+            p0 = self.getConceptNodeWorldXY(n0, gid)
+            p1 = self.getConceptNodeWorldXY(n1, gid)
+            dx = float(p1[0] - p0[0])
+            dy = float(p1[1] - p0[1])
+            return float(math.atan2(dy, dx))
+
+        def _leftmost_node(nodes):
+            best = None
+            best_x = None
+            best_y = None
+            for n in nodes:
+                x, y = self.getConceptNodeWorldXY(n, gid)
+                if best is None or x < best_x or (x == best_x and y < best_y):
+                    best = n
+                    best_x = x
+                    best_y = y
+            return best
+
+        start = _leftmost_node(neighbors.keys())
+        start_neighbors = sorted(neighbors[start], key=lambda n: _angle(start, n))
+        if not start_neighbors:
+            c.boundaryCycle = [start]
+            c.boundaryEdges = set()
+            c.boundaryIndex = {start: 0}
+            c.boundaryOrientation = orient
+            return
+
+        tau = 2.0 * math.pi
+        eps_ang = 1e-12
+        max_steps = len(neighbors) + len(c.edges) + 5
+
+        def _walk(first_next):
+            cycle = [start, first_next]
+            prev = start
+            cur = first_next
+            steps = 0
+            while True:
+                steps += 1
+                if steps > max_steps:
+                    raise ValueError(f"[Boundary] loop did not close (gid={gid}, orient={orient})")
+                candidates = [n for n in neighbors.get(cur, []) if n != prev]
+                if not candidates:
+                    break
+                ang_in = _angle(cur, prev)
+                best = None
+                best_delta = None
+                for cand in candidates:
+                    ang_out = _angle(cur, cand)
+                    if orient == "cw":
+                        delta = (ang_in - ang_out) % tau
+                    else:
+                        delta = (ang_out - ang_in) % tau
+                    if delta <= eps_ang:
+                        continue
+                    if best_delta is None or delta < best_delta:
+                        best = cand
+                        best_delta = delta
+                if best is None:
+                    break
+                prev2, cur2 = cur, best
+                if prev2 == start and cur2 == first_next:
+                    break
+                prev, cur = prev2, cur2
+                cycle.append(cur)
+            if cycle and cycle[-1] == cycle[0]:
+                cycle = cycle[:-1]
+            return cycle
+
+        def _normalize_cycle(cycle):
+            if len(cycle) >= 3:
+                area = 0.0
+                for i in range(len(cycle)):
+                    x0, y0 = self.getConceptNodeWorldXY(cycle[i], gid)
+                    x1, y1 = self.getConceptNodeWorldXY(cycle[(i + 1) % len(cycle)], gid)
+                    area += (float(x0) * float(y1)) - (float(x1) * float(y0))
+                if area > 0.0:
+                    cycle = list(reversed(cycle))
+
+                best_idx = 0
+                best_x, best_y = self.getConceptNodeWorldXY(cycle[0], gid)
+                for i in range(1, len(cycle)):
+                    x, y = self.getConceptNodeWorldXY(cycle[i], gid)
+                    if (x < best_x) or (x == best_x and y < best_y):
+                        best_idx = i
+                        best_x, best_y = x, y
+                cycle = cycle[best_idx:] + cycle[:best_idx]
+            return cycle
+
+        def _covers_all_nodes(cycle):
+            if len(cycle) < 3:
+                return False
+            pts = [self.getConceptNodeWorldXY(n, gid) for n in cycle]
+            poly = _ShPoly(pts).buffer(0)
+            if poly.is_empty:
+                return False
+            for n in neighbors.keys():
+                px, py = self.getConceptNodeWorldXY(n, gid)
+                p = _ShPoint(float(px), float(py))
+                if not (poly.contains(p) or poly.touches(p)):
+                    return False
+            return True
+
+        cycle = None
+        for first_next in start_neighbors:
+            candidate = _walk(first_next)
+            candidate = _normalize_cycle(candidate)
+            if _covers_all_nodes(candidate):
+                cycle = candidate
+                break
+
+        if cycle is None:
+            raise ValueError("[Boundary] no external face found")
+
+        edges = set()
+        if len(cycle) >= 2:
+            for i in range(len(cycle)):
+                a = cycle[i]
+                b = cycle[(i + 1) % len(cycle)]
+                edges.add((a, b))
+
+        c.boundaryCycle = cycle
+        c.boundaryEdges = edges
+        c.boundaryIndex = {n: i for i, n in enumerate(cycle)}
+        c.boundaryOrientation = orient
+
+    def getBoundaryCycle(self, group_id: str, startNodeId: str) -> list[str]:
+        gid = self.find_group(str(group_id))
+        c = self._concept_cache(gid)
+        if not c.boundaryCycle:
+            raise ValueError("[Boundary] not computed")
+        start = str(startNodeId)
+        if start not in c.boundaryIndex:
+            raise ValueError("[Boundary] not computed")
+        idx = c.boundaryIndex[start]
+        return c.boundaryCycle[idx:] + c.boundaryCycle[:idx]
+
+    def getBoundaryNeighbors(self, group_id: str, nodeId: str) -> tuple[str, str]:
+        gid = self.find_group(str(group_id))
+        c = self._concept_cache(gid)
+        if not c.boundaryCycle:
+            raise ValueError("[Boundary] not computed")
+        node = str(nodeId)
+        if node not in c.boundaryIndex:
+            raise ValueError("[Boundary] not computed")
+        idx = c.boundaryIndex[node]
+        prev_node = c.boundaryCycle[idx - 1]
+        next_node = c.boundaryCycle[(idx + 1) % len(c.boundaryCycle)]
+        return (prev_node, next_node)
+
+    def isBoundaryEdge(self, group_id: str, a: str, b: str) -> bool:
+        gid = self.find_group(str(group_id))
+        c = self._concept_cache(gid)
+        if not c.boundaryEdges:
+            raise ValueError("[Boundary] not computed")
+        return (str(a), str(b)) in c.boundaryEdges or (str(b), str(a)) in c.boundaryEdges
+
     # --- Parcours du graphe conceptuel (par groupe) ---
     def getConceptEdgesForNode(self, node_id: str, group_id: str | None = None) -> list[dict]:
         """Liste des edges conceptuels incidentes à un concept node (par groupe)."""
         gid = group_id if group_id is not None else self._infer_group_for_node(node_id)
         if gid is None:
             return []
-        self.buildConceptCacheIfNeeded(gid)
         cn = self.find_node(str(node_id))
-        c = self._concept_cache(gid)
+        c = self.ensureConceptGraph(gid)
         out: list[dict] = []
         for (a, b), ce in c.edges.items():
             if cn != a and cn != b:
@@ -1044,7 +1311,7 @@ class TopologyWorld:
         mem = self._node_members.get(canonical, [canonical])
         mem_other = self._node_members.get(other, [other])
         self._node_members[canonical] = mem + [x for x in mem_other if x not in mem]
-        self.invalidateConceptCache(None)
+        self.invalidateConceptGraph(None)
         return canonical
 
     def node_members(self, node_id: str) -> list[str]:
@@ -1098,7 +1365,8 @@ class TopologyWorld:
         if canonical in self.groups and other in self.groups:
             self.groups[canonical].element_ids.extend(self.groups[other].element_ids)
             self.groups[canonical].attachment_ids.extend(self.groups[other].attachment_ids)
-        self.invalidateConceptCache(canonical)
+        self.invalidateConceptGraph(canonical)
+        self._markTopoTouched(canonical)
         return canonical
 
     def group_members(self, group_id: str) -> list[str]:
@@ -1127,7 +1395,8 @@ class TopologyWorld:
             v1 = element.vertexes[(i + 1) % n]
             element.edges.append(TopologyEdge(element.element_id, i, v0, v1, element.edge_lengths_km[i]))
 
-        self.invalidateConceptCache(gid)
+        self.invalidateConceptGraph(gid)
+        self._markTopoTouched(gid)
         return gid
 
     def get_edge(self, element_id: str, edge_index: int) -> TopologyEdge:
@@ -1156,8 +1425,8 @@ class TopologyWorld:
         if el is None:
             raise ValueError(f"Element inconnu: {element_id}")
         el.set_pose(R=R, T=T, mirrored=mirrored)
-        # pose change -> positions monde changent -> cache conceptuel invalide
-        self.invalidateConceptCache(self.element_to_group.get(str(element_id)))
+        # pose change -> positions monde changent -> géométrie conceptuelle invalide
+        self.invalidateConceptGeom(self.element_to_group.get(str(element_id)))
 
     # ------------------------------------------------------------------
     # Flip (symétrie axiale) au niveau GROUPE (mais appliquée aux poses d'éléments)
@@ -1495,6 +1764,8 @@ class TopologyWorld:
             raise ValueError(f"Attachment kind non supporté: {kind}")
 
         self.record_attachment(attachment, group_id=gC)
+        self.invalidateConceptGraph(gC)
+        self._markTopoTouched(gC)
         return gC
 
     def rebuild_from_attachments(self, attachments: list[TopologyAttachment]):
@@ -1584,7 +1855,10 @@ class TopologyWorld:
 
         # on reconstruit les références aux groupes (sur le nouveau world)
         neww.rebuildGroupElementLists()
-        neww.invalidateConceptCache(None)
+        for gid in sorted(neww.groups.keys()):
+            if gid == neww.find_group(gid):
+                neww.invalidateConceptGraph(gid)
+                neww._markTopoTouched(gid)
 
         # 4) swap in-place (les refs Tk vers scen.topoWorld restent valides)
         self.__dict__.clear()
@@ -1720,6 +1994,9 @@ class TopologyWorld:
 
         Ajoute aussi: fromLabel/toLabel (labels métier) pour debug.
         """
+        gid = self._infer_group_for_node(node_id)
+        if gid is not None:
+            self.ensureConceptGeom(gid)
         c = self.find_node(str(node_id))
         rays: list[dict] = []
 
@@ -1805,8 +2082,11 @@ class TopologyWorld:
                 gid = self.element_to_group.get(str(el.element_id))
                 if gid is None:
                     continue
-                self.buildConceptCacheIfNeeded(gid)
-                ccache = self._concept_cache(gid)
+                try:
+                    ccache = self.ensureConceptGraph(gid)
+                except ValueError as exc:
+                    errors.append(str(exc))
+                    continue
                 edge_id = str(edge.edge_id())
                 occs = [
                     occ for ce in ccache.edges.values()
@@ -1929,8 +2209,7 @@ class TopologyWorld:
         for gid in sorted(self.groups.keys()):
             if gid != self.find_group(gid):
                 continue
-            self.buildConceptCacheIfNeeded(gid)
-            ccache = self._concept_cache(gid)
+            ccache = self.ensureConceptGeom(gid)
 
             cm = _ET.SubElement(cm_all, "ConceptModel", {"version": "1.0", "group": str(gid)})
             cns = _ET.SubElement(cm, "ConceptNodes")
@@ -1975,6 +2254,11 @@ class TopologyWorld:
                         "t0": f"{float(occ.get('t0', 0.0)):.6f}",
                         "t1": f"{float(occ.get('t1', 0.0)):.6f}",
                     })
+            if ccache.boundaryCycle:
+                bnd = _ET.SubElement(cm, "Boundary", {"orientation": str(ccache.boundaryOrientation)})
+                cycle_el = _ET.SubElement(bnd, "Cycle")
+                for nid in ccache.boundaryCycle:
+                    _ET.SubElement(cycle_el, "N", {"id": str(nid)})
 
 
         elements_el = _ET.SubElement(root, "Elements")
@@ -2069,9 +2353,6 @@ class TopologyWorld:
             params_el = _ET.SubElement(att, "Params")
             for k in sorted(a.params.keys()):
                 _ET.SubElement(params_el, "Param", {"name": str(k), "value": str(a.params[k])})
-
-        boundary_el = _ET.SubElement(root, "Boundary", {"orientation": str(orientation)})
-        _ET.SubElement(boundary_el, "Note").text = "Boundary non implémentée en V1 (IDs lisibles) (sera ajoutée en itération suivante)."
 
         _ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
         return path
