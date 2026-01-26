@@ -5137,87 +5137,27 @@ class TriangleViewerManual(
             P0 = self._last_drawn[idx]["pts"]
             v_world = np.array(P0[vkey], dtype=float) if vkey in ("O","B","L") else None
 
-            # --- C7 debug core (prints only, ne touche pas au tooltip legacy) ---
             scen = self._get_active_scenario()
-            topoWorld = getattr(scen, "topoWorld", None)
+            topoWorld = scen.topoWorld
             
+            tooltip_txt = ""
             if topoWorld is not None and v_world is not None and vkey in ("O", "B", "L"):
                 vkey_to_n = {"O": 0, "B": 1, "L": 2}
                 triNum = int(self._last_drawn[idx].get("id", idx + 1))
-                nodeId = f"{getattr(scen, 'topoScenarioId', getattr(scen, 'scenarioId', 'SM?'))}:T{triNum:02d}:N{vkey_to_n[vkey]}"
-                last = getattr(self, "_dbg_tip_last_node", None)
-                if nodeId != last:
-                    self._dbg_tip_last_node = nodeId
-                    phys_nodes = topoWorld.getPhysicalNodesFromConceptNode(nodeId)
-                    phys_names = [topoWorld.getPhysicalNodeName(nid) for nid in phys_nodes]
-                    print(f"Phys: {', '.join(phys_names)}")
+                scenario_id = scen.topoScenarioId if scen.topoScenarioId else scen.scenarioId
+                nodeId = f"{scenario_id}:T{triNum:02d}:N{vkey_to_n[vkey]}"
 
-                    rays = topoWorld.getConceptRays(nodeId)
-                    for _, other_node_id, az in rays:
-                        other_name = topoWorld.getConceptNodeName(other_node_id)
-                        print(f"-> {other_name} @ {float(az):0.2f}°")
-
-            lines = []
-            if v_world is not None:
-                # tolérance monde proportionnelle à l'affichage (hit_px/zoom)
-                tol_world = max(1e-9, float(getattr(self, "_hit_px", 12)) / max(self.zoom, 1e-9))
-                def same_pos(a, b):
-                    return (abs(float(a[0]) - float(b[0])) <= tol_world) and \
-                           (abs(float(a[1]) - float(b[1])) <= tol_world)
-                # parcourir le GROUPE uniquement
-                gid = self._get_group_of_triangle(idx)
-                nodes = self._group_nodes(gid) if gid else []
-                seen = set()  # éviter doublons texte
-                for nd in nodes:
-                    tid = nd.get("tid")
-                    if tid is None or not (0 <= tid < len(self._last_drawn)):
-                        continue
-                    tri = self._last_drawn[tid]
-                    Pt = tri["pts"]
-                    labels = tri.get("labels", ("Bourges","",""))
-                    # Préfixes comme dans la liste : O:..., B:..., L:...
-                    for key, lbl in (("O", labels[0] if len(labels) > 0 else ""),
-                                     ("B", labels[1] if len(labels) > 1 else ""),
-                                     ("L", labels[2] if len(labels) > 2 else "")):
-
-                        if same_pos(Pt[key], v_world):
-                            triNum = int(tri.get("id", tid+1))
-                            txt = f"{key}:{str(lbl).strip()}({triNum}S)"
-                            if txt and txt not in seen:
-                                lines.append(txt); seen.add(txt)
-
-                # ---- LIGNE(S) DU DESSOUS : arêtes connectées ----
-                connected = self._connected_vertices_from(v_world, gid, tol_world)
-
-                if connected:
-                    # séparateur visuel entre “sommet(s)” et “connectés”
-                    lines.append("")  # ligne vide
-                    # chaque voisin: "-> Nom — ddd° / mm.m' / h.h"
-                    for item in connected:
-                        name = item.get("name", "")
-                        pt   = item.get("pt", None)
-                        tid2 = item.get("tid", None)
-
-                        if not name:
-                            continue
-                        # Ajouter l'id du triangle (ex: 2S) pour lever l'ambiguïté
-                        nameDisp = name
-                        if tid2 is not None and 0 <= int(tid2) < len(self._last_drawn):
-                            tri2 = self._last_drawn[int(tid2)]
-                            triNum2 = int(tri2.get("id", int(tid2)+1))
-                            nameDisp = f"{name} ({triNum2}S)"
-
-                        if pt is None:
-                            lines.append(f"-> {nameDisp}")
-                            continue
-                        az = self._azimutDegEtMinute(v_world, pt)
-                        if az is None:
-                            lines.append(f"-> {nameDisp} — azimut indéterminé")
-                        else:
-                            degInt, minFloat, hourFloat = az
-                            # Alignements lisibles: degrés sur 3, minutes & heures avec 1 décimale
-                            lines.append(f"-> {nameDisp} — {degInt:03d}° / {minFloat:04.1f}' / {hourFloat:0.1f}h")
-            tooltip_txt = "\n".join(lines)
+                lines = ["Noeuds:"]
+                phys_nodes = topoWorld.getPhysicalNodesForConceptNode(nodeId)
+                for nid in phys_nodes:
+                    lines.append(f"- {topoWorld.getPhysicalNodeName(nid)}")
+                lines.append("Liens connectés:")
+                rays = topoWorld.getConceptRays(nodeId)
+                for ray in rays:
+                    other = ray["otherNodeId"]
+                    az = ray["azDeg"]
+                    lines.append(f"- {topoWorld.getConceptNodeName(other)} @ {float(az):0.2f}°")
+                tooltip_txt = "\n".join(lines)
             if tooltip_txt:
                 # === Placement robuste par CENTRE du tooltip ===
                 # 1) Coordonnées CANVAS du sommet et du barycentre

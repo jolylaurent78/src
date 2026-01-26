@@ -970,6 +970,12 @@ class TopologyWorld:
         c.geomValid = True
 
     def getConceptNodeWorldXY(self, node_id: str, group_id: str | None = None) -> tuple[float, float]:
+        """Retourne la position monde d'un concept node (x, y).
+        Garantit un couple de floats pour un node résolu via le groupe.
+        Ne modifie pas la topologie ni les attachments.
+        Ne définit pas le groupe si l'inférence échoue.
+        Peut retourner (0,0) si l'information n'est pas disponible.
+        """
         gid = group_id if group_id is not None else self._infer_group_for_node(node_id)
         if gid is None:
             return (0.0, 0.0)
@@ -981,15 +987,34 @@ class TopologyWorld:
         return info.world_xy()
 
 
-    def getConceptRays(self, node_id: str, group_id: str | None = None) -> list[tuple[str, str, float]]:
-        """Rays conceptuels au node canonique, LIMITES AU GROUPE."""
+    def getConceptRays(self, node_id: str, group_id: str | None = None) -> list[dict]:
+        """
+        Retourne les rayons (arcs) conceptuels incident au nœud conceptuel canonique.
+
+        Entrées :
+        - node_id (str) : identifiant d’un nœud (atomique ou déjà canonique). La canonisation DSU
+        est appliquée en interne.
+        - group_id (str | None) : si fourni, force le groupe ; sinon le groupe est inféré depuis node_id.
+
+        Sortie :
+        - list[dict] : liste de rayons, chacun au format :
+            {
+            "otherNodeId": str,  # id canonique du nœud voisin
+            "azDeg": float       # azimut en degrés (0° = Nord, sens horaire), normalisé [0..360)
+            }
+
+        Garanties :
+        - les voisins sont limités au groupe résolu (fourni ou inféré),
+        - la liste est triée de manière stable (azDeg puis otherNodeId),
+        - n’écrit aucun texte d’affichage et ne modifie ni topologie ni caches.
+        """
         gid = group_id if group_id is not None else self._infer_group_for_node(node_id)
         if gid is None:
             return []
         cn = self.find_node(str(node_id))
         p0 = self.getConceptNodeWorldXY(cn, gid)
         c = self.ensureConceptGeom(gid)
-        out: list[tuple[str, str, float]] = []
+        out: list[dict] = []
         for (a, b), ce in c.edges.items():
             if cn != a and cn != b:
                 continue
@@ -997,9 +1022,11 @@ class TopologyWorld:
             p1 = self.getConceptNodeWorldXY(other, gid)
             dx = float(p1[0] - p0[0])
             dy = float(p1[1] - p0[1])
-            edge_id = f"{a}|{b}"
-            out.append((edge_id, other, self.azimutDegFromDxDy(dx, dy)))
-        out.sort(key=lambda r: (float(r[2]), str(r[1])))
+            out.append({
+                "otherNodeId": str(other),
+                "azDeg": self.azimutDegFromDxDy(dx, dy),
+            })
+        out.sort(key=lambda r: (float(r.get("azDeg", 0.0)), str(r.get("otherNodeId", ""))))
         return out
 
     def computeBoundary(self, group_id: str, orientation: str = "cw") -> None:
@@ -1200,7 +1227,12 @@ class TopologyWorld:
         return out
 
     def getConceptNeighborNodes(self, node_id: str, group_id: str | None = None) -> list[str]:
-        """Liste des concept nodes voisins (ids canoniques) connectés à node_id (par groupe)."""
+        """Retourne les voisins conceptuels directs d'un node.
+        Renvoie une liste d'IDs canoniques, uniques et stables.
+        Garantit que les voisins sont limités au groupe résolu.
+        Ne calcule pas d'azimut ni de géométrie.
+        Ne modifie pas la topologie ni les caches.
+        """
         edges = self.getConceptEdgesForNode(node_id, group_id)
         neigh = [e["other"] for e in edges]
         # unique + stable
@@ -1914,13 +1946,19 @@ class TopologyWorld:
         return f"{node_type}:{label}({tri})"
 
     def getConceptNodeName(self, node_id: str) -> str:
+        """Retourne le libellé conceptuel pour un node.
+        Renvoie un texte "Type:Labels" basé sur le node canonique.
+        Garantit une agrégation des labels des membres.
+        Ne choisit pas une vue physique et ne retourne pas d'ID.
+        Ne modifie pas la topologie ni les caches.
+        """
         cn = self.find_node(str(node_id))
         member_ids = list(self.node_members(cn))
         node_type = self.computeConceptNodeTypeOptionB(member_ids)
         label = self.getNodeLabel(cn)
         return f"{node_type}:{label}"
 
-    def getPhysicalNodesFromConceptNode(self, node_id: str) -> list[str]:
+    def getPhysicalNodesForConceptNode(self, node_id: str) -> list[str]:
         cn = self.find_node(str(node_id))
         return list(self.node_members(cn))
 
