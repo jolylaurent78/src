@@ -5830,16 +5830,16 @@ class TriangleViewerManual(
         # Contrainte: d'autres appels attendent que choice[4] soit déballable en (m_a,m_b,t_a,t_b).
         # On encapsule donc ces 4 points dans un petit objet séquence (len==4) qui porte aussi les identités réelles.
         class _EdgeChoiceEpts:
-            __slots__ = ("mA", "mB", "tA", "tB",
+            __slots__ = ("mA", "mBEdgeVertex", "tA", "tBEdgeVertex",
                          "src_owner_tid", "src_edge", "dst_owner_tid", "dst_edge",
                          "src_vkey_at_mA", "src_vkey_at_mB", "dst_vkey_at_tA", "dst_vkey_at_tB",
                          "src_edge_labels", "dst_edge_labels", "kind", "tRaw")
 
-            def __init__(self, mA, mB, tA, tB,
+            def __init__(self, mA, mBEdgeVertex, tA, tBEdgeVertex,
                          src_owner_tid=None, src_edge=None, dst_owner_tid=None, dst_edge=None,
                          src_vkey_at_mA=None, src_vkey_at_mB=None, dst_vkey_at_tA=None, dst_vkey_at_tB=None,
                          src_edge_labels=None, dst_edge_labels=None, kind=None, t_raw=None):
-                self.mA = tuple(mA); self.mB = tuple(mB); self.tA = tuple(tA); self.tB = tuple(tB)
+                self.mA = tuple(mA); self.mBEdgeVertex = tuple(mBEdgeVertex); self.tA = tuple(tA); self.tBEdgeVertex = tuple(tBEdgeVertex)
                 self.src_owner_tid = src_owner_tid
                 self.src_edge = src_edge
                 self.dst_owner_tid = dst_owner_tid
@@ -5859,15 +5859,15 @@ class TriangleViewerManual(
 
             def __iter__(self):
                 yield self.mA
-                yield self.mB
+                yield self.mBEdgeVertex
                 yield self.tA
-                yield self.tB
+                yield self.tBEdgeVertex
 
             def __getitem__(self, i):
                 if i == 0: return self.mA
-                if i == 1: return self.mB
+                if i == 1: return self.mBEdgeVertex
                 if i == 2: return self.tA
-                if i == 3: return self.tB
+                if i == 3: return self.tBEdgeVertex
                 raise IndexError(i)
 
         def _edge_code_from_vkeys(a, b):
@@ -6074,11 +6074,6 @@ class TriangleViewerManual(
                 if (src_edge_labels[0] == dst_edge_labels[0]) and (src_edge_labels[1] == dst_edge_labels[1]):
                     kind = "edge-edge"
 
-            # t: UNIQUEMENT en vertex-edge (sinon None)
-            t_raw = None
-            if kind == "vertex-edge":
-                t_raw = _compute_t_by_edge_ratio(mA, mB, tA, tB)
-
             # --- TOPOL: associer chaque point (mA/mB/tA/tB) à l'endpoint vkey correspondant ---
             # Sans cette info, on ne peut PAS décider "direct/reverse" de manière topologique.
             def _edge_code_to_vkeys(edge_code: str):
@@ -6129,7 +6124,37 @@ class TriangleViewerManual(
                 dst_vkey_at_tA = dstA
                 dst_vkey_at_tB = dstB
 
-            epts = _EdgeChoiceEpts(tuple(mA), tuple(mB), tuple(tA), tuple(tB),
+            # t: UNIQUEMENT en vertex-edge (sinon None)
+            t_raw = None
+            if kind == "vertex-edge":
+                # Par défaut: legacy (graphique)
+                mB_edge_vertex = mB
+                tB_edge_vertex = tB
+
+                if sv0 and sv1 and dv0 and dv1 and src_vkey_at_mA and dst_vkey_at_tA:
+                    if src_vkey_at_mA not in (sv0, sv1):
+                        print("[ATTACH][VE] src_vkey_at_mA not on src_edge -> fallback legacy")
+                    elif dst_vkey_at_tA not in (dv0, dv1):
+                        print("[ATTACH][VE] dst_vkey_at_tA not on dst_edge -> fallback legacy")
+                    else:
+                        src_other = sv1 if src_vkey_at_mA == sv0 else sv0
+                        dst_other = dv1 if dst_vkey_at_tA == dv0 else dv0
+                        if src_other in Psrc and dst_other in Pdst:
+                            mB_edge_vertex = Psrc[src_other]
+                            tB_edge_vertex = Pdst[dst_other]
+                        else:
+                            print("[ATTACH][VE] owner edge vertex missing -> fallback legacy")
+
+                t_raw = _compute_t_by_edge_ratio(mA, mB_edge_vertex, tA, tB_edge_vertex)
+
+            if kind == "vertex-edge" and "mB_edge_vertex" in locals():
+                mB_edge_vertex_out = mB_edge_vertex
+                tB_edge_vertex_out = tB_edge_vertex
+            else:
+                mB_edge_vertex_out = mB
+                tB_edge_vertex_out = tB
+
+            epts = _EdgeChoiceEpts(tuple(mA), tuple(mB_edge_vertex_out), tuple(tA), tuple(tB_edge_vertex_out),
                                    src_owner_tid=src_owner_tid, src_edge=src_edge,
                                    dst_owner_tid=dst_owner_tid, dst_edge=dst_edge,
                                    src_vkey_at_mA=src_vkey_at_mA, src_vkey_at_mB=src_vkey_at_mB,
@@ -8292,14 +8317,14 @@ class TriangleViewerManual(
                 and choice[1] == anchor.get("vkey")):
 
                 # Déballage du choix d'arête: (mob_idx,vkey_m,tgt_idx,vkey_t,epts)
-                # epts est un objet séquence (mA,mB,tA,tB) enrichi pendant l'assist
+                # epts est un objet séquence (mA,mBEdgeVertex,tA,tBEdgeVertex) enrichi pendant l'assist
                 (_, _, idx_t, vkey_t, epts) = choice
-                (m_a, m_b, t_a, t_b) = epts
+                (m_a, m_b_edge_vertex, t_a, t_b_edge_vertex) = epts
 
                 A = np.array(m_a, dtype=float)  # sommet mobile saisi (dans le groupe)
-                B = np.array(m_b, dtype=float)  # voisin côté mobile (définit l'arête)
+                B = np.array(m_b_edge_vertex, dtype=float)  # voisin côté mobile (définit l'arête)
                 U = np.array(t_a, dtype=float)  # cible: point d'accroche
-                V = np.array(t_b, dtype=float)  # cible: second point arête
+                V = np.array(t_b_edge_vertex, dtype=float)  # cible: second point arête
 
                 # Angle mobile/cible et rotation à appliquer (helpers unifiés)
                 ang_m = self._ang_of_vec(B[0] - A[0], B[1] - A[1])
