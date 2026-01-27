@@ -12,7 +12,7 @@
   },
   "uiMapOpacity": 80,
   "uiClockRefAzimuth": 173.79803238581732,
-  "uiShowOnlyGroupContours": false,
+  "uiShowOnlyGroupContours": true,
   "simLastAlgoId": "quadris_par_paires",
   "simLastN": 6,
   "simLastOrder": "forward",

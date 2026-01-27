@@ -71,6 +71,7 @@ from src.assembleur_tk_mixin_dictionary import TriangleViewerDictionaryMixin
 from src.assembleur_tk_mixin_frontier import TriangleViewerFrontierGraphMixin
 from src.assembleur_tk_mixin_bg import TriangleViewerBackgroundMapMixin
 from src.assembleur_tk_mixin_clockarc import TriangleViewerClockArcMixin
+from src.assembleur_edgechoice import buildEdgeChoiceEptsFromBest
 
 
 # --- Dictionnaire (chargement livre.txt) ---
@@ -5333,14 +5334,6 @@ class TriangleViewerManual(
             t1 = float(bs.t1)
             q0 = pA + (pB - pA) * t0
             q1 = pA + (pB - pA) * t1
-            print(
-                "[BOUNDARY]",
-                "A,B=", bs.conceptA, bs.conceptB,
-                "elem=", bs.elementId, "edge=", bs.edgeIndex,
-                "k0,k1=", k0, k1,
-                "from,to=", bs.fromNodeId, bs.toNodeId,
-                "t0,t1=", bs.t0, bs.t1,
-            )
             outline.append((q0, q1))
         return outline
 
@@ -5828,342 +5821,27 @@ class TriangleViewerManual(
 
         # --- NOTE: _edge_choice est la "source de vérité" pour le release ---
         # Contrainte: d'autres appels attendent que choice[4] soit déballable en (m_a,m_b,t_a,t_b).
-        # On encapsule donc ces 4 points dans un petit objet séquence (len==4) qui porte aussi les identités réelles.
-        class _EdgeChoiceEpts:
-            __slots__ = ("mA", "mBEdgeVertex", "tA", "tBEdgeVertex",
-                         "src_owner_tid", "src_edge", "dst_owner_tid", "dst_edge",
-                         "src_vkey_at_mA", "src_vkey_at_mB", "dst_vkey_at_tA", "dst_vkey_at_tB",
-                         "src_edge_labels", "dst_edge_labels", "kind", "tRaw")
-
-            def __init__(self, mA, mBEdgeVertex, tA, tBEdgeVertex,
-                         src_owner_tid=None, src_edge=None, dst_owner_tid=None, dst_edge=None,
-                         src_vkey_at_mA=None, src_vkey_at_mB=None, dst_vkey_at_tA=None, dst_vkey_at_tB=None,
-                         src_edge_labels=None, dst_edge_labels=None, kind=None, t_raw=None):
-                self.mA = tuple(mA); self.mBEdgeVertex = tuple(mBEdgeVertex); self.tA = tuple(tA); self.tBEdgeVertex = tuple(tBEdgeVertex)
-                self.src_owner_tid = src_owner_tid
-                self.src_edge = src_edge
-                self.dst_owner_tid = dst_owner_tid
-                self.dst_edge = dst_edge
-                self.src_vkey_at_mA = src_vkey_at_mA
-                self.src_vkey_at_mB = src_vkey_at_mB
-                self.dst_vkey_at_tA = dst_vkey_at_tA
-                self.dst_vkey_at_tB = dst_vkey_at_tB
-                self.src_edge_labels = src_edge_labels
-                self.dst_edge_labels = dst_edge_labels
-                self.kind = kind
-                self.tRaw = t_raw
-
-            # --- compat: unpack (m_a,m_b,t_a,t_b) ---
-            def __len__(self):
-                return 4
-
-            def __iter__(self):
-                yield self.mA
-                yield self.mBEdgeVertex
-                yield self.tA
-                yield self.tBEdgeVertex
-
-            def __getitem__(self, i):
-                if i == 0: return self.mA
-                if i == 1: return self.mBEdgeVertex
-                if i == 2: return self.tA
-                if i == 3: return self.tBEdgeVertex
-                raise IndexError(i)
-
-        def _edge_code_from_vkeys(a, b):
-            if not a or not b or a == b:
-                return None
-            s = {a, b}
-            if s == {"O", "B"}: return "OB"
-            if s == {"B", "L"}: return "BL"
-            if s == {"L", "O"}: return "LO"
-            return None
-
-        def _find_owner_edge_for_segment(gid: int, A, B, eps=EPS_WORLD):
-            """
-            Détermine, à partir d’un segment monde (A,B) détecté pendant le "snap assist",
-            quel triangle (tid) du groupe gid porte ce segment, et à quelle arête locale
-            (OB / BL / LO) il correspond.
-
-            Contexte d’usage
-            ---------------
-            Cette fonction est appelée dans _update_edge_highlights() après avoir trouvé
-            un "best" candidat de collage. Le couple (owner_tid, edge_code) est ensuite
-            utilisé pour :
-            - récupérer les labels de l’arête (src_edge_labels / dst_edge_labels),
-            - décider si l’assist est "edge-edge" ou "vertex-edge",
-            - dériver les vkeys aux extrémités (src_vkey_at_mA/mB, dst_vkey_at_tA/tB),
-            - construire les TopologyAttachment au relâché (release).
-
-            Entrées
-            -------
-            gid : identifiant du groupe UI (self.groups) dans lequel chercher.
-            A,B : points monde (x,y) du segment candidat, issus de l’assist.
-                A et B sont censés représenter les deux extrémités du segment d’arête
-                ciblé (dans le repère monde UI).
-            eps : tolérance monde (en unités monde) pour les comparaisons.
-
-            Sortie
-            ------
-            (owner_tid, edge_code) où :
-            - owner_tid est l’index du triangle dans self._last_drawn,
-            - edge_code ∈ {"OB","BL","LO"}.
-            Retourne (None, None) si aucun match n’est trouvé.
-
-            Hypothèse / Limite
-            ------------------
-            Version actuelle : on identifie l’arête en comparant (A,B) aux endpoints
-            (O,B,L) de chaque triangle du groupe. Cette logique suppose que (A,B)
-            correspond à l’arête entière (endpoints), pas à un sous-segment.
-            """
-            if gid is None:
-                return (None, None)
-
-            Ax, Ay = float(A[0]), float(A[1])
-            Bx, By = float(B[0]), float(B[1])
-
-            def _proj_t_and_d2(P0x, P0y, P1x, P1y, Qx, Qy):
-                vx, vy = (P1x - P0x), (P1y - P0y)
-                wx, wy = (Qx - P0x), (Qy - P0y)
-                vv = vx*vx + vy*vy
-                if vv <= 1e-12:
-                    return (0.0, (Qx - P0x)**2 + (Qy - P0y)**2)
-                t = (wx*vx + wy*vy) / vv
-                if t < 0.0: t = 0.0
-                elif t > 1.0: t = 1.0
-                px, py = (P0x + t*vx), (P0y + t*vy)
-                dx, dy = (Qx - px), (Qy - py)
-                return (t, dx*dx + dy*dy)
-
-            best = None  # (score, tid, edge_code)
-            for nd in (self._group_nodes(gid) or []):
-                tid = nd.get("tid")
-                if tid is None or not (0 <= tid < len(self._last_drawn)):
-                    continue
-                P = self._last_drawn[tid].get("pts")
-                if not P:
-                    continue
-
-                # arêtes du triangle (non orientées)
-                for (a, b) in (("O", "B"), ("B", "L"), ("L", "O")):
-                    P0x, P0y = float(P[a][0]), float(P[a][1])
-                    P1x, P1y = float(P[b][0]), float(P[b][1])
-
-                    tA, d2A = _proj_t_and_d2(P0x, P0y, P1x, P1y, Ax, Ay)
-                    tB, d2B = _proj_t_and_d2(P0x, P0y, P1x, P1y, Bx, By)
-
-                    if d2A <= eps*eps and d2B <= eps*eps:
-                        score = d2A + d2B
-                        if best is None or score < best[0]:
-                            best = (score, tid, _edge_code_from_vkeys(a, b))
-
-            if best is None:
-                return (None, None)
-            return (best[1], best[2])
-
-        def _edge_vkeys_from_code(edge_code: str):
-            e = str(edge_code or "").upper().strip()
-            if e == "OB": return ("O", "B")
-            if e == "BL": return ("B", "L")
-            if e == "LO": return ("L", "O")
-            return (None, None)
-
-        def _edge_labels_for(owner_tid: int, edge_code: str):
-            """Retourne (labA, labB) selon l'ordre des vkeys de l'arête, ou None si impossible."""
-            if owner_tid is None or not (0 <= int(owner_tid) < len(self._last_drawn)):
-                return None
-            tri = self._last_drawn[int(owner_tid)]
-            labels = tri.get("labels", None)
-            if labels is None:
-                return None
-            a, b = _edge_vkeys_from_code(edge_code)
-            if not a or not b:
-                return None
-            idx = {"O": 0, "B": 1, "L": 2}
-            ia, ib = idx.get(a, None), idx.get(b, None)
-            if ia is None or ib is None:
-                return None
-            la = labels[ia] if ia < len(labels) else ""
-            lb = labels[ib] if ib < len(labels) else ""
-            return (str(la).strip(), str(lb).strip())
-
-
-        def _compute_t_by_edge_ratio(mA, mB, tA, tB):
-            """
-            Compute the parameter t for a vertex-edge attachment using a length ratio.
-
-            This function implements a topological "gluing" rule:
-            the source segment (mA -> mB) is conceptually glued onto the
-            target edge segment (tA -> tB).
-
-            The resulting parameter t is defined as:
-                t = |mA -> mB| / |tA -> tB|
-
-            This computation:
-            - is independent of the current geometric pose,
-            - does NOT perform any projection,
-            - produces a stable parameter suitable for conceptual interpretation
-              and XML export.
-
-            The returned t is clamped to [0, 1].
-
-            Parameters:
-                mA, mB : Points defining the source segment
-                tA, tB : Points defining the target edge segment
-
-            Returns:
-                t (float): normalized parameter along the target edge.
-            """
-            mAx, mAy = float(mA[0]), float(mA[1])
-            mBx, mBy = float(mB[0]), float(mB[1])
-            tAx, tAy = float(tA[0]), float(tA[1])
-            tBx, tBy = float(tB[0]), float(tB[1])
-            dx_m = mBx - mAx
-            dy_m = mBy - mAy
-            dx_t = tBx - tAx
-            dy_t = tBy - tAy
-            L_src = math.hypot(dx_m, dy_m)
-            L_dst = math.hypot(dx_t, dy_t)
-            if L_dst <= 1e-12:
-                raise ValueError("Degenerate target edge length")
-            t = L_src / L_dst
-            return float(t)
-
         self._edge_choice = None
         if best:
-            (mA, mB), (tA, tB) = best[1], best[2]
-
-            # Identités réelles (owner_tid + edge) au moment de l'assist
-            src_owner_tid, src_edge = _find_owner_edge_for_segment(gid_m, mA, mB)
-            dst_owner_tid, dst_edge = _find_owner_edge_for_segment(gid_t, tA, tB)
-
-            # Fallback: garder au minimum l'edge du triangle de départ si non déterminé
-            if src_owner_tid is None:
-                src_owner_tid = int(mob_idx)
-            if dst_owner_tid is None:
-                dst_owner_tid = int(tgt_idx)
-
-            # Pts owners (Topology assist) — distinct des Pm/Pt legacy
-            tri_src = self._last_drawn[int(src_owner_tid)]
-            tri_dst = self._last_drawn[int(dst_owner_tid)]
-            if tri_src is None or tri_dst is None:
-                raise ValueError(
-                    f"Topo pts manquants (src_tid={src_owner_tid}, dst_tid={dst_owner_tid}, src_edge={src_edge}, dst_edge={dst_edge})"
-                )
-            Psrc = tri_src.get("pts", None)
-            Pdst = tri_dst.get("pts", None)
-            if Psrc is None or Pdst is None:
-                raise ValueError(
-                    f"Topo pts manquants (src_tid={src_owner_tid}, dst_tid={dst_owner_tid}, src_edge={src_edge}, dst_edge={dst_edge})"
-                )
-            if not all(k in Psrc for k in ("O", "B", "L")) or not all(k in Pdst for k in ("O", "B", "L")):
-                raise ValueError(
-                    f"Topo pts incomplets (src_tid={src_owner_tid}, dst_tid={dst_owner_tid}, src_edge={src_edge}, dst_edge={dst_edge})"
-                )
-
-            # Labels des 2 arêtes (source/cible) → décision fiable Edge-Edge vs Vertex-Edge
-            src_edge_labels = _edge_labels_for(src_owner_tid, src_edge)
-            dst_edge_labels = _edge_labels_for(dst_owner_tid, dst_edge)
-
-            # Par défaut: vertex-edge (si labels indisponibles, on ne "devine" pas au release)
-            kind = "vertex-edge"
-            if src_edge_labels and dst_edge_labels:
-                # Edge-Edge si [A,B] vs [B,A]
-                if (src_edge_labels[0] == dst_edge_labels[1]) and (src_edge_labels[1] == dst_edge_labels[0]):
-                    kind = "edge-edge"
-                if (src_edge_labels[0] == dst_edge_labels[0]) and (src_edge_labels[1] == dst_edge_labels[1]):
-                    kind = "edge-edge"
-
-            # --- TOPOL: associer chaque point (mA/mB/tA/tB) à l'endpoint vkey correspondant ---
-            # Sans cette info, on ne peut PAS décider "direct/reverse" de manière topologique.
-            def _edge_code_to_vkeys(edge_code: str):
-                c = str(edge_code or "").upper()
-                if c == "OB": return ("O", "B")
-                if c == "BL": return ("B", "L")
-                if c == "LO": return ("L", "O")
-                return (None, None)
-
-            def _assign_edge_endpoints_by_cross_distance(src_edge_code, dst_edge_code, Pm, Pt):
-                """
-                Retourne:
-                  (srcA, srcB), (dstA, dstB)
-                où A est le couple minimisant la distance croisée, et B est déduit (autre endpoint).
-                """
-                sv0, sv1 = _edge_code_to_vkeys(src_edge_code)
-                dv0, dv1 = _edge_code_to_vkeys(dst_edge_code)
-                if sv0 is None or sv1 is None or dv0 is None or dv1 is None:
-                    return ((None, None), (None, None))
-
-                pairs = [(sv0, dv0), (sv0, dv1), (sv1, dv0), (sv1, dv1)]
-                best_pair = None
-                best_d2 = None
-                for sa, da in pairs:
-                    p = _to_np(Pm[sa])
-                    q = _to_np(Pt[da])
-                    d2 = float((p[0] - q[0])**2 + (p[1] - q[1])**2)
-                    if best_d2 is None or d2 < best_d2:
-                        best_d2 = d2
-                        best_pair = (sa, da)
-
-                if best_pair is None:
-                    return ((None, None), (None, None))
-
-                srcA, dstA = best_pair
-                srcB = sv1 if srcA == sv0 else sv0
-                dstB = dv1 if dstA == dv0 else dv0
-                return ((srcA, srcB), (dstA, dstB))
-
-            src_vkey_at_mA = src_vkey_at_mB = None
-            dst_vkey_at_tA = dst_vkey_at_tB = None
-            sv0, sv1 = _edge_code_to_vkeys(src_edge)
-            dv0, dv1 = _edge_code_to_vkeys(dst_edge)
-            if sv0 and sv1 and dv0 and dv1:
-                (srcA, srcB), (dstA, dstB) = _assign_edge_endpoints_by_cross_distance(src_edge, dst_edge, Psrc, Pdst)
-                src_vkey_at_mA = srcA
-                src_vkey_at_mB = srcB
-                dst_vkey_at_tA = dstA
-                dst_vkey_at_tB = dstB
-
-            # t: UNIQUEMENT en vertex-edge (sinon None)
-            t_raw = None
-            if kind == "vertex-edge":
-                # Par défaut: legacy (graphique)
-                mB_edge_vertex = mB
-                tB_edge_vertex = tB
-
-                if sv0 and sv1 and dv0 and dv1 and src_vkey_at_mA and dst_vkey_at_tA:
-                    if src_vkey_at_mA not in (sv0, sv1):
-                        print("[ATTACH][VE] src_vkey_at_mA not on src_edge -> fallback legacy")
-                    elif dst_vkey_at_tA not in (dv0, dv1):
-                        print("[ATTACH][VE] dst_vkey_at_tA not on dst_edge -> fallback legacy")
-                    else:
-                        src_other = sv1 if src_vkey_at_mA == sv0 else sv0
-                        dst_other = dv1 if dst_vkey_at_tA == dv0 else dv0
-                        if src_other in Psrc and dst_other in Pdst:
-                            mB_edge_vertex = Psrc[src_other]
-                            tB_edge_vertex = Pdst[dst_other]
-                        else:
-                            print("[ATTACH][VE] owner edge vertex missing -> fallback legacy")
-
-                t_raw = _compute_t_by_edge_ratio(mA, mB_edge_vertex, tA, tB_edge_vertex)
-
-            if kind == "vertex-edge" and "mB_edge_vertex" in locals():
-                mB_edge_vertex_out = mB_edge_vertex
-                tB_edge_vertex_out = tB_edge_vertex
-            else:
-                mB_edge_vertex_out = mB
-                tB_edge_vertex_out = tB
-
-            epts = _EdgeChoiceEpts(tuple(mA), tuple(mB_edge_vertex_out), tuple(tA), tuple(tB_edge_vertex_out),
-                                   src_owner_tid=src_owner_tid, src_edge=src_edge,
-                                   dst_owner_tid=dst_owner_tid, dst_edge=dst_edge,
-                                   src_vkey_at_mA=src_vkey_at_mA, src_vkey_at_mB=src_vkey_at_mB,
-                                   dst_vkey_at_tA=dst_vkey_at_tA, dst_vkey_at_tB=dst_vkey_at_tB,
-                                   src_edge_labels=src_edge_labels, dst_edge_labels=dst_edge_labels,
-                                   kind=kind, t_raw=t_raw)
-
-            # Contrainte compat: structure inchangée (5 items) ; epts est "unpackable" en 4 points.
-            self._edge_choice = (mob_idx, vkey_m, tgt_idx, tgt_vkey, epts)
+            mob_tids = [nd.get("tid") for nd in (self._group_nodes(gid_m) or []) if nd.get("tid") is not None]
+            tgt_tids = [nd.get("tid") for nd in (self._group_nodes(gid_t) or []) if nd.get("tid") is not None]
+            res = buildEdgeChoiceEptsFromBest(
+                best,
+                mob_gid=gid_m,
+                tgt_gid=gid_t,
+                mob_idx=mob_idx,
+                tgt_idx=tgt_idx,
+                mob_tids=mob_tids,
+                tgt_tids=tgt_tids,
+                last_drawn=self._last_drawn,
+                eps_world=EPS_WORLD,
+                src_anchor_vkey=vkey_m,
+                dst_anchor_vkey=tgt_vkey,
+                debug=bool(self._debug_snap_assist),
+            )
+            if res:
+                epts, _meta = res
+                self._edge_choice = (mob_idx, vkey_m, tgt_idx, tgt_vkey, epts)
 
         # Ajout des contours pour le debug (bleu)
         mob_outline = [(tuple(a), tuple(b)) for (a,b) in self._outline_for_item(mob_idx)]
@@ -8375,123 +8053,26 @@ class TriangleViewerManual(
                         # La pose Core doit refléter ce que Tk a effectivement appliqué
                         self._sync_group_elements_pose_to_core(mob_gid)
 
-                        edge_code_to_index = {"OB": 0, "BL": 1, "LO": 2}
-                        vkey_to_index = {"O": 0, "B": 1, "L": 2}
-
                         kind = str(epts.kind).strip().lower()
                         if kind not in ("edge-edge", "vertex-edge"):
                             raise RuntimeError(f"kind inattendu: {kind}")
 
-                        attachments_to_apply: list[TopologyAttachment] = []
+                        tri_src = self._last_drawn[int(epts.src_owner_tid)]
+                        tri_dst = self._last_drawn[int(epts.dst_owner_tid)]
+                        elementIdSrc = tri_src.get("topoElementId", None)
+                        elementIdDst = tri_dst.get("topoElementId", None)
+                        if elementIdSrc is None or elementIdDst is None:
+                            raise ValueError(
+                                f"vertex-edge: topoElementId manquant (src_tid={epts.src_owner_tid}, dst_tid={epts.dst_owner_tid})"
+                            )
 
-                        if kind == "edge-edge":
-                            em = edge_code_to_index[str(epts.src_edge).upper()]
-                            et = edge_code_to_index[str(epts.dst_edge).upper()]
-                            # mapping topologique : direct/reverse selon les vkeys
-                            if (epts.src_vkey_at_mA == epts.dst_vkey_at_tA) and (epts.src_vkey_at_mB == epts.dst_vkey_at_tB):
-                                mapping = "direct"
-                            elif (epts.src_vkey_at_mA == epts.dst_vkey_at_tB) and (epts.src_vkey_at_mB == epts.dst_vkey_at_tA):
-                                mapping = "reverse"
-                            else:
-                                msg = (
-                                    "edge-edge: mapping indéterminable "
-                                    f"(mA={epts.src_vkey_at_mA} mB={epts.src_vkey_at_mB} "
-                                    f"tA={epts.dst_vkey_at_tA} tB={epts.dst_vkey_at_tB})"
-                                )
-                                if self._debug_snap_assist:
-                                    raise RuntimeError(msg)
-                                print(f"[ATTACH][edge-edge] {msg}")
-                                mapping = None
-                            if mapping is not None:
-                                attachments_to_apply.append(
-                                    TopologyAttachment(
-                                        attachment_id=world.new_attachment_id(),
-                                        kind="edge-edge",
-                                        feature_a=TopologyFeatureRef(TopologyFeatureType.EDGE, element_id_m, int(em)),
-                                        feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE, element_id_t, int(et)),
-                                        params={"mapping": mapping},
-                                        source="manual",
-                                    )
-                                )
-
-                        elif kind == "vertex-edge":
-                            vmB = vkey_to_index[epts.src_vkey_at_mB]
-                            vmA = vkey_to_index[epts.src_vkey_at_mA]
-                            vtA = vkey_to_index[epts.dst_vkey_at_tA]
-                            vtB = vkey_to_index[epts.dst_vkey_at_tB]
-                            et_dst = edge_code_to_index[str(epts.dst_edge).upper()]
-                            et_src = edge_code_to_index[str(epts.src_edge).upper()]
-                            t_raw = epts.tRaw
-                            tri_src = self._last_drawn[int(epts.src_owner_tid)]
-                            tri_dst = self._last_drawn[int(epts.dst_owner_tid)]
-                            elementIdSrc = tri_src.get("topoElementId", None)
-                            elementIdDst = tri_dst.get("topoElementId", None)
-                            if elementIdSrc is None or elementIdDst is None:
-                                raise ValueError(
-                                    f"vertex-edge: topoElementId manquant (src_tid={epts.src_owner_tid}, dst_tid={epts.dst_owner_tid})"
-                                )
-
-                            # tRaw < 0 : rejet (géométriquement impossible dans notre assemblage)
-                            if t_raw < 0.0:
-                                if self._debug_snap_assist:
-                                    print(f"[ATTACH][VE] reject tRaw={t_raw}")
-                                return
-
-                            if t_raw <= 1.0:
-                                # vertex-edge : on attache le sommet mB sur l’arête cible, paramétrée par tRaw
-                                if vtA is None:
-                                    raise ValueError("vertex-edge: vkey tA indisponible pour edgeFrom")
-                                edge_from = world.format_node_id(elementIdDst, int(vtA))
-                                attachments_to_apply.append(
-                                    TopologyAttachment(
-                                        attachment_id=world.new_attachment_id(),
-                                        kind="vertex-edge",
-                                        feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdSrc, int(vmB)),
-                                        feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE,   elementIdDst, int(et_dst)),
-                                        params={"t": float(t_raw), "edgeFrom": edge_from},
-                                        source="manual",
-                                    )
-                                )
-
-                                # vertex-vertex : 2e contrainte pour verrouiller mA ↔ tA
-                                attachments_to_apply.append(
-                                    TopologyAttachment(
-                                        attachment_id=world.new_attachment_id(),
-                                        kind="vertex-vertex",
-                                        feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdSrc, int(vmA)),
-                                        feature_b=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdDst, int(vtA)),
-                                        params={},
-                                        source="manual",
-                                    )
-                                )
-                            else:
-                                # tRaw > 1 : inversion (swap) + t_inv = 1/tRaw pour revenir dans [0,1]
-                                t_inv = 1.0 / float(t_raw)
-                                if vmA is None:
-                                    raise ValueError("vertex-edge: vkey mA indisponible pour edgeFrom")
-                                edge_from = world.format_node_id(elementIdSrc, int(vmA))
-                                attachments_to_apply.append(
-                                    TopologyAttachment(
-                                        attachment_id=world.new_attachment_id(),
-                                        kind="vertex-edge",
-                                        feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdDst, int(vtB)),
-                                        feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE,   elementIdSrc, int(et_src)),
-                                        params={"t": float(t_inv), "edgeFrom": edge_from},
-                                        source="manual",
-                                    )
-                                )
-                                attachments_to_apply.append(
-                                    TopologyAttachment(
-                                        attachment_id=world.new_attachment_id(),
-                                        kind="vertex-vertex",
-                                        feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdDst, int(vtA)),
-                                        feature_b=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdSrc, int(vmA)),
-                                        params={},
-                                        source="manual",
-                                    )
-                                )
-                        else:
-                            raise RuntimeError(f"kind inattendu: {kind}")
+                        attachments_to_apply = epts.createTopologyAttachments(
+                            new_attachment_id=world.new_attachment_id,
+                            elementIdSrc=elementIdSrc,
+                            elementIdDst=elementIdDst,
+                            format_node_id=world.format_node_id,
+                            debug=bool(self._debug_snap_assist),
+                        )
                         if attachments_to_apply:
                             world.beginTopoTransaction()
                             new_core_gid = world.apply_attachments(attachments_to_apply)
