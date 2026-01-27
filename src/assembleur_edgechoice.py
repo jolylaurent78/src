@@ -6,12 +6,14 @@ class EdgeChoiceEpts:
     __slots__ = ("mA", "mBEdgeVertex", "tA", "tBEdgeVertex",
                  "src_owner_tid", "src_edge", "dst_owner_tid", "dst_edge",
                  "src_vkey_at_mA", "src_vkey_at_mB", "dst_vkey_at_tA", "dst_vkey_at_tB",
-                 "src_edge_labels", "dst_edge_labels", "kind", "tRaw")
+                 "src_edge_labels", "dst_edge_labels", "kind", "tRaw",
+                 "elementIdSrc", "elementIdDst")
 
     def __init__(self, mA, mBEdgeVertex, tA, tBEdgeVertex,
                  src_owner_tid=None, src_edge=None, dst_owner_tid=None, dst_edge=None,
                  src_vkey_at_mA=None, src_vkey_at_mB=None, dst_vkey_at_tA=None, dst_vkey_at_tB=None,
-                 src_edge_labels=None, dst_edge_labels=None, kind=None, t_raw=None):
+                 src_edge_labels=None, dst_edge_labels=None, kind=None, t_raw=None,
+                 elementIdSrc=None, elementIdDst=None):
         self.mA = tuple(mA)
         self.mBEdgeVertex = tuple(mBEdgeVertex)
         self.tA = tuple(tA)
@@ -28,6 +30,8 @@ class EdgeChoiceEpts:
         self.dst_edge_labels = dst_edge_labels
         self.kind = kind
         self.tRaw = t_raw
+        self.elementIdSrc = elementIdSrc
+        self.elementIdDst = elementIdDst
 
     def __len__(self):
         return 4
@@ -45,10 +49,12 @@ class EdgeChoiceEpts:
         if i == 3: return self.tBEdgeVertex
         raise IndexError(i)
 
-    def createTopologyAttachments(self, *, new_attachment_id, elementIdSrc: str, elementIdDst: str, format_node_id, debug: bool = False):
+    def createTopologyAttachments(self, *, world, debug: bool = False):
         from src.assembleur_core import TopologyAttachment, TopologyFeatureRef, TopologyFeatureType
-        if elementIdSrc is None or elementIdDst is None:
-            raise ValueError("createTopologyAttachments: elementIdSrc/elementIdDst manquant")
+        if world is None:
+            raise ValueError("createTopologyAttachments: world manquant")
+        elementIdSrc = self.elementIdSrc
+        elementIdDst = self.elementIdDst
 
         edge_code_to_index = {"OB": 0, "BL": 1, "LO": 2}
         vkey_to_index = {"O": 0, "B": 1, "L": 2}
@@ -78,7 +84,7 @@ class EdgeChoiceEpts:
                 return []
             atts.append(
                 TopologyAttachment(
-                    attachment_id=new_attachment_id(),
+                    attachment_id=world.new_attachment_id(),
                     kind="edge-edge",
                     feature_a=TopologyFeatureRef(TopologyFeatureType.EDGE, elementIdSrc, int(em)),
                     feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE, elementIdDst, int(et)),
@@ -105,10 +111,10 @@ class EdgeChoiceEpts:
             return []
 
         if t_raw <= 1.0:
-            edge_from = format_node_id(elementIdDst, int(vtA))
+            edge_from = world.format_node_id(elementIdDst, int(vtA))
             atts.append(
                 TopologyAttachment(
-                    attachment_id=new_attachment_id(),
+                    attachment_id=world.new_attachment_id(),
                     kind="vertex-edge",
                     feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdSrc, int(vmB)),
                     feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE,   elementIdDst, int(et_dst)),
@@ -118,7 +124,7 @@ class EdgeChoiceEpts:
             )
             atts.append(
                 TopologyAttachment(
-                    attachment_id=new_attachment_id(),
+                    attachment_id=world.new_attachment_id(),
                     kind="vertex-vertex",
                     feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdSrc, int(vmA)),
                     feature_b=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdDst, int(vtA)),
@@ -128,10 +134,10 @@ class EdgeChoiceEpts:
             )
         else:
             t_inv = 1.0 / float(t_raw)
-            edge_from = format_node_id(elementIdSrc, int(vmA))
+            edge_from = world.format_node_id(elementIdSrc, int(vmA))
             atts.append(
                 TopologyAttachment(
-                    attachment_id=new_attachment_id(),
+                    attachment_id=world.new_attachment_id(),
                     kind="vertex-edge",
                     feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdDst, int(vtB)),
                     feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE,   elementIdSrc, int(et_src)),
@@ -141,7 +147,7 @@ class EdgeChoiceEpts:
             )
             atts.append(
                 TopologyAttachment(
-                    attachment_id=new_attachment_id(),
+                    attachment_id=world.new_attachment_id(),
                     kind="vertex-vertex",
                     feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdDst, int(vtA)),
                     feature_b=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdSrc, int(vmA)),
@@ -296,8 +302,6 @@ def _compute_t_by_edge_ratio(mA, mB, tA, tB):
 def buildEdgeChoiceEptsFromBest(
     best,
     *,
-    mob_gid: int,
-    tgt_gid: int,
     mob_idx: int,
     tgt_idx: int,
     mob_tids: list,
@@ -311,22 +315,32 @@ def buildEdgeChoiceEptsFromBest(
     if not best:
         return None
 
+    if last_drawn is None or len(last_drawn) == 0:
+        raise ValueError("buildEdgeChoiceEptsFromBest: last_drawn manquant")
+
     (mA, mB), (tA, tB) = best[1], best[2]
 
     src_owner_tid, src_edge = _find_owner_edge_for_segment(mob_tids, mA, mB, eps_world, last_drawn)
     dst_owner_tid, dst_edge = _find_owner_edge_for_segment(tgt_tids, tA, tB, eps_world, last_drawn)
 
     if src_owner_tid is None:
-        src_owner_tid = int(mob_idx)
+        src_owner_tid = mob_idx
     if dst_owner_tid is None:
-        dst_owner_tid = int(tgt_idx)
+        dst_owner_tid = tgt_idx
 
-    tri_src = last_drawn[int(src_owner_tid)]
-    tri_dst = last_drawn[int(dst_owner_tid)]
-    if tri_src is None or tri_dst is None:
-        raise ValueError(
-            f"Topo pts manquants (src_tid={src_owner_tid}, dst_tid={dst_owner_tid}, src_edge={src_edge}, dst_edge={dst_edge})"
-        )
+
+    src_owner_tid = int(src_owner_tid)
+    dst_owner_tid = int(dst_owner_tid)
+    tri_src = last_drawn[src_owner_tid]
+    tri_dst = last_drawn[dst_owner_tid]
+    if not isinstance(tri_src, dict) or not isinstance(tri_dst, dict):
+        raise ValueError("buildEdgeChoiceEptsFromBest: tri_src/tri_dst invalides")
+
+    elementIdSrc = tri_src.get("topoElementId", None)
+    elementIdDst = tri_dst.get("topoElementId", None)
+    if not elementIdSrc or not elementIdDst:
+        raise ValueError("buildEdgeChoiceEptsFromBest: topoElementId manquant (src/dst)")
+
     Psrc = tri_src.get("pts", None)
     Pdst = tri_dst.get("pts", None)
     if Psrc is None or Pdst is None:
@@ -338,6 +352,12 @@ def buildEdgeChoiceEptsFromBest(
             f"Topo pts incomplets (src_tid={src_owner_tid}, dst_tid={dst_owner_tid}, src_edge={src_edge}, dst_edge={dst_edge})"
         )
 
+    edge_code_set = {"OB", "BL", "LO"}
+    src_edge = str(src_edge or "").upper().strip()
+    dst_edge = str(dst_edge or "").upper().strip()
+    if src_edge not in edge_code_set or dst_edge not in edge_code_set:
+        raise ValueError("buildEdgeChoiceEptsFromBest: src_edge/dst_edge invalide")
+
     src_edge_labels = _edge_labels_for(src_owner_tid, src_edge, last_drawn)
     dst_edge_labels = _edge_labels_for(dst_owner_tid, dst_edge, last_drawn)
 
@@ -347,6 +367,8 @@ def buildEdgeChoiceEptsFromBest(
             kind = "edge-edge"
         if (src_edge_labels[0] == dst_edge_labels[0]) and (src_edge_labels[1] == dst_edge_labels[1]):
             kind = "edge-edge"
+    if kind not in ("edge-edge", "vertex-edge"):
+        raise ValueError("buildEdgeChoiceEptsFromBest: kind inattendu")
 
     sv0, sv1 = _edge_code_to_vkeys(src_edge)
     dv0, dv1 = _edge_code_to_vkeys(dst_edge)
@@ -355,11 +377,11 @@ def buildEdgeChoiceEptsFromBest(
 
     if kind == "vertex-edge":
         if not (sv0 and sv1 and dv0 and dv1):
-            return None
+            raise ValueError("buildEdgeChoiceEptsFromBest: vkeys manquants")
         if src_anchor_vkey not in (sv0, sv1):
-            return None
+            raise ValueError("buildEdgeChoiceEptsFromBest: vkeys manquants")
         if dst_anchor_vkey not in (dv0, dv1):
-            return None
+            raise ValueError("buildEdgeChoiceEptsFromBest: vkeys manquants")
         src_vkey_at_mA = src_anchor_vkey
         dst_vkey_at_tA = dst_anchor_vkey
         src_vkey_at_mB = sv1 if src_vkey_at_mA == sv0 else sv0
@@ -371,24 +393,31 @@ def buildEdgeChoiceEptsFromBest(
             src_vkey_at_mB = srcB
             dst_vkey_at_tA = dstA
             dst_vkey_at_tB = dstB
+        if not (src_vkey_at_mA and src_vkey_at_mB and dst_vkey_at_tA and dst_vkey_at_tB):
+            raise ValueError("buildEdgeChoiceEptsFromBest: vkeys manquants")
+
+        mapping_direct = (src_vkey_at_mA == dst_vkey_at_tA) and (src_vkey_at_mB == dst_vkey_at_tB)
+        mapping_reverse = (src_vkey_at_mA == dst_vkey_at_tB) and (src_vkey_at_mB == dst_vkey_at_tA)
+        if not (mapping_direct or mapping_reverse):
+            raise ValueError("buildEdgeChoiceEptsFromBest: mapping indeterminable")
 
     t_raw = None
     if kind == "vertex-edge":
         if not (src_vkey_at_mB and dst_vkey_at_tB):
-            return None
+            raise ValueError("buildEdgeChoiceEptsFromBest: vkeys manquants")
         if src_vkey_at_mB not in Psrc or dst_vkey_at_tB not in Pdst:
-            return None
+            raise ValueError("buildEdgeChoiceEptsFromBest: vkeys manquants")
         mB_edge_vertex = Psrc[src_vkey_at_mB]
         tB_edge_vertex = Pdst[dst_vkey_at_tB]
-        try:
-            t_raw = _compute_t_by_edge_ratio(mA, mB_edge_vertex, tA, tB_edge_vertex)
-        except Exception:
-            return None
+        t_raw = _compute_t_by_edge_ratio(mA, mB_edge_vertex, tA, tB_edge_vertex)
+
         mB_edge_vertex_out = mB_edge_vertex
         tB_edge_vertex_out = tB_edge_vertex
     else:
         mB_edge_vertex_out = mB
         tB_edge_vertex_out = tB
+    if kind == "vertex-edge" and t_raw is None:
+        raise ValueError("buildEdgeChoiceEptsFromBest: tRaw manquant")
 
     epts = EdgeChoiceEpts(
         tuple(mA), tuple(mB_edge_vertex_out), tuple(tA), tuple(tB_edge_vertex_out),
@@ -397,7 +426,8 @@ def buildEdgeChoiceEptsFromBest(
         src_vkey_at_mA=src_vkey_at_mA, src_vkey_at_mB=src_vkey_at_mB,
         dst_vkey_at_tA=dst_vkey_at_tA, dst_vkey_at_tB=dst_vkey_at_tB,
         src_edge_labels=src_edge_labels, dst_edge_labels=dst_edge_labels,
-        kind=kind, t_raw=t_raw
+        kind=kind, t_raw=t_raw,
+        elementIdSrc=elementIdSrc, elementIdDst=elementIdDst
     )
 
     meta = {

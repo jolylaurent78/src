@@ -5827,8 +5827,6 @@ class TriangleViewerManual(
             tgt_tids = [nd.get("tid") for nd in (self._group_nodes(gid_t) or []) if nd.get("tid") is not None]
             res = buildEdgeChoiceEptsFromBest(
                 best,
-                mob_gid=gid_m,
-                tgt_gid=gid_t,
                 mob_idx=mob_idx,
                 tgt_idx=tgt_idx,
                 mob_tids=mob_tids,
@@ -8057,20 +8055,8 @@ class TriangleViewerManual(
                         if kind not in ("edge-edge", "vertex-edge"):
                             raise RuntimeError(f"kind inattendu: {kind}")
 
-                        tri_src = self._last_drawn[int(epts.src_owner_tid)]
-                        tri_dst = self._last_drawn[int(epts.dst_owner_tid)]
-                        elementIdSrc = tri_src.get("topoElementId", None)
-                        elementIdDst = tri_dst.get("topoElementId", None)
-                        if elementIdSrc is None or elementIdDst is None:
-                            raise ValueError(
-                                f"vertex-edge: topoElementId manquant (src_tid={epts.src_owner_tid}, dst_tid={epts.dst_owner_tid})"
-                            )
-
                         attachments_to_apply = epts.createTopologyAttachments(
-                            new_attachment_id=world.new_attachment_id,
-                            elementIdSrc=elementIdSrc,
-                            elementIdDst=elementIdDst,
-                            format_node_id=world.format_node_id,
+                            world=world,
                             debug=bool(self._debug_snap_assist),
                         )
                         if attachments_to_apply:
