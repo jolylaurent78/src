@@ -219,9 +219,9 @@ class DialogSimulationAssembler(tk.Toplevel):
             self.n_var.set(n)
 
 
-        order = str(getattr(self, "order_var", tk.StringVar(value="forward")).get() or "forward")
+        order = str(self.order_var.get() or "forward")
 
-        first_raw = str(getattr(self, "first_edge_var", tk.StringVar(value="OL")).get() or "OL")
+        first_raw = str(self.first_edge_var.get() or "OL")
         if "Même" in first_raw or "même" in first_raw:
             first_edge = "__LASTRUN__"
         else:
@@ -324,7 +324,7 @@ class DialogCreateCheminParams(tk.Toplevel):
         if limit and maxPoints <= 2:
             messagebox.showerror("Créer un chemin…", "Le nombre max doit être > 2.")
             return
-        orient = str(getattr(self, "orientation_var", tk.StringVar(value="cw")).get() or "cw").strip().lower()
+        orient = str(self.orientation_var.get() or "cw").strip().lower()
         if orient not in ("cw", "ccw"):
             orient = "cw"
         self.result = {"limit": limit, "maxPoints": int(maxPoints), "orientation": orient}
@@ -371,11 +371,17 @@ class TriangleViewerManual(
         self._drag_preview_id = None  # id du polygone "fantôme" sur le canvas
         self._sel = None              # sélection sur canvas: {'mode': 'move'|'vertex', 'idx': int}
         self._hit_px = 12             # tolérance de hit (pixels) pour les sommets
+        self._center_hit_px = 12      # même défaut que hit_px historique
         self._marker_px = 6           # rayon des marqueurs (cercles) dessinés aux sommets
+        self._pan_anchor = None
+        self._offset_anchor = None
+        self._last_canvas_size = (0, 0)
+        self._resize_redraw_after_id = None
+
         self._ctx_target_idx = None   # index du triangle visé par clic droit (menu contextuel)
-        self._placed_ids = set()      # ids déjà posés dans le scénario actif
         self._ctx_last_rclick = None  # dernière position écran du clic droit (pour pivoter)
         self._ctx_nearest_vertex_key = None  # 'O'|'B'|'L' sommet le plus proche du clic droit        
+        self._placed_ids = set()      # ids déjà posés dans le scénario actif
         self._nearest_line_id = None  # trait d'aide "sommet le plus proche"
         self._edge_highlight_ids = [] # surlignage des 2 arêtes (mobile/cible)
         self._edge_choice = None      # (i_mob, key_mob, edge_m, i_tgt, key_tgt, edge_t)
@@ -413,7 +419,10 @@ class TriangleViewerManual(
         # Opacité du layer "carte" (0..100). 100 = opaque, 0 = invisible.
         self.map_opacity = tk.IntVar(value=70)
         self._map_opacity_redraw_job = None
-
+        # Gestion du contour
+        self.show_only_group_contours = tk.BooleanVar(value=False)
+        self.only_group_contours = None
+        self._only_group_contours = False
 
         # Recentrage automatique (Fit à l'écran) lors de la sélection d'un scénario
         self.auto_fit_scenario_select = tk.BooleanVar(value=False)
@@ -779,9 +788,9 @@ class TriangleViewerManual(
         scen.topoWorld = TopologyWorld(sid)
 
     def _get_active_scenario(self) -> ScenarioAssemblage | None:
-        if not getattr(self, "scenarios", None):
+        if not self.scenarios:
             return None
-        idx = int(getattr(self, "active_scenario_index", 0) or 0)
+        idx = int(self.active_scenario_index or 0)
         if idx < 0 or idx >= len(self.scenarios):
             return None
         return self.scenarios[idx]
@@ -808,7 +817,7 @@ class TriangleViewerManual(
         self.status.config(text=f"[DEBUG] Chevauchement (highlight): {state} — F9 pour basculer")
 
     def _toggle_debug_snap_assist(self, event=None):
-        self._debug_snap_assist = not bool(getattr(self, "_debug_snap_assist", False))
+        self._debug_snap_assist = not bool(self._debug_snap_assist)
         state = "ON" if self._debug_snap_assist else "OFF"
         self.status.config(text=f"[DEBUG] Snap assist: {state} — F10 pour basculer")
 
@@ -959,7 +968,7 @@ class TriangleViewerManual(
 
     def _simulation_clear_auto_scenarios(self):
         """Supprime tous les scénarios 'auto' (conserve les manuels)."""
-        if not getattr(self, "scenarios", None):
+        if not self.scenarios:
             return
         kept = [s for s in self.scenarios if getattr(s, "source_type", "manual") == "manual"]
         removed = len(self.scenarios) - len(kept)
@@ -975,7 +984,7 @@ class TriangleViewerManual(
     def _simulationGetMapKey(self) -> str:
         """Clé de carte (basename) pour la persistance simulation."""
         p = str(self.getAppConfigValue("bgSvgPath", "") or "").strip()
-        if not p and isinstance(getattr(self, "_bg", None), dict):
+        if not p and isinstance(self._bg, dict):
             p = str(self._bg.get("path", "") or "").strip()
         return os.path.basename(p) if p else ""
 
@@ -1019,13 +1028,13 @@ class TriangleViewerManual(
         """Persiste le repère global auto courant (ox/oy/thetaDeg) pour (carte, ordre)."""
         if self.auto_geom_state is None:
             return
-        ordk = str(order or getattr(self, "_simulation_last_order", "forward") or "forward").strip().lower()
+        ordk = str(order or self._simulation_last_order or "forward").strip().lower()
         mk = self._simulationGetMapKey()
         self._simulationSetLastAutoPlacement(mk, ordk, self.auto_geom_state, save=save)
 
     def _simulation_assemble_dialog(self):
         """Ouvre la boîte de dialogue 'Assembler…' et lance l'algo choisi."""
-        if getattr(self, "df", None) is None:
+        if self.df is None:
             messagebox.showwarning("Assembler", "Charge d'abord un fichier Triangle.")
             return
         if not hasattr(self, "listbox"):
@@ -1038,10 +1047,10 @@ class TriangleViewerManual(
             return
 
         algo_items = [(aid, cls.label) for aid, cls in ALGOS.items()]
-        default_algo_id = getattr(self, "_simulation_last_algo_id", "") or (algo_items[0][0] if algo_items else "")
-        default_n = getattr(self, "_simulation_last_n", n_max)
-        default_order = getattr(self, "_simulation_last_order", "forward")
-        default_first_edge = getattr(self, "_simulation_last_first_edge", "OL")
+        default_algo_id = self._simulation_last_algo_id or (algo_items[0][0] if algo_items else "")
+        default_n = self._simulation_last_n if self._simulation_last_n is not None else n_max
+        default_order = self._simulation_last_order if self._simulation_last_order is not None else "forward"
+        default_first_edge = self._simulation_last_first_edge if self._simulation_last_first_edge is not None else "OL"
         default_n = min(int(default_n), n_max)
         if default_n < 2:
             default_n = 2
@@ -1192,7 +1201,7 @@ class TriangleViewerManual(
         Charge une icône depuis le dossier images.
         Retourne un tk.PhotoImage ou None si échec (fichier manquant, etc.).
         """
-        base = getattr(self, "images_dir", None)
+        base = self.images_dir
         if not base:
             return None
         path = os.path.join(base, filename)
@@ -1481,7 +1490,7 @@ class TriangleViewerManual(
                 self._toggle_only_group_contours()
             else:
                 # forcer un redraw (utile si on a juste re-cliqué)
-                self._redraw()
+                self._redraw_from(self._last_drawn)
 
         # Radios à droite (icône-only). Fallback texte si l'icône n'est pas dispo.
         rb_kwargs = dict(
@@ -1491,7 +1500,7 @@ class TriangleViewerManual(
             pady=0,
             command=_onTriangleContourModeChange,
         )
-        if getattr(self, "iconTriModeContour", None) is not None:
+        if self.iconTriModeContour is not None:
             tk.Radiobutton(
                 row_tri_right,
                 image=self.iconTriModeContour,
@@ -1506,7 +1515,7 @@ class TriangleViewerManual(
                 **rb_kwargs,
             ).pack(side=tk.RIGHT, padx=(2, 0))
 
-        if getattr(self, "iconTriModeEdges", None) is not None:
+        if self.iconTriModeEdges is not None:
             tk.Radiobutton(
                 row_tri_right,
                 image=self.iconTriModeEdges,
@@ -2179,7 +2188,7 @@ class TriangleViewerManual(
 
             # Valeurs des colonnes additionnelles (propriétés calculées)
             values = []
-            for spec in (getattr(self, "_scenario_prop_specs", None) or []):
+            for spec in (self._scenario_prop_specs or []):
                 getter = spec.get("getter")
                 if callable(getter):
                     v = getter(scen)
@@ -2297,7 +2306,7 @@ class TriangleViewerManual(
         # Optionnel: petit indicateur ▲/▼ sur l'en-tête trié
         base_id_title = "ID"
         tree.heading("#0", text=base_id_title, command=lambda c="#0": self._scenarioTreeSortBy(c))
-        for spec in (getattr(self, "_scenario_prop_specs", None) or []):
+        for spec in (self._scenario_prop_specs or []):
             cid = spec.get("id")
             if not cid:
                 continue
@@ -2310,7 +2319,7 @@ class TriangleViewerManual(
         elif self._scenario_tree_sort_col:
             # retrouver le titre de la colonne
             title = None
-            for spec in (getattr(self, "_scenario_prop_specs", None) or []):
+            for spec in (self._scenario_prop_specs or []):
                 if spec.get("id") == self._scenario_tree_sort_col:
                     title = str(spec.get("title", self._scenario_tree_sort_col))
                     break
@@ -2427,7 +2436,7 @@ class TriangleViewerManual(
         """
         if self._bg is None:
             raise RuntimeError("bgWorldToLambertKm: pas de carte chargée")
-        data = getattr(self, "_bg_calib_data", None)
+        data = self._bg_calib_data
         if not isinstance(data, dict):
             raise RuntimeError("bgWorldToLambertKm: calibration absente (_bg_calib_data)")
         aff = data.get("affineWorldToLambertKm")
@@ -2776,7 +2785,7 @@ class TriangleViewerManual(
 
     def _capture_view_state(self) -> dict:
         return {
-            "zoom": float(getattr(self, "zoom", 1.0) or 1.0),
+            "zoom": float(self.zoom or 1.0),
             "offset_x": float(self.offset[0]) if hasattr(self, "offset") else 0.0,
             "offset_y": float(self.offset[1]) if hasattr(self, "offset") else 0.0,
         }
@@ -2784,13 +2793,13 @@ class TriangleViewerManual(
     def _apply_view_state(self, vs: dict | None):
         if not vs:
             return
-        self.zoom = float(vs.get("zoom", getattr(self, "zoom", 1.0) or 1.0))
+        self.zoom = float(vs.get("zoom", self.zoom or 1.0))
         ox = float(vs.get("offset_x", self.offset[0] if hasattr(self, "offset") else 0.0))
         oy = float(vs.get("offset_y", self.offset[1] if hasattr(self, "offset") else 0.0))
         self.offset = np.array([ox, oy], dtype=float)
  
     def _capture_map_state(self) -> dict:
-        bg = getattr(self, "_bg", None)
+        bg = self._bg
         state = {
             "path": str(bg.get("path")) if isinstance(bg, dict) and bg.get("path") else "",
             "x0": float(bg.get("x0")) if isinstance(bg, dict) and bg.get("x0") is not None else 0.0,
@@ -2804,7 +2813,7 @@ class TriangleViewerManual(
         if hasattr(self, "_bg_compute_scale_factor"):
             state["scale"] = self._bg_compute_scale_factor()
         if state["scale"] is None:
-            state["scale"] = getattr(self, "_bg_scale_factor_override", None)
+            state["scale"] = self._bg_scale_factor_override
         return state
  
     def _apply_map_state(self, ms: dict | None, persist: bool = False):
@@ -2837,7 +2846,7 @@ class TriangleViewerManual(
         }
 
         # --- OPTIM: ne pas recharger la carte + calibration si rien n'a changé ---
-        bg = getattr(self, "_bg", None) or {}
+        bg = self._bg or {}
         samePath = str(bg.get("path") or "") == str(path or "")
         eps = 1e-9
         sameRect = (
@@ -2846,7 +2855,7 @@ class TriangleViewerManual(
             abs(float(bg.get("w")  or 0.0) - float(rect.get("w")  or 0.0)) < eps and
             abs(float(bg.get("h")  or 0.0) - float(rect.get("h")  or 0.0)) < eps
         )
-        sameScale = (getattr(self, "_bg_scale_factor_override", None) == ms.get("scale"))
+        sameScale = (self._bg_scale_factor_override == ms.get("scale"))
 
 
         if samePath and sameRect and sameScale:
@@ -2857,9 +2866,9 @@ class TriangleViewerManual(
 
     # ---------- AUTO (scénarios automatiques): transform géométrique global ----------
     def _get_active_scenario(self):
-        if not getattr(self, "scenarios", None):
+        if not self.scenarios:
             return None
-        idx = int(getattr(self, "active_scenario_index", 0) or 0)
+        idx = int(self.active_scenario_index or 0)
         if idx < 0 or idx >= len(self.scenarios):
             return None
         return self.scenarios[idx]
@@ -2940,9 +2949,9 @@ class TriangleViewerManual(
         R = np.array([[c, -s], [s, c]], dtype=float)
         origin = np.array([ox, oy], dtype=float)
 
-        active_idx = int(getattr(self, "active_scenario_index", 0) or 0)
+        active_idx = int(self.active_scenario_index or 0)
 
-        for i, scen in enumerate(getattr(self, "scenarios", []) or []):
+        for i, scen in enumerate(self.scenarios or []):
             if getattr(scen, "source_type", "manual") != "auto":
                 continue
             self._autoEnsureLocalGeometry(scen)
@@ -2978,7 +2987,7 @@ class TriangleViewerManual(
 
     def _autoInitFromGeneratedScenarios(self, base_idx: int, order: str):
         """Après génération d'autos, construit les géométries locales + initialise le transform global."""
-        if not getattr(self, "scenarios", None):
+        if not self.scenarios:
             return
         for i in range(int(base_idx), len(self.scenarios)):
             scen = self.scenarios[i]
@@ -3088,13 +3097,13 @@ class TriangleViewerManual(
         scenIsAuto = (getattr(scen, "source_type", "manual") == "auto")
 
         if scenIsAuto:
-            self._apply_map_state(getattr(self, "auto_map_state", None), persist=False)
+            self._apply_map_state(self.auto_map_state, persist=False)
         else:
             self._apply_map_state(getattr(scen, "map_state", None), persist=False)
 
         if scenIsAuto:
             # Vue AUTO partagée, fallback si jamais pas encore initialisée
-            self._apply_view_state(getattr(self, "auto_view_state", None) or getattr(scen, "view_state", None))
+            self._apply_view_state(self.auto_view_state or getattr(scen, "view_state", None))
         else:
             self._apply_view_state(getattr(scen, "view_state", None))
 
@@ -3398,16 +3407,16 @@ class TriangleViewerManual(
         # Si la taille a réellement changé, on programme un redraw complet.
         # (sinon, le fond de carte reste « figé » jusqu'au prochain pan/zoom)
         if cw_now > 2 and ch_now > 2:
-            last_sz = getattr(self, "_last_canvas_size", None)
+            last_sz = self._last_canvas_size
             if last_sz != (cw_now, ch_now):
                 self._last_canvas_size = (cw_now, ch_now)
-                if getattr(self, "_resize_redraw_after_id", None) is not None:
+                if self._resize_redraw_after_id is not None:
                     self.after_cancel(self._resize_redraw_after_id)
 
                 self._resize_redraw_after_id = self.after(40, self._do_resize_redraw)
 
 
-        if getattr(self, "_bg_defer_redraw", False) and getattr(self, "_bg", None):
+        if self._bg_defer_redraw and self._bg:
             cw = int(self.canvas.winfo_width() or 0)
             ch = int(self.canvas.winfo_height() or 0)
             if cw > 2 and ch > 2:
@@ -3449,7 +3458,7 @@ class TriangleViewerManual(
             if not self.dicoPanel.winfo_ismapped():
                 self.dicoPanel.pack(side=tk.BOTTOM, fill=tk.X)
                 # Si la grille n'a jamais été construite, on la (re)construit
-                if not getattr(self, "dicoSheet", None):
+                if not self.dicoSheet:
                     self._build_dico_grid()
 
         else:
@@ -3467,7 +3476,7 @@ class TriangleViewerManual(
 
     def _clock_change_radius(self, delta: int):
         """Modifie le rayon du compas (min=50) et redessine l'overlay."""
-        r = int(getattr(self, "_clock_radius", 69))
+        r = int(self._clock_radius)
         r = max(50, r + int(delta))
         self._clock_radius = int(r)
         # Redessiner uniquement l'overlay (ne touche pas aux triangles)
@@ -3515,7 +3524,7 @@ class TriangleViewerManual(
 
     def _toggle_clock_overlay(self):
         """Affiche ou cache le compas horaire (overlay horloge)."""
-        if not getattr(self, "canvas", None):
+        if not self.canvas:
             return
         # Effacer systématiquement l'overlay courant
         self.canvas.delete("clock_overlay")
@@ -3542,7 +3551,7 @@ class TriangleViewerManual(
         if not self._last_drawn:
             self._pick_cache_valid = True
             return
-        Z = float(getattr(self, "zoom", 1.0))
+        Z = float(self.zoom)
         Ox, Oy = (float(self.offset[0]), float(self.offset[1]))
         def W2S(p):
             # monde -> écran (canvas)
@@ -3564,7 +3573,7 @@ class TriangleViewerManual(
     def _bind_canvas_handlers(self):
         """(Ré)applique tous les bindings nécessaires au canvas et au clavier.
         À appeler après création du canvas ET après un chargement de scénario."""
-        if not getattr(self, "canvas", None):
+        if not self.canvas:
             return
         # Purge défensive pour éviter les doublons (Tk ignore les doublons, mais on nettoie)
         self.canvas.unbind("<MouseWheel>")
@@ -3605,7 +3614,7 @@ class TriangleViewerManual(
 
     # --- conversions utilitaires (utilisées par le pick) ---
     def _screen_to_world(self, x, y):
-        Z = float(getattr(self, "zoom", 1.0))
+        Z = float(self.zoom)
         Ox, Oy = (float(self.offset[0]), float(self.offset[1]))
         return ((x - Ox) / Z, (Oy - y) / Z)
 
@@ -3879,7 +3888,7 @@ class TriangleViewerManual(
 
         if not hasattr(self, "appConfig") or self.appConfig is None:
             self.appConfig = {}
-        if not getattr(self, "_bg", None):
+        if not self._bg:
             changed = False
             for k in ("bgSvgPath", "bgWorldRect"):
                 if k in self.appConfig:
@@ -3910,7 +3919,7 @@ class TriangleViewerManual(
         Solution : charger le SVG *après* la 1ère passe de layout (after_idle) et forcer
         un redraw complet au 1er <Configure> valide.
         """
-        if getattr(self, "_bg_startup_scheduled", False):
+        if self._bg_startup_scheduled:
             return
         self._bg_startup_scheduled = True
         self.after_idle(self._autoLoadBackgroundAfterLayout)
@@ -3955,7 +3964,7 @@ class TriangleViewerManual(
             return
 
         # 2) Fallback : data/triangle.xlsx
-        default = os.path.join(getattr(self, "data_dir", ""), "triangle.xlsx")
+        default = os.path.join(self.data_dir, "triangle.xlsx")
         if default and os.path.isfile(default):
             self.load_excel(default)
 
@@ -4042,7 +4051,7 @@ class TriangleViewerManual(
         Construit les triangles (coord. locales) à partir du DF pour [start:start+n].
         Retour: liste de dict { 'labels':(O,B,L), 'pts':{'O','B','L'} }
         """
-        if getattr(self, "df", None) is None or self.df.empty:
+        if self.df is None or self.df.empty:
             raise RuntimeError("Pas de données — ouvre d'abord l’Excel.")
         sub = self.df.iloc[start:start+n]
         out = []
@@ -4069,7 +4078,7 @@ class TriangleViewerManual(
         IMPORTANT: on parse l'ID affiché (NN.) au lieu d'utiliser df.iloc[idx],
         car la listbox peut avoir des éléments retirés → indices décalés.
         """
-        if getattr(self, "df", None) is None or self.df.empty:
+        if self.df is None or self.df.empty:
             raise RuntimeError("Pas de données — ouvre d'abord l’Excel.")
         # Récupérer le texte de la listbox et extraire l'id (NN. ...)
         lb_txt = ""
@@ -4164,7 +4173,7 @@ class TriangleViewerManual(
     def _refresh_listbox_from_df(self):
         """Recharge la listbox des triangles depuis self.df (sans filtrage)."""
         self.listbox.delete(0, tk.END)
-        if getattr(self, "df", None) is not None and not self.df.empty:
+        if self.df is not None and not self.df.empty:
             for _, r in self.df.iterrows():
                 self.listbox.insert(tk.END, f"{int(r['id']):02d}. B:{r['B']}  L:{r['L']}")
 
@@ -4202,7 +4211,7 @@ class TriangleViewerManual(
     # ---------- Overlay Horloge (indépendant du zoom/pan) ----------
     def _redraw_overlay_only(self):
         """Efface/redessine uniquement l'overlay (horloge)."""
-        if not getattr(self, "canvas", None):
+        if not self.canvas:
             return
 
         self.canvas.delete("clock_overlay")
@@ -4214,7 +4223,7 @@ class TriangleViewerManual(
         indépendante du zoom/pan (coordonnées canvas).
         Utilise self._clock_state = {'hour':h, 'minute':m, 'label':str}.
         """
-        if not getattr(self, "canvas", None):
+        if not self.canvas:
             return
         # Nettoyer l'ancien overlay
         self.canvas.delete("clock_overlay")
@@ -4225,13 +4234,13 @@ class TriangleViewerManual(
         # Paramètres d'aspect
         margin = 12              # marge par rapport aux bords du canvas (px)
         # rayon (px) — modifiable via UI (min=50)
-        R = max(50, int(getattr(self, "_clock_radius", 69)))
+        R = max(50, int(self._clock_radius))
         # Si un ancrage monde existe (et qu'on ne drag pas), le centre du compas suit pan/zoom
-        if getattr(self, "_clock_anchor_world", None) is not None and not getattr(self, "_clock_dragging", False):
+        if self._clock_anchor_world is not None and not self._clock_dragging:
             sx, sy = self._world_to_screen(self._clock_anchor_world)
             self._clock_cx, self._clock_cy = float(sx), float(sy)
         # Si on a déjà une position écran mais pas d'ancrage monde, on l'initialise
-        if getattr(self, "_clock_anchor_world", None) is None and self._clock_cx is not None and self._clock_cy is not None and not getattr(self, "_clock_dragging", False):
+        if self._clock_anchor_world is None and self._clock_cx is not None and self._clock_cy is not None and not self._clock_dragging:
             wx, wy = self._screen_to_world(self._clock_cx, self._clock_cy)
             self._clock_anchor_world = np.array([wx, wy], dtype=float)
 
@@ -4245,7 +4254,7 @@ class TriangleViewerManual(
         self._clock_R = R
 
         # Axe 0 de référence (azimut)
-        ref_az = float(getattr(self, "_clock_ref_azimuth_deg", 0.0)) % 360.0
+        ref_az = float(self._clock_ref_azimuth_deg) % 360.0
 
         # Couleurs
         col_circle = "#b0b0b0"   # gris cercle
@@ -4379,8 +4388,8 @@ class TriangleViewerManual(
                 label_disp = f"{label_disp} — Δ={float(delta_needles_deg):0.0f}°"
             # Si le filtrage dico est actif, afficher aussi l'azimut théorique du 12h (référence)
             # pour aligner les aiguilles sur les 2 droites mesurées (az1/az2).
-            if getattr(self, "_dico_filter_active", False):
-                last = getattr(self, "_clock_arc_last", None)
+            if self._dico_filter_active:
+                last = self._clock_arc_last
                 if isinstance(last, dict) and ("az1" in last) and ("az2" in last):
                     ref_theo = self._clock_compute_theoretical_ref_azimuth_deg(
                         az1=float(last["az1"]),
@@ -4400,7 +4409,7 @@ class TriangleViewerManual(
     def _clock_clear_snap_target(self):
         """Efface le marqueur visuel du sommet 'target' pendant le drag du compas."""
         self._clock_snap_target = None
-        if getattr(self, "canvas", None):
+        if self.canvas:
             self.canvas.delete("clock_snap_target")
 
 
@@ -4414,7 +4423,7 @@ class TriangleViewerManual(
 
         Nécessite que la calibration 3 points associée au fond soit chargée (data/<carte>.json).
         """
-        data = getattr(self, "_bg_calib_data", None)
+        data = self._bg_calib_data
         if not data or not isinstance(data, dict) or "affineLambertKmToWorld" not in data:
             raise RuntimeError("Calibration fond absente : lance d'abord la calibration (3 points) ou charge le fichier .json associé à la carte.")
 
@@ -4459,7 +4468,7 @@ class TriangleViewerManual(
 
         self.canvas.delete("all")
         # Fond carte (si layer visible)
-        if getattr(self, "show_map_layer", None) is None or self.show_map_layer.get():
+        if self.show_map_layer is None or self.show_map_layer.get():
             self._bg_draw_world_layer()     
 
         # l'ID de la ligne n'est plus valide après delete("all")
@@ -4470,28 +4479,28 @@ class TriangleViewerManual(
         # Mode "contours uniquement" : même visualisation (noeuds, tags, numéros, mot),
         # mais SANS les arêtes internes. En plus, on trace l'enveloppe extérieure des groupes.
         showContoursMode = bool(
-            getattr(self, "show_only_group_contours", None) is not None
+            self.show_only_group_contours is not None
             and self.show_only_group_contours.get()
         )
 
         onlyContours = False
-        v = getattr(self, "only_group_contours", None)
+        v = self.only_group_contours
         if v is not None and hasattr(v, "get"):
             onlyContours = bool(v.get())
         else:
-            onlyContours = bool(getattr(self, "_only_group_contours", False))
+            onlyContours = bool(self._only_group_contours)
 
         # Si on est en mode "contour only", on force la suppression des arêtes internes.
         if showContoursMode:
             onlyContours = True
 
         # 1) Triangles (toujours dessinés si layer actif) : on coupe juste les arêtes internes.
-        if getattr(self, "show_triangles_layer", None) is None or self.show_triangles_layer.get():
+        if self.show_triangles_layer is None or self.show_triangles_layer.get():
             for i, t in enumerate(placed):
                 labels = t["labels"]
                 P = t["pts"]
                 tri_id = t.get("id")
-                fill = "#ffd6d6" if i in getattr(self, "_comparison_diff_indices", set()) else None
+                fill = "#ffd6d6" if i in self._comparison_diff_indices else None
                 self._draw_triangle_screen(
                     P,
                     labels=[f"O:{labels[0]}", f"B:{labels[1]}", f"L:{labels[2]}"],
@@ -4510,7 +4519,7 @@ class TriangleViewerManual(
             # — Recrée l'aide visuelle UNIQUEMENT si une sélection 'vertex' est encore active —
             if self._sel and self._sel.get("mode") == "vertex":
                 # redessine candidates + best si on a des données
-                if getattr(self, "_edge_highlights", None):
+                if self._edge_highlights:
                     self._redraw_edge_highlights()
                 # remet la ligne grise
                 idx = self._sel["idx"]; vkey = self._sel["vkey"]
@@ -4534,14 +4543,14 @@ class TriangleViewerManual(
         self.canvas.delete("group_outline")
 
         # Si aucun groupe n'est défini, on n'a rien de spécial à tracer.
-        if not getattr(self, "groups", None):
+        if not self.groups:
             return
 
         for gid, g in self.groups.items():
             nodes = g.get("nodes") or []
             if not nodes:
                 continue
-            outline = self._group_outline_segments(gid)
+            outline = self._group_outline_segments_topo(gid)
             for p1, p2 in outline:
                 x1, y1 = self._world_to_screen(p1)
                 x2, y2 = self._world_to_screen(p2)
@@ -4653,7 +4662,7 @@ class TriangleViewerManual(
                 )
     def _dbgSnap(self, msg: str):
         """Trace console pour diagnostiquer l'assist de collage (activable via F10)."""
-        if getattr(self, "_debug_snap_assist", False):
+        if self._debug_snap_assist:
             print(msg)
 
     def _dbgPoseCompare(self, label: str, R_tk, T_tk, R_core, T_core) -> None:
@@ -4661,7 +4670,7 @@ class TriangleViewerManual(
 
         Affiche theta + translation + deltas. Aucun effet si F10 (snap assist) est OFF.
         """
-        if not getattr(self, "_debug_snap_assist", False):
+        if not self._debug_snap_assist:
             return
         try:
             import numpy as np
@@ -4689,7 +4698,7 @@ class TriangleViewerManual(
     def _on_ctrl_down(self, event=None):
         # Pendant une mesure d'azimut du compas, CTRL sert uniquement à désactiver le snap.
         # On évite donc d'activer le mode "déconnexion" des triangles (curseur + aides).
-        if getattr(self, "_clock_measure_active", False):
+        if self._clock_measure_active:
             self._ctrl_down = True
             return
 
@@ -4707,7 +4716,7 @@ class TriangleViewerManual(
             # mais SANS translation et SANS collage (CTRL empêchera le snap au relâchement).
             if self._sel and (not self._sel.get("suppress_assist")):
                 mode = self._sel.get("mode")
-                choice = getattr(self, "_edge_choice", None)
+                choice = self._edge_choice
                 if choice:
                     import numpy as np
 
@@ -4798,7 +4807,7 @@ class TriangleViewerManual(
     def _on_triangle_list_select(self, event=None):
         """Empêche la sélection d'un triangle déjà utilisé dans le scénario courant."""
         # éviter la récursion quand on modifie la sélection nous-mêmes
-        if getattr(self, "_in_triangle_select_guard", False):
+        if self._in_triangle_select_guard:
             return
         if not hasattr(self, "listbox"):
             return
@@ -4813,7 +4822,7 @@ class TriangleViewerManual(
         tid = int(tri.get("id"))
 
 
-        placed = getattr(self, "_placed_ids", set()) or set()
+        placed = self._placed_ids or set()
         if tid is not None and tid in placed:
             # Triangle déjà posé : on annule la sélection visuelle
             self._in_triangle_select_guard = True
@@ -4843,7 +4852,7 @@ class TriangleViewerManual(
         sauf si le triangle est déjà utilisé dans le scénario courant.
         """
         # Pas de DF → rien à faire
-        if getattr(self, "df", None) is None or self.df.empty:
+        if self.df is None or self.df.empty:
             return
 
         # Index de la ligne cliquée dans la listbox
@@ -4861,7 +4870,7 @@ class TriangleViewerManual(
 
         tri_id = tri.get("id")
         # Si le triangle est déjà posé dans ce scénario, on bloque le drag
-        if tri_id is not None and int(tri_id) in getattr(self, "_placed_ids", set()):
+        if tri_id is not None and int(tri_id) in self._placed_ids:
             self.status.config(text=f"Triangle {tri_id} déjà utilisé dans ce scénario.")
             self._drag = None
             return
@@ -5009,17 +5018,17 @@ class TriangleViewerManual(
 
     def _on_canvas_motion_update_drag(self, event):
         # Mode compas : mesure d'un azimut (relatif à la référence)
-        if getattr(self, "_clock_measure_active", False):
+        if self._clock_measure_active:
             self._clock_measure_update_preview(int(event.x), int(event.y))
             return "break"
 
         # Mode compas : mesure d'arc d'angle
-        if getattr(self, "_clock_arc_active", False):
+        if self._clock_arc_active:
             self._clock_arc_update_preview(int(event.x), int(event.y))
             return "break"
 
         # Mode compas : définition de l'azimut de référence
-        if getattr(self, "_clock_setref_active", False):
+        if self._clock_setref_active:
             self._clock_setref_update_preview(int(event.x), int(event.y))
             return "break"
 
@@ -5127,7 +5136,7 @@ class TriangleViewerManual(
         mode, idx, extra = self._hit_test(event.x, event.y)
 
         # En mode déconnexion (CTRL), ne pas afficher de tooltip
-        if getattr(self, "_ctrl_down", False):
+        if self._ctrl_down:
             self._hide_tooltip()
             return
 
@@ -5194,7 +5203,7 @@ class TriangleViewerManual(
                 ry = 0.5 * th
                 ang = math.atan2(uy, ux)
                 r_eff = abs(rx * math.cos(ang)) + abs(ry * math.sin(ang))
-                cushion_px  = float(getattr(self, "_tooltip_cushion_px", 14))
+                cushion_px  = float(self._tooltip_cushion_px)
                 dist = r_eff + cushion_px
                 cx_tip = sx_v + ux * dist
                 cy_tip = sy_v + uy * dist
@@ -5270,6 +5279,71 @@ class TriangleViewerManual(
         return _id
 
     # ---------- utilitaires contour de groupe ----------
+    def _group_outline_segments_topo(self, gid: int) -> list[tuple[np.ndarray, np.ndarray]]:
+        """Retourne le contour du groupe gid depuis la topologie (segments monde)."""
+        g = self.groups.get(gid) or {}
+        core_gid = g.get("topoGroupId", None)
+        if not core_gid:
+            raise ValueError(f"TopoGroupId manquant pour le groupe {gid}")
+
+        scen = self._get_active_scenario()
+        if scen is None or scen.topoWorld is None:
+            raise ValueError("TopologyWorld indisponible pour le scenario actif")
+        topoWorld = scen.topoWorld
+
+        segments = topoWorld.getBoundarySegments(str(core_gid))
+        if not segments:
+            return []
+
+        element_map = {}
+        for t in (self._last_drawn or []):
+            if "topoElementId" in t:
+                element_map[str(t["topoElementId"])] = t
+
+        outline = []
+        for bs in segments:
+            element_id = str(bs.elementId)
+            if element_id not in element_map:
+                raise ValueError(f"Element manquant dans last_drawn: {element_id}")
+            tri = element_map[element_id]
+            pts = tri.get("pts", None)
+            if not isinstance(pts, dict):
+                raise ValueError(f"Points invalides pour {element_id}")
+
+            def vkeyFromNodeId(node_id: str, element_id: str) -> str:
+                nid = str(node_id)
+                if not nid.startswith(str(element_id) + ":N"):
+                    raise ValueError(f"[BOUNDARY][TK] nodeId not in element: node={nid} elem={element_id}")
+                if nid.endswith(":N0"):
+                    return "O"
+                if nid.endswith(":N1"):
+                    return "B"
+                if nid.endswith(":N2"):
+                    return "L"
+                raise ValueError(f"[BOUNDARY][TK] unexpected node suffix: {nid}")
+
+            k0 = vkeyFromNodeId(bs.fromNodeId, element_id)
+            k1 = vkeyFromNodeId(bs.toNodeId, element_id)
+            if k0 not in pts or k1 not in pts:
+                raise ValueError(f"Sommet manquant pour {element_id}: {k0}/{k1}")
+
+            pA = np.array(pts[k0], dtype=float)
+            pB = np.array(pts[k1], dtype=float)
+            t0 = float(bs.t0)
+            t1 = float(bs.t1)
+            q0 = pA + (pB - pA) * t0
+            q1 = pA + (pB - pA) * t1
+            print(
+                "[BOUNDARY]",
+                "A,B=", bs.conceptA, bs.conceptB,
+                "elem=", bs.elementId, "edge=", bs.edgeIndex,
+                "k0,k1=", k0, k1,
+                "from,to=", bs.fromNodeId, bs.toNodeId,
+                "t0,t1=", bs.t0, bs.t1,
+            )
+            outline.append((q0, q1))
+        return outline
+
     def _group_outline_segments(self, gid: int, eps: float = EPS_WORLD):
         """
         Retourne une liste de sous-segments (P1,P2) qui appartiennent au
@@ -5630,7 +5704,7 @@ class TriangleViewerManual(
         if eps is None:
             tol_world = max(
                 1e-9,
-                float(getattr(self, "stroke_px", 2)) / max(getattr(self, "zoom", 1.0), 1e-9)
+                float(self.stroke_px) / max(self.zoom, 1e-9)
             )
             eps = max(EPS_WORLD, 0.5 * tol_world)
         return self._group_outline_segments(gid, eps=float(eps))
@@ -5672,7 +5746,7 @@ class TriangleViewerManual(
         )
 
         # Tolérance (utile à d'autres endroits si besoin)
-        tol_world = max(1e-9, float(getattr(self, "stroke_px", 2)) / max(getattr(self, "zoom", 1.0), 1e-9))
+        tol_world = max(1e-9, float(self.stroke_px) / max(self.zoom, 1e-9))
 
         # === Collecte via graphe de frontière puis argmin global (Δ-angle) ===
         # 1) outlines des deux groupes
@@ -5730,12 +5804,12 @@ class TriangleViewerManual(
                 azt = _azim(*te)
                 score = _ang_dist(azm, azt)
                 # --- Anti-chevauchement (shrink-only) remis en service ---
-                if not getattr(self, "debug_skip_overlap_highlight", False):
+                if not self.debug_skip_overlap_highlight:
                     S_m_pose = _place_union_on_pair(S_m_base, me[0], me[1], te[0], te[1])
                     if S_m_pose is not None:
                         if _overlap_shrink(S_m_pose, S_t,
-                                           getattr(self, "stroke_px", 2),
-                                           max(getattr(self, "zoom", 1.0), 1e-9)):
+                                           self.stroke_px,
+                                           max(self.zoom, 1e-9)):
                             continue  # paire rejetée pour chevauchement
                 # argmin global (parmi les paires admissibles)
                 if (best is None) or (score < best[0]):
@@ -5914,17 +5988,46 @@ class TriangleViewerManual(
             return (str(la).strip(), str(lb).strip())
 
 
-        def _project_t_on_segment_raw(P, A, B):
-            # t brut (non clampé) : projection de P sur AB.
-            px, py = float(P[0]), float(P[1])
-            ax, ay = float(A[0]), float(A[1])
-            bx, by = float(B[0]), float(B[1])
-            vx, vy = (bx - ax), (by - ay)
-            vv = vx * vx + vy * vy
-            if vv <= 1e-18:
-                return 0.0
-            wx, wy = (px - ax), (py - ay)
-            return float((wx * vx + wy * vy) / vv)
+        def _compute_t_by_edge_ratio(mA, mB, tA, tB):
+            """
+            Compute the parameter t for a vertex-edge attachment using a length ratio.
+
+            This function implements a topological "gluing" rule:
+            the source segment (mA -> mB) is conceptually glued onto the
+            target edge segment (tA -> tB).
+
+            The resulting parameter t is defined as:
+                t = |mA -> mB| / |tA -> tB|
+
+            This computation:
+            - is independent of the current geometric pose,
+            - does NOT perform any projection,
+            - produces a stable parameter suitable for conceptual interpretation
+              and XML export.
+
+            The returned t is clamped to [0, 1].
+
+            Parameters:
+                mA, mB : Points defining the source segment
+                tA, tB : Points defining the target edge segment
+
+            Returns:
+                t (float): normalized parameter along the target edge.
+            """
+            mAx, mAy = float(mA[0]), float(mA[1])
+            mBx, mBy = float(mB[0]), float(mB[1])
+            tAx, tAy = float(tA[0]), float(tA[1])
+            tBx, tBy = float(tB[0]), float(tB[1])
+            dx_m = mBx - mAx
+            dy_m = mBy - mAy
+            dx_t = tBx - tAx
+            dy_t = tBy - tAy
+            L_src = math.hypot(dx_m, dy_m)
+            L_dst = math.hypot(dx_t, dy_t)
+            if L_dst <= 1e-12:
+                raise ValueError("Degenerate target edge length")
+            t = L_src / L_dst
+            return float(t)
 
         self._edge_choice = None
         if best:
@@ -5939,6 +6042,24 @@ class TriangleViewerManual(
                 src_owner_tid = int(mob_idx)
             if dst_owner_tid is None:
                 dst_owner_tid = int(tgt_idx)
+
+            # Pts owners (Topology assist) — distinct des Pm/Pt legacy
+            tri_src = self._last_drawn[int(src_owner_tid)]
+            tri_dst = self._last_drawn[int(dst_owner_tid)]
+            if tri_src is None or tri_dst is None:
+                raise ValueError(
+                    f"Topo pts manquants (src_tid={src_owner_tid}, dst_tid={dst_owner_tid}, src_edge={src_edge}, dst_edge={dst_edge})"
+                )
+            Psrc = tri_src.get("pts", None)
+            Pdst = tri_dst.get("pts", None)
+            if Psrc is None or Pdst is None:
+                raise ValueError(
+                    f"Topo pts manquants (src_tid={src_owner_tid}, dst_tid={dst_owner_tid}, src_edge={src_edge}, dst_edge={dst_edge})"
+                )
+            if not all(k in Psrc for k in ("O", "B", "L")) or not all(k in Pdst for k in ("O", "B", "L")):
+                raise ValueError(
+                    f"Topo pts incomplets (src_tid={src_owner_tid}, dst_tid={dst_owner_tid}, src_edge={src_edge}, dst_edge={dst_edge})"
+                )
 
             # Labels des 2 arêtes (source/cible) → décision fiable Edge-Edge vs Vertex-Edge
             src_edge_labels = _edge_labels_for(src_owner_tid, src_edge)
@@ -5956,7 +6077,7 @@ class TriangleViewerManual(
             # t: UNIQUEMENT en vertex-edge (sinon None)
             t_raw = None
             if kind == "vertex-edge":
-                t_raw = _project_t_on_segment_raw(mB, tA, tB)
+                t_raw = _compute_t_by_edge_ratio(mA, mB, tA, tB)
 
             # --- TOPOL: associer chaque point (mA/mB/tA/tB) à l'endpoint vkey correspondant ---
             # Sans cette info, on ne peut PAS décider "direct/reverse" de manière topologique.
@@ -5967,25 +6088,46 @@ class TriangleViewerManual(
                 if c == "LO": return ("L", "O")
                 return (None, None)
 
-            def _closest_vkey(p_xy, v0, v1, Pdict):
-                if v0 is None or v1 is None:
-                    return None
-                p = _to_np(p_xy)
-                p0 = _to_np(Pdict[v0])
-                p1 = _to_np(Pdict[v1])
-                d0 = float((p[0]-p0[0])**2 + (p[1]-p0[1])**2)
-                d1 = float((p[0]-p1[0])**2 + (p[1]-p1[1])**2)
-                return v0 if d0 <= d1 else v1
+            def _assign_edge_endpoints_by_cross_distance(src_edge_code, dst_edge_code, Pm, Pt):
+                """
+                Retourne:
+                  (srcA, srcB), (dstA, dstB)
+                où A est le couple minimisant la distance croisée, et B est déduit (autre endpoint).
+                """
+                sv0, sv1 = _edge_code_to_vkeys(src_edge_code)
+                dv0, dv1 = _edge_code_to_vkeys(dst_edge_code)
+                if sv0 is None or sv1 is None or dv0 is None or dv1 is None:
+                    return ((None, None), (None, None))
+
+                pairs = [(sv0, dv0), (sv0, dv1), (sv1, dv0), (sv1, dv1)]
+                best_pair = None
+                best_d2 = None
+                for sa, da in pairs:
+                    p = _to_np(Pm[sa])
+                    q = _to_np(Pt[da])
+                    d2 = float((p[0] - q[0])**2 + (p[1] - q[1])**2)
+                    if best_d2 is None or d2 < best_d2:
+                        best_d2 = d2
+                        best_pair = (sa, da)
+
+                if best_pair is None:
+                    return ((None, None), (None, None))
+
+                srcA, dstA = best_pair
+                srcB = sv1 if srcA == sv0 else sv0
+                dstB = dv1 if dstA == dv0 else dv0
+                return ((srcA, srcB), (dstA, dstB))
 
             src_vkey_at_mA = src_vkey_at_mB = None
             dst_vkey_at_tA = dst_vkey_at_tB = None
             sv0, sv1 = _edge_code_to_vkeys(src_edge)
             dv0, dv1 = _edge_code_to_vkeys(dst_edge)
             if sv0 and sv1 and dv0 and dv1:
-                src_vkey_at_mA = _closest_vkey(mA, sv0, sv1, Pm)
-                src_vkey_at_mB = _closest_vkey(mB, sv0, sv1, Pm)
-                dst_vkey_at_tA = _closest_vkey(tA, dv0, dv1, Pt)
-                dst_vkey_at_tB = _closest_vkey(tB, dv0, dv1, Pt)
+                (srcA, srcB), (dstA, dstB) = _assign_edge_endpoints_by_cross_distance(src_edge, dst_edge, Psrc, Pdst)
+                src_vkey_at_mA = srcA
+                src_vkey_at_mB = srcB
+                dst_vkey_at_tA = dstA
+                dst_vkey_at_tB = dstB
 
             epts = _EdgeChoiceEpts(tuple(mA), tuple(mB), tuple(tA), tuple(tB),
                                    src_owner_tid=src_owner_tid, src_edge=src_edge,
@@ -6019,7 +6161,7 @@ class TriangleViewerManual(
         - uniquement les segments INCIDENTS (candidats possibles) en BLEU **épais**,
         - meilleure paire (mobile & cible) en **ROUGE** par-dessus."""
         self._clear_edge_highlights()
-        data = getattr(self, "_edge_highlights", None)
+        data = self._edge_highlights
         if not data:
             return
         # 0) Contours (bleu, fin)
@@ -6549,7 +6691,7 @@ class TriangleViewerManual(
         if not self._last_drawn:
             return (None, None, None)
         tol2 = float(self._hit_px) ** 2
-        center_tol2 = float(getattr(self, "_center_hit_px", self._hit_px)) ** 2
+        center_tol2 = float(self._center_hit_px) ** 2
         # Parcourt les triangles dans l'ordre inverse de dessin (avant-plan d'abord)
         for i in reversed(range(len(self._last_drawn))):
             t = self._last_drawn[i]
@@ -6822,11 +6964,11 @@ class TriangleViewerManual(
 
     def _is_point_in_clock(self, sx: float, sy: float) -> bool:
         """True si (sx,sy) est dans le disque du compas (coords canvas)."""
-        if not getattr(self, "show_clock_overlay", None) or not self.show_clock_overlay.get():
+        if not self.show_clock_overlay or not self.show_clock_overlay.get():
             return False
-        cx = float(getattr(self, "_clock_cx", None))
-        cy = float(getattr(self, "_clock_cy", None))
-        R  = float(getattr(self, "_clock_R", getattr(self, "_clock_radius", 69)))
+        cx = float(self._clock_cx)
+        cy = float(self._clock_cy)
+        R  = float(self._clock_R)
         if cx is None or cy is None:
             return False
         dx = float(sx) - cx
@@ -6840,9 +6982,9 @@ class TriangleViewerManual(
         # Repartir d'un état propre
         self._clock_setref_cancel(silent=True)
 
-        if not getattr(self, "canvas", None):
+        if not self.canvas:
             return
-        if not getattr(self, "show_clock_overlay", None) or not self.show_clock_overlay.get():
+        if not self.show_clock_overlay or not self.show_clock_overlay.get():
             self.status.config(text="Compas masqué : affiche-le pour définir l'azimut de référence.")
             return
 
@@ -6862,9 +7004,9 @@ class TriangleViewerManual(
         self._clock_measure_cancel(silent=True)
         self._clock_setref_cancel(silent=True)
 
-        if not getattr(self, "canvas", None):
+        if not self.canvas:
             return
-        if not getattr(self, "show_clock_overlay", None) or not self.show_clock_overlay.get():
+        if not self.show_clock_overlay or not self.show_clock_overlay.get():
             self.status.config(text="Compas masqué : affiche-le pour mesurer un azimut.")
             return
 
@@ -6887,7 +7029,7 @@ class TriangleViewerManual(
 
         if not hasattr(self, "canvas") or self.canvas is None:
             return
-        if not getattr(self, "show_clock_overlay", None) or not self.show_clock_overlay.get():
+        if not self.show_clock_overlay or not self.show_clock_overlay.get():
             self.status.config(text="Compas masqué : affiche-le pour mesurer un arc d'angle.")
             return
 
@@ -6902,10 +7044,10 @@ class TriangleViewerManual(
 
     def _ctx_filter_dictionary_by_clock_arc(self):
         """Filtre visuellement le dictionnaire selon l'angle de référence mesuré."""
-        if not getattr(self, "dicoSheet", None):
+        if not self.dicoSheet:
             messagebox.showinfo("Filtrer le dictionnaire", "Le dictionnaire n'est pas affiché.")
             return
-        ref = getattr(self, "_clock_arc_last_angle_deg", None)
+        ref = self._clock_arc_last_angle_deg
         if ref is None:
             messagebox.showinfo("Filtrer le dictionnaire", "Aucun arc n'a été mesuré.\n\nMesure d'abord un arc d'angle sur le compas.")
             return
@@ -6924,15 +7066,15 @@ class TriangleViewerManual(
         """
         arc_ok = bool(self._clock_arc_is_available())
 
-        menu = getattr(self, '_ctx_menu_compass', None)
-        idx = getattr(self, '_ctx_compass_idx_filter_dico', None)
+        menu = self._ctx_menu_compass
+        idx = self._ctx_compass_idx_filter_dico
         if menu is not None and idx is not None:
             menu.entryconfig(idx, state=(tk.NORMAL if arc_ok else tk.DISABLED))
 
         # Activer/désactiver "Annuler le filtrage" selon l'état courant
-        idx_cancel = getattr(self, '_ctx_compass_idx_cancel_dico_filter', None)
+        idx_cancel = self._ctx_compass_idx_cancel_dico_filter
         if menu is not None and idx_cancel is not None:
-            menu.entryconfig(idx_cancel, state=(tk.NORMAL if bool(getattr(self, "_dico_filter_active", False)) else tk.DISABLED))
+            menu.entryconfig(idx_cancel, state=(tk.NORMAL if bool(self._dico_filter_active) else tk.DISABLED))
 
         # Le dico reste sélectionnable dans tous les cas.
         self._dico_set_selection_enabled(True)
@@ -6940,7 +7082,7 @@ class TriangleViewerManual(
         # Si on perd l'arc alors qu'un filtrage était actif, on annule le filtrage.
         # IMPORTANT: ne pas appeler _simulation_cancel_dictionary_filter() si aucun filtrage n'est actif,
         # sinon recursion infinie (cancel -> update -> cancel -> ...).
-        if (not arc_ok) and (bool(getattr(self, "_dico_filter_active", False)) or (getattr(self, "_dico_filter_ref_angle_deg", None) is not None)):
+        if (not arc_ok) and (bool(self._dico_filter_active) or (self._dico_filter_ref_angle_deg is not None)):
             if hasattr(self, "_simulation_cancel_dictionary_filter"):
                 self._simulation_cancel_dictionary_filter()
 
@@ -6961,8 +7103,8 @@ class TriangleViewerManual(
 
     def _clock_point_on_circle(self, az_deg: float, radius: float):
         """Point écran (sx,sy) à un azimut donné autour du centre du compas."""
-        cx = float(getattr(self, "_clock_cx", 0.0))
-        cy = float(getattr(self, "_clock_cy", 0.0))
+        cx = float(self._clock_cx)
+        cy = float(self._clock_cy)
         a = math.radians(float(az_deg) % 360.0)
         sx = cx + float(radius) * math.sin(a)
         sy = cy - float(radius) * math.cos(a)
@@ -6973,12 +7115,12 @@ class TriangleViewerManual(
         sx2, sy2 = int(sx), int(sy)
         if not enable_snap:
             return sx2, sy2
-        if getattr(self, "_ctrl_down", False):
+        if self._ctrl_down:
             self._clock_clear_snap_target()
             return sx2, sy2
 
         self._clock_update_snap_target(float(sx2), float(sy2))
-        tgt = getattr(self, "_clock_snap_target", None)
+        tgt = self._clock_snap_target
         if isinstance(tgt, dict) and tgt.get("world") is not None:
             sxx, syy = self._world_to_screen(tgt["world"])
             return (int(sxx), int(syy))
@@ -7008,18 +7150,18 @@ class TriangleViewerManual(
             return
         (_, _, az_abs, az_rel) = last
         self._clock_measure_cancel(silent=True)
-        self.status.config(text=f"Azimut mesuré : {az_rel:0.0f}° (ref={float(getattr(self, '_clock_ref_azimuth_deg', 0.0))%360.0:0.0f}°, abs={az_abs:0.0f}°)")
+        self.status.config(text=f"Azimut mesuré : {az_rel:0.0f}° (ref={float(self._clock_ref_azimuth_deg)%360.0:0.0f}°, abs={az_abs:0.0f}°)")
 
 
     def _clock_measure_cancel(self, silent: bool=False):
-        if not getattr(self, "_clock_measure_active", False):
+        if not self._clock_measure_active:
             return
         self._clock_measure_active = False
 
-        if getattr(self, "_clock_measure_line_id", None) is not None:
+        if self._clock_measure_line_id is not None:
             self.canvas.delete(self._clock_measure_line_id)
 
-        if getattr(self, "_clock_measure_text_id", None) is not None:
+        if self._clock_measure_text_id is not None:
             self.canvas.delete(self._clock_measure_text_id)
 
 
@@ -7033,8 +7175,8 @@ class TriangleViewerManual(
 
     def _clock_compute_azimuth_deg(self, sx: float, sy: float) -> float:
         """Azimut (degrés) depuis le centre du compas vers (sx,sy). 0°=Nord, sens horaire."""
-        cx = float(getattr(self, "_clock_cx", 0.0))
-        cy = float(getattr(self, "_clock_cy", 0.0))
+        cx = float(self._clock_cx)
+        cy = float(self._clock_cy)
         vx = float(sx) - cx
         vy = float(sy) - cy
         # Tk: y vers le bas -> Nord = -y
@@ -7084,7 +7226,7 @@ class TriangleViewerManual(
     # ---------- Compas : helpers communs (éviter duplication setref/measure) ----------
     def _clock_get_initial_cursor_xy(self) -> Tuple[int, int]:
         """Point de départ pour les modes compas: clic droit si dispo, sinon position souris."""
-        if getattr(self, "_ctx_last_rclick", None):
+        if self._ctx_last_rclick:
             sx, sy = self._ctx_last_rclick
             return int(sx), int(sy)
         # coords canvas sous la souris
@@ -7689,13 +7831,13 @@ class TriangleViewerManual(
 
 
         # Calibration fond (3 points) : intercepte le clic gauche
-        if getattr(self, "_bg_calib_active", False):
+        if self._bg_calib_active:
             return self._bg_calibrate_handle_click(event)
 
         # Horloge : démarrer drag si clic dans le disque (marge 10px)
         if self._is_in_clock(event.x, event.y):
             # ne pas intercepter si un drag de triangle est en cours
-            if not getattr(self, "_drag", None):
+            if not self._drag:
                 self._clock_dragging = True
                 self._clock_drag_dx = event.x - (self._clock_cx or event.x)
                 self._clock_drag_dy = event.y - (self._clock_cy or event.y)
@@ -7930,7 +8072,7 @@ class TriangleViewerManual(
 
     def _on_canvas_left_move(self, event):
         # Horloge : drag en cours -> on déplace le centre et on redessine l’overlay
-        if getattr(self, "_clock_dragging", False):
+        if self._clock_dragging:
             self._clock_cx = event.x - self._clock_drag_dx
             self._clock_cy = event.y - self._clock_drag_dy
             # Cible snap (sommet le plus proche du CENTRE du compas)
@@ -7939,7 +8081,7 @@ class TriangleViewerManual(
             return "break"
 
         # Mode déplacement fond d'écran (mode resize actif, clic maintenu hors poignée)
-        if getattr(self, "_bg_moving", None):
+        if self._bg_moving:
             self._bg_update_move(event.x, event.y)
             self._redraw_from(self._last_drawn)
             return "break"
@@ -8035,13 +8177,13 @@ class TriangleViewerManual(
 
     def _on_canvas_left_up(self, event):
         # Horloge : fin de drag
-        if getattr(self, "_clock_dragging", False):
+        if self._clock_dragging:
             # On capture la cible de snap *avant* de la nettoyer pour pouvoir déclencher
             # une éventuelle mesure d'arc automatique.
-            snap_tgt = getattr(self, "_clock_snap_target", None)
+            snap_tgt = self._clock_snap_target
 
             # Si CTRL au relâché : on sort du mode sans "snap" (le compas reste où il est)
-            if getattr(self, "_ctrl_down", False):
+            if self._ctrl_down:
                 wx, wy = self._screen_to_world(self._clock_cx, self._clock_cy)
                 self._clock_anchor_world = np.array([wx, wy], dtype=float)
 
@@ -8063,7 +8205,7 @@ class TriangleViewerManual(
             # Spéc : si on déplace le compas et qu'il s'accroche à un noeud,
             # on tente une mesure d'arc automatique (EXT). Sinon on reset.
             measured = False
-            if (not getattr(self, "_ctrl_down", False)) and isinstance(snap_tgt, dict):
+            if (not self._ctrl_down) and isinstance(snap_tgt, dict):
                 measured = bool(self._clock_arc_auto_from_snap_target(snap_tgt))
             if not measured:
                 self._clock_arc_clear_last()
@@ -8078,7 +8220,7 @@ class TriangleViewerManual(
             self._redraw_from(self._last_drawn)
             return "break"
 
-        if getattr(self, "_bg_moving", None):
+        if self._bg_moving:
             self._bg_moving = None
             self.canvas.configure(cursor="")
             self._persistBackgroundConfig()
@@ -8086,7 +8228,7 @@ class TriangleViewerManual(
             return "break"
 
         # Pan au clic gauche : fin du pan même si aucun triangle n'est sélectionné
-        if getattr(self, "_pan_anchor", None) is not None and not getattr(self, "_sel", None) and not getattr(self, "_drag", None):
+        if self._pan_anchor is not None and not self._sel and not self._drag:
             self._on_pan_end(event)
             return
 
@@ -8137,12 +8279,12 @@ class TriangleViewerManual(
             # Si l'aide était active et qu'on a bien un choix d'arête,
             # on applique la même géométrie que pour un triangle seul,
             # mais à TOUS les triangles du groupe.
-            choice = getattr(self, "_edge_choice", None)
+            choice = self._edge_choice
             self._dbgSnap(
                 f"[snap] release(move_group) suppress_assist={self._sel.get('suppress_assist')} choice={'OK' if choice else 'None'}"
             )
             if (not suppress
-                and (not getattr(self, "_ctrl_down", False))
+                and (not self._ctrl_down)
                 and anchor
                 and anchor.get("type") == "vertex"
                 and choice
@@ -8231,7 +8373,7 @@ class TriangleViewerManual(
                                     f"(mA={epts.src_vkey_at_mA} mB={epts.src_vkey_at_mB} "
                                     f"tA={epts.dst_vkey_at_tA} tB={epts.dst_vkey_at_tB})"
                                 )
-                                if getattr(self, "_debug_snap_assist", False):
+                                if self._debug_snap_assist:
                                     raise RuntimeError(msg)
                                 print(f"[ATTACH][edge-edge] {msg}")
                                 mapping = None
@@ -8255,22 +8397,33 @@ class TriangleViewerManual(
                             et_dst = edge_code_to_index[str(epts.dst_edge).upper()]
                             et_src = edge_code_to_index[str(epts.src_edge).upper()]
                             t_raw = epts.tRaw
+                            tri_src = self._last_drawn[int(epts.src_owner_tid)]
+                            tri_dst = self._last_drawn[int(epts.dst_owner_tid)]
+                            elementIdSrc = tri_src.get("topoElementId", None)
+                            elementIdDst = tri_dst.get("topoElementId", None)
+                            if elementIdSrc is None or elementIdDst is None:
+                                raise ValueError(
+                                    f"vertex-edge: topoElementId manquant (src_tid={epts.src_owner_tid}, dst_tid={epts.dst_owner_tid})"
+                                )
 
                             # tRaw < 0 : rejet (géométriquement impossible dans notre assemblage)
                             if t_raw < 0.0:
-                                if getattr(self, "_debug_snap_assist", False):
+                                if self._debug_snap_assist:
                                     print(f"[ATTACH][VE] reject tRaw={t_raw}")
                                 return
 
                             if t_raw <= 1.0:
                                 # vertex-edge : on attache le sommet mB sur l’arête cible, paramétrée par tRaw
+                                if vtA is None:
+                                    raise ValueError("vertex-edge: vkey tA indisponible pour edgeFrom")
+                                edge_from = world.format_node_id(elementIdDst, int(vtA))
                                 attachments_to_apply.append(
                                     TopologyAttachment(
                                         attachment_id=world.new_attachment_id(),
                                         kind="vertex-edge",
-                                        feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, element_id_m, int(vmB)),
-                                        feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE,   element_id_t, int(et_dst)),
-                                        params={"t": float(t_raw)},
+                                        feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdSrc, int(vmB)),
+                                        feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE,   elementIdDst, int(et_dst)),
+                                        params={"t": float(t_raw), "edgeFrom": edge_from},
                                         source="manual",
                                     )
                                 )
@@ -8280,8 +8433,8 @@ class TriangleViewerManual(
                                     TopologyAttachment(
                                         attachment_id=world.new_attachment_id(),
                                         kind="vertex-vertex",
-                                        feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, element_id_m, int(vmA)),
-                                        feature_b=TopologyFeatureRef(TopologyFeatureType.VERTEX, element_id_t, int(vtA)),
+                                        feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdSrc, int(vmA)),
+                                        feature_b=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdDst, int(vtA)),
                                         params={},
                                         source="manual",
                                     )
@@ -8289,13 +8442,16 @@ class TriangleViewerManual(
                             else:
                                 # tRaw > 1 : inversion (swap) + t_inv = 1/tRaw pour revenir dans [0,1]
                                 t_inv = 1.0 / float(t_raw)
+                                if vmA is None:
+                                    raise ValueError("vertex-edge: vkey mA indisponible pour edgeFrom")
+                                edge_from = world.format_node_id(elementIdSrc, int(vmA))
                                 attachments_to_apply.append(
                                     TopologyAttachment(
                                         attachment_id=world.new_attachment_id(),
                                         kind="vertex-edge",
-                                        feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, element_id_t, int(vtB)),
-                                        feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE,   element_id_m, int(et_src)),
-                                        params={"t": float(t_inv)},
+                                        feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdDst, int(vtB)),
+                                        feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE,   elementIdSrc, int(et_src)),
+                                        params={"t": float(t_inv), "edgeFrom": edge_from},
                                         source="manual",
                                     )
                                 )
@@ -8303,8 +8459,8 @@ class TriangleViewerManual(
                                     TopologyAttachment(
                                         attachment_id=world.new_attachment_id(),
                                         kind="vertex-vertex",
-                                        feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, element_id_t, int(vtA)),
-                                        feature_b=TopologyFeatureRef(TopologyFeatureType.VERTEX, element_id_m, int(vmA)),
+                                        feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdDst, int(vtA)),
+                                        feature_b=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdSrc, int(vmA)),
                                         params={},
                                         source="manual",
                                     )
@@ -8328,7 +8484,7 @@ class TriangleViewerManual(
                         g_src = self.groups.get(mob_gid)
                         g_tgt = self.groups.get(tgt_gid)
                         anchor = self._sel.get("anchor")  # {"type":"vertex","tid":...,"vkey":...}
-                        choice = getattr(self, "_edge_choice", None)  # (... idx_t, vkey_t, ...)
+                        choice = self._edge_choice  # (... idx_t, vkey_t, ...)
                         if g_src and g_tgt and anchor and choice:
                             # 2.1 Localiser ancre (dans src) et cible (dans tgt)
                             anchor_tid = anchor.get("tid"); anchor_vkey = anchor.get("vkey")
@@ -8499,7 +8655,7 @@ class TriangleViewerManual(
         self._offset_anchor = np.array(self.offset, dtype=float).copy()
 
     def _on_pan_move(self, event):
-        if getattr(self, "_pan_anchor", None) is None:
+        if self._pan_anchor is None:
             return
         d = np.array([event.x, event.y], dtype=float) - self._pan_anchor
         self.offset = self._offset_anchor + d
@@ -8720,10 +8876,10 @@ class TriangleViewerManual(
         from tkinter import filedialog
         scen_name = ""
 
-        if getattr(self, "scenarios", None) and 0 <= int(getattr(self, "active_scenario_index", 0)) < len(self.scenarios):
+        if self.scenarios and 0 <= int(self.active_scenario_index) < len(self.scenarios):
             scen_name = str(getattr(self.scenarios[self.active_scenario_index], "name", "") or "")
 
-        tri_file = str(getattr(self, "triangle_file", None).get()) if hasattr(getattr(self, "triangle_file", None), "get") else ""
+        tri_file = str(self.triangle_file.get()) if hasattr(self.triangle_file, "get") else ""
 
 
         def _safe(s: str) -> str:
@@ -8812,7 +8968,7 @@ class TriangleViewerManual(
         vy0e = cy0 - 0.5 * h2
         vy1e = cy0 + 0.5 * h2
 
-        Z = float(getattr(self, "zoom", 1.0))
+        Z = float(self.zoom)
         virt_w_px = w2 * Z
         virt_h_px = h2 * Z
         if virt_w_px <= 1 or virt_h_px <= 1:
@@ -8825,9 +8981,9 @@ class TriangleViewerManual(
         c.rect(0, 0, page_w, page_h, stroke=0, fill=1)
 
         scen_name = ""
-        if getattr(self, "scenarios", None) and 0 <= int(getattr(self, "active_scenario_index", 0)) < len(self.scenarios):
+        if self.scenarios and 0 <= int(self.active_scenario_index) < len(self.scenarios):
             scen_name = str(getattr(self.scenarios[self.active_scenario_index], "name", "") or "")
-        tri_name = str(getattr(self, "triangle_file", None).get()) if hasattr(getattr(self, "triangle_file", None), "get") else ""
+        tri_name = str(self.triangle_file.get()) if hasattr(self.triangle_file, "get") else ""
 
 
         title_y = page_h - margin_top - 10
@@ -8841,10 +8997,10 @@ class TriangleViewerManual(
         origin_y_pt = margin_bottom
 
         # --- Carte raster (si affichée) ---
-        show_map = (getattr(self, "show_map_layer", None) is None) or bool(self.show_map_layer.get())
+        show_map = (self.show_map_layer is None) or bool(self.show_map_layer.get())
         op = int(float(self.map_opacity.get())) if hasattr(self, "map_opacity") else 100
         op = max(0, min(100, int(op)))
-        if show_map and op > 0 and getattr(self, "_bg", None) and getattr(self, "_bg_base_pil", None) is not None and Image is not None:
+        if show_map and op > 0 and self._bg and self._bg_base_pil is not None and Image is not None:
             bx0 = float(self._bg.get("x0", 0.0)); by0 = float(self._bg.get("y0", 0.0))
             bw = float(self._bg.get("w", 0.0));  bh = float(self._bg.get("h", 0.0))
             bx1 = bx0 + bw; by1 = by0 + bh
@@ -8902,13 +9058,13 @@ class TriangleViewerManual(
 
         old_canvas = self.canvas
         old_offset = np.array(self.offset, dtype=float).copy()
-        old_zoom = float(getattr(self, "zoom", 1.0))
-        old_nearest = getattr(self, "_nearest_line_id", None)
+        old_zoom = float(self.zoom)
+        old_nearest = self._nearest_line_id
         old_clock = {
-            "_clock_cx": getattr(self, "_clock_cx", None),
-            "_clock_cy": getattr(self, "_clock_cy", None),
-            "_clock_R": getattr(self, "_clock_R", None),
-            "_clock_anchor_world": copy.deepcopy(getattr(self, "_clock_anchor_world", None)),
+            "_clock_cx": self._clock_cx,
+            "_clock_cy": self._clock_cy,
+            "_clock_R": self._clock_R,
+            "_clock_anchor_world": copy.deepcopy(self._clock_anchor_world),
         }
 
         try:
@@ -8920,26 +9076,26 @@ class TriangleViewerManual(
             self._update_current_scenario_differences()
 
             showContoursMode = bool(
-                getattr(self, "show_only_group_contours", None) is not None
+                self.show_only_group_contours is not None
                 and self.show_only_group_contours.get()
             )
             onlyContours = False
-            v = getattr(self, "only_group_contours", None)
+            v = self.only_group_contours
             if v is not None and hasattr(v, "get"):
                 onlyContours = bool(v.get())
             else:
-                onlyContours = bool(getattr(self, "_only_group_contours", False))
+                onlyContours = bool(self._only_group_contours)
             if showContoursMode:
                 onlyContours = True
 
-            if getattr(self, "show_triangles_layer", None) is None or self.show_triangles_layer.get():
-                for i, t in enumerate(getattr(self, "_last_drawn", []) or []):
+            if self.show_triangles_layer is None or self.show_triangles_layer.get():
+                for i, t in enumerate(self._last_drawn or []):
                     labels = t.get("labels")
                     P = t.get("pts")
                     if not labels or not P:
                         continue
                     tri_id = t.get("id")
-                    fill = "#ffd6d6" if i in getattr(self, "_comparison_diff_indices", set()) else None
+                    fill = "#ffd6d6" if i in self._comparison_diff_indices else None
                     self._draw_triangle_screen(
                         P,
                         labels=[f"O:{labels[0]}", f"B:{labels[1]}", f"L:{labels[2]}"],
@@ -8954,7 +9110,7 @@ class TriangleViewerManual(
                 self._draw_group_outlines()
             else:
                 if self._sel and self._sel.get("mode") == "vertex":
-                    if getattr(self, "_edge_highlights", None):
+                    if self._edge_highlights:
                         self._redraw_edge_highlights()
                     idx = self._sel.get("idx"); vkey = self._sel.get("vkey")
                     if idx is not None and vkey and 0 <= int(idx) < len(self._last_drawn):
@@ -9132,7 +9288,7 @@ class TriangleViewerManual(
 
     def print_triangles_dialog(self):
         from tkinter import simpledialog, filedialog
-        if getattr(self, "df", None) is None or self.df.empty:
+        if self.df is None or self.df.empty:
             messagebox.showwarning("Imprimer", "Charge d'abord le fichier Excel.")
             return
 

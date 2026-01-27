@@ -610,6 +610,207 @@ class ConceptEdgeInfo:
     occurrences: list[dict]
 
 @dataclass
+class TopologyBoundaries:
+    cycle: list[str] | None = None
+    edges: set[tuple[str, str]] | None = None
+    index: dict[str, int] | None = None
+    orientation: str | None = None
+
+    def clear(self) -> None:
+        self.cycle = None
+        self.edges = None
+        self.index = None
+        self.orientation = None
+
+    def compute(self, world: "TopologyWorld", gid: str, orientation: str) -> None:
+        orient = str(orientation).strip().lower()
+        if orient not in ("cw", "ccw"):
+            raise ValueError(f"[Boundary] invalid orientation={orientation}")
+        gid = world.find_group(str(gid))
+        c = world.ensureConceptGeom(gid)
+
+        neighbors: dict[str, set[str]] = {}
+        for (a, b) in c.edges.keys():
+            neighbors.setdefault(a, set()).add(b)
+            neighbors.setdefault(b, set()).add(a)
+
+        if not neighbors:
+            self.cycle = []
+            self.edges = set()
+            self.index = {}
+            self.orientation = orient
+            return
+
+        for n, adj in neighbors.items():
+            if len(adj) < 2:
+                self.cycle = []
+                self.edges = set()
+                self.index = {}
+                self.orientation = orient
+                return
+
+        coords = {}
+        for n in neighbors.keys():
+            coords[n] = world.getConceptNodeWorldXY(n, gid)
+
+        sorted_neighbors: dict[str, list[str]] = {}
+        pos_index: dict[str, dict[str, int]] = {}
+        for u, adj in neighbors.items():
+            ux, uy = coords[u]
+            ordered = sorted(
+                list(adj),
+                key=lambda v: math.atan2(float(coords[v][1]) - float(uy), float(coords[v][0]) - float(ux))
+            )
+            sorted_neighbors[u] = ordered
+            pos_index[u] = {v: i for i, v in enumerate(ordered)}
+
+        def _next_dart(u: str, v: str) -> tuple[str, str]:
+            nb = sorted_neighbors.get(v, [])
+            if not nb:
+                raise ValueError(f"[Boundary] missing neighbors for node {v}")
+            i = pos_index[v].get(u, None)
+            if i is None:
+                raise ValueError(f"[Boundary] missing neighbor {u} around {v}")
+            if orient == "cw":
+                w = nb[(i - 1) % len(nb)]
+            else:
+                w = nb[(i + 1) % len(nb)]
+            return (v, w)
+
+        darts = []
+        for u, adj in neighbors.items():
+            for v in adj:
+                if u != v:
+                    darts.append((u, v))
+
+        visited: set[tuple[str, str]] = set()
+        faces: list[tuple[list[str], float]] = []
+        max_steps = len(darts) + 1
+        eps_area = 1e-12
+
+        def _signed_area(cycle: list[str]) -> float:
+            area = 0.0
+            for i in range(len(cycle)):
+                x0, y0 = coords[cycle[i]]
+                x1, y1 = coords[cycle[(i + 1) % len(cycle)]]
+                area += (float(x0) * float(y1)) - (float(x1) * float(y0))
+            return 0.5 * area
+
+        for d0 in darts:
+            if d0 in visited:
+                continue
+            local_darts: list[tuple[str, str]] = []
+            local_set: set[tuple[str, str]] = set()
+            nodes = [d0[0]]
+            cur = d0
+            steps = 0
+            closed = False
+            while True:
+                if cur in visited:
+                    break
+                if cur in local_set:
+                    break
+                local_darts.append(cur)
+                local_set.add(cur)
+                nodes.append(cur[1])
+                steps += 1
+                if steps > max_steps:
+                    break
+                nxt = _next_dart(cur[0], cur[1])
+                if nxt == d0:
+                    closed = True
+                    break
+                cur = nxt
+            if not closed:
+                continue
+            if nodes and nodes[-1] == nodes[0]:
+                nodes = nodes[:-1]
+            if len(nodes) < 3:
+                continue
+            area = _signed_area(nodes)
+            if abs(area) <= eps_area:
+                continue
+            visited.update(local_darts)
+            faces.append((nodes, area))
+
+        if not faces:
+            self.cycle = []
+            self.edges = set()
+            self.index = {}
+            self.orientation = orient
+            return
+
+        def _is_simple(nodes: list[str]) -> bool:
+            if not nodes:
+                return False
+            if nodes[-1] == nodes[0]:
+                nodes = nodes[:-1]
+            if len(nodes) < 3:
+                return False
+            if len(nodes) != len(set(nodes)):
+                return False
+            return True
+
+        faces_simple = [(face, area) for (face, area) in faces if _is_simple(face)]
+        if not faces_simple:
+            self.cycle = []
+            self.edges = set()
+            self.index = {}
+            self.orientation = orient
+            return
+
+        outer = None
+        outer_area = None
+        for face, area in faces_simple:
+            if outer_area is None or abs(area) > abs(outer_area):
+                outer = face
+                outer_area = area
+
+        if outer is None or outer_area is None:
+            self.cycle = []
+            self.edges = set()
+            self.index = {}
+            self.orientation = orient
+            return
+
+        cycle = list(outer)
+        best_idx = 0
+        best_x, best_y = coords[cycle[0]]
+        for i in range(1, len(cycle)):
+            x, y = coords[cycle[i]]
+            if (x < best_x) or (x == best_x and y < best_y):
+                best_idx = i
+                best_x, best_y = x, y
+        cycle = cycle[best_idx:] + cycle[:best_idx]
+
+        edges = set()
+        if len(cycle) >= 2:
+            for i in range(len(cycle)):
+                a = cycle[i]
+                b = cycle[(i + 1) % len(cycle)]
+                k = (a, b) if a < b else (b, a)
+                if k not in c.edges:
+                    raise ValueError(f"[Boundary] missing concept edge for {a}-{b}")
+                edges.add((a, b))
+
+        self.cycle = cycle
+        self.edges = edges
+        self.index = {n: i for i, n in enumerate(cycle)}
+        signed = _signed_area(cycle)
+        self.orientation = "cw" if signed < 0.0 else "ccw"
+
+@dataclass
+class BoundarySegment:
+    conceptA: str
+    conceptB: str
+    elementId: str
+    edgeIndex: int
+    fromNodeId: str
+    toNodeId: str
+    t0: float
+    t1: float
+
+@dataclass
 class ConceptGroupCache:
     """Cache du modèle conceptuel pour un groupe canonique."""
     graphValid: bool = False
@@ -621,6 +822,7 @@ class ConceptGroupCache:
     boundaryEdges: set[tuple[str, str]] | None = None
     boundaryIndex: dict[str, int] | None = None
     boundaryOrientation: str | None = None
+    boundaries: TopologyBoundaries | None = None
 
     def __post_init__(self) -> None:
         if self.nodes is None:
@@ -629,6 +831,8 @@ class ConceptGroupCache:
             self.edges = {}
         if self.nodeOccurrencesByCid is None:
             self.nodeOccurrencesByCid = {}
+        if self.boundaries is None:
+            self.boundaries = TopologyBoundaries()
 
 class TopologyWorld:
     """Racine métier du modèle topologique (Core, sans Tk).
@@ -813,6 +1017,10 @@ class TopologyWorld:
     def buildDerivedSplitPointsForPhysEdge(self, element_id: str, edge_index: int,
                                            eps_t: float = 1e-9) -> list[dict]:
         edge = self.get_edge(element_id, edge_index)
+        edge_start = str(edge.v_start.node_id)
+        edge_end = str(edge.v_end.node_id)
+        if edge_start == edge_end:
+            raise ValueError(f"[DP][{edge.edge_id()}] edge endpoints are identical")
         start_cn = self.find_node(str(edge.v_start.node_id))
         end_cn = self.find_node(str(edge.v_end.node_id))
         dp: list[dict] = [
@@ -833,18 +1041,31 @@ class TopologyWorld:
                 continue
             t_val = att.params.get("t", None)
             if t_val is None:
-                continue
-            t_val = float(t_val)
-            if abs(t_val) <= eps_t or abs(t_val - 1.0) <= eps_t:
-                continue
-            if t_val < 0.0 + eps_t or t_val > 1.0 - eps_t:
+                raise ValueError(f"[DP][{edge.edge_id()}] vertex-edge missing t id={att.attachment_id}")
+            edge_from = att.params.get("edgeFrom", None)
+            if edge_from is None or str(edge_from).strip() == "":
+                raise ValueError(f"[DP][{edge.edge_id()}] vertex-edge missing edgeFrom id={att.attachment_id}")
+            edge_from = str(edge_from)
+            if edge_from == edge_start:
+                t_phys = float(t_val)
+            elif edge_from == edge_end:
+                t_phys = 1.0 - float(t_val)
+            else:
+                raise ValueError(
+                    f"[DP][{edge.edge_id()}] edgeFrom not on edge (edgeFrom={edge_from}) id={att.attachment_id}"
+                )
+            if t_phys < 0.0 - eps_t or t_phys > 1.0 + eps_t:
+                raise ValueError(
+                    f"[DP][{edge.edge_id()}] vertex-edge t out of [0,1] (t={t_phys:.6f}) id={att.attachment_id}"
+                )
+            if abs(t_phys) <= eps_t or abs(t_phys - 1.0) <= eps_t:
                 continue
             v = self.get_vertex(vRef.element_id, vRef.index)
             node_canon = self.find_node(v.node_id)
             if node_canon == start_cn or node_canon == end_cn:
                 continue
             dp.append({
-                "t": t_val,
+                "t": float(t_phys),
                 "nodeCanon": node_canon,
                 "source": "vertex-edge",
                 "attachmentId": att.attachment_id,
@@ -877,6 +1098,10 @@ class TopologyWorld:
                                            eps_t: float = 1e-9) -> list[dict]:
         edge = self.get_edge(element_id, edge_index)
         dp = self.buildDerivedSplitPointsForPhysEdge(element_id, edge_index, eps_t=eps_t)
+        from_node_id = str(edge.v_start.node_id)
+        to_node_id = str(edge.v_end.node_id)
+        if from_node_id == to_node_id:
+            raise ValueError(f"[C1][{edge.edge_id()}] from/to are identical")
         occs: list[dict] = []
         for i in range(len(dp) - 1):
             t0 = float(dp[i]["t"])
@@ -886,10 +1111,10 @@ class TopologyWorld:
             occs.append({
                 "elementId": str(edge.element_id),
                 "edgeId": str(edge.edge_id()),
+                "fromNodeId": from_node_id,
+                "toNodeId": to_node_id,
                 "t0": t0,
                 "t1": t1,
-                "nodeCanon0": str(dp[i]["nodeCanon"]),
-                "nodeCanon1": str(dp[i + 1]["nodeCanon"]),
             })
         return occs
 
@@ -905,6 +1130,8 @@ class TopologyWorld:
         for el in self._iter_group_elements(gid):
             for edge in getattr(el, "edges", []):
                 dp = self.buildDerivedSplitPointsForPhysEdge(el.element_id, edge.edge_index, eps_t=eps_t)
+                from_node_id = str(edge.v_start.node_id)
+                to_node_id = str(edge.v_end.node_id)
 
                 # nodes : occurrences locales (pour refresh geom)
                 for sp in dp:
@@ -934,6 +1161,8 @@ class TopologyWorld:
                     ce.occurrences.append({
                         "elementId": str(el.element_id),
                         "edgeId": str(edge.edge_id()),
+                        "fromNodeId": from_node_id,
+                        "toNodeId": to_node_id,
                         "t0": float(t0),
                         "t1": float(t1),
                     })
@@ -1035,144 +1264,11 @@ class TopologyWorld:
             raise ValueError(f"[Boundary] invalid orientation={orientation}")
         gid = self.find_group(str(group_id))
         c = self.ensureConceptGeom(gid)
-
-        neighbors: dict[str, set[str]] = {}
-        for (a, b) in c.edges.keys():
-            neighbors.setdefault(a, set()).add(b)
-            neighbors.setdefault(b, set()).add(a)
-
-        if not neighbors:
-            c.boundaryCycle = []
-            c.boundaryEdges = set()
-            c.boundaryIndex = {}
-            c.boundaryOrientation = orient
-            return
-
-        def _angle(n0: str, n1: str) -> float:
-            p0 = self.getConceptNodeWorldXY(n0, gid)
-            p1 = self.getConceptNodeWorldXY(n1, gid)
-            dx = float(p1[0] - p0[0])
-            dy = float(p1[1] - p0[1])
-            return float(math.atan2(dy, dx))
-
-        def _leftmost_node(nodes):
-            best = None
-            best_x = None
-            best_y = None
-            for n in nodes:
-                x, y = self.getConceptNodeWorldXY(n, gid)
-                if best is None or x < best_x or (x == best_x and y < best_y):
-                    best = n
-                    best_x = x
-                    best_y = y
-            return best
-
-        start = _leftmost_node(neighbors.keys())
-        start_neighbors = sorted(neighbors[start], key=lambda n: _angle(start, n))
-        if not start_neighbors:
-            c.boundaryCycle = [start]
-            c.boundaryEdges = set()
-            c.boundaryIndex = {start: 0}
-            c.boundaryOrientation = orient
-            return
-
-        tau = 2.0 * math.pi
-        eps_ang = 1e-12
-        max_steps = len(neighbors) + len(c.edges) + 5
-
-        def _walk(first_next):
-            cycle = [start, first_next]
-            prev = start
-            cur = first_next
-            steps = 0
-            while True:
-                steps += 1
-                if steps > max_steps:
-                    raise ValueError(f"[Boundary] loop did not close (gid={gid}, orient={orient})")
-                candidates = [n for n in neighbors.get(cur, []) if n != prev]
-                if not candidates:
-                    break
-                ang_in = _angle(cur, prev)
-                best = None
-                best_delta = None
-                for cand in candidates:
-                    ang_out = _angle(cur, cand)
-                    if orient == "cw":
-                        delta = (ang_in - ang_out) % tau
-                    else:
-                        delta = (ang_out - ang_in) % tau
-                    if delta <= eps_ang:
-                        continue
-                    if best_delta is None or delta < best_delta:
-                        best = cand
-                        best_delta = delta
-                if best is None:
-                    break
-                prev2, cur2 = cur, best
-                if prev2 == start and cur2 == first_next:
-                    break
-                prev, cur = prev2, cur2
-                cycle.append(cur)
-            if cycle and cycle[-1] == cycle[0]:
-                cycle = cycle[:-1]
-            return cycle
-
-        def _normalize_cycle(cycle):
-            if len(cycle) >= 3:
-                area = 0.0
-                for i in range(len(cycle)):
-                    x0, y0 = self.getConceptNodeWorldXY(cycle[i], gid)
-                    x1, y1 = self.getConceptNodeWorldXY(cycle[(i + 1) % len(cycle)], gid)
-                    area += (float(x0) * float(y1)) - (float(x1) * float(y0))
-                if area > 0.0:
-                    cycle = list(reversed(cycle))
-
-                best_idx = 0
-                best_x, best_y = self.getConceptNodeWorldXY(cycle[0], gid)
-                for i in range(1, len(cycle)):
-                    x, y = self.getConceptNodeWorldXY(cycle[i], gid)
-                    if (x < best_x) or (x == best_x and y < best_y):
-                        best_idx = i
-                        best_x, best_y = x, y
-                cycle = cycle[best_idx:] + cycle[:best_idx]
-            return cycle
-
-        def _covers_all_nodes(cycle):
-            if len(cycle) < 3:
-                return False
-            pts = [self.getConceptNodeWorldXY(n, gid) for n in cycle]
-            poly = _ShPoly(pts).buffer(0)
-            if poly.is_empty:
-                return False
-            for n in neighbors.keys():
-                px, py = self.getConceptNodeWorldXY(n, gid)
-                p = _ShPoint(float(px), float(py))
-                if not (poly.contains(p) or poly.touches(p)):
-                    return False
-            return True
-
-        cycle = None
-        for first_next in start_neighbors:
-            candidate = _walk(first_next)
-            candidate = _normalize_cycle(candidate)
-            if _covers_all_nodes(candidate):
-                cycle = candidate
-                break
-
-        if cycle is None:
-            raise ValueError("[Boundary] no external face found")
-
-        edges = set()
-        if len(cycle) >= 2:
-            for i in range(len(cycle)):
-                a = cycle[i]
-                b = cycle[(i + 1) % len(cycle)]
-                edges.add((a, b))
-
-        c.boundaryCycle = cycle
-        c.boundaryEdges = edges
-        c.boundaryIndex = {n: i for i, n in enumerate(cycle)}
-        c.boundaryOrientation = orient
+        c.boundaries.compute(self, gid, orientation=orient)
+        c.boundaryCycle = c.boundaries.cycle
+        c.boundaryEdges = c.boundaries.edges
+        c.boundaryIndex = c.boundaries.index
+        c.boundaryOrientation = c.boundaries.orientation
 
     def getBoundaryCycle(self, group_id: str, startNodeId: str) -> list[str]:
         gid = self.find_group(str(group_id))
@@ -1204,6 +1300,101 @@ class TopologyWorld:
         if not c.boundaryEdges:
             raise ValueError("[Boundary] not computed")
         return (str(a), str(b)) in c.boundaryEdges or (str(b), str(a)) in c.boundaryEdges
+
+    def getBoundarySegments(self, group_id: str) -> list[BoundarySegment]:
+        gid = self.find_group(str(group_id))
+        c = self._concept_cache(gid)
+        if not c.boundaryCycle or not c.boundaryIndex:
+            raise ValueError("[Boundary] not computed")
+        if not c.edges:
+            raise ValueError("[Boundary] concept edges missing")
+
+        cycle = c.boundaryCycle
+        if len(cycle) < 2:
+            return []
+
+        segments: list[BoundarySegment] = []
+        for i in range(len(cycle)):
+            ca = str(cycle[i])
+            cb = str(cycle[(i + 1) % len(cycle)])
+            k = (ca, cb) if ca < cb else (cb, ca)
+            ce = c.edges.get(k)
+            if ce is None:
+                raise ValueError(f"[Boundary] missing concept edge for {ca}-{cb}")
+            if not ce.occurrences:
+                raise ValueError(f"[Boundary] missing occurrences for {ca}-{cb}")
+            occ = ce.occurrences[0]
+
+            if "elementId" not in occ:
+                raise ValueError(f"[Boundary] missing elementId for {ca}-{cb}")
+            if "edgeId" not in occ:
+                raise ValueError(f"[Boundary] missing edgeId for {ca}-{cb}")
+            if "t0" not in occ or "t1" not in occ:
+                raise ValueError(f"[Boundary] missing t0/t1 for {ca}-{cb}")
+            if "fromNodeId" not in occ or "toNodeId" not in occ:
+                raise ValueError(f"[Boundary] missing fromNodeId/toNodeId for {ca}-{cb}")
+
+            element_id = str(occ["elementId"])
+            edge_id = str(occ["edgeId"])
+            t0 = float(occ["t0"])
+            t1 = float(occ["t1"])
+            from_node_id = str(occ["fromNodeId"])
+            to_node_id = str(occ["toNodeId"])
+            if from_node_id == to_node_id:
+                raise ValueError(f"[Boundary] from/to identical for {edge_id}")
+
+            if ":E" not in edge_id:
+                raise ValueError(f"[Boundary] invalid edgeId format: {edge_id}")
+            edge_head, edge_tail = edge_id.rsplit(":E", 1)
+            if not edge_head or not edge_tail:
+                raise ValueError(f"[Boundary] invalid edgeId format: {edge_id}")
+            try:
+                edge_index = int(edge_tail)
+            except ValueError as exc:
+                raise ValueError(f"[Boundary] invalid edgeId index: {edge_id}") from exc
+
+            if edge_head != element_id:
+                raise ValueError(f"[Boundary] edgeId does not match elementId: {edge_id}")
+
+            edge = self.get_edge(element_id, edge_index)
+            if str(edge.v_start.node_id) != from_node_id or str(edge.v_end.node_id) != to_node_id:
+                raise ValueError(f"[Boundary] occurrence from/to mismatch for {edge_id}")
+
+            eps_t = float(getattr(self, "concept_split_epsilon_t", 1e-6))
+            dp = self.buildDerivedSplitPointsForPhysEdge(element_id, edge_index, eps_t=eps_t)
+
+            def _concept_at_t(t_val: float) -> str:
+                for sp in dp:
+                    if abs(float(sp["t"]) - t_val) <= eps_t:
+                        return str(sp["nodeCanon"])
+                raise ValueError(f"[Boundary] missing split point at t={t_val} for {edge_id}")
+
+            n0 = _concept_at_t(t0)
+            n1 = _concept_at_t(t1)
+
+            if n0 == ca and n1 == cb:
+                pass
+            elif n0 == cb and n1 == ca:
+                t0, t1 = (1.0 - t1), (1.0 - t0)
+                from_node_id, to_node_id = to_node_id, from_node_id
+            else:
+                raise ValueError(f"[Boundary] occurrence orientation mismatch for {ca}-{cb}: {n0}-{n1}")
+
+            if t0 < 0.0 or t0 > 1.0 or t1 < 0.0 or t1 > 1.0 or t0 >= t1:
+                raise ValueError(f"[Boundary] invalid t0/t1 for {edge_id}: t0={t0} t1={t1}")
+
+            segments.append(BoundarySegment(
+                conceptA=ca,
+                conceptB=cb,
+                elementId=element_id,
+                edgeIndex=edge_index,
+                fromNodeId=from_node_id,
+                toNodeId=to_node_id,
+                t0=t0,
+                t1=t1,
+            ))
+
+        return segments
 
     # --- Parcours du graphe conceptuel (par groupe) ---
     def getConceptEdgesForNode(self, node_id: str, group_id: str | None = None) -> list[dict]:
@@ -1732,6 +1923,18 @@ class TopologyWorld:
         elif abs(t_val - 1.0) <= eps_t:
             t_val = 1.0
         attachment.params["t"] = t_val
+        edge_from = attachment.params.get("edgeFrom", None)
+        if edge_from is None or str(edge_from).strip() == "":
+            raise ValueError(f"[P2][Attachment] vertex-edge missing edgeFrom id={attachment.attachment_id}")
+        edge_from = str(edge_from)
+        e = self.get_edge(attachment.feature_b.element_id, attachment.feature_b.index)
+        s = str(e.v_start.node_id)
+        t = str(e.v_end.node_id)
+        if edge_from != s and edge_from != t:
+            raise ValueError(
+                f"[P2][Attachment] vertex-edge edgeFrom not on edge (edgeFrom={edge_from}) id={attachment.attachment_id}"
+            )
+        attachment.params["edgeFrom"] = edge_from
 
     def record_attachment(self, attachment: TopologyAttachment, group_id: str | None = None):
         self.attachments[attachment.attachment_id] = attachment
@@ -1763,15 +1966,23 @@ class TopologyWorld:
                 t = vRef.t if vRef.t is not None else eRef.t
             if t is None:
                 raise ValueError("vertex-edge: paramètre t manquant")
+            edge_from = attachment.params.get("edgeFrom", None)
+            if edge_from is None or str(edge_from).strip() == "":
+                raise ValueError("vertex-edge: paramètre edgeFrom manquant")
 
             v = self.get_vertex(vRef.element_id, vRef.index)
-            t_val = float(t)
+            e = self.get_edge(eRef.element_id, eRef.index)
+            edge_from = str(edge_from)
+            if edge_from == str(e.v_start.node_id):
+                t_val = float(t)
+            elif edge_from == str(e.v_end.node_id):
+                t_val = 1.0 - float(t)
+            else:
+                raise ValueError(f"vertex-edge: edgeFrom incohérent (edgeFrom={edge_from})")
             eps = float(getattr(self, "vertex_edge_endpoint_epsilon", 1e-6))
             if abs(t_val) <= eps:
-                e = self.get_edge(eRef.element_id, eRef.index)
                 self.union_nodes(v.node_id, e.v_start.node_id)
             elif abs(t_val - 1.0) <= eps:
-                e = self.get_edge(eRef.element_id, eRef.index)
                 self.union_nodes(v.node_id, e.v_end.node_id)
 
         elif kind == "edge-edge":
@@ -2289,6 +2500,8 @@ class TopologyWorld:
                     _ET.SubElement(occ_el, "O", {
                         "element": str(occ.get("elementId", "")),
                         "edge": str(occ.get("edgeId", "")),
+                        "from": str(occ.get("fromNodeId", "")),
+                        "to": str(occ.get("toNodeId", "")),
                         "t0": f"{float(occ.get('t0', 0.0)):.6f}",
                         "t1": f"{float(occ.get('t1', 0.0)):.6f}",
                     })
