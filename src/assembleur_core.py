@@ -622,6 +622,20 @@ class TopologyBoundaries:
         self.index = None
         self.orientation = None
 
+    def inverse(self) -> None:
+        """Inverse le cycle boundary (reverse order) et réoriente les edges."""
+        if not self.cycle:
+            return
+        cycle = list(reversed(self.cycle))
+        self.cycle = cycle
+        self.index = {n: i for i, n in enumerate(cycle)}
+        if self.edges is not None:
+            self.edges = {(b, a) for (a, b) in self.edges}
+        if self.orientation == "cw":
+            self.orientation = "ccw"
+        elif self.orientation == "ccw":
+            self.orientation = "cw"
+
     def compute(self, world: "TopologyWorld", gid: str, orientation: str) -> None:
         orient = str(orientation).strip().lower()
         if orient not in ("cw", "ccw"):
@@ -796,8 +810,16 @@ class TopologyBoundaries:
         self.cycle = cycle
         self.edges = edges
         self.index = {n: i for i, n in enumerate(cycle)}
+    
         signed = _signed_area(cycle)
-        self.orientation = "cw" if signed < 0.0 else "ccw"
+        computed = "cw" if signed < 0.0 else "ccw"
+        self.orientation = computed
+
+        # Si l'orientation finale du graph n'est finalement pas celle demandée en entrée, 
+        # on inverse le cycle
+        if computed != orient:
+            self.inverse()
+            self.orientation = orient   # contrainte forte
 
 @dataclass
 class BoundarySegment:
@@ -922,28 +944,26 @@ class TopologyWorld:
         if self._topoTxDepth == 1:
             self._topoTxTouchedGroups.clear()
 
-    def commitTopoTransaction(self, orientation: str = "cw") -> None:
+    def commitTopoTransaction(self) -> None:
         if self._topoTxDepth <= 0:
             raise ValueError("[TopoTx] commit without begin")
         self._topoTxDepth -= 1
         if self._topoTxDepth > 0:
             return
-        self._topoTxOrientation = str(orientation)
         for gid in sorted(self._topoTxTouchedGroups):
-            self.recomputeConceptAndBoundary(gid, orientation=self._topoTxOrientation)
+            self.recomputeConceptAndBoundary(gid)
         self._topoTxTouchedGroups.clear()
-        self._topoTxOrientation = "cw"
 
     def _markTopoTouched(self, group_id: str) -> None:
         gid = self.find_group(str(group_id))
         if self._topoTxDepth > 0:
             self._topoTxTouchedGroups.add(gid)
 
-    def recomputeConceptAndBoundary(self, group_id: str, orientation: str = "cw") -> None:
+    def recomputeConceptAndBoundary(self, group_id: str) -> None:
         gid = self.find_group(str(group_id))
         self.invalidateConceptGraph(gid)
         self.ensureConceptGeom(gid)
-        self.computeBoundary(gid, orientation=str(orientation))
+        self.computeBoundary(gid)
 
     def toConceptNodeId(self, node_id: str) -> str:
         return self.find_node(str(node_id))
@@ -1258,13 +1278,10 @@ class TopologyWorld:
         out.sort(key=lambda r: (float(r.get("azDeg", 0.0)), str(r.get("otherNodeId", ""))))
         return out
 
-    def computeBoundary(self, group_id: str, orientation: str = "cw") -> None:
-        orient = str(orientation).strip().lower()
-        if orient not in ("cw", "ccw"):
-            raise ValueError(f"[Boundary] invalid orientation={orientation}")
+    def computeBoundary(self, group_id: str) -> None:
         gid = self.find_group(str(group_id))
         c = self.ensureConceptGeom(gid)
-        c.boundaries.compute(self, gid, orientation=orient)
+        c.boundaries.compute(self, gid, orientation=self._topoTxOrientation)
         c.boundaryCycle = c.boundaries.cycle
         c.boundaryEdges = c.boundaries.edges
         c.boundaryIndex = c.boundaries.index
@@ -1395,6 +1412,473 @@ class TopologyWorld:
             ))
 
         return segments
+
+    def _build_ring_from_boundary_cycle(
+        self,
+        group_id: str,
+        eps_world: float = 1e-9,
+    ) -> tuple[list[np.ndarray], list[str], dict[str, int]] | None:
+        """Construit un ring monde depuis le cycle topologique (1 point physique par concept node)."""
+        gid = self.find_group(str(group_id))
+        c = self._concept_cache(gid)
+        if not c.boundaryCycle:
+            raise ValueError("[Boundary] not computed")
+
+        cycle = list(c.boundaryCycle)
+        if len(cycle) < 3:
+            return None
+
+        # Assure que les occurrences physiques sont prêtes
+        c = self.ensureConceptGeom(gid)
+
+        ring_pts: list[np.ndarray] = []
+        ring_nodes: list[str] = []
+        for cn in cycle:
+            occs = c.nodeOccurrencesByCid.get(str(cn))
+            if not occs:
+                return None
+            element_id, local_xy = occs[0]
+            el = self.elements.get(str(element_id))
+            if el is None:
+                return None
+            p_world = el.localToWorld(np.array(local_xy, dtype=float))
+            ring_pts.append(np.array([float(p_world[0]), float(p_world[1])], dtype=float))
+            ring_nodes.append(str(cn))
+
+        if len(ring_pts) < 3:
+            return None
+
+        # Validation minimale : pas de doublons consécutifs
+        for i in range(len(ring_pts) - 1):
+            dx = float(ring_pts[i + 1][0] - ring_pts[i][0])
+            dy = float(ring_pts[i + 1][1] - ring_pts[i][1])
+            if (dx * dx + dy * dy) <= float(eps_world) * float(eps_world):
+                return None
+
+        index = {str(n): i for i, n in enumerate(ring_nodes)}
+        if len(index) != len(ring_nodes):
+            return None
+        return (ring_pts, ring_nodes, index)
+
+    def _arcForward(self, pts: list[np.ndarray], i: int, j: int) -> list[np.ndarray]:
+        """Arc avant sur un ring non fermé: i -> j en sens direct."""
+        if i == j:
+            return [pts[i]]
+        if i < j:
+            return pts[i:j + 1]
+        return pts[i:] + pts[:j + 1]
+
+    def _arcReverse(self, pts: list[np.ndarray], i: int, j: int) -> list[np.ndarray]:
+        """Arc arrière sur un ring non fermé: i -> j en sens inverse."""
+        return list(reversed(self._arcForward(pts, j, i)))
+
+    def _concatArcs(self, a: list[np.ndarray], b: list[np.ndarray]) -> list[np.ndarray]:
+        """Concatène deux arcs. b est inversé, puis on évite le doublon au point de jonction."""
+        if not a or not b:
+            return []
+        b_rev = list(reversed(b))
+        return list(a[:-1]) + b_rev[:-1]
+
+    def _resolveJunctionsMobDest(
+        self,
+        attachments: list[TopologyAttachment],
+        nodesMob: list[str],
+        ptsMob: list[np.ndarray],
+        indexMob: dict[str, int],
+        nodesDest: list[str],
+        ptsDest: list[np.ndarray],
+        indexDest: dict[str, int],
+    ) -> tuple[dict, dict] | None:
+        """Construit J0/J1 (types+ids) et remplit les points/directions depuis les rings."""
+        atts = list(attachments or [])
+        if not atts:
+            return None
+
+        def _edge_t_from_params(edge: TopologyEdge, t_val: float, edge_from: str) -> float | None:
+            if edge_from == str(edge.v_start.node_id):
+                return float(t_val)
+            if edge_from == str(edge.v_end.node_id):
+                return 1.0 - float(t_val)
+            return None
+
+        def _node_pt(nid: str, pts: list[np.ndarray], idx: dict[str, int]) -> np.ndarray | None:
+            if nid not in idx:
+                return None
+            return pts[idx[nid]]
+
+        def _edge_dir_from_ring(edge: TopologyEdge, ptsRing: list, indexRing: dict[str, int], refNodeId: str):
+            """
+            Return a unit direction vector for edgeId, oriented so it starts from refNodeId.
+            refNodeId MUST be one of the edge endpoints in the ring (concept node id).
+            """
+            a = str(self.find_node(edge.v_start.node_id))
+            b = str(self.find_node(edge.v_end.node_id))
+
+            if a not in indexRing or b not in indexRing:
+                return None
+
+            pa = ptsRing[indexRing[a]]
+            pb = ptsRing[indexRing[b]]
+
+            v = pb - pa
+            n = float((v[0] ** 2 + v[1] ** 2) ** 0.5)
+            if n <= 1e-12:
+                return None
+            dir_ab = v / n
+
+            # orienter le vecteur au départ du refNode
+            if refNodeId == a:
+                return dir_ab
+            if refNodeId == b:
+                return -dir_ab
+
+            # refNode n'est pas un endpoint => incohérent
+            return None
+
+
+        # Cas A: edge-edge (1 attachment)
+        if len(atts) == 1 and str(atts[0].kind) == "edge-edge":
+            att = atts[0]
+            if att.feature_a is None or att.feature_b is None:
+                return None
+            if att.feature_a.feature_type != TopologyFeatureType.EDGE or att.feature_b.feature_type != TopologyFeatureType.EDGE:
+                return None
+
+            eA = self.get_edge(att.feature_a.element_id, att.feature_a.index)
+            eB = self.get_edge(att.feature_b.element_id, att.feature_b.index)
+            a0 = self.find_node(str(eA.v_start.node_id))
+            a1 = self.find_node(str(eA.v_end.node_id))
+            b0 = self.find_node(str(eB.v_start.node_id))
+            b1 = self.find_node(str(eB.v_end.node_id))
+
+            mapping = str(att.params.get("mapping", "") or "").strip().lower()
+            if mapping not in ("direct", "reverse"):
+                return None
+
+            if a0 in indexMob and a1 in indexMob and b0 in indexDest and b1 in indexDest:
+                mob0, mob1 = a0, a1
+                dest0, dest1 = b0, b1
+            elif b0 in indexMob and b1 in indexMob and a0 in indexDest and a1 in indexDest:
+                mob0, mob1 = b0, b1
+                dest0, dest1 = a0, a1
+            else:
+                return None
+
+            if mapping == "reverse":
+                dest0, dest1 = dest1, dest0
+
+            J0 = {"mobType": "node", "mobId": str(mob0), "destType": "node", "destId": str(dest0)}
+            J1 = {"mobType": "node", "mobId": str(mob1), "destType": "node", "destId": str(dest1)}
+
+        # Cas B: vertex-edge (2 attachments)
+        elif len(atts) == 2:
+            att_vv = None
+            att_ve = None
+            for att in atts:
+                if str(att.kind) == "vertex-vertex":
+                    att_vv = att
+                elif str(att.kind) == "vertex-edge":
+                    att_ve = att
+            if att_vv is None or att_ve is None:
+                return None
+
+            # vertex-vertex => J0
+            if att_vv.feature_a is None or att_vv.feature_b is None:
+                return None
+            vA = self.get_vertex(att_vv.feature_a.element_id, att_vv.feature_a.index)
+            vB = self.get_vertex(att_vv.feature_b.element_id, att_vv.feature_b.index)
+            nA = self.find_node(str(vA.node_id))
+            nB = self.find_node(str(vB.node_id))
+            if nA in indexMob and nB in indexDest:
+                J0 = {"mobType": "node", "mobId": str(nA), "destType": "node", "destId": str(nB)}
+            elif nB in indexMob and nA in indexDest:
+                J0 = {"mobType": "node", "mobId": str(nB), "destType": "node", "destId": str(nA)}
+            else:
+                return None
+
+            # vertex-edge => J1 (edge side)
+            if att_ve.feature_a is None or att_ve.feature_b is None:
+                return None
+            if att_ve.feature_a.feature_type == TopologyFeatureType.VERTEX and att_ve.feature_b.feature_type == TopologyFeatureType.EDGE:
+                v_ref = att_ve.feature_a
+                e_ref = att_ve.feature_b
+            elif att_ve.feature_a.feature_type == TopologyFeatureType.EDGE and att_ve.feature_b.feature_type == TopologyFeatureType.VERTEX:
+                v_ref = att_ve.feature_b
+                e_ref = att_ve.feature_a
+            else:
+                return None
+
+            edge = self.get_edge(e_ref.element_id, e_ref.index)
+            t_raw = att_ve.params.get("t", None)
+            edge_from = att_ve.params.get("edgeFrom", None)
+            if t_raw is None or edge_from is None or str(edge_from).strip() == "":
+                return None
+            t_val = float(t_raw)
+
+            t_edge = _edge_t_from_params(edge, t_val, str(edge_from))
+            if t_edge is None:
+                return None
+
+            el = self.elements.get(str(e_ref.element_id))
+            if el is None:
+                return None
+            p_local = self._localPointOnEdge(el, edge, float(t_edge))
+            p_world = el.localToWorld(p_local)
+
+            ref_node = self.find_node(str(edge.v_start.node_id)) if t_edge <= 0.5 else self.find_node(str(edge.v_end.node_id))
+            # on trouve les vecteurs edge_mob et edge_dest avec une référence coté J0
+            edge_dir_mob = _edge_dir_from_ring(edge=edge, ptsRing=ptsMob, indexRing=indexMob, refNodeId=str(J0["mobId"]))
+            edge_dir_dest = _edge_dir_from_ring(edge=edge, ptsRing=ptsDest, indexRing=indexDest, refNodeId=str(J0["destId"]))
+
+            v_node = self.find_node(str(self.get_vertex(v_ref.element_id, v_ref.index).node_id))
+            if edge_dir_mob is not None and ref_node in indexMob:
+                J1 = {"mobType": "edge", "mobId": edge.edge_id(), "mobPt": p_world, "mobDir": edge_dir_mob,
+                      "destType": "node", "destId": str(v_node)}
+            elif edge_dir_dest is not None and ref_node in indexDest:
+                J1 = {"mobType": "node", "mobId": str(v_node),
+                      "destType": "edge", "destId": edge.edge_id(), "destPt": p_world, "destDir": edge_dir_dest}
+            else:
+                return None
+        else:
+            return None
+
+        # Remplir points depuis rings
+        for j in (J0, J1):
+            if j.get("mobType") == "node":
+                p = _node_pt(j.get("mobId", ""), ptsMob, indexMob)
+                if p is None:
+                    return None
+                j["mobPt"] = p
+            if j.get("destType") == "node":
+                p = _node_pt(j.get("destId", ""), ptsDest, indexDest)
+                if p is None:
+                    return None
+                j["destPt"] = p
+        return (J0, J1)
+
+    def _computeRigidTransform(self, J0: dict, J1: dict) -> tuple[np.ndarray, np.ndarray] | None:
+        """Calcule (R,T) tel que R*mob + T = dest entre J0 et J1."""
+        p0m = J0.get("mobPt")
+        p1m = J1.get("mobPt")
+        p0d = J0.get("destPt")
+        p1d = J1.get("destPt")
+        if p0m is None or p1m is None or p0d is None or p1d is None:
+            return None
+        vm = np.array([float(p1m[0] - p0m[0]), float(p1m[1] - p0m[1])], dtype=float)
+        vd = np.array([float(p1d[0] - p0d[0]), float(p1d[1] - p0d[1])], dtype=float)
+        nm = float(np.hypot(vm[0], vm[1]))
+        nd = float(np.hypot(vd[0], vd[1]))
+        if nm <= 1e-12 or nd <= 1e-12:
+            return None
+        ang_m = math.atan2(float(vm[1]), float(vm[0]))
+        ang_d = math.atan2(float(vd[1]), float(vd[0]))
+        dtheta = ang_d - ang_m
+        c = math.cos(dtheta); s = math.sin(dtheta)
+        R = np.array([[c, -s], [s, c]], dtype=float)
+        T = np.array([float(p0d[0]), float(p0d[1])], dtype=float) - (R @ np.array([float(p0m[0]), float(p0m[1])], dtype=float))
+        return (R, T)
+
+    def _injectSplitByEdgeDir(
+        self,
+        nodes: list[str],
+        pts: list[np.ndarray],
+        index: dict[str, int],
+        refNode: str,
+        splitPt: np.ndarray,
+        edgeDirRot: np.ndarray,
+    ) -> tuple[list[str], list[np.ndarray], dict[str, int], str] | None:
+        """Injecte un pseudo-nœud sur un ring selon la direction d'arête."""
+        if refNode not in index:
+            return None
+        n = len(nodes)
+        if n < 3:
+            return None
+        i = int(index[refNode])
+        i_prev = (i - 1) % n
+        i_next = (i + 1) % n
+        p_ref = pts[i]
+        p_prev = pts[i_prev]
+        p_next = pts[i_next]
+
+        v_prev = np.array([float(p_prev[0] - p_ref[0]), float(p_prev[1] - p_ref[1])], dtype=float)
+        v_next = np.array([float(p_next[0] - p_ref[0]), float(p_next[1] - p_ref[1])], dtype=float)
+        n_prev = float(np.hypot(v_prev[0], v_prev[1]))
+        n_next = float(np.hypot(v_next[0], v_next[1]))
+        if n_prev <= 1e-12 or n_next <= 1e-12:
+            return None
+        v_prev /= n_prev
+        v_next /= n_next
+
+        s_prev = float(np.dot(edgeDirRot, v_prev))
+        s_next = float(np.dot(edgeDirRot, v_next))
+        insert_after = bool(s_next >= s_prev)
+
+        out_nodes = list(nodes)
+        out_pts = list(pts)
+        pseudo = "__EDGE__1"
+        insert_at = i + 1 if insert_after else i
+        out_nodes.insert(insert_at, pseudo)
+        out_pts.insert(insert_at, np.array([float(splitPt[0]), float(splitPt[1])], dtype=float))
+        out_index = {str(nid): k for k, nid in enumerate(out_nodes)}
+        if len(out_index) != len(out_nodes):
+            return None
+        return (out_nodes, out_pts, out_index, pseudo)
+
+    def _isValidPolygon(self, ringPts: list[np.ndarray]) -> bool:
+        """Valide un contour simple: LineString simple + Polygon valide + aire > EPS_AREA."""
+        if not ringPts or len(ringPts) < 3:
+            return False
+        ring = [(float(p[0]), float(p[1])) for p in ringPts]
+        ls = _ShLine(ring)
+        if not ls.is_simple:
+            return False
+        poly = _ShPoly(ring)
+        if getattr(poly, "is_empty", False) or not poly.is_valid:
+            return False
+        eps_area = float(getattr(self, "overlap_eps_area", 1e-12))
+        if abs(float(poly.area)) <= eps_area:
+            return False
+        return True
+
+
+    def simulateOverlapTopologique(
+        self,
+        groupDest: TopologyGroup,
+        groupMob: TopologyGroup,
+        attachments: list[TopologyAttachment],
+        debug: bool = False,
+    ) -> bool:
+        """Simule l'assemblage topologique de 2 groupes et d\u00e9tecte un overlap (contour auto-intersect\u00e9)."""
+        def _dbg(msg: str) -> None:
+            if debug:
+                print(str(msg))
+
+        def _fmt_feature(f) -> str:
+            if f is None:
+                return "None"
+            return f"{str(getattr(f, 'feature_type', ''))}:{getattr(f, 'element_id', '')}:{getattr(f, 'index', '')}"
+
+        def _fmt_atts(att_list: list[TopologyAttachment]) -> str:
+            out = []
+            for a in att_list:
+                kind = str(getattr(a, "kind", ""))
+                fa = _fmt_feature(getattr(a, "feature_a", None))
+                fb = _fmt_feature(getattr(a, "feature_b", None))
+                params = getattr(a, "params", {}) or {}
+                keys = {}
+                for k in ("t", "edgeFrom", "mapping"):
+                    if k in params:
+                        keys[k] = params.get(k)
+                out.append(f"{kind}({fa}<->{fb}){keys}")
+            return "[" + ", ".join(out) + "]"
+
+        # --- checks ---
+        if groupMob is None or groupDest is None:
+            return True
+
+        gid_mob = self.find_group(str(groupMob.group_id))
+        gid_dest = self.find_group(str(groupDest.group_id))
+        if not gid_mob or not gid_dest or gid_mob == gid_dest:
+            return True
+
+        atts = list(attachments or [])
+        if not atts:
+            return True
+
+        _dbg(f"[TOPO-OVERLAP][START] mob={gid_mob} dest={gid_dest} atts={_fmt_atts(atts)}")
+
+        # --- build rings from boundary cycles ---
+        eps_world = float(getattr(self, "overlap_eps_world", 1e-9))
+        ring_mob = self._build_ring_from_boundary_cycle(gid_mob, eps_world=eps_world)
+        ring_dest = self._build_ring_from_boundary_cycle(gid_dest, eps_world=eps_world)
+        if ring_mob is None or ring_dest is None:
+            return True
+        nodes_mob, pts_mob, index_mob = ring_mob[1], ring_mob[0], ring_mob[2]
+        nodes_dest, pts_dest, index_dest = ring_dest[1], ring_dest[0], ring_dest[2]
+
+        _dbg(f"[TOPO-OVERLAP][RINGS] nMob={len(pts_mob)} nDest={len(pts_dest)}")
+
+        # --- resolve junctions ---
+        res = self._resolveJunctionsMobDest(atts, nodes_mob, pts_mob, index_mob, nodes_dest, pts_dest, index_dest)
+        if res is None:
+            return True
+        J0, J1 = res
+        _dbg(f"[TOPO-OVERLAP][J] J0={J0}")
+        _dbg(f"[TOPO-OVERLAP][J] J1={J1}")
+
+        # --- compute rigid transform (mob -> dest) ---
+        RT = self._computeRigidTransform(J0, J1)
+        if RT is None:
+            return True
+        R, T = RT
+        _dbg(f"[TOPO-OVERLAP][RT] R={R.tolist()} T={[float(T[0]), float(T[1])]}" )
+
+        # Apply transform to mob ring
+        pts_mob = [(R @ np.array([float(p[0]), float(p[1])], dtype=float)) + T for p in pts_mob]
+
+        # --- inject split by edge direction (only for J1 edge) ---
+        if J1.get("mobType") == "edge":
+            edge_dir_rot = R @ np.array(J1.get("mobDir"), dtype=float)
+            split_pt = (R @ np.array([float(J1["mobPt"][0]), float(J1["mobPt"][1])], dtype=float)) + T
+            res_split = self._injectSplitByEdgeDir(nodes_mob, pts_mob, index_mob, J0.get("mobId"), split_pt, edge_dir_rot)
+            if res_split is None:
+                return True
+            nodes_mob, pts_mob, index_mob, edge_node_id = res_split
+            J1["mobType"] = "node"
+            J1["mobId"] = edge_node_id
+            J1["mobPt"] = split_pt
+            _dbg(f"[TOPO-OVERLAP][SPLIT] side=mob edgeDirRot={edge_dir_rot.tolist()} splitPt={[float(split_pt[0]), float(split_pt[1])]} edgeNodeId={edge_node_id}")
+
+        if J1.get("destType") == "edge":
+            edge_dir_rot = np.array(J1.get("destDir"), dtype=float)
+            split_pt = np.array([float(J1["destPt"][0]), float(J1["destPt"][1])], dtype=float)
+            res_split = self._injectSplitByEdgeDir(nodes_dest, pts_dest, index_dest, J0.get("destId"), split_pt, edge_dir_rot)
+            if res_split is None:
+                return True
+            nodes_dest, pts_dest, index_dest, edge_node_id = res_split
+            J1["destType"] = "node"
+            J1["destId"] = edge_node_id
+            J1["destPt"] = split_pt
+            _dbg(f"[TOPO-OVERLAP][SPLIT] side=dest edgeDirRot={edge_dir_rot.tolist()} splitPt={[float(split_pt[0]), float(split_pt[1])]} edgeNodeId={edge_node_id}")
+
+        # --- resolve cut indices ---
+        if J0.get("mobId") not in index_mob or J1.get("mobId") not in index_mob:
+            return True
+        if J0.get("destId") not in index_dest or J1.get("destId") not in index_dest:
+            return True
+        i_m0 = int(index_mob[J0.get("mobId")]); i_m1 = int(index_mob[J1.get("mobId")])
+        i_d0 = int(index_dest[J0.get("destId")]); i_d1 = int(index_dest[J1.get("destId")])
+        if i_m0 == i_m1 or i_d0 == i_d1:
+            return True
+        _dbg(f"[TOPO-OVERLAP][CUT] iMob=({i_m0},{i_m1}) iDest=({i_d0},{i_d1})")
+
+        # --- build output ring ---
+        # on part du point __EDGE_ pour revenir à refNode
+        def arcEntreJonctionsSelonEdge(pts, j0, j1):
+            """
+            Renvoie l'arc entre a et b en choisissant Forward/Reverse selon le sens de l'edge j0->j1
+            par rapport au boundary CW.
+            """
+            n = len(pts)
+            if j1 == (j0 + 1) % n:       # edge suit CW
+                return self._arcReverse(pts, j0, j1)
+            elif j1 == (j0 - 1) % n:     # edge inversé
+                return self._arcForward(pts, j0, j1)
+
+         
+        arc_mob = arcEntreJonctionsSelonEdge(pts_mob, i_m0, i_m1)   
+        arc_dest = arcEntreJonctionsSelonEdge(pts_dest, i_d0, i_d1) 
+        ring_out = self._concatArcs(arc_mob, arc_dest)
+        ring_xy = [(float(p[0]), float(p[1])) for p in ring_out]
+        poly = _ShPoly(ring_xy) if ring_xy else _ShPoly()
+        area = float(getattr(poly, "area", 0.0) or 0.0)
+        _dbg(f"[TOPO-OVERLAP][RINGOUT] n={len(ring_xy)} area={area:.6f}")
+
+        # --- validate final ring ---
+        is_valid = self._isValidPolygon(ring_out)
+        overlap = not is_valid
+        _dbg(f"[TOPO-OVERLAP][VALID] overlap={overlap}")
+        return overlap
 
     # --- Parcours du graphe conceptuel (par groupe) ---
     def getConceptEdgesForNode(self, node_id: str, group_id: str | None = None) -> list[dict]:
@@ -2134,6 +2618,11 @@ class TopologyWorld:
         if hasattr(el, "vertex_labels") and 0 <= vidx < len(el.vertex_labels):
             return str(el.vertex_labels[vidx])
         return f"N{vidx}"
+
+    def getNodeType(self, nodeId: str) -> str:
+        elementId, vidx = self._parseElementAndVertexIndexFromNodeId(nodeId)
+        el = self.elements[elementId]
+        return el.vertex_types[vidx]
 
     def getNodeLabel(self, node_id: str) -> str:
         """Label métier d'un node (canonique ou atomique).

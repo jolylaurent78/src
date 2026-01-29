@@ -1,6 +1,11 @@
 import math
 import numpy as np
 
+# === Modules externalisés (découpage maintenable) ===
+from src.assembleur_core import (
+    TopologyWorld, TopologyElement, TopologyNodeType,
+    TopologyAttachment, TopologyFeatureRef, TopologyFeatureType,
+)
 
 class EdgeChoiceEpts:
     __slots__ = ("mA", "mBEdgeVertex", "tA", "tBEdgeVertex",
@@ -50,7 +55,6 @@ class EdgeChoiceEpts:
         raise IndexError(i)
 
     def createTopologyAttachments(self, *, world, debug: bool = False):
-        from src.assembleur_core import TopologyAttachment, TopologyFeatureRef, TopologyFeatureType
         if world is None:
             raise ValueError("createTopologyAttachments: world manquant")
         elementIdSrc = self.elementIdSrc
@@ -302,14 +306,15 @@ def _compute_t_by_edge_ratio(mA, mB, tA, tB):
 def buildEdgeChoiceEptsFromBest(
     best,
     *,
+    world,
     mob_idx: int,
     tgt_idx: int,
     mob_tids: list,
     tgt_tids: list,
     last_drawn: list,
     eps_world: float,
-    src_anchor_vkey: str,
-    dst_anchor_vkey: str,
+    mATmpId: str,
+    tATmpId: str,
     debug: bool = False,
 ):
     if not best:
@@ -340,6 +345,20 @@ def buildEdgeChoiceEptsFromBest(
     elementIdDst = tri_dst.get("topoElementId", None)
     if not elementIdSrc or not elementIdDst:
         raise ValueError("buildEdgeChoiceEptsFromBest: topoElementId manquant (src/dst)")
+
+    # On récupère le noeud équivalent dans le bon référentiel de triangle
+    def getEquivalentNodeInElement(world, nodeIdSrc: str, elementId: str) -> str | None:
+        elementId = str(elementId)
+        for nid in world.node_members(nodeIdSrc):
+            eid, _vidx = world._parseElementAndVertexIndexFromNodeId(nid)
+            if str(eid) == elementId:
+                return nid
+        return None
+    mAId = getEquivalentNodeInElement(world, mATmpId, elementIdSrc)
+    tAId = getEquivalentNodeInElement(world, tATmpId, elementIdDst)
+
+    src_anchor_vkey = world.getNodeType(mAId)
+    dst_anchor_vkey = world.getNodeType(tAId) 
 
     Psrc = tri_src.get("pts", None)
     Pdst = tri_dst.get("pts", None)

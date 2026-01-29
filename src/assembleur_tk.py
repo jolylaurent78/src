@@ -5732,6 +5732,18 @@ class TriangleViewerManual(
         if gid_m is None or gid_t is None:
             self._clear_edge_highlights(); self._edge_choice = None; return
 
+        # On récupère la topo
+        scen = self._get_active_scenario()
+        world = scen.topoWorld
+        # On récupère les ID des TopoNodes mA et tA
+        tAElementId  = str(tri_t["topoElementId"])
+        idx = {"O":0, "B":1, "L":2}[tgt_vkey]
+        tAId = world.format_node_id(tAElementId, idx)
+
+        mAElementId  = str(tri_m["topoElementId"])
+        idx = {"O":0, "B":1, "L":2}[vkey_m]
+        mAId = world.format_node_id(mAElementId, idx)
+
 
         # DEBUG
         self._dbgSnap(
@@ -5789,6 +5801,48 @@ class TriangleViewerManual(
             S = rotate(S, dtheta * 180.0 / pi, origin=(0.0, 0.0), use_radians=False)
             S = translate(S, xoff=vtx, yoff=vty)
             return S
+
+        # Helper pour tester le chevauchement via Algo Topologique
+        def _overlap_topo_for_pair(score, me, te) -> bool:
+            g_m = self.groups.get(gid_m) or {}
+            g_t = self.groups.get(gid_t) or {}
+            core_gid_m = g_m.get("topoGroupId", None)
+            core_gid_t = g_t.get("topoGroupId", None)
+            srcGroup = world.groups.get(str(core_gid_t)) if core_gid_t else None
+            dstGroup = world.groups.get(str(core_gid_m)) if core_gid_m else None
+            if srcGroup is None or dstGroup is None:
+                return False
+
+            mob_tids = [nd.get("tid") for nd in (self._group_nodes(gid_m) or []) if nd.get("tid") is not None]
+            tgt_tids = [nd.get("tid") for nd in (self._group_nodes(gid_t) or []) if nd.get("tid") is not None]
+
+            # 1) fabriquer un "best" local, compatible buildEdgeChoiceEptsFromBest
+            best_local = (score, me, te)
+
+            res = buildEdgeChoiceEptsFromBest(
+                best_local,
+                world=world,
+                mob_idx=mob_idx,
+                tgt_idx=tgt_idx,
+                mob_tids=mob_tids,
+                tgt_tids=tgt_tids,
+                last_drawn=self._last_drawn,
+                eps_world=EPS_WORLD,
+                mATmpId=mAId,
+                tATmpId=tAId,
+                debug=False,
+            )
+            if not res:
+                return False
+
+            epts, _meta = res
+            attachments = epts.createTopologyAttachments(world=world, debug=False)
+            if not attachments:
+                return False
+
+            return bool(world.simulateOverlapTopologique(srcGroup, dstGroup, attachments, debug=self.debug_skip_overlap_highlight))
+
+
         m_oriented = [ (a,b) if _almost_eq(a, vm) else (b,a) for (a,b) in (m_inc_raw or []) ]
         t_oriented = [ (a,b) if _almost_eq(a, vt) else (b,a) for (a,b) in (t_inc_raw or []) ]
         for me in m_oriented:
@@ -5800,13 +5854,16 @@ class TriangleViewerManual(
                 if not self.debug_skip_overlap_highlight:
                     S_m_pose = _place_union_on_pair(S_m_base, me[0], me[1], te[0], te[1])
                     if S_m_pose is not None:
-                        if _overlap_shrink(S_m_pose, S_t,
-                                           self.stroke_px,
-                                           max(self.zoom, 1e-9)):
+                        if _overlap_topo_for_pair(score, me, te):
                             continue  # paire rejetée pour chevauchement
                 # argmin global (parmi les paires admissibles)
                 if (best is None) or (score < best[0]):
                     best = (score, me, te)
+
+        # --- Debug TopoOverlap sur BEST uniquement (F9) ---
+        if self.debug_skip_overlap_highlight and best:
+            overlap_topo_for_pair(score, me, te)
+
         # 5) sorties visuelles
         mo = [(tuple(a), tuple(b)) for (a, b) in (mob_outline or [])]
         self._edge_highlights = {
@@ -5827,14 +5884,15 @@ class TriangleViewerManual(
             tgt_tids = [nd.get("tid") for nd in (self._group_nodes(gid_t) or []) if nd.get("tid") is not None]
             res = buildEdgeChoiceEptsFromBest(
                 best,
+                world = world,
                 mob_idx=mob_idx,
                 tgt_idx=tgt_idx,
                 mob_tids=mob_tids,
                 tgt_tids=tgt_tids,
                 last_drawn=self._last_drawn,
                 eps_world=EPS_WORLD,
-                src_anchor_vkey=vkey_m,
-                dst_anchor_vkey=tgt_vkey,
+                mATmpId=mAId,
+                tATmpId=tAId,
                 debug=bool(self._debug_snap_assist),
             )
             if res:
@@ -5995,7 +6053,7 @@ class TriangleViewerManual(
                     # Pose monde de l'ELEMENT : fit rigoureux sur (O,B,L) (pas l'approx O->B)
                     self._sync_element_pose_to_core(new_tid)
                 finally:
-                    world.commitTopoTransaction(orientation="cw")
+                    world.commitTopoTransaction()
 
         # 2) Création d'un groupe singleton
         self._ensure_group_fields(self._last_drawn[new_tid])
@@ -8062,7 +8120,7 @@ class TriangleViewerManual(
                         if attachments_to_apply:
                             world.beginTopoTransaction()
                             new_core_gid = world.apply_attachments(attachments_to_apply)
-                            world.commitTopoTransaction(orientation="cw")
+                            world.commitTopoTransaction()
 
                         if new_core_gid:
                             self.groups[mob_gid]["topoGroupId"] = new_core_gid
