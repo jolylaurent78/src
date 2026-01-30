@@ -112,6 +112,7 @@ class ScenarioAssemblage:
         # État géométrique associé au scénario
         self.last_drawn: List[Dict] = []         # même structure que viewer._last_drawn
         self.groups: Dict[int, Dict] = {}        # même structure que viewer.groups
+        self.topoWorld = None                    # TopologyWorld (auto: clone physique par branche)
 
         # --- Vue & Carte ---
         # Vue: zoom + offset (pan). Stockée pour retrouver exactement l'affichage au switch.
@@ -2720,6 +2721,157 @@ class TopologyWorld:
 
         for att in sorted(attachments, key=lambda a: a.attachment_id):
             self.apply_attachment(att)
+
+    # ------------------------------------------------------------------
+    # Clone physique deterministe (sans derives)
+    # ------------------------------------------------------------------
+    def _exportPhysicalSnapshot(self) -> dict:
+        if self._topoTxDepth > 0:
+            raise ValueError("TopologyWorld.clonePhysicalState: transaction ouverte")
+
+        elements_payload: list[dict] = []
+        for eid in sorted(self.elements.keys()):
+            el = self.elements[eid]
+            R, T, mirrored = el.get_pose()
+            elements_payload.append({
+                "element_id": str(el.element_id),
+                "name": str(el.name),
+                "vertex_labels": list(el.vertex_labels),
+                "vertex_types": list(el.vertex_types),
+                "edge_lengths_km": [float(x) for x in el.edge_lengths_km],
+                "intrinsic_sides_km": dict(getattr(el, "intrinsic_sides_km", {}) or {}),
+                "local_frame": dict(getattr(el, "local_frame", {}) or {}),
+                "vertex_local_xy": {int(k): (float(v[0]), float(v[1]))
+                                    for k, v in dict(getattr(el, "vertex_local_xy", {}) or {}).items()},
+                "meta": dict(getattr(el, "meta", {}) or {}),
+                "pose": {
+                    "R": np.array(R, float).tolist(),
+                    "T": np.array(T, float).tolist(),
+                    "mirrored": bool(mirrored),
+                },
+            })
+
+        attachments_payload: list[dict] = []
+        for att in self.attachments.values():
+            attachments_payload.append({
+                "attachment_id": str(att.attachment_id),
+                "kind": str(att.kind),
+                "feature_a": {
+                    "feature_type": str(att.feature_a.feature_type),
+                    "element_id": str(att.feature_a.element_id),
+                    "index": int(att.feature_a.index),
+                    "t": None if att.feature_a.t is None else float(att.feature_a.t),
+                },
+                "feature_b": {
+                    "feature_type": str(att.feature_b.feature_type),
+                    "element_id": str(att.feature_b.element_id),
+                    "index": int(att.feature_b.index),
+                    "t": None if att.feature_b.t is None else float(att.feature_b.t),
+                },
+                "params": dict(att.params) if att.params is not None else {},
+                "source": str(att.source),
+            })
+
+        config_payload = {
+            "fusion_distance_km": float(getattr(self, "fusion_distance_km", 1.0)),
+            "worldYAxisDown": bool(getattr(self, "worldYAxisDown", False)),
+        }
+        if hasattr(self, "vertex_edge_endpoint_epsilon"):
+            config_payload["vertex_edge_endpoint_epsilon"] = float(getattr(self, "vertex_edge_endpoint_epsilon"))
+
+        return {
+            "scenario_id": str(self.scenario_id),
+            "config": config_payload,
+            "elements": elements_payload,
+            "attachments": attachments_payload,
+        }
+
+    def _importPhysicalSnapshot(self, snapshot: dict) -> None:
+        if snapshot is None:
+            raise ValueError("TopologyWorld._importPhysicalSnapshot: snapshot absent")
+
+        config = snapshot.get("config", {}) or {}
+        if "fusion_distance_km" in config:
+            self.fusion_distance_km = float(config.get("fusion_distance_km", 1.0))
+        if "worldYAxisDown" in config:
+            self.worldYAxisDown = bool(config.get("worldYAxisDown", False))
+        if "vertex_edge_endpoint_epsilon" in config:
+            self.vertex_edge_endpoint_epsilon = float(config.get("vertex_edge_endpoint_epsilon", 1e-6))
+
+        elements_payload = list(snapshot.get("elements", []) or [])
+        for el in elements_payload:
+            eid = str(el.get("element_id"))
+            clone = TopologyElement(
+                element_id=eid,
+                name=str(el.get("name", "")),
+                vertex_labels=list(el.get("vertex_labels", [])),
+                vertex_types=list(el.get("vertex_types", [])),
+                edge_lengths_km=list(el.get("edge_lengths_km", [])),
+                intrinsic_sides_km=dict(el.get("intrinsic_sides_km", {}) or {}),
+                local_frame=dict(el.get("local_frame", {}) or {}),
+                vertex_local_xy=dict(el.get("vertex_local_xy", {}) or {}),
+                meta=dict(el.get("meta", {}) or {}),
+            )
+            self.add_element_as_new_group(clone)
+            pose = el.get("pose", {}) or {}
+            if pose:
+                self.setElementPose(
+                    eid,
+                    R=np.array(pose.get("R", np.eye(2)), float),
+                    T=np.array(pose.get("T", np.zeros(2)), float),
+                    mirrored=bool(pose.get("mirrored", False)),
+                )
+
+        attachments_payload = list(snapshot.get("attachments", []) or [])
+        max_att_num = 0
+        for att in attachments_payload:
+            fa = att.get("feature_a", {}) or {}
+            fb = att.get("feature_b", {}) or {}
+            feature_a = TopologyFeatureRef(
+                feature_type=fa.get("feature_type"),
+                element_id=fa.get("element_id"),
+                index=int(fa.get("index", 0)),
+                t=fa.get("t", None),
+            )
+            feature_b = TopologyFeatureRef(
+                feature_type=fb.get("feature_type"),
+                element_id=fb.get("element_id"),
+                index=int(fb.get("index", 0)),
+                t=fb.get("t", None),
+            )
+            attachment = TopologyAttachment(
+                attachment_id=str(att.get("attachment_id")),
+                kind=str(att.get("kind")),
+                feature_a=feature_a,
+                feature_b=feature_b,
+                params=dict(att.get("params", {}) or {}),
+                source=str(att.get("source", "manual")),
+            )
+            try:
+                self.apply_attachment(attachment)
+            except Exception as exc:
+                raise ValueError(f"TopologyWorld._importPhysicalSnapshot: attachment invalide ({attachment.attachment_id})") from exc
+            m = re.search(r":A(\d+)$", str(attachment.attachment_id))
+            if m:
+                max_att_num = max(max_att_num, int(m.group(1)))
+
+        if max_att_num > 0:
+            self._created_counter_attachments = max_att_num
+
+        self.rebuildGroupElementLists()
+        for gid in sorted(self.groups.keys()):
+            if gid == self.find_group(gid):
+                self.recomputeConceptAndBoundary(gid)
+
+    def clonePhysicalState(self) -> "TopologyWorld":
+        """Clone deterministe de l'etat physique (sans derives)."""
+        if self._topoTxDepth > 0:
+            raise ValueError("TopologyWorld.clonePhysicalState: transaction ouverte")
+
+        snapshot = self._exportPhysicalSnapshot()
+        target = TopologyWorld(self.scenario_id)
+        target._importPhysicalSnapshot(snapshot)
+        return target
 
     def removeElementsAndRebuild(self, element_ids: list[str]) -> None:
         """Supprime des éléments du world (et tout ce qui les référence), puis rebuild depuis les attachments restants.

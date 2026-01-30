@@ -18,7 +18,11 @@ from src.assembleur_core import (
     _pose_params,
     _apply_R_T_on_P,
     ScenarioAssemblage,
+    TopologyWorld,
+    TopologyElement,
+    TopologyNodeType,
 )
+from src.assembleur_edgechoice import EdgeChoiceEpts
 
  
 # ============================================================
@@ -400,6 +404,9 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
 
         v = engine.viewer
 
+        topoScenarioId = "SA_AUTO"
+        topoWorld0 = TopologyWorld(topoScenarioId)
+
         t1 = engine.build_local_triangle(tri1_id)
         t2 = engine.build_local_triangle(tri2_id)
 
@@ -445,6 +452,106 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
 
         (_, (a1, b1), (a2, b2)) = best
 
+        def _edge_code(a: str, b: str) -> str | None:
+            s = {a, b}
+            if s == {"O", "B"}: return "OB"
+            if s == {"B", "L"}: return "BL"
+            if s == {"L", "O"}: return "LO"
+            return None
+
+        def _bootstrap_topo_first_pair(
+            *,
+            world: TopologyWorld,
+            P1_world: Dict[str, np.ndarray],
+            P2_world: Dict[str, np.ndarray],
+            tri1_id: int,
+            tri2_id: int,
+            t1: Dict,
+            t2: Dict,
+            base_list: list | None,
+        ) -> None:
+            element_id_1 = TopologyWorld.format_element_id(topoScenarioId, int(tri1_id))
+            element_id_2 = TopologyWorld.format_element_id(topoScenarioId, int(tri2_id))
+
+            if element_id_1 not in world.elements:
+                v_labels_1 = list(t1.get("labels") or ("O", "B", "L"))
+                v_types = [TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE]
+                edge_lengths_1 = [
+                    _edge_len(P1_world, "O", "B"),
+                    _edge_len(P1_world, "B", "L"),
+                    _edge_len(P1_world, "L", "O"),
+                ]
+                orient_1 = "CW" if bool(t1.get("mirrored", False)) else "CCW"
+                el1 = TopologyElement(
+                    element_id=element_id_1,
+                    name=f"Triangle {int(tri1_id):02d}",
+                    vertex_labels=v_labels_1,
+                    vertex_types=v_types,
+                    edge_lengths_km=edge_lengths_1,
+                    meta={"orient": orient_1},
+                )
+                world.add_element_as_new_group(el1)
+
+            if element_id_2 not in world.elements:
+                P2_local = {k: np.array(t2["pts"][k], dtype=float) for k in ("O", "B", "L")}
+                v_labels_2 = list(t2.get("labels") or ("O", "B", "L"))
+                v_types = [TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE]
+                edge_lengths_2 = [
+                    _edge_len(P2_local, "O", "B"),
+                    _edge_len(P2_local, "B", "L"),
+                    _edge_len(P2_local, "L", "O"),
+                ]
+                orient_2 = "CW" if bool(t2.get("mirrored", False)) else "CCW"
+                el2 = TopologyElement(
+                    element_id=element_id_2,
+                    name=f"Triangle {int(tri2_id):02d}",
+                    vertex_labels=v_labels_2,
+                    vertex_types=v_types,
+                    edge_lengths_km=edge_lengths_2,
+                    meta={"orient": orient_2},
+                )
+                world.add_element_as_new_group(el2)
+
+            if base_list is not None and len(base_list) >= 2:
+                base_list[0]["topoElementId"] = element_id_1
+                base_list[1]["topoElementId"] = element_id_2
+
+            src_edge = _edge_code(a1, b1)
+            dst_edge = _edge_code(a2, b2)
+            if not src_edge or not dst_edge:
+                raise ValueError("Topo bootstrap: edge code invalide")
+
+            # Déterminer l'ordre des vkeys côté dst via les positions monde
+            eps = 1e-6
+            dst_a = a2
+            dst_b = b2
+            if np.linalg.norm(np.array(P2_world[dst_a], float) - np.array(P1_world[a1], float)) <= eps:
+                pass
+            elif np.linalg.norm(np.array(P2_world[dst_b], float) - np.array(P1_world[a1], float)) <= eps:
+                dst_a, dst_b = dst_b, dst_a
+
+            epts = EdgeChoiceEpts(
+                P1_world[a1], P1_world[b1], P2_world[dst_a], P2_world[dst_b],
+                src_owner_tid=int(tri1_id), src_edge=src_edge,
+                dst_owner_tid=int(tri2_id), dst_edge=dst_edge,
+                src_vkey_at_mA=a1, src_vkey_at_mB=b1,
+                dst_vkey_at_tA=dst_a, dst_vkey_at_tB=dst_b,
+                kind="edge-edge",
+                elementIdSrc=element_id_1,
+                elementIdDst=element_id_2,
+            )
+
+            atts = epts.createTopologyAttachments(world=world)
+            if not atts:
+                raise ValueError("Topo bootstrap: attachment edge-edge introuvable")
+            world.beginTopoTransaction()
+            world.apply_attachments(atts)
+            world.commitTopoTransaction()
+            core_gid = world.get_group_of_element(element_id_1)
+            if base_list is not None and len(base_list) >= 2:
+                base_list[0]["topoGroupId"] = core_gid
+                base_list[1]["topoGroupId"] = core_gid
+
         # ---- 3) Pose du triangle 2 : 2 essais (direct / inversé)
         poly1 = _tri_shape(P1)
 
@@ -489,7 +596,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
         # ---- 4) Si n=2 : même comportement qu'avant (1 ou 2 scénarios possibles)
         if len(tri_ids) <= 2:
             out: List[ScenarioAssemblage] = []
-            for i, P2 in enumerate(poses[:2]):
+            poses_short = list(poses[:2])
+            for i, P2 in enumerate(poses_short):
                 scen = ScenarioAssemblage(
                     name=(f"#1" if i==0 else f"#{i+1}=#1+({tri2_id})"),
                     source_type="auto",
@@ -497,6 +605,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                     tri_ids=[tri1_id, tri2_id],
                 )
                 scen.status = "complete"
+                scen.topoScenarioId = topoScenarioId
 
                 last_drawn = []
                 last_drawn.append({
@@ -515,6 +624,18 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                     "group_id": 1,
                     "group_pos": 1,
                 })
+                topoWorld_scen = TopologyWorld(topoScenarioId)
+                _bootstrap_topo_first_pair(
+                    world=topoWorld_scen,
+                    P1_world=P1,
+                    P2_world=P2,
+                    tri1_id=tri1_id,
+                    tri2_id=tri2_id,
+                    t1=t1,
+                    t2=t2,
+                    base_list=last_drawn,
+                )
+                scen.topoWorld = topoWorld_scen
 
                 xs, ys = [], []
                 for t in last_drawn:
@@ -532,6 +653,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                         "bbox": bbox,
                     }
                 }
+                groups[1]["topoGroupId"] = last_drawn[0].get("topoGroupId")
                 scen.last_drawn = last_drawn
                 # Enrichit les nodes (vkey_in / vkey_out) en déduisant l’arête partagée via la géométrie
                 AlgoQuadrisParPaires._fill_group_vkeys_from_geometry(last_drawn, groups, Q=1e-6)
@@ -651,6 +773,17 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             [{"tid": 0}, {"tid": 1}],
             base_last
         )
+
+        _bootstrap_topo_first_pair(
+            world=topoWorld0,
+            P1_world=P1,
+            P2_world=P2,
+            tri1_id=tri1_id,
+            tri2_id=tri2_id,
+            t1=t1,
+            t2=t2,
+            base_list=base_last,
+        )
         @dataclass(eq=False)
         class _BranchNode:
             parent: Optional["_BranchNode"]
@@ -660,8 +793,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
         rootNode = _BranchNode(parent=None, children=[], branchTriId=None)
 
         # État de recherche : liste de branches (scénarios partiels)
-        # Chaque état = (node, last_drawn, poly_occ)
-        states = [(rootNode, base_last, poly_occ0)]
+        # Chaque état = (node, last_drawn, poly_occ, topoWorld)
+        states = [(rootNode, base_last, poly_occ0, topoWorld0)]
 
         # Boucle sur les paires suivantes : (tri3,tri4), (tri5,tri6), ...
         for pair_start in range(2, len(tri_ids), 2):
@@ -680,8 +813,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 dbg_overlap = 0
                 dbg_added = 0
 
-                for (node_prev, last_drawn_prev, poly_occ_prev) in states:
-                    candidates = []   
+                for (node_prev, last_drawn_prev, poly_occ_prev, topoWorld_prev) in states:
+                    candidates = []
                     anchor = last_drawn_prev[-1]["pts"]
                     mob_keys = ("O", "B")
 
@@ -753,10 +886,15 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                         else:
                             node_prev.branchTriId = None
 
-                        for (ld_new, poly_u) in candidates:
+                        if len(candidates) >= 2:
+                            topo_candidates = [topoWorld_prev.clonePhysicalState() for _ in candidates]
+                        else:
+                            topo_candidates = [topoWorld_prev for _ in candidates]
+
+                        for (ld_new, poly_u), topo_new in zip(candidates, topo_candidates):
                             child = _BranchNode(parent=node_prev, children=[], branchTriId=None)
                             node_prev.children.append(child)
-                            new_states.append((child, ld_new, poly_u))
+                            new_states.append((child, ld_new, poly_u, topo_new))
 
                 return new_states, dbg_try, dbg_overlap, dbg_added
 
@@ -790,7 +928,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
 
         # --- Post-traitement : construire une numérotation COHÉRENTE sur l'arbre survivant ---
         # Objectif : pouvoir "pruner mentalement" par plages (#1..#96 / #97..#117, etc.).
-        leafData = {node: (last_drawn, _poly_occ) for (node, last_drawn, _poly_occ) in states}
+        leafData = {node: (last_drawn, _poly_occ, topoWorld) for (node, last_drawn, _poly_occ, topoWorld) in states}
 
         kept = set()
         for leaf in leafData.keys():
@@ -851,7 +989,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
         # Finalisation : créer les scénarios complets
         out: List[ScenarioAssemblage] = []
         for leaf in leaves:
-            (last_drawn, _poly_occ) = leafData[leaf]
+            (last_drawn, _poly_occ, topoWorld_leaf) = leafData[leaf]
             idx = int(leafIndex.get(leaf, 0) or 0)
             scen = ScenarioAssemblage(
                 name=labels.get(leaf, f"#{idx}"),
@@ -861,6 +999,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             )
             scen.status = "complete"
             scen.last_drawn = last_drawn
+            scen.topoWorld = topoWorld_leaf
+            scen.topoScenarioId = topoScenarioId
 
             # Groupe unique
             idxs = list(range(len(last_drawn)))
@@ -1006,4 +1146,3 @@ class MoteurSimulationAssemblage:
             getattr(v, "stroke_px", 2),
             max(self.getOverlapZoomRef(), 1e-9),
         )
-

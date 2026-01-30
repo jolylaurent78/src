@@ -474,6 +474,7 @@ class TriangleViewerManual(
  
         # Carte partagée pour les scénarios automatiques (snapshot au lancement de la simu)
         self.auto_map_state: dict | None = None
+        self.auto_view_state: dict | None = None
 
         # état géométrique global pour scénarios automatiques (transform commun)
         # P_world = (ox,oy) + R(thetaDeg) * P_local
@@ -3143,6 +3144,21 @@ class TriangleViewerManual(
             # 4) bbox
             for _gid in list(scen.groups.keys()):
                 self._recompute_group_bbox(_gid)
+
+            # 5) topoGroupId : propager triangle -> groupe UI (sécurisation)
+            for _gid, _g in scen.groups.items():
+                _nodes = (_g or {}).get("nodes", []) or []
+                if not _nodes:
+                    continue
+                _tid = _nodes[0].get("tid")
+                if _tid is None:
+                    continue
+                _tid_i = int(_tid)
+                if not (0 <= _tid_i < len(scen.last_drawn)):
+                    continue
+                _core_gid = scen.last_drawn[_tid_i].get("topoGroupId", None)
+                if _core_gid is not None:
+                    scen.groups[_gid]["topoGroupId"] = _core_gid
 
 
         # Recalibrer _next_group_id si besoin
