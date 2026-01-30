@@ -287,6 +287,56 @@ class AlgorithmeAssemblage:
         """Lance la simulation et retourne une liste de scénarios."""
         raise NotImplementedError
 
+def setElementPoseFromWorldPts(
+    world: TopologyWorld,
+    elementId: str,
+    Pw: dict,
+    mirrored: bool = False,
+) -> None:
+    eps = 1e-12
+    if world is None or str(elementId) not in world.elements:
+        raise ValueError(f"setElementPoseFromWorldPts: elementId inconnu: {elementId}")
+    if not isinstance(Pw, dict):
+        raise ValueError("setElementPoseFromWorldPts: Pw invalide")
+    for k in ("O", "B", "L"):
+        if k not in Pw:
+            raise ValueError("setElementPoseFromWorldPts: Pw incomplet")
+
+    el = world.elements[str(elementId)]
+    pO = np.array(el.vertex_local_xy.get(0, (0.0, 0.0)), dtype=float)
+    pB = np.array(el.vertex_local_xy.get(1, (0.0, 0.0)), dtype=float)
+    pL = np.array(el.vertex_local_xy.get(2, (0.0, 0.0)), dtype=float)
+
+    Ow = np.array(Pw["O"], dtype=float)
+    Bw = np.array(Pw["B"], dtype=float)
+    Lw = np.array(Pw["L"], dtype=float)
+    if Ow.shape != (2,) or Bw.shape != (2,) or Lw.shape != (2,):
+        raise ValueError("setElementPoseFromWorldPts: Pw dimension invalide")
+    if not np.isfinite(Ow).all() or not np.isfinite(Bw).all() or not np.isfinite(Lw).all():
+        raise ValueError("setElementPoseFromWorldPts: Pw non fini")
+
+    if mirrored:
+        M = np.array([[1.0, 0.0], [0.0, -1.0]], dtype=float)
+        pO = (M @ pO)
+        pB = (M @ pB)
+        pL = (M @ pL)
+
+    X = np.stack([pO, pB, pL], axis=0)
+    Y = np.stack([Ow, Bw, Lw], axis=0)
+    Xc = X - X.mean(axis=0)
+    Yc = Y - Y.mean(axis=0)
+    if np.linalg.norm(Xc) <= eps or np.linalg.norm(Yc) <= eps:
+        raise ValueError("setElementPoseFromWorldPts: points degeneres")
+    H = Xc.T @ Yc
+    U, _S, Vt = np.linalg.svd(H)
+    R = (Vt.T @ U.T)
+    if np.linalg.det(R) < 0.0:
+        Vt[1, :] *= -1.0
+        R = (Vt.T @ U.T)
+    T = Y.mean(axis=0) - (R @ X.mean(axis=0))
+
+    world.setElementPose(str(elementId), R=R, T=T, mirrored=bool(mirrored))
+
 class AlgoQuadrisParPaires(AlgorithmeAssemblage):
     id = "quadris_par_paires"
     label = "Quadrilatères par paires (bases communes) [WIP]"
@@ -459,6 +509,35 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             if s == {"L", "O"}: return "LO"
             return None
 
+        def _ensure_element_from_local(
+            *,
+            world: TopologyWorld,
+            element_id: str,
+            tri_id: int,
+            pts_local: Dict[str, np.ndarray],
+            labels: tuple | list,
+            mirrored: bool,
+        ) -> None:
+            if element_id in world.elements:
+                return
+            v_labels = list(labels or ("O", "B", "L"))
+            v_types = [TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE]
+            edge_lengths = [
+                _edge_len(pts_local, "O", "B"),
+                _edge_len(pts_local, "B", "L"),
+                _edge_len(pts_local, "L", "O"),
+            ]
+            orient = "CW" if bool(mirrored) else "CCW"
+            el = TopologyElement(
+                element_id=element_id,
+                name=f"Triangle {int(tri_id):02d}",
+                vertex_labels=v_labels,
+                vertex_types=v_types,
+                edge_lengths_km=edge_lengths,
+                meta={"orient": orient},
+            )
+            world.add_element_as_new_group(el)
+
         def _bootstrap_topo_first_pair(
             *,
             world: TopologyWorld,
@@ -470,47 +549,31 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             t2: Dict,
             base_list: list | None,
         ) -> None:
+            if base_list and len(base_list) >= 2:
+                tri1_id = int(base_list[0].get("id"))
+                tri2_id = int(base_list[1].get("id"))
             element_id_1 = TopologyWorld.format_element_id(topoScenarioId, int(tri1_id))
             element_id_2 = TopologyWorld.format_element_id(topoScenarioId, int(tri2_id))
 
-            if element_id_1 not in world.elements:
-                v_labels_1 = list(t1.get("labels") or ("O", "B", "L"))
-                v_types = [TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE]
-                edge_lengths_1 = [
-                    _edge_len(P1_world, "O", "B"),
-                    _edge_len(P1_world, "B", "L"),
-                    _edge_len(P1_world, "L", "O"),
-                ]
-                orient_1 = "CW" if bool(t1.get("mirrored", False)) else "CCW"
-                el1 = TopologyElement(
-                    element_id=element_id_1,
-                    name=f"Triangle {int(tri1_id):02d}",
-                    vertex_labels=v_labels_1,
-                    vertex_types=v_types,
-                    edge_lengths_km=edge_lengths_1,
-                    meta={"orient": orient_1},
-                )
-                world.add_element_as_new_group(el1)
+            _ensure_element_from_local(
+                world=world,
+                element_id=element_id_1,
+                tri_id=int(tri1_id),
+                pts_local={k: np.array(t1["pts"][k], dtype=float) for k in ("O", "B", "L")},
+                labels=t1.get("labels"),
+                mirrored=bool(t1.get("mirrored", False)),
+            )
+            _ensure_element_from_local(
+                world=world,
+                element_id=element_id_2,
+                tri_id=int(tri2_id),
+                pts_local={k: np.array(t2["pts"][k], dtype=float) for k in ("O", "B", "L")},
+                labels=t2.get("labels"),
+                mirrored=bool(t2.get("mirrored", False)),
+            )
 
-            if element_id_2 not in world.elements:
-                P2_local = {k: np.array(t2["pts"][k], dtype=float) for k in ("O", "B", "L")}
-                v_labels_2 = list(t2.get("labels") or ("O", "B", "L"))
-                v_types = [TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE]
-                edge_lengths_2 = [
-                    _edge_len(P2_local, "O", "B"),
-                    _edge_len(P2_local, "B", "L"),
-                    _edge_len(P2_local, "L", "O"),
-                ]
-                orient_2 = "CW" if bool(t2.get("mirrored", False)) else "CCW"
-                el2 = TopologyElement(
-                    element_id=element_id_2,
-                    name=f"Triangle {int(tri2_id):02d}",
-                    vertex_labels=v_labels_2,
-                    vertex_types=v_types,
-                    edge_lengths_km=edge_lengths_2,
-                    meta={"orient": orient_2},
-                )
-                world.add_element_as_new_group(el2)
+            setElementPoseFromWorldPts(world, element_id_1, P1_world, mirrored=False)
+            setElementPoseFromWorldPts(world, element_id_2, P2_world, mirrored=False)
 
             if base_list is not None and len(base_list) >= 2:
                 base_list[0]["topoElementId"] = element_id_1
@@ -859,6 +922,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                 "group_id": 1,
                                 "group_pos": pos0,
                             })
+                            elem_id_odd = TopologyWorld.format_element_id(topoScenarioId, int(triOddId))
+                            last_drawn_new[pos0]["topoElementId"] = elem_id_odd
                             last_drawn_new[pos0]["_chain_edge_in"] = odd_edge
                             pos1 = len(last_drawn_new)
                             last_drawn_new.append({
@@ -869,8 +934,31 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                 "group_id": 1,
                                 "group_pos": pos1,
                             })
+                            elem_id_even = TopologyWorld.format_element_id(topoScenarioId, int(triEvenId))
+                            last_drawn_new[pos1]["topoElementId"] = elem_id_even
 
-                            candidates.append((last_drawn_new, poly_occ_prev.union(poly_new)))
+                            candidates.append((
+                                last_drawn_new,
+                                poly_occ_prev.union(poly_new),
+                                {
+                                    "odd": {
+                                        "element_id": elem_id_odd,
+                                        "tri_id": int(triOddId),
+                                        "pts_world": Podd_w,
+                                        "labels": tOdd.get("labels"),
+                                        "mirrored": bool(tOdd.get("mirrored", False)),
+                                        "pts_local": Podd,
+                                    },
+                                    "even": {
+                                        "element_id": elem_id_even,
+                                        "tri_id": int(triEvenId),
+                                        "pts_world": Peven_w,
+                                        "labels": tEven.get("labels"),
+                                        "mirrored": bool(tEven.get("mirrored", False)),
+                                        "pts_local": Peven,
+                                    },
+                                },
+                            ))
                             dbg_added += 1
 
                     # Si au moins 2 candidats existent *à cette étape*, on enregistre une bifurcation.
@@ -891,7 +979,28 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                         else:
                             topo_candidates = [topoWorld_prev for _ in candidates]
 
-                        for (ld_new, poly_u), topo_new in zip(candidates, topo_candidates):
+                        for (ld_new, poly_u, topo_meta), topo_new in zip(candidates, topo_candidates):
+                            for _key in ("odd", "even"):
+                                _info = topo_meta.get(_key, {})
+                                _elem_id = _info.get("element_id")
+                                _tri_id = _info.get("tri_id")
+                                _pts_local = _info.get("pts_local")
+                                if _elem_id and _tri_id and _pts_local is not None:
+                                    _ensure_element_from_local(
+                                        world=topo_new,
+                                        element_id=str(_elem_id),
+                                        tri_id=int(_tri_id),
+                                        pts_local={k: np.array(_pts_local[k], dtype=float) for k in ("O", "B", "L")},
+                                        labels=_info.get("labels"),
+                                        mirrored=bool(_info.get("mirrored", False)),
+                                    )
+                                if _elem_id and _info.get("pts_world") is not None:
+                                    setElementPoseFromWorldPts(
+                                        topo_new,
+                                        str(_elem_id),
+                                        _info.get("pts_world"),
+                                        mirrored=bool(_info.get("mirrored", False)),
+                                    )
                             child = _BranchNode(parent=node_prev, children=[], branchTriId=None)
                             node_prev.children.append(child)
                             new_states.append((child, ld_new, poly_u, topo_new))
