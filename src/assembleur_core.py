@@ -637,6 +637,59 @@ class TopologyBoundaries:
             self.orientation = "cw"
 
     def compute(self, world: "TopologyWorld", gid: str, orientation: str) -> None:
+        """
+        Overview
+        --------
+        Calcule le contour (boundary) d’un graphe conceptuel plan (un groupe topologique),
+        sous la forme d’un cycle de nœuds conceptuels ordonné (CW/CCW). Ce cycle sert ensuite
+        de référence unique pour reconstruire des rings géométriques et effectuer des découpes
+        (arcs) lors des simulations d’anti-chevauchement.
+
+        Entrées
+        -------
+        world : TopologyWorld
+            Monde topo contenant le cache conceptuel (nodes/edges + coordonnées monde).
+        gid : str
+            Identifiant de groupe (canonisé en interne).
+        orientation : str
+            Orientation attendue pour le cycle final: "cw" ou "ccw".
+
+        Sorties
+        -------
+        None
+            Remplit les champs de l’instance:
+            - self.cycle : list[str]
+            - self.edges : set[tuple[str,str]]
+            - self.index : dict[str,int]
+            - self.orientation : str
+            En cas de graphe dégénéré, produit un cycle vide et des structures vides.
+
+        Traitement
+        ----------
+        1) Normalise l’orientation demandée ("cw"/"ccw"), récupère le cache conceptuel du groupe.
+        2) Construit l’adjacence non orientée `neighbors` à partir des arêtes conceptuelles.
+           - Cas dégénérés: graphe vide ou nœuds de degré < 2 → boundary vide.
+        3) Récupère les coordonnées monde (barycentres) des nœuds conceptuels.
+        4) Pour chaque nœud, ordonne ses voisins par angle polaire autour du nœud.
+           - Produit `sorted_neighbors` et un index local `pos_index` pour le suivi de face.
+        5) Énumère les "darts" (u→v) et parcourt les faces via une règle de tournage:
+           - En CW : à l’arrivée en v, prendre le voisin précédent autour de v.
+           - En CCW : à l’arrivée en v, prendre le voisin suivant autour de v.
+           Chaque parcours génère un cycle candidat (face) si on se referme sur le dart initial.
+        6) Filtre les faces:
+           - longueur >= 3
+           - aire signée non nulle (|area| > eps)
+           - cycle simple (pas de nœud répété)
+        7) Sélectionne la face "extérieure" par aire absolue maximale.
+        8) Normalise le cycle choisi (rotation) pour démarrer sur le nœud le plus "bas-gauche"
+           (min x puis min y), afin d’avoir un cycle stable/diffable.
+        9) Construit:
+           - `cycle` (liste des nœuds),
+           - `edges` (ensemble des arêtes du contour),
+           - `index` (nodeId → position dans le cycle),
+           - `orientation` (orientation mesurée via l’aire).
+           Si l’orientation mesurée ne correspond pas à celle demandée, inverse le cycle.
+        """
         orient = str(orientation).strip().lower()
         if orient not in ("cw", "ccw"):
             raise ValueError(f"[Boundary] invalid orientation={orientation}")
@@ -1279,6 +1332,35 @@ class TopologyWorld:
         return out
 
     def computeBoundary(self, group_id: str) -> None:
+        """
+        Overview
+        --------
+        Calcule et met en cache le boundary (cycle du contour) d’un groupe topologique.
+        Cette méthode est le point d’entrée "métier" : elle déclenche le calcul dans
+        `TopologyBoundaries`, puis recopie les résultats dans le cache conceptuel du groupe.
+
+        Entrées
+        -------
+        group_id : str
+            Identifiant de groupe (canonisé en interne).
+
+        Sorties
+        -------
+        None
+            Met à jour le cache conceptuel du groupe:
+            - boundaryCycle
+            - boundaryEdges
+            - boundaryIndex
+            - boundaryOrientation
+
+        Traitement
+        ----------
+        1) Canonise l’identifiant de groupe.
+        2) Assure que la géométrie conceptuelle (nodes/edges + barycentres) est disponible.
+        3) Lance `c.boundaries.compute(...)` avec l’orientation de transaction topo courante.
+        4) Recopie dans le cache du groupe:
+           - `boundaryCycle`, `boundaryEdges`, `boundaryIndex`, `boundaryOrientation`.
+        """
         gid = self.find_group(str(group_id))
         c = self.ensureConceptGeom(gid)
         c.boundaries.compute(self, gid, orientation=self._topoTxOrientation)
@@ -1418,7 +1500,45 @@ class TopologyWorld:
         group_id: str,
         eps_world: float = 1e-9,
     ) -> tuple[list[np.ndarray], list[str], dict[str, int]] | None:
-        """Construit un ring monde depuis le cycle topologique (1 point physique par concept node)."""
+        """
+        Overview
+        --------
+        Reconstruit un "ring" géométrique (points monde) à partir du boundary conceptuel
+        d’un groupe. L’objectif est d’obtenir une représentation polygonale simple du contour
+        (un point physique par nœud conceptuel du cycle) utilisée ensuite par la simulation
+        d’anti-chevauchement.
+
+        Entrées
+        -------
+        group_id : str
+            Identifiant de groupe (canonisé en interne).
+        eps_world : float
+            Seuil (monde) pour rejeter des doublons consécutifs (points trop proches).
+
+        Sorties
+        -------
+        tuple | None
+            - None si le ring ne peut pas être construit (cycle trop court, occurrences manquantes,
+              doublons consécutifs, collisions d’ids).
+            - Sinon un triplet:
+              (ring_pts, ring_nodes, index)
+              - ring_pts  : list[np.ndarray] (points monde, ring non fermé)
+              - ring_nodes: list[str]        (ids conceptuels dans le même ordre)
+              - index     : dict[str,int]    (nodeId → position)
+
+        Traitement
+        ----------
+        1) Vérifie que le boundary du groupe est déjà calculé (cycle présent dans le cache).
+        2) Assure que les occurrences physiques (nodeOccurrencesByCid) sont disponibles.
+        3) Pour chaque nœud conceptuel du cycle:
+           - prend une occurrence physique (element_id, local_xy),
+           - convertit en coordonnées monde via la pose de l’élément,
+           - alimente `ring_pts` (np.ndarray 2D) et `ring_nodes` (ids conceptuels).
+        4) Effectue une validation minimale:
+           - taille >= 3,
+           - pas de doublons consécutifs (distance <= eps_world) le long du cycle.
+        5) Construit `index` (nodeId → position) et rejette si collisions.
+        """
         gid = self.find_group(str(group_id))
         c = self._concept_cache(gid)
         if not c.boundaryCycle:
@@ -1489,7 +1609,54 @@ class TopologyWorld:
         ptsDest: list[np.ndarray],
         indexDest: dict[str, int],
     ) -> tuple[dict, dict] | None:
-        """Construit J0/J1 (types+ids) et remplit les points/directions depuis les rings."""
+        """
+        Overview
+        --------
+        Interprète une liste d’attachments (edge-edge ou vertex-edge) et en déduit deux jonctions
+        topologiques J0 et J1 entre un ring "mobile" et un ring "destination". Ces jonctions
+        sont la base de toute la simulation: elles définissent les deux points (ou point+point sur arête)
+        qui permettent de calculer une pose rigide et de découper les deux rings en arcs.
+
+        Entrées
+        -------
+        attachments : list[TopologyAttachment]
+            Attachments candidats (edge-edge ou vertex-edge selon le cas).
+        nodesMob, ptsMob, indexMob : (list[str], list[np.ndarray], dict[str,int])
+            Ring mobile (concept node ids + points monde + index).
+        nodesDest, ptsDest, indexDest : (list[str], list[np.ndarray], dict[str,int])
+            Ring destination (concept node ids + points monde + index).
+
+        Sorties
+        -------
+        tuple[dict, dict] | None
+            - None si les attachments ne correspondent pas à un cas supporté ou si des
+              informations nécessaires manquent dans les rings.
+            - Sinon (J0, J1) : deux dictionnaires décrivant les jonctions mob/dest.
+              Chaque jonction expose typiquement:
+              - mobType / destType : "node" ou "edge"
+              - mobId / destId     : id conceptuel (node) ou référence (edge)
+              - mobPt / destPt     : np.ndarray 2D (si type "node", lu depuis le ring)
+              Des champs additionnels (t, dir, etc.) peuvent être présents selon le cas vertex-edge.
+
+        Traitement
+        ----------
+        1) Normalise la liste d’attachments, rejette les cas vides ou non supportés.
+        2) Cas A : edge-edge (un seul attachment)
+           - Identifie quelles extrémités d’arêtes appartiennent au ring mobile et au ring destination.
+           - Applique le mapping (direct/reverse) pour obtenir deux jonctions "node-node":
+             J0 = (mob0 ↔ dest0) et J1 = (mob1 ↔ dest1).
+        3) Cas B : vertex-edge (deux attachments: un vertex-vertex + un vertex-edge)
+           - Le vertex-vertex définit J0 (node-node) et fixe la référence d’orientation.
+           - Le vertex-edge définit un point sur une arête (t + edgeFrom):
+             - calcule t côté edge (sens) et le point monde correspondant,
+             - récupère une direction unitaire de l’arête depuis le ring (référencée côté J0),
+             - décide si la partie "edge" appartient au ring mobile ou au ring destination,
+               et construit J1 comme (edge ↔ node) du bon côté.
+        4) Complète les champs `mobPt` / `destPt` pour les jonctions de type "node"
+           en lisant les coordonnées dans les rings (indexMob / indexDest).
+        5) Retourne (J0, J1) prêts pour le calcul de pose et la découpe en arcs.
+        """
+
         atts = list(attachments or [])
         if not atts:
             return None
@@ -1741,14 +1908,53 @@ class TopologyWorld:
         return True
 
 
-    def simulateOverlapTopologique(
-        self,
-        groupDest: TopologyGroup,
-        groupMob: TopologyGroup,
+    def simulateOverlapTopologique(self, 
+        groupDest: TopologyGroup, groupMob: TopologyGroup,
         attachments: list[TopologyAttachment],
-        debug: bool = False,
-    ) -> bool:
-        """Simule l'assemblage topologique de 2 groupes et d\u00e9tecte un overlap (contour auto-intersect\u00e9)."""
+        debug: bool = False) -> bool:
+        """
+        Overview
+        --------
+        Simule une tentative d’assemblage topologique entre deux groupes (mobile et destination)
+        à partir d’attachments candidats, et détecte un chevauchement via la qualité du contour
+        résultant. L’idée est de reconstruire un ring "résultat" en recollant deux arcs de boundary,
+        puis de valider que ce contour est un polygone simple (pas d’auto-intersection, aire non nulle).
+
+        Entrées
+        -------
+        groupDest : TopologyGroup | str
+            Groupe destination (ou identifiant) sur lequel on tente de coller.
+        groupMob : TopologyGroup | str
+            Groupe mobile (ou identifiant) que l’on tente de poser.
+        attachments : list[TopologyAttachment]
+            Attachments candidats décrivant la jonction (edge-edge ou vertex-edge).
+        debug : bool
+            Active un mode de trace interne (si implémenté dans la version courante).
+
+        Sorties
+        -------
+        bool
+            True  : chevauchement détecté / placement rejeté.
+            False : placement admissible (contour final simple et valide).
+
+        Traitement
+        ----------
+        1) Vérifications et normalisations (groupes, ids, attachments).
+        2) Reconstruit les rings géométriques (monde) des deux groupes depuis leurs boundary cycles
+           via `_build_ring_from_boundary_cycle(...)`.
+        3) Analyse les attachments pour construire deux jonctions J0/J1 (types, ids, points, directions)
+           via `_resolveJunctionsMobDest(...)`.
+        4) Calcule la pose rigide (R, T) qui aligne la partie mobile sur la destination à partir de J0/J1,
+           puis applique (R, T) au ring mobile.
+        5) Si J1 implique une jonction sur arête (type "edge"), injecte un pseudo-nœud (split)
+           sur le ring concerné, en choisissant le côté d’insertion selon la direction de l’arête.
+        6) Résout les indices de coupe (positions de J0 et J1 dans les rings) et construit deux arcs
+           complémentaires entre ces jonctions. Le choix Forward/Reverse est fait pour respecter le
+           sens du boundary (CW dans le modèle courant).
+        7) Concatène les deux arcs pour former le ring de sortie (`ring_out`).
+        8) Valide le ring final avec `_isValidPolygon` (simple + polygon valide + aire > eps).
+           Ring invalide ⇒ placement rejeté (chevauchement).
+        """        
         def _dbg(msg: str) -> None:
             if debug:
                 print(str(msg))

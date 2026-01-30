@@ -8055,23 +8055,8 @@ class TriangleViewerManual(
                 (_, _, idx_t, vkey_t, epts) = choice
                 (m_a, m_b_edge_vertex, t_a, t_b_edge_vertex) = epts
 
-                A = np.array(m_a, dtype=float)  # sommet mobile saisi (dans le groupe)
-                B = np.array(m_b_edge_vertex, dtype=float)  # voisin côté mobile (définit l'arête)
-                U = np.array(t_a, dtype=float)  # cible: point d'accroche
-                V = np.array(t_b_edge_vertex, dtype=float)  # cible: second point arête
-
-                # Angle mobile/cible et rotation à appliquer (helpers unifiés)
-                ang_m = self._ang_of_vec(B[0] - A[0], B[1] - A[1])
-                ang_t = self._ang_of_vec(V[0] - U[0], V[1] - U[1])
-                dtheta = ang_t - ang_m
-                R = np.array([[np.cos(dtheta), -np.sin(dtheta)],
-                              [np.sin(dtheta),  np.cos(dtheta)]], dtype=float)
-
-                # Translation finale pour amener A -> U
-                # (après rotation autour de A, A reste à A)
-                delta = U - A
-
-                # Appliquer (rotation autour de A) + translation à tous
+                R, T = epts.computeRigidTransform()
+                # Appliquer p' = R @ p + T à tous
                 gid = self._sel.get("gid")
                 g = self.groups.get(gid)
                 if g:
@@ -8081,8 +8066,7 @@ class TriangleViewerManual(
                             P = self._last_drawn[tid]["pts"]
                             for k in ("O", "B", "L"):
                                 p = np.array(P[k], dtype=float)
-                                p_rot = A + (R @ (p - A))
-                                p_fin = p_rot + delta
+                                p_fin = (R @ p) + T
                                 P[k][0] = float(p_fin[0])
                                 P[k][1] = float(p_fin[1])
 

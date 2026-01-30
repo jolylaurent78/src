@@ -54,6 +54,40 @@ class EdgeChoiceEpts:
         if i == 3: return self.tBEdgeVertex
         raise IndexError(i)
 
+    def computeRigidTransform(self, *, eps: float = 1e-12) -> tuple[np.ndarray, np.ndarray] | None:
+        """
+        Compute la pose rigide 2D telle que p_dest = R @ p_mob + T.
+
+        Points utilisÃ©s :
+        - mA, mBEdgeVertex : segment mobile (direction)
+        - tA, tBEdgeVertex : segment cible (direction)
+
+        Retourne None si un segment est dÃ©gÃ©nÃ©rÃ© (norme <= eps) ou si les points sont invalides.
+        """
+        p0m = np.array([float(self.mA[0]), float(self.mA[1])], dtype=float)
+        p1m = np.array([float(self.mBEdgeVertex[0]), float(self.mBEdgeVertex[1])], dtype=float)
+        p0d = np.array([float(self.tA[0]), float(self.tA[1])], dtype=float)
+        p1d = np.array([float(self.tBEdgeVertex[0]), float(self.tBEdgeVertex[1])], dtype=float)
+
+        vm = p1m - p0m
+        vd = p1d - p0d
+
+        nm = math.hypot(float(vm[0]), float(vm[1]))
+        nd = math.hypot(float(vd[0]), float(vd[1]))
+        if nm <= eps or nd <= eps:
+            return None
+
+        ang_m = math.atan2(float(vm[1]), float(vm[0]))
+        ang_d = math.atan2(float(vd[1]), float(vd[0]))
+        dtheta = ang_d - ang_m
+
+        c = math.cos(dtheta)
+        s = math.sin(dtheta)
+        R = np.array([[float(c), float(-s)], [float(s), float(c)]], dtype=float)
+
+        T = p0d - R @ p0m
+        return (R, T)
+
     def createTopologyAttachments(self, *, world, debug: bool = False):
         if world is None:
             raise ValueError("createTopologyAttachments: world manquant")
