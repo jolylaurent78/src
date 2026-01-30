@@ -538,6 +538,16 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             )
             world.add_element_as_new_group(el)
 
+        def _assign_topo_element_id_to_last_drawn(
+            *,
+            topo_scenario_id: str,
+            entry: dict,
+        ) -> str:
+            tri_id = int(entry.get("id"))
+            elem_id = TopologyWorld.format_element_id(topo_scenario_id, tri_id)
+            entry["topoElementId"] = elem_id
+            return elem_id
+
         def _bootstrap_topo_first_pair(
             *,
             world: TopologyWorld,
@@ -760,6 +770,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 "group_pos": 1,
             },
         ]
+        _assign_topo_element_id_to_last_drawn(topo_scenario_id=topoScenarioId, entry=base_last[0])
+        _assign_topo_element_id_to_last_drawn(topo_scenario_id=topoScenarioId, entry=base_last[1])
 
         def _orient_O_to_L_north(P: Dict[str,np.ndarray]) -> Dict[str,np.ndarray]:
             P = {k: np.array(P[k], dtype=float) for k in ("O","B","L")}
@@ -922,8 +934,10 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                 "group_id": 1,
                                 "group_pos": pos0,
                             })
-                            elem_id_odd = TopologyWorld.format_element_id(topoScenarioId, int(triOddId))
-                            last_drawn_new[pos0]["topoElementId"] = elem_id_odd
+                            elem_id_odd = _assign_topo_element_id_to_last_drawn(
+                                topo_scenario_id=topoScenarioId,
+                                entry=last_drawn_new[pos0],
+                            )
                             last_drawn_new[pos0]["_chain_edge_in"] = odd_edge
                             pos1 = len(last_drawn_new)
                             last_drawn_new.append({
@@ -934,8 +948,10 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                 "group_id": 1,
                                 "group_pos": pos1,
                             })
-                            elem_id_even = TopologyWorld.format_element_id(topoScenarioId, int(triEvenId))
-                            last_drawn_new[pos1]["topoElementId"] = elem_id_even
+                            elem_id_even = _assign_topo_element_id_to_last_drawn(
+                                topo_scenario_id=topoScenarioId,
+                                entry=last_drawn_new[pos1],
+                            )
 
                             candidates.append((
                                 last_drawn_new,
@@ -995,11 +1011,12 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                         mirrored=bool(_info.get("mirrored", False)),
                                     )
                                 if _elem_id and _info.get("pts_world") is not None:
+                                    # Pose from world points in simulation uses non-mirrored fit.
                                     setElementPoseFromWorldPts(
                                         topo_new,
                                         str(_elem_id),
                                         _info.get("pts_world"),
-                                        mirrored=bool(_info.get("mirrored", False)),
+                                        mirrored=False,
                                     )
                             child = _BranchNode(parent=node_prev, children=[], branchTriId=None)
                             node_prev.children.append(child)
