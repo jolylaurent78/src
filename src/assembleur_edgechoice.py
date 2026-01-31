@@ -7,6 +7,7 @@ from src.assembleur_core import (
     TopologyAttachment, TopologyFeatureRef, TopologyFeatureType,
 )
 
+
 class EdgeChoiceEpts:
     __slots__ = ("mA", "mBEdgeVertex", "tA", "tBEdgeVertex",
                  "src_owner_tid", "src_edge", "dst_owner_tid", "dst_edge",
@@ -492,3 +493,98 @@ def buildEdgeChoiceEptsFromBest(
     }
 
     return (epts, meta)
+
+
+def buildEdgeChoiceEptsForAutoChain(
+    *,
+    world,
+    last_drawn_base: list,
+    pos_mobile: int,
+    pos_dest: int,
+    src_edge: str,      # "LO" ou "BL" (côté mobile)
+    dst_edge: str,      # "LO" ou "BL" (côté dest)
+    src_vkey: str = "L",
+    dst_vkey: str = "L",
+    kind: str = "vertex-edge",
+    debug: bool = False,
+):
+    # --- helpers ---
+    def _other_vkey_on_edge(edge_code: str, vkey_anchor: str) -> str:
+        e = str(edge_code).upper()
+        if e == "LO":
+            return "O" if vkey_anchor == "L" else "L"
+        if e == "BL":
+            return "B" if vkey_anchor == "L" else "L"
+        if e == "OB":
+            return "B" if vkey_anchor == "O" else "O"
+        raise ValueError(f"edge_code invalide: {edge_code}")
+
+    mob = last_drawn_base[pos_mobile]
+    dst = last_drawn_base[pos_dest]
+
+    elementIdSrc = mob["topoElementId"]
+    elementIdDst = dst["topoElementId"]
+    src_owner_tid = mob["id"]
+    dst_owner_tid = dst["id"]
+
+    Pm = mob["pts"]
+    Pt = dst["pts"]
+
+    # Ancre = L des deux côtés (Phase 3)
+    mA = Pm[src_vkey]
+    tA_v = dst_vkey
+    tA = Pt[tA_v]
+
+    # Endpoint "edge vertex" : l’autre sommet de l’arête
+    mB_v = _other_vkey_on_edge(src_edge, src_vkey)
+    tB_v = _other_vkey_on_edge(dst_edge, dst_vkey)
+
+    mBEdgeVertex = Pm[mB_v]
+    tBEdgeVertex = Pt[tB_v]
+
+    # Cas auto actuel : on attache l’endpoint mobile (O ou B) sur l’arête dest (LO ou BL)
+    # avec edgeFrom = dst_vkey (L). => t=1 (endpoint opposé).
+    edge_code_to_index = {"OB": 0, "BL": 1, "LO": 2}
+
+    el_src = world.elements[elementIdSrc]
+    el_dst = world.elements[elementIdDst]
+
+    i_src = edge_code_to_index[str(src_edge).upper()]
+    i_dst = edge_code_to_index[str(dst_edge).upper()]
+
+    L_src = float(el_src.edge_lengths_km[i_src])
+    L_dst = float(el_dst.edge_lengths_km[i_dst])
+    if L_dst <= 1e-12:
+        raise ValueError("buildEdgeChoiceEptsForAutoChain: arête cible dégénérée")
+
+    t_raw = L_src / L_dst
+
+
+    epts = EdgeChoiceEpts(
+        mA, mBEdgeVertex,
+        tA, tBEdgeVertex,
+        src_owner_tid=src_owner_tid, src_edge=src_edge,
+        dst_owner_tid=dst_owner_tid, dst_edge=dst_edge,
+        src_vkey_at_mA=src_vkey, src_vkey_at_mB=mB_v,
+        dst_vkey_at_tA=dst_vkey, dst_vkey_at_tB=tB_v,
+        kind=kind,
+        t_raw=t_raw,
+        elementIdSrc=elementIdSrc,
+        elementIdDst=elementIdDst,
+    )
+
+    meta = {
+        "kind": kind,
+        "src_edge": str(src_edge),
+        "dst_edge": str(dst_edge),
+        "src_owner_tid": int(src_owner_tid),
+        "dst_owner_tid": int(dst_owner_tid),
+        "src_vkey_at_mA": str(src_vkey),
+        "src_vkey_at_mB": str(mB_v),
+        "dst_vkey_at_tA": str(dst_vkey),
+        "dst_vkey_at_tB": str(tB_v),
+        "tRaw": float(t_raw),
+    }
+
+    return (epts, meta) if debug else (epts, meta)
+

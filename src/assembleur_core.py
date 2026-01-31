@@ -1010,8 +1010,16 @@ class TopologyWorld:
 
     def _markTopoTouched(self, group_id: str) -> None:
         gid = self.find_group(str(group_id))
+        print(
+            f"[TOPO-TOUCH] gid={gid} "
+            f"topoTxDepth={self._topoTxDepth}"
+        )
         if self._topoTxDepth > 0:
             self._topoTxTouchedGroups.add(gid)
+            return
+        
+        # hors transaction
+        print(f"[TOPO-TOUCH] WARNING: touch hors transaction pour gid={gid}")
 
     def recomputeConceptAndBoundary(self, group_id: str) -> None:
         gid = self.find_group(str(group_id))
@@ -2942,8 +2950,7 @@ class TopologyWorld:
         neww.rebuildGroupElementLists()
         for gid in sorted(neww.groups.keys()):
             if gid == neww.find_group(gid):
-                neww.invalidateConceptGraph(gid)
-                neww._markTopoTouched(gid)
+                neww.recomputeConceptAndBoundary(gid)
 
         # 4) swap in-place (les refs Tk vers scen.topoWorld restent valides)
         self.__dict__.clear()
