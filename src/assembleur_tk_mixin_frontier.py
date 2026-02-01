@@ -179,26 +179,39 @@ class TriangleViewerFrontierGraphMixin:
 
     def _incident_half_edges_at_vertex(self, graph, v, eps=EPS_WORLD):
         """
-        Renvoie les deux demi-arêtes (si existantes) qui partent de 'v' le long de la frontière.
-        Retour: liste de 0..2 éléments, chaque élément est ((ax,ay),(bx,by))
+        Renvoie les demi-arêtes qui partent de 'v' le long de la frontière.
+        Retour: liste (0..2) éléments, chaque élément est ((ax,ay),(bx,by))
+        NOTE: on travaille en coordonnées *canoniques* du graphe (graph["pts"]).
         """
-        key = self._pt_key_eps(v)
-        neighs = graph["adj"].get(key, [])
+        key = self._pt_key_eps(v, eps=eps)
+
+        # point canonique du sommet (clé quantifiée -> coord monde "réelle")
+        a = graph.get("pts", {}).get(key, (float(v[0]), float(v[1])))
+
+        neighs = graph.get("adj", {}).get(key, [])
         out = []
+        pts_map = graph.get("pts", {})
+
         for w in neighs:
-            out.append(( (float(v[0]),float(v[1])), (float(w[0]),float(w[1])) ))
-        # garder au maximum 2 (enveloppe standard) ; si plus, on trie par angle autour de v et on prend 2 extrêmes
+            wk = self._pt_key_eps(w, eps=eps)
+            b = pts_map.get(wk, (float(w[0]), float(w[1])))
+            out.append(((float(a[0]), float(a[1])), (float(b[0]), float(b[1]))))
+
+        # garder au maximum 2 ; si plus, prendre 2 extrêmes en angle autour de a
         if len(out) > 2:
             import math
             def ang(e):
-                (a,b)=e; vx,vy=self._edge_dir(a,b); return math.atan2(vy,vx)
+                (p, q) = e
+                vx, vy = self._edge_dir(p, q)
+                return math.atan2(vy, vx)
+
             out = sorted(out, key=ang)
-            # choisir deux qui maximisent l'écart angulaire (les bords de l'enveloppe)
-            # heuristique simple: prendre le premier et celui qui maximise |Δ|
             a0 = out[0]; ang0 = ang(a0)
             a1 = max(out[1:], key=lambda e: self._ang_diff(ang(e), ang0))
-            out = [a0,a1]
+            out = [a0, a1]
+
         return out
+
 
 
     def _incident_half_edges_at_point(self, graph, v, outline, eps=EPS_WORLD):

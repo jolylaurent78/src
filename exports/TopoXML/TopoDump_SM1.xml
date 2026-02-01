@@ -1,2 +1,707 @@
 <?xml version='1.0' encoding='utf-8'?>
-<TopoDump version="4.3" units="km" tFrame="world" scenarioId="SM1"><Groups><Group id="SM1:G002" elements="2" attachments="1" originGroups="SM1:G001,SM1:G002"><Validate errors="0" warnings="0" /></Group><Group id="SM1:G004" elements="2" attachments="1" originGroups="SM1:G003,SM1:G004"><Validate errors="0" warnings="0" /></Group><Group id="SM1:G006" elements="2" attachments="1" originGroups="SM1:G005,SM1:G006"><Validate errors="0" warnings="0" /></Group><Group id="SM1:G008" elements="2" attachments="2" originGroups="SM1:G007,SM1:G008"><Validate errors="0" warnings="0" /></Group></Groups><Nodes><Node id="SM1:T01:N1" type="B" origins="SM1:T01:N1,SM1:T02:N0" createdOrder="2" /><Node id="SM1:T01:N2" type="L" origins="SM1:T01:N2" createdOrder="3" /><Node id="SM1:T02:N1" type="B" origins="SM1:T01:N0,SM1:T02:N1" createdOrder="5" /><Node id="SM1:T02:N2" type="L" origins="SM1:T02:N2" createdOrder="6" /><Node id="SM1:T03:N2" type="L" origins="SM1:T03:N2" createdOrder="9" /><Node id="SM1:T04:N0" type="O" origins="SM1:T03:N0,SM1:T04:N0" createdOrder="10" /><Node id="SM1:T04:N1" type="B" origins="SM1:T03:N1,SM1:T04:N1" createdOrder="11" /><Node id="SM1:T04:N2" type="L" origins="SM1:T04:N2" createdOrder="12" /><Node id="SM1:T05:N1" type="B" origins="SM1:T05:N1,SM1:T06:N0" createdOrder="14" /><Node id="SM1:T05:N2" type="L" origins="SM1:T05:N2" createdOrder="15" /><Node id="SM1:T06:N1" type="B" origins="SM1:T05:N0,SM1:T06:N1" createdOrder="17" /><Node id="SM1:T06:N2" type="L" origins="SM1:T06:N2" createdOrder="18" /><Node id="SM1:T07:N0" type="O" origins="SM1:T07:N0" createdOrder="19" /><Node id="SM1:T07:N2" type="L" origins="SM1:T07:N2" createdOrder="21" /><Node id="SM1:T08:N0" type="O" origins="SM1:T08:N0" createdOrder="22" /><Node id="SM1:T08:N1" type="B" origins="SM1:T08:N1" createdOrder="23" /><Node id="SM1:T08:N2" type="L" origins="SM1:T07:N1,SM1:T08:N2" createdOrder="24" /></Nodes><ConceptModels><ConceptModel version="1.0" group="SM1:G002"><ConceptNodes><ConceptNode id="SM1:T01:N1" type="M" x="194.705873" y="218.752084"><Members><M id="SM1:T01:N1" type="B" tri="T01" label="Rocamadour" /><M id="SM1:T02:N0" type="O" tri="T02" label="Bourges" /></Members></ConceptNode><ConceptNode id="SM1:T01:N2" type="L" x="-214.999132" y="138.869264"><Members><M id="SM1:T01:N2" type="L" tri="T01" label="La Ferté-Alais" /></Members></ConceptNode><ConceptNode id="SM1:T02:N1" type="M" x="-64.120056" y="190.163647"><Members><M id="SM1:T01:N0" type="O" tri="T01" label="Bourges" /><M id="SM1:T02:N1" type="B" tri="T02" label="Rocamadour" /></Members></ConceptNode><ConceptNode id="SM1:T02:N2" type="L" x="164.079731" y="320.544665"><Members><M id="SM1:T02:N2" type="L" tri="T02" label="Loches" /></Members></ConceptNode></ConceptNodes><ConceptEdges><ConceptEdge a="SM1:T01:N1" b="SM1:T01:N2" distanceKm="417.420000" azimutDeg="258.967092"><Occurrences><O element="SM1:T01" edge="SM1:T01:E1" from="SM1:T01:N1" to="SM1:T01:N2" t0="0.000000" t1="1.000000" /></Occurrences></ConceptEdge><ConceptEdge a="SM1:T01:N1" b="SM1:T02:N1" distanceKm="260.400000" azimutDeg="263.696984"><Occurrences><O element="SM1:T02" edge="SM1:T02:E0" from="SM1:T02:N0" to="SM1:T02:N1" t0="0.000000" t1="1.000000" /><O element="SM1:T01" edge="SM1:T01:E0" from="SM1:T01:N0" to="SM1:T01:N1" t0="0.000000" t1="1.000000" /></Occurrences></ConceptEdge><ConceptEdge a="SM1:T01:N1" b="SM1:T02:N2" distanceKm="106.300000" azimutDeg="343.255134"><Occurrences><O element="SM1:T02" edge="SM1:T02:E2" from="SM1:T02:N2" to="SM1:T02:N0" t0="0.000000" t1="1.000000" /></Occurrences></ConceptEdge><ConceptEdge a="SM1:T01:N2" b="SM1:T02:N1" distanceKm="159.360000" azimutDeg="71.223499"><Occurrences><O element="SM1:T01" edge="SM1:T01:E2" from="SM1:T01:N2" to="SM1:T01:N0" t0="0.000000" t1="1.000000" /></Occurrences></ConceptEdge><ConceptEdge a="SM1:T02:N1" b="SM1:T02:N2" distanceKm="262.820000" azimutDeg="60.258689"><Occurrences><O element="SM1:T02" edge="SM1:T02:E1" from="SM1:T02:N1" to="SM1:T02:N2" t0="0.000000" t1="1.000000" /></Occurrences></ConceptEdge></ConceptEdges><Boundary orientation="cw"><Cycle><N id="SM1:T01:N2" /><N id="SM1:T02:N1" /><N id="SM1:T02:N2" /><N id="SM1:T01:N1" /></Cycle></Boundary></ConceptModel><ConceptModel version="1.0" group="SM1:G004"><ConceptNodes><ConceptNode id="SM1:T03:N2" type="L" x="225.827737" y="-62.189924"><Members><M id="SM1:T03:N2" type="L" tri="T03" label="Jumièges" /></Members></ConceptNode><ConceptNode id="SM1:T04:N0" type="O" x="-28.494843" y="-193.803277"><Members><M id="SM1:T03:N0" type="O" tri="T03" label="Bourges" /><M id="SM1:T04:N0" type="O" tri="T04" label="Bourges" /></Members></ConceptNode><ConceptNode id="SM1:T04:N1" type="B" x="-80.863973" y="-423.847706"><Members><M id="SM1:T03:N1" type="B" tri="T03" label="Saint-Amour" /><M id="SM1:T04:N1" type="B" tri="T04" label="Saint-Amour" /></Members></ConceptNode><ConceptNode id="SM1:T04:N2" type="L" x="-504.367049" y="-161.021508"><Members><M id="SM1:T04:N2" type="L" tri="T04" label="Grotte de Lombrives" /></Members></ConceptNode></ConceptNodes><ConceptEdges><ConceptEdge a="SM1:T03:N2" b="SM1:T04:N0" distanceKm="286.360000" azimutDeg="242.638183"><Occurrences><O element="SM1:T03" edge="SM1:T03:E2" from="SM1:T03:N2" to="SM1:T03:N0" t0="0.000000" t1="1.000000" /></Occurrences></ConceptEdge><ConceptEdge a="SM1:T03:N2" b="SM1:T04:N1" distanceKm="474.190000" azimutDeg="220.298489"><Occurrences><O element="SM1:T03" edge="SM1:T03:E1" from="SM1:T03:N1" to="SM1:T03:N2" t0="0.000000" t1="1.000000" /></Occurrences></ConceptEdge><ConceptEdge a="SM1:T04:N0" b="SM1:T04:N1" distanceKm="235.930000" azimutDeg="192.824704"><Occurrences><O element="SM1:T04" edge="SM1:T04:E0" from="SM1:T04:N0" to="SM1:T04:N1" t0="0.000000" t1="1.000000" /><O element="SM1:T03" edge="SM1:T03:E0" from="SM1:T03:N0" to="SM1:T03:N1" t0="0.000000" t1="1.000000" /></Occurrences></ConceptEdge><ConceptEdge a="SM1:T04:N0" b="SM1:T04:N2" distanceKm="477.000000" azimutDeg="273.940752"><Occurrences><O element="SM1:T04" edge="SM1:T04:E2" from="SM1:T04:N2" to="SM1:T04:N0" t0="0.000000" t1="1.000000" /></Occurrences></ConceptEdge><ConceptEdge a="SM1:T04:N1" b="SM1:T04:N2" distanceKm="498.430000" azimutDeg="301.823757"><Occurrences><O element="SM1:T04" edge="SM1:T04:E1" from="SM1:T04:N1" to="SM1:T04:N2" t0="0.000000" t1="1.000000" /></Occurrences></ConceptEdge></ConceptEdges><Boundary orientation="cw"><Cycle><N id="SM1:T03:N2" /><N id="SM1:T04:N1" /><N id="SM1:T04:N2" /><N id="SM1:T04:N0" /></Cycle></Boundary></ConceptModel><ConceptModel version="1.0" group="SM1:G006"><ConceptNodes><ConceptNode id="SM1:T05:N1" type="M" x="-106.320000" y="140.000000"><Members><M id="SM1:T05:N1" type="B" tri="T05" label="Le Goulet" /><M id="SM1:T06:N0" type="O" tri="T06" label="Bourges" /></Members></ConceptNode><ConceptNode id="SM1:T05:N2" type="L" x="-729.397784" y="451.936395"><Members><M id="SM1:T05:N2" type="L" tri="T05" label="Pic du Midi" /></Members></ConceptNode><ConceptNode id="SM1:T06:N1" type="M" x="-347.000000" y="140.000000"><Members><M id="SM1:T05:N0" type="O" tri="T05" label="Bourges" /><M id="SM1:T06:N1" type="B" tri="T06" label="Le Goulet" /></Members></ConceptNode><ConceptNode id="SM1:T06:N2" type="L" x="-197.665207" y="108.359171"><Members><M id="SM1:T06:N2" type="L" tri="T06" label="Beaugency" /></Members></ConceptNode></ConceptNodes><ConceptEdges><ConceptEdge a="SM1:T05:N1" b="SM1:T05:N2" distanceKm="696.800000" azimutDeg="296.594286"><Occurrences><O element="SM1:T05" edge="SM1:T05:E1" from="SM1:T05:N1" to="SM1:T05:N2" t0="0.000000" t1="1.000000" /></Occurrences></ConceptEdge><ConceptEdge a="SM1:T05:N1" b="SM1:T06:N1" distanceKm="240.680000" azimutDeg="270.000000"><Occurrences><O element="SM1:T06" edge="SM1:T06:E0" from="SM1:T06:N0" to="SM1:T06:N1" t0="0.000000" t1="1.000000" /><O element="SM1:T05" edge="SM1:T05:E0" from="SM1:T05:N0" to="SM1:T05:N1" t0="0.000000" t1="1.000000" /></Occurrences></ConceptEdge><ConceptEdge a="SM1:T05:N1" b="SM1:T06:N2" distanceKm="96.670000" azimutDeg="250.894559"><Occurrences><O element="SM1:T06" edge="SM1:T06:E2" from="SM1:T06:N2" to="SM1:T06:N0" t0="0.000000" t1="1.000000" /></Occurrences></ConceptEdge><ConceptEdge a="SM1:T05:N2" b="SM1:T06:N1" distanceKm="493.490000" azimutDeg="129.205432"><Occurrences><O element="SM1:T05" edge="SM1:T05:E2" from="SM1:T05:N2" to="SM1:T05:N0" t0="0.000000" t1="1.000000" /></Occurrences></ConceptEdge><ConceptEdge a="SM1:T06:N1" b="SM1:T06:N2" distanceKm="152.650000" azimutDeg="101.962823"><Occurrences><O element="SM1:T06" edge="SM1:T06:E1" from="SM1:T06:N1" to="SM1:T06:N2" t0="0.000000" t1="1.000000" /></Occurrences></ConceptEdge></ConceptEdges><Boundary orientation="cw"><Cycle><N id="SM1:T05:N2" /><N id="SM1:T05:N1" /><N id="SM1:T06:N2" /><N id="SM1:T06:N1" /></Cycle></Boundary></ConceptModel><ConceptModel version="1.0" group="SM1:G008"><ConceptNodes><ConceptNode id="SM1:T07:N0" type="O" x="105.000000" y="95.000000"><Members><M id="SM1:T07:N0" type="O" tri="T07" label="Bourges" /></Members></ConceptNode><ConceptNode id="SM1:T07:N2" type="L" x="391.810201" y="189.476395"><Members><M id="SM1:T07:N2" type="L" tri="T07" label="Pertuis d'Antioche" /></Members></ConceptNode><ConceptNode id="SM1:T08:N0" type="O" x="580.173821" y="-18.483182"><Members><M id="SM1:T08:N0" type="O" tri="T08" label="Bourges" /></Members></ConceptNode><ConceptNode id="SM1:T08:N1" type="B" x="356.388929" y="245.757684"><Members><M id="SM1:T08:N1" type="B" tri="T08" label="Pont de Noirmoutier" /></Members></ConceptNode><ConceptNode id="SM1:T08:N2" type="M" x="451.270000" y="95.000000"><Members><M id="SM1:T07:N1" type="B" tri="T07" label="Pont de Noirmoutier" /><M id="SM1:T08:N2" type="L" tri="T08" label="Mirebeau" /></Members></ConceptNode></ConceptNodes><ConceptEdges><ConceptEdge a="SM1:T07:N0" b="SM1:T07:N2" distanceKm="301.970000" azimutDeg="71.767916"><Occurrences><O element="SM1:T07" edge="SM1:T07:E2" from="SM1:T07:N2" to="SM1:T07:N0" t0="0.000000" t1="1.000000" /></Occurrences></ConceptEdge><ConceptEdge a="SM1:T07:N0" b="SM1:T08:N2" distanceKm="346.270000" azimutDeg="90.000000"><Occurrences><O element="SM1:T07" edge="SM1:T07:E0" from="SM1:T07:N0" to="SM1:T07:N1" t0="0.000000" t1="1.000000" /></Occurrences></ConceptEdge><ConceptEdge a="SM1:T07:N2" b="SM1:T08:N1" distanceKm="66.500000" azimutDeg="327.815272"><Occurrences><O element="SM1:T08" edge="SM1:T08:E1" from="SM1:T08:N1" to="SM1:T08:N2" t0="0.000000" t1="0.373323" /></Occurrences></ConceptEdge><ConceptEdge a="SM1:T07:N2" b="SM1:T08:N2" distanceKm="111.630000" azimutDeg="147.815272"><Occurrences><O element="SM1:T08" edge="SM1:T08:E1" from="SM1:T08:N1" to="SM1:T08:N2" t0="0.373323" t1="1.000000" /><O element="SM1:T07" edge="SM1:T07:E1" from="SM1:T07:N1" to="SM1:T07:N2" t0="0.000000" t1="1.000000" /></Occurrences></ConceptEdge><ConceptEdge a="SM1:T08:N0" b="SM1:T08:N1" distanceKm="346.270000" azimutDeg="319.738825"><Occurrences><O element="SM1:T08" edge="SM1:T08:E0" from="SM1:T08:N0" to="SM1:T08:N1" t0="0.000000" t1="1.000000" /></Occurrences></ConceptEdge><ConceptEdge a="SM1:T08:N0" b="SM1:T08:N2" distanceKm="171.740000" azimutDeg="311.359754"><Occurrences><O element="SM1:T08" edge="SM1:T08:E2" from="SM1:T08:N2" to="SM1:T08:N0" t0="0.000000" t1="1.000000" /></Occurrences></ConceptEdge></ConceptEdges><Boundary orientation="cw"><Cycle><N id="SM1:T07:N0" /><N id="SM1:T07:N2" /><N id="SM1:T08:N1" /><N id="SM1:T08:N0" /><N id="SM1:T08:N2" /></Cycle></Boundary></ConceptModel></ConceptModels><Elements><Element id="SM1:T01" name="Triangle 01" n="3" group="SM1:G002"><ElementPose mirrored="0" tx="-64.120056" ty="190.163647"><R r00="0.993955179" r01="-0.109786625" r10="0.109786625" r11="0.993955179" /></ElementPose><LocalCoords frameOrigin="O" xAxis="O-&gt;B" units="km" orient="CW"><P idx="0" x="0.000000" y="0.000000" /><P idx="1" x="260.400000" y="0.000000" /><P idx="2" x="-155.598477" y="-34.419814" /></LocalCoords><Vertices><V idx="0" label="Bourges" node="SM1:T02:N1" nodeOrigin="SM1:T01:N0" type="O" /><V idx="1" label="Rocamadour" node="SM1:T01:N1" nodeOrigin="SM1:T01:N1" type="B" /><V idx="2" label="La Ferté-Alais" node="SM1:T01:N2" nodeOrigin="SM1:T01:N2" type="L" /></Vertices><Edges><Edge id="SM1:T01:E0" idx="0" from="0" to="1" labels="Bourges–Rocamadour" edgeLabelKey="Bourges|Rocamadour" lengthKm="260.400"><Points><P t="0.000000" node="SM1:T02:N1" nodeOrigin="SM1:T01:N0" /><P t="1.000000" node="SM1:T01:N1" nodeOrigin="SM1:T01:N1" /></Points><Coverages><C t0="0.000000" t1="1.000000" /></Coverages></Edge><Edge id="SM1:T01:E1" idx="1" from="1" to="2" labels="Rocamadour–La Ferté-Alais" edgeLabelKey="La Ferté-Alais|Rocamadour" lengthKm="417.420"><Points><P t="0.000000" node="SM1:T01:N1" nodeOrigin="SM1:T01:N1" /><P t="1.000000" node="SM1:T01:N2" nodeOrigin="SM1:T01:N2" /></Points><Coverages /></Edge><Edge id="SM1:T01:E2" idx="2" from="2" to="0" labels="La Ferté-Alais–Bourges" edgeLabelKey="Bourges|La Ferté-Alais" lengthKm="159.360"><Points><P t="0.000000" node="SM1:T01:N2" nodeOrigin="SM1:T01:N2" /><P t="1.000000" node="SM1:T02:N1" nodeOrigin="SM1:T01:N0" /></Points><Coverages /></Edge></Edges></Element><Element id="SM1:T02" name="Triangle 02" n="3" group="SM1:G002"><ElementPose mirrored="0" tx="194.705873" ty="218.752084"><R r00="-0.993955179" r01="0.109786625" r10="-0.109786625" r11="-0.993955179" /></ElementPose><LocalCoords frameOrigin="O" xAxis="O-&gt;B" units="km" orient="CW"><P idx="0" x="0.000000" y="0.000000" /><P idx="1" x="260.400000" y="0.000000" /><P idx="2" x="19.265548" y="-104.539603" /></LocalCoords><Vertices><V idx="0" label="Bourges" node="SM1:T01:N1" nodeOrigin="SM1:T02:N0" type="O" /><V idx="1" label="Rocamadour" node="SM1:T02:N1" nodeOrigin="SM1:T02:N1" type="B" /><V idx="2" label="Loches" node="SM1:T02:N2" nodeOrigin="SM1:T02:N2" type="L" /></Vertices><Edges><Edge id="SM1:T02:E0" idx="0" from="0" to="1" labels="Bourges–Rocamadour" edgeLabelKey="Bourges|Rocamadour" lengthKm="260.400"><Points><P t="0.000000" node="SM1:T01:N1" nodeOrigin="SM1:T02:N0" /><P t="1.000000" node="SM1:T02:N1" nodeOrigin="SM1:T02:N1" /></Points><Coverages><C t0="0.000000" t1="1.000000" /></Coverages></Edge><Edge id="SM1:T02:E1" idx="1" from="1" to="2" labels="Rocamadour–Loches" edgeLabelKey="Loches|Rocamadour" lengthKm="262.820"><Points><P t="0.000000" node="SM1:T02:N1" nodeOrigin="SM1:T02:N1" /><P t="1.000000" node="SM1:T02:N2" nodeOrigin="SM1:T02:N2" /></Points><Coverages /></Edge><Edge id="SM1:T02:E2" idx="2" from="2" to="0" labels="Loches–Bourges" edgeLabelKey="Bourges|Loches" lengthKm="106.300"><Points><P t="0.000000" node="SM1:T02:N2" nodeOrigin="SM1:T02:N2" /><P t="1.000000" node="SM1:T01:N1" nodeOrigin="SM1:T02:N0" /></Points><Coverages /></Edge></Edges></Element><Element id="SM1:T03" name="Triangle 03" n="3" group="SM1:G004"><ElementPose mirrored="0" tx="-28.494843" ty="-193.803277"><R r00="-0.221968931" r01="0.975053739" r10="-0.975053739" r11="-0.221968931" /></ElementPose><LocalCoords frameOrigin="O" xAxis="O-&gt;B" units="km" orient="CCW"><P idx="0" x="0.000000" y="0.000000" /><P idx="1" x="235.930000" y="0.000000" /><P idx="2" x="-184.781803" y="218.764108" /></LocalCoords><Vertices><V idx="0" label="Bourges" node="SM1:T04:N0" nodeOrigin="SM1:T03:N0" type="O" /><V idx="1" label="Saint-Amour" node="SM1:T04:N1" nodeOrigin="SM1:T03:N1" type="B" /><V idx="2" label="Jumièges" node="SM1:T03:N2" nodeOrigin="SM1:T03:N2" type="L" /></Vertices><Edges><Edge id="SM1:T03:E0" idx="0" from="0" to="1" labels="Bourges–Saint-Amour" edgeLabelKey="Bourges|Saint-Amour" lengthKm="235.930"><Points><P t="0.000000" node="SM1:T04:N0" nodeOrigin="SM1:T03:N0" /><P t="1.000000" node="SM1:T04:N1" nodeOrigin="SM1:T03:N1" /></Points><Coverages><C t0="0.000000" t1="1.000000" /></Coverages></Edge><Edge id="SM1:T03:E1" idx="1" from="1" to="2" labels="Saint-Amour–Jumièges" edgeLabelKey="Jumièges|Saint-Amour" lengthKm="474.190"><Points><P t="0.000000" node="SM1:T04:N1" nodeOrigin="SM1:T03:N1" /><P t="1.000000" node="SM1:T03:N2" nodeOrigin="SM1:T03:N2" /></Points><Coverages /></Edge><Edge id="SM1:T03:E2" idx="2" from="2" to="0" labels="Jumièges–Bourges" edgeLabelKey="Bourges|Jumièges" lengthKm="286.360"><Points><P t="0.000000" node="SM1:T03:N2" nodeOrigin="SM1:T03:N2" /><P t="1.000000" node="SM1:T04:N0" nodeOrigin="SM1:T03:N0" /></Points><Coverages /></Edge></Edges></Element><Element id="SM1:T04" name="Triangle 04" n="3" group="SM1:G004"><ElementPose mirrored="0" tx="-28.494843" ty="-193.803277"><R r00="-0.221968931" r01="0.975053739" r10="-0.975053739" r11="-0.221968931" /></ElementPose><LocalCoords frameOrigin="O" xAxis="O-&gt;B" units="km" orient="CW"><P idx="0" x="0.000000" y="0.000000" /><P idx="1" x="235.930000" y="0.000000" /><P idx="2" x="73.664858" y="-471.277507" /></LocalCoords><Vertices><V idx="0" label="Bourges" node="SM1:T04:N0" nodeOrigin="SM1:T04:N0" type="O" /><V idx="1" label="Saint-Amour" node="SM1:T04:N1" nodeOrigin="SM1:T04:N1" type="B" /><V idx="2" label="Grotte de Lombrives" node="SM1:T04:N2" nodeOrigin="SM1:T04:N2" type="L" /></Vertices><Edges><Edge id="SM1:T04:E0" idx="0" from="0" to="1" labels="Bourges–Saint-Amour" edgeLabelKey="Bourges|Saint-Amour" lengthKm="235.930"><Points><P t="0.000000" node="SM1:T04:N0" nodeOrigin="SM1:T04:N0" /><P t="1.000000" node="SM1:T04:N1" nodeOrigin="SM1:T04:N1" /></Points><Coverages><C t0="0.000000" t1="1.000000" /></Coverages></Edge><Edge id="SM1:T04:E1" idx="1" from="1" to="2" labels="Saint-Amour–Grotte de Lombrives" edgeLabelKey="Grotte de Lombrives|Saint-Amour" lengthKm="498.430"><Points><P t="0.000000" node="SM1:T04:N1" nodeOrigin="SM1:T04:N1" /><P t="1.000000" node="SM1:T04:N2" nodeOrigin="SM1:T04:N2" /></Points><Coverages /></Edge><Edge id="SM1:T04:E2" idx="2" from="2" to="0" labels="Grotte de Lombrives–Bourges" edgeLabelKey="Bourges|Grotte de Lombrives" lengthKm="477.000"><Points><P t="0.000000" node="SM1:T04:N2" nodeOrigin="SM1:T04:N2" /><P t="1.000000" node="SM1:T04:N0" nodeOrigin="SM1:T04:N0" /></Points><Coverages /></Edge></Edges></Element><Element id="SM1:T05" name="Triangle 05" n="3" group="SM1:G006"><ElementPose mirrored="0" tx="-347.000000" ty="140.000000"><R r00="1.000000000" r01="-0.000000000" r10="-0.000000000" r11="1.000000000" /></ElementPose><LocalCoords frameOrigin="O" xAxis="O-&gt;B" units="km" orient="CCW"><P idx="0" x="0.000000" y="0.000000" /><P idx="1" x="240.680000" y="0.000000" /><P idx="2" x="-382.397784" y="311.936395" /></LocalCoords><Vertices><V idx="0" label="Bourges" node="SM1:T06:N1" nodeOrigin="SM1:T05:N0" type="O" /><V idx="1" label="Le Goulet" node="SM1:T05:N1" nodeOrigin="SM1:T05:N1" type="B" /><V idx="2" label="Pic du Midi" node="SM1:T05:N2" nodeOrigin="SM1:T05:N2" type="L" /></Vertices><Edges><Edge id="SM1:T05:E0" idx="0" from="0" to="1" labels="Bourges–Le Goulet" edgeLabelKey="Bourges|Le Goulet" lengthKm="240.680"><Points><P t="0.000000" node="SM1:T06:N1" nodeOrigin="SM1:T05:N0" /><P t="1.000000" node="SM1:T05:N1" nodeOrigin="SM1:T05:N1" /></Points><Coverages><C t0="0.000000" t1="1.000000" /></Coverages></Edge><Edge id="SM1:T05:E1" idx="1" from="1" to="2" labels="Le Goulet–Pic du Midi" edgeLabelKey="Le Goulet|Pic du Midi" lengthKm="696.800"><Points><P t="0.000000" node="SM1:T05:N1" nodeOrigin="SM1:T05:N1" /><P t="1.000000" node="SM1:T05:N2" nodeOrigin="SM1:T05:N2" /></Points><Coverages /></Edge><Edge id="SM1:T05:E2" idx="2" from="2" to="0" labels="Pic du Midi–Bourges" edgeLabelKey="Bourges|Pic du Midi" lengthKm="493.490"><Points><P t="0.000000" node="SM1:T05:N2" nodeOrigin="SM1:T05:N2" /><P t="1.000000" node="SM1:T06:N1" nodeOrigin="SM1:T05:N0" /></Points><Coverages /></Edge></Edges></Element><Element id="SM1:T06" name="Triangle 06" n="3" group="SM1:G006"><ElementPose mirrored="0" tx="-106.320000" ty="140.000000"><R r00="-1.000000000" r01="-0.000000000" r10="0.000000000" r11="-1.000000000" /></ElementPose><LocalCoords frameOrigin="O" xAxis="O-&gt;B" units="km" orient="CCW"><P idx="0" x="0.000000" y="0.000000" /><P idx="1" x="240.680000" y="0.000000" /><P idx="2" x="91.345207" y="31.640829" /></LocalCoords><Vertices><V idx="0" label="Bourges" node="SM1:T05:N1" nodeOrigin="SM1:T06:N0" type="O" /><V idx="1" label="Le Goulet" node="SM1:T06:N1" nodeOrigin="SM1:T06:N1" type="B" /><V idx="2" label="Beaugency" node="SM1:T06:N2" nodeOrigin="SM1:T06:N2" type="L" /></Vertices><Edges><Edge id="SM1:T06:E0" idx="0" from="0" to="1" labels="Bourges–Le Goulet" edgeLabelKey="Bourges|Le Goulet" lengthKm="240.680"><Points><P t="0.000000" node="SM1:T05:N1" nodeOrigin="SM1:T06:N0" /><P t="1.000000" node="SM1:T06:N1" nodeOrigin="SM1:T06:N1" /></Points><Coverages><C t0="0.000000" t1="1.000000" /></Coverages></Edge><Edge id="SM1:T06:E1" idx="1" from="1" to="2" labels="Le Goulet–Beaugency" edgeLabelKey="Beaugency|Le Goulet" lengthKm="152.650"><Points><P t="0.000000" node="SM1:T06:N1" nodeOrigin="SM1:T06:N1" /><P t="1.000000" node="SM1:T06:N2" nodeOrigin="SM1:T06:N2" /></Points><Coverages /></Edge><Edge id="SM1:T06:E2" idx="2" from="2" to="0" labels="Beaugency–Bourges" edgeLabelKey="Beaugency|Bourges" lengthKm="96.670"><Points><P t="0.000000" node="SM1:T06:N2" nodeOrigin="SM1:T06:N2" /><P t="1.000000" node="SM1:T05:N1" nodeOrigin="SM1:T06:N0" /></Points><Coverages /></Edge></Edges></Element><Element id="SM1:T07" name="Triangle 07" n="3" group="SM1:G008"><ElementPose mirrored="0" tx="105.000000" ty="95.000000"><R r00="1.000000000" r01="-0.000000000" r10="-0.000000000" r11="1.000000000" /></ElementPose><LocalCoords frameOrigin="O" xAxis="O-&gt;B" units="km" orient="CCW"><P idx="0" x="0.000000" y="0.000000" /><P idx="1" x="346.270000" y="0.000000" /><P idx="2" x="286.810201" y="94.476395" /></LocalCoords><Vertices><V idx="0" label="Bourges" node="SM1:T07:N0" nodeOrigin="SM1:T07:N0" type="O" /><V idx="1" label="Pont de Noirmoutier" node="SM1:T08:N2" nodeOrigin="SM1:T07:N1" type="B" /><V idx="2" label="Pertuis d'Antioche" node="SM1:T07:N2" nodeOrigin="SM1:T07:N2" type="L" /></Vertices><Edges><Edge id="SM1:T07:E0" idx="0" from="0" to="1" labels="Bourges–Pont de Noirmoutier" edgeLabelKey="Bourges|Pont de Noirmoutier" lengthKm="346.270"><Points><P t="0.000000" node="SM1:T07:N0" nodeOrigin="SM1:T07:N0" /><P t="1.000000" node="SM1:T08:N2" nodeOrigin="SM1:T07:N1" /></Points><Coverages /></Edge><Edge id="SM1:T07:E1" idx="1" from="1" to="2" labels="Pont de Noirmoutier–Pertuis d'Antioche" edgeLabelKey="Pertuis d'Antioche|Pont de Noirmoutier" lengthKm="111.630"><Points><P t="0.000000" node="SM1:T08:N2" nodeOrigin="SM1:T07:N1" /><P t="1.000000" node="SM1:T07:N2" nodeOrigin="SM1:T07:N2" /></Points><Coverages /></Edge><Edge id="SM1:T07:E2" idx="2" from="2" to="0" labels="Pertuis d'Antioche–Bourges" edgeLabelKey="Bourges|Pertuis d'Antioche" lengthKm="301.970"><Points><P t="0.000000" node="SM1:T07:N2" nodeOrigin="SM1:T07:N2" /><P t="1.000000" node="SM1:T07:N0" nodeOrigin="SM1:T07:N0" /></Points><Coverages /></Edge></Edges></Element><Element id="SM1:T08" name="Triangle 08" n="3" group="SM1:G008"><ElementPose mirrored="0" tx="580.173821" ty="-18.483182"><R r00="-0.646272827" r01="-0.763106436" r10="0.763106436" r11="-0.646272827" /></ElementPose><LocalCoords frameOrigin="O" xAxis="O-&gt;B" units="km" orient="CCW"><P idx="0" x="0.000000" y="0.000000" /><P idx="1" x="346.270000" y="0.000000" /><P idx="2" x="169.906783" y="25.026239" /></LocalCoords><Vertices><V idx="0" label="Bourges" node="SM1:T08:N0" nodeOrigin="SM1:T08:N0" type="O" /><V idx="1" label="Pont de Noirmoutier" node="SM1:T08:N1" nodeOrigin="SM1:T08:N1" type="B" /><V idx="2" label="Mirebeau" node="SM1:T08:N2" nodeOrigin="SM1:T08:N2" type="L" /></Vertices><Edges><Edge id="SM1:T08:E0" idx="0" from="0" to="1" labels="Bourges–Pont de Noirmoutier" edgeLabelKey="Bourges|Pont de Noirmoutier" lengthKm="346.270"><Points><P t="0.000000" node="SM1:T08:N0" nodeOrigin="SM1:T08:N0" /><P t="1.000000" node="SM1:T08:N1" nodeOrigin="SM1:T08:N1" /></Points><Coverages /></Edge><Edge id="SM1:T08:E1" idx="1" from="1" to="2" labels="Pont de Noirmoutier–Mirebeau" edgeLabelKey="Mirebeau|Pont de Noirmoutier" lengthKm="178.130"><Points><P t="0.000000" node="SM1:T08:N1" nodeOrigin="SM1:T08:N1" /><P t="1.000000" node="SM1:T08:N2" nodeOrigin="SM1:T08:N2" /></Points><Coverages /></Edge><Edge id="SM1:T08:E2" idx="2" from="2" to="0" labels="Mirebeau–Bourges" edgeLabelKey="Bourges|Mirebeau" lengthKm="171.740"><Points><P t="0.000000" node="SM1:T08:N2" nodeOrigin="SM1:T08:N2" /><P t="1.000000" node="SM1:T08:N0" nodeOrigin="SM1:T08:N0" /></Points><Coverages /></Edge></Edges></Element></Elements><Attachments><Attachment id="SM1:A008" kind="edge-edge" source="manual" featureA="edge(SM1:T01,0)" featureB="edge(SM1:T02,0)"><Params><Param name="mapping" value="reverse" /></Params></Attachment><Attachment id="SM1:A016" kind="edge-edge" source="manual" featureA="edge(SM1:T04,0)" featureB="edge(SM1:T03,0)"><Params><Param name="mapping" value="direct" /></Params></Attachment><Attachment id="SM1:A024" kind="edge-edge" source="manual" featureA="edge(SM1:T06,0)" featureB="edge(SM1:T05,0)"><Params><Param name="mapping" value="reverse" /></Params></Attachment><Attachment id="SM1:A033" kind="vertex-edge" source="manual" featureA="vertex(SM1:T07,2)" featureB="edge(SM1:T08,1)"><Params><Param name="edgeFrom" value="SM1:T08:N2" /><Param name="t" value="0.626677145904677" /></Params></Attachment><Attachment id="SM1:A034" kind="vertex-vertex" source="manual" featureA="vertex(SM1:T07,1)" featureB="vertex(SM1:T08,2)"><Params /></Attachment></Attachments></TopoDump>
+<TopoDump version="4.3" units="km" tFrame="world" scenarioId="SM1">
+    <Groups>
+        <Group id="SM1:G002" elements="2" attachments="1" originGroups="SM1:G001,SM1:G002">
+            <Validate errors="0" warnings="0" />
+        </Group>
+        <Group id="SM1:G004" elements="2" attachments="1" originGroups="SM1:G003,SM1:G004">
+            <Validate errors="0" warnings="0" />
+        </Group>
+        <Group id="SM1:G006" elements="2" attachments="1" originGroups="SM1:G005,SM1:G006">
+            <Validate errors="0" warnings="0" />
+        </Group>
+        <Group id="SM1:G008" elements="2" attachments="1" originGroups="SM1:G007,SM1:G008">
+            <Validate errors="0" warnings="0" />
+        </Group>
+    </Groups>
+    <Nodes>
+        <Node id="SM1:T01:N1" type="B" origins="SM1:T01:N1,SM1:T02:N0" createdOrder="2" />
+        <Node id="SM1:T01:N2" type="L" origins="SM1:T01:N2" createdOrder="3" />
+        <Node id="SM1:T02:N1" type="B" origins="SM1:T01:N0,SM1:T02:N1" createdOrder="5" />
+        <Node id="SM1:T02:N2" type="L" origins="SM1:T02:N2" createdOrder="6" />
+        <Node id="SM1:T03:N2" type="L" origins="SM1:T03:N2" createdOrder="9" />
+        <Node id="SM1:T04:N0" type="O" origins="SM1:T03:N0,SM1:T04:N0" createdOrder="10" />
+        <Node id="SM1:T04:N1" type="B" origins="SM1:T03:N1,SM1:T04:N1" createdOrder="11" />
+        <Node id="SM1:T04:N2" type="L" origins="SM1:T04:N2" createdOrder="12" />
+        <Node id="SM1:T05:N1" type="B" origins="SM1:T05:N1,SM1:T06:N0" createdOrder="14" />
+        <Node id="SM1:T05:N2" type="L" origins="SM1:T05:N2" createdOrder="15" />
+        <Node id="SM1:T06:N1" type="B" origins="SM1:T05:N0,SM1:T06:N1" createdOrder="17" />
+        <Node id="SM1:T06:N2" type="L" origins="SM1:T06:N2" createdOrder="18" />
+        <Node id="SM1:T07:N1" type="B" origins="SM1:T07:N1,SM1:T08:N0" createdOrder="20" />
+        <Node id="SM1:T07:N2" type="L" origins="SM1:T07:N2" createdOrder="21" />
+        <Node id="SM1:T08:N1" type="B" origins="SM1:T07:N0,SM1:T08:N1" createdOrder="23" />
+        <Node id="SM1:T08:N2" type="L" origins="SM1:T08:N2" createdOrder="24" />
+    </Nodes>
+    <ConceptModels>
+        <ConceptModel version="1.0" group="SM1:G002">
+            <ConceptNodes>
+                <ConceptNode id="SM1:T01:N1" type="M" x="351.125417" y="-72.755463">
+                    <Members>
+                        <M id="SM1:T01:N1" type="B" tri="T01" label="Rocamadour" />
+                        <M id="SM1:T02:N0" type="O" tri="T02" label="Bourges" />
+                    </Members>
+                </ConceptNode>
+                <ConceptNode id="SM1:T01:N2" type="L" x="351.125417" y="344.664537">
+                    <Members>
+                        <M id="SM1:T01:N2" type="L" tri="T01" label="La Ferté-Alais" />
+                    </Members>
+                </ConceptNode>
+                <ConceptNode id="SM1:T02:N1" type="M" x="372.597602" y="186.757745">
+                    <Members>
+                        <M id="SM1:T01:N0" type="O" tri="T01" label="Bourges" />
+                        <M id="SM1:T02:N1" type="B" tri="T02" label="Rocamadour" />
+                    </Members>
+                </ConceptNode>
+                <ConceptNode id="SM1:T02:N2" type="L" x="456.897619" y="-62.175699">
+                    <Members>
+                        <M id="SM1:T02:N2" type="L" tri="T02" label="Loches" />
+                    </Members>
+                </ConceptNode>
+            </ConceptNodes>
+            <ConceptEdges>
+                <ConceptEdge a="SM1:T01:N1" b="SM1:T01:N2" distanceKm="417.420000"
+                    azimutDeg="0.000000">
+                    <Occurrences>
+                        <O element="SM1:T01" edge="SM1:T01:E1" from="SM1:T01:N1" to="SM1:T01:N2"
+                            t0="0.000000" t1="1.000000" />
+                    </Occurrences>
+                </ConceptEdge>
+                <ConceptEdge a="SM1:T01:N1" b="SM1:T02:N1" distanceKm="260.400000"
+                    azimutDeg="4.729893">
+                    <Occurrences>
+                        <O element="SM1:T02" edge="SM1:T02:E0" from="SM1:T02:N0" to="SM1:T02:N1"
+                            t0="0.000000" t1="1.000000" />
+                        <O element="SM1:T01" edge="SM1:T01:E0" from="SM1:T01:N0" to="SM1:T01:N1"
+                            t0="0.000000" t1="1.000000" />
+                    </Occurrences>
+                </ConceptEdge>
+                <ConceptEdge a="SM1:T01:N1" b="SM1:T02:N2" distanceKm="106.300000"
+                    azimutDeg="84.288042">
+                    <Occurrences>
+                        <O element="SM1:T02" edge="SM1:T02:E2" from="SM1:T02:N2" to="SM1:T02:N0"
+                            t0="0.000000" t1="1.000000" />
+                    </Occurrences>
+                </ConceptEdge>
+                <ConceptEdge a="SM1:T01:N2" b="SM1:T02:N1" distanceKm="159.360000"
+                    azimutDeg="172.256408">
+                    <Occurrences>
+                        <O element="SM1:T01" edge="SM1:T01:E2" from="SM1:T01:N2" to="SM1:T01:N0"
+                            t0="0.000000" t1="1.000000" />
+                    </Occurrences>
+                </ConceptEdge>
+                <ConceptEdge a="SM1:T02:N1" b="SM1:T02:N2" distanceKm="262.820000"
+                    azimutDeg="161.291597">
+                    <Occurrences>
+                        <O element="SM1:T02" edge="SM1:T02:E1" from="SM1:T02:N1" to="SM1:T02:N2"
+                            t0="0.000000" t1="1.000000" />
+                    </Occurrences>
+                </ConceptEdge>
+            </ConceptEdges>
+            <Boundary orientation="cw">
+                <Cycle>
+                    <N id="SM1:T01:N2" />
+                    <N id="SM1:T02:N1" />
+                    <N id="SM1:T02:N2" />
+                    <N id="SM1:T01:N1" />
+                </Cycle>
+            </Boundary>
+        </ConceptModel>
+        <ConceptModel version="1.0" group="SM1:G004">
+            <ConceptNodes>
+                <ConceptNode id="SM1:T03:N2" type="L" x="464.106940" y="-79.957892">
+                    <Members>
+                        <M id="SM1:T03:N2" type="L" tri="T03" label="Jumièges" />
+                    </Members>
+                </ConceptNode>
+                <ConceptNode id="SM1:T04:N0" type="O" x="179.168769" y="-108.458562">
+                    <Members>
+                        <M id="SM1:T03:N0" type="O" tri="T03" label="Bourges" />
+                        <M id="SM1:T04:N0" type="O" tri="T04" label="Bourges" />
+                    </Members>
+                </ConceptNode>
+                <ConceptNode id="SM1:T04:N1" type="B" x="45.622879" y="-302.953961">
+                    <Members>
+                        <M id="SM1:T03:N1" type="B" tri="T03" label="Saint-Amour" />
+                        <M id="SM1:T04:N1" type="B" tri="T04" label="Saint-Amour" />
+                    </Members>
+                </ConceptNode>
+                <ConceptNode id="SM1:T04:N2" type="L" x="-251.039114" y="97.575846">
+                    <Members>
+                        <M id="SM1:T04:N2" type="L" tri="T04" label="Grotte de Lombrives" />
+                    </Members>
+                </ConceptNode>
+            </ConceptNodes>
+            <ConceptEdges>
+                <ConceptEdge a="SM1:T03:N2" b="SM1:T04:N0" distanceKm="286.360000"
+                    azimutDeg="264.288042">
+                    <Occurrences>
+                        <O element="SM1:T03" edge="SM1:T03:E2" from="SM1:T03:N2" to="SM1:T03:N0"
+                            t0="0.000000" t1="1.000000" />
+                    </Occurrences>
+                </ConceptEdge>
+                <ConceptEdge a="SM1:T03:N2" b="SM1:T04:N1" distanceKm="474.190000"
+                    azimutDeg="241.948349">
+                    <Occurrences>
+                        <O element="SM1:T03" edge="SM1:T03:E1" from="SM1:T03:N1" to="SM1:T03:N2"
+                            t0="0.000000" t1="1.000000" />
+                    </Occurrences>
+                </ConceptEdge>
+                <ConceptEdge a="SM1:T04:N0" b="SM1:T04:N1" distanceKm="235.930000"
+                    azimutDeg="214.474563">
+                    <Occurrences>
+                        <O element="SM1:T04" edge="SM1:T04:E0" from="SM1:T04:N0" to="SM1:T04:N1"
+                            t0="0.000000" t1="1.000000" />
+                        <O element="SM1:T03" edge="SM1:T03:E0" from="SM1:T03:N0" to="SM1:T03:N1"
+                            t0="0.000000" t1="1.000000" />
+                    </Occurrences>
+                </ConceptEdge>
+                <ConceptEdge a="SM1:T04:N0" b="SM1:T04:N2" distanceKm="477.000000"
+                    azimutDeg="295.590611">
+                    <Occurrences>
+                        <O element="SM1:T04" edge="SM1:T04:E2" from="SM1:T04:N2" to="SM1:T04:N0"
+                            t0="0.000000" t1="1.000000" />
+                    </Occurrences>
+                </ConceptEdge>
+                <ConceptEdge a="SM1:T04:N1" b="SM1:T04:N2" distanceKm="498.430000"
+                    azimutDeg="323.473616">
+                    <Occurrences>
+                        <O element="SM1:T04" edge="SM1:T04:E1" from="SM1:T04:N1" to="SM1:T04:N2"
+                            t0="0.000000" t1="1.000000" />
+                    </Occurrences>
+                </ConceptEdge>
+            </ConceptEdges>
+            <Boundary orientation="cw">
+                <Cycle>
+                    <N id="SM1:T03:N2" />
+                    <N id="SM1:T04:N1" />
+                    <N id="SM1:T04:N2" />
+                    <N id="SM1:T04:N0" />
+                </Cycle>
+            </Boundary>
+        </ConceptModel>
+        <ConceptModel version="1.0" group="SM1:G006">
+            <ConceptNodes>
+                <ConceptNode id="SM1:T05:N1" type="M" x="58.295780" y="-488.047971">
+                    <Members>
+                        <M id="SM1:T05:N1" type="B" tri="T05" label="Le Goulet" />
+                        <M id="SM1:T06:N0" type="O" tri="T06" label="Bourges" />
+                    </Members>
+                </ConceptNode>
+                <ConceptNode id="SM1:T05:N2" type="L" x="-356.434627" y="71.888570">
+                    <Members>
+                        <M id="SM1:T05:N2" type="L" tri="T05" label="Pic du Midi" />
+                    </Members>
+                </ConceptNode>
+                <ConceptNode id="SM1:T06:N1" type="M" x="-156.381319" y="-379.233425">
+                    <Members>
+                        <M id="SM1:T05:N0" type="O" tri="T05" label="Bourges" />
+                        <M id="SM1:T06:N1" type="B" tri="T06" label="Le Goulet" />
+                    </Members>
+                </ConceptNode>
+                <ConceptNode id="SM1:T06:N2" type="L" x="-37.485782" y="-474.971995">
+                    <Members>
+                        <M id="SM1:T06:N2" type="L" tri="T06" label="Beaugency" />
+                    </Members>
+                </ConceptNode>
+            </ConceptNodes>
+            <ConceptEdges>
+                <ConceptEdge a="SM1:T05:N1" b="SM1:T05:N2" distanceKm="696.800000"
+                    azimutDeg="323.473616">
+                    <Occurrences>
+                        <O element="SM1:T05" edge="SM1:T05:E1" from="SM1:T05:N1" to="SM1:T05:N2"
+                            t0="0.000000" t1="1.000000" />
+                    </Occurrences>
+                </ConceptEdge>
+                <ConceptEdge a="SM1:T05:N1" b="SM1:T06:N1" distanceKm="240.680000"
+                    azimutDeg="296.879330">
+                    <Occurrences>
+                        <O element="SM1:T06" edge="SM1:T06:E0" from="SM1:T06:N0" to="SM1:T06:N1"
+                            t0="0.000000" t1="1.000000" />
+                        <O element="SM1:T05" edge="SM1:T05:E0" from="SM1:T05:N0" to="SM1:T05:N1"
+                            t0="0.000000" t1="1.000000" />
+                    </Occurrences>
+                </ConceptEdge>
+                <ConceptEdge a="SM1:T05:N1" b="SM1:T06:N2" distanceKm="96.670000"
+                    azimutDeg="277.773889">
+                    <Occurrences>
+                        <O element="SM1:T06" edge="SM1:T06:E2" from="SM1:T06:N2" to="SM1:T06:N0"
+                            t0="0.000000" t1="1.000000" />
+                    </Occurrences>
+                </ConceptEdge>
+                <ConceptEdge a="SM1:T05:N2" b="SM1:T06:N1" distanceKm="493.490000"
+                    azimutDeg="156.084762">
+                    <Occurrences>
+                        <O element="SM1:T05" edge="SM1:T05:E2" from="SM1:T05:N2" to="SM1:T05:N0"
+                            t0="0.000000" t1="1.000000" />
+                    </Occurrences>
+                </ConceptEdge>
+                <ConceptEdge a="SM1:T06:N1" b="SM1:T06:N2" distanceKm="152.650000"
+                    azimutDeg="128.842153">
+                    <Occurrences>
+                        <O element="SM1:T06" edge="SM1:T06:E1" from="SM1:T06:N1" to="SM1:T06:N2"
+                            t0="0.000000" t1="1.000000" />
+                    </Occurrences>
+                </ConceptEdge>
+            </ConceptEdges>
+            <Boundary orientation="cw">
+                <Cycle>
+                    <N id="SM1:T05:N2" />
+                    <N id="SM1:T05:N1" />
+                    <N id="SM1:T06:N2" />
+                    <N id="SM1:T06:N1" />
+                </Cycle>
+            </Boundary>
+        </ConceptModel>
+        <ConceptModel version="1.0" group="SM1:G008">
+            <ConceptNodes>
+                <ConceptNode id="SM1:T07:N1" type="M" x="-141.897805" y="-521.094970">
+                    <Members>
+                        <M id="SM1:T07:N1" type="B" tri="T07" label="Pont de Noirmoutier" />
+                        <M id="SM1:T08:N0" type="O" tri="T08" label="Bourges" />
+                    </Members>
+                </ConceptNode>
+                <ConceptNode id="SM1:T07:N2" type="L" x="-252.501879" y="-505.995445">
+                    <Members>
+                        <M id="SM1:T07:N2" type="L" tri="T07" label="Pertuis d'Antioche" />
+                    </Members>
+                </ConceptNode>
+                <ConceptNode id="SM1:T08:N1" type="M" x="-364.284223" y="-786.513873">
+                    <Members>
+                        <M id="SM1:T07:N0" type="O" tri="T07" label="Bourges" />
+                        <M id="SM1:T08:N1" type="B" tri="T08" label="Pont de Noirmoutier" />
+                    </Members>
+                </ConceptNode>
+                <ConceptNode id="SM1:T08:N2" type="L" x="-231.834918" y="-667.402671">
+                    <Members>
+                        <M id="SM1:T08:N2" type="L" tri="T08" label="Mirebeau" />
+                    </Members>
+                </ConceptNode>
+            </ConceptNodes>
+            <ConceptEdges>
+                <ConceptEdge a="SM1:T07:N1" b="SM1:T07:N2" distanceKm="111.630000"
+                    azimutDeg="277.773889">
+                    <Occurrences>
+                        <O element="SM1:T07" edge="SM1:T07:E1" from="SM1:T07:N1" to="SM1:T07:N2"
+                            t0="0.000000" t1="1.000000" />
+                    </Occurrences>
+                </ConceptEdge>
+                <ConceptEdge a="SM1:T07:N1" b="SM1:T08:N1" distanceKm="346.270000"
+                    azimutDeg="219.958617">
+                    <Occurrences>
+                        <O element="SM1:T08" edge="SM1:T08:E0" from="SM1:T08:N0" to="SM1:T08:N1"
+                            t0="0.000000" t1="1.000000" />
+                        <O element="SM1:T07" edge="SM1:T07:E0" from="SM1:T07:N0" to="SM1:T07:N1"
+                            t0="0.000000" t1="1.000000" />
+                    </Occurrences>
+                </ConceptEdge>
+                <ConceptEdge a="SM1:T07:N1" b="SM1:T08:N2" distanceKm="171.740000"
+                    azimutDeg="211.579545">
+                    <Occurrences>
+                        <O element="SM1:T08" edge="SM1:T08:E2" from="SM1:T08:N2" to="SM1:T08:N0"
+                            t0="0.000000" t1="1.000000" />
+                    </Occurrences>
+                </ConceptEdge>
+                <ConceptEdge a="SM1:T07:N2" b="SM1:T08:N1" distanceKm="301.970000"
+                    azimutDeg="201.726533">
+                    <Occurrences>
+                        <O element="SM1:T07" edge="SM1:T07:E2" from="SM1:T07:N2" to="SM1:T07:N0"
+                            t0="0.000000" t1="1.000000" />
+                    </Occurrences>
+                </ConceptEdge>
+                <ConceptEdge a="SM1:T08:N1" b="SM1:T08:N2" distanceKm="178.130000"
+                    azimutDeg="48.035064">
+                    <Occurrences>
+                        <O element="SM1:T08" edge="SM1:T08:E1" from="SM1:T08:N1" to="SM1:T08:N2"
+                            t0="0.000000" t1="1.000000" />
+                    </Occurrences>
+                </ConceptEdge>
+            </ConceptEdges>
+            <Boundary orientation="cw">
+                <Cycle>
+                    <N id="SM1:T08:N1" />
+                    <N id="SM1:T07:N2" />
+                    <N id="SM1:T07:N1" />
+                    <N id="SM1:T08:N2" />
+                </Cycle>
+            </Boundary>
+        </ConceptModel>
+    </ConceptModels>
+    <Elements>
+        <Element id="SM1:T01" name="Triangle 01" n="3" group="SM1:G002">
+            <ElementPose mirrored="0" tx="372.597602" ty="186.757745">
+                <R r00="-0.082458468" r01="0.996594502" r10="-0.996594502" r11="-0.082458468" />
+            </ElementPose>
+            <LocalCoords frameOrigin="O" xAxis="O-&gt;B" units="km" orient="CW">
+                <P idx="0" x="0.000000" y="0.000000" />
+                <P idx="1" x="260.400000" y="0.000000" />
+                <P idx="2" x="-155.598477" y="-34.419814" />
+            </LocalCoords>
+            <Vertices>
+                <V idx="0" label="Bourges" node="SM1:T02:N1" nodeOrigin="SM1:T01:N0" type="O" />
+                <V idx="1" label="Rocamadour" node="SM1:T01:N1" nodeOrigin="SM1:T01:N1" type="B" />
+                <V idx="2" label="La Ferté-Alais" node="SM1:T01:N2" nodeOrigin="SM1:T01:N2" type="L" />
+            </Vertices>
+            <Edges>
+                <Edge id="SM1:T01:E0" idx="0" from="0" to="1" labels="Bourges–Rocamadour"
+                    edgeLabelKey="Bourges|Rocamadour" lengthKm="260.400">
+                    <Points>
+                        <P t="0.000000" node="SM1:T02:N1" nodeOrigin="SM1:T01:N0" />
+                        <P t="1.000000" node="SM1:T01:N1" nodeOrigin="SM1:T01:N1" />
+                    </Points>
+                    <Coverages>
+                        <C t0="0.000000" t1="1.000000" />
+                    </Coverages>
+                </Edge>
+                <Edge id="SM1:T01:E1" idx="1" from="1" to="2" labels="Rocamadour–La Ferté-Alais"
+                    edgeLabelKey="La Ferté-Alais|Rocamadour" lengthKm="417.420">
+                    <Points>
+                        <P t="0.000000" node="SM1:T01:N1" nodeOrigin="SM1:T01:N1" />
+                        <P t="1.000000" node="SM1:T01:N2" nodeOrigin="SM1:T01:N2" />
+                    </Points>
+                    <Coverages />
+                </Edge>
+                <Edge id="SM1:T01:E2" idx="2" from="2" to="0" labels="La Ferté-Alais–Bourges"
+                    edgeLabelKey="Bourges|La Ferté-Alais" lengthKm="159.360">
+                    <Points>
+                        <P t="0.000000" node="SM1:T01:N2" nodeOrigin="SM1:T01:N2" />
+                        <P t="1.000000" node="SM1:T02:N1" nodeOrigin="SM1:T01:N0" />
+                    </Points>
+                    <Coverages />
+                </Edge>
+            </Edges>
+        </Element>
+        <Element id="SM1:T02" name="Triangle 02" n="3" group="SM1:G002">
+            <ElementPose mirrored="0" tx="351.125417" ty="-72.755463">
+                <R r00="0.082458468" r01="-0.996594502" r10="0.996594502" r11="0.082458468" />
+            </ElementPose>
+            <LocalCoords frameOrigin="O" xAxis="O-&gt;B" units="km" orient="CW">
+                <P idx="0" x="0.000000" y="0.000000" />
+                <P idx="1" x="260.400000" y="0.000000" />
+                <P idx="2" x="19.265548" y="-104.539603" />
+            </LocalCoords>
+            <Vertices>
+                <V idx="0" label="Bourges" node="SM1:T01:N1" nodeOrigin="SM1:T02:N0" type="O" />
+                <V idx="1" label="Rocamadour" node="SM1:T02:N1" nodeOrigin="SM1:T02:N1" type="B" />
+                <V idx="2" label="Loches" node="SM1:T02:N2" nodeOrigin="SM1:T02:N2" type="L" />
+            </Vertices>
+            <Edges>
+                <Edge id="SM1:T02:E0" idx="0" from="0" to="1" labels="Bourges–Rocamadour"
+                    edgeLabelKey="Bourges|Rocamadour" lengthKm="260.400">
+                    <Points>
+                        <P t="0.000000" node="SM1:T01:N1" nodeOrigin="SM1:T02:N0" />
+                        <P t="1.000000" node="SM1:T02:N1" nodeOrigin="SM1:T02:N1" />
+                    </Points>
+                    <Coverages>
+                        <C t0="0.000000" t1="1.000000" />
+                    </Coverages>
+                </Edge>
+                <Edge id="SM1:T02:E1" idx="1" from="1" to="2" labels="Rocamadour–Loches"
+                    edgeLabelKey="Loches|Rocamadour" lengthKm="262.820">
+                    <Points>
+                        <P t="0.000000" node="SM1:T02:N1" nodeOrigin="SM1:T02:N1" />
+                        <P t="1.000000" node="SM1:T02:N2" nodeOrigin="SM1:T02:N2" />
+                    </Points>
+                    <Coverages />
+                </Edge>
+                <Edge id="SM1:T02:E2" idx="2" from="2" to="0" labels="Loches–Bourges"
+                    edgeLabelKey="Bourges|Loches" lengthKm="106.300">
+                    <Points>
+                        <P t="0.000000" node="SM1:T02:N2" nodeOrigin="SM1:T02:N2" />
+                        <P t="1.000000" node="SM1:T01:N1" nodeOrigin="SM1:T02:N0" />
+                    </Points>
+                    <Coverages />
+                </Edge>
+            </Edges>
+        </Element>
+        <Element id="SM1:T03" name="Triangle 03" n="3" group="SM1:G004">
+            <ElementPose mirrored="0" tx="179.168769" ty="-108.458562">
+                <R r00="-0.566040307" r01="0.824377566" r10="-0.824377566" r11="-0.566040307" />
+            </ElementPose>
+            <LocalCoords frameOrigin="O" xAxis="O-&gt;B" units="km" orient="CCW">
+                <P idx="0" x="0.000000" y="0.000000" />
+                <P idx="1" x="235.930000" y="0.000000" />
+                <P idx="2" x="-184.781803" y="218.764108" />
+            </LocalCoords>
+            <Vertices>
+                <V idx="0" label="Bourges" node="SM1:T04:N0" nodeOrigin="SM1:T03:N0" type="O" />
+                <V idx="1" label="Saint-Amour" node="SM1:T04:N1" nodeOrigin="SM1:T03:N1" type="B" />
+                <V idx="2" label="Jumièges" node="SM1:T03:N2" nodeOrigin="SM1:T03:N2" type="L" />
+            </Vertices>
+            <Edges>
+                <Edge id="SM1:T03:E0" idx="0" from="0" to="1" labels="Bourges–Saint-Amour"
+                    edgeLabelKey="Bourges|Saint-Amour" lengthKm="235.930">
+                    <Points>
+                        <P t="0.000000" node="SM1:T04:N0" nodeOrigin="SM1:T03:N0" />
+                        <P t="1.000000" node="SM1:T04:N1" nodeOrigin="SM1:T03:N1" />
+                    </Points>
+                    <Coverages>
+                        <C t0="0.000000" t1="1.000000" />
+                    </Coverages>
+                </Edge>
+                <Edge id="SM1:T03:E1" idx="1" from="1" to="2" labels="Saint-Amour–Jumièges"
+                    edgeLabelKey="Jumièges|Saint-Amour" lengthKm="474.190">
+                    <Points>
+                        <P t="0.000000" node="SM1:T04:N1" nodeOrigin="SM1:T03:N1" />
+                        <P t="1.000000" node="SM1:T03:N2" nodeOrigin="SM1:T03:N2" />
+                    </Points>
+                    <Coverages />
+                </Edge>
+                <Edge id="SM1:T03:E2" idx="2" from="2" to="0" labels="Jumièges–Bourges"
+                    edgeLabelKey="Bourges|Jumièges" lengthKm="286.360">
+                    <Points>
+                        <P t="0.000000" node="SM1:T03:N2" nodeOrigin="SM1:T03:N2" />
+                        <P t="1.000000" node="SM1:T04:N0" nodeOrigin="SM1:T03:N0" />
+                    </Points>
+                    <Coverages />
+                </Edge>
+            </Edges>
+        </Element>
+        <Element id="SM1:T04" name="Triangle 04" n="3" group="SM1:G004">
+            <ElementPose mirrored="0" tx="179.168769" ty="-108.458562">
+                <R r00="-0.566040307" r01="0.824377566" r10="-0.824377566" r11="-0.566040307" />
+            </ElementPose>
+            <LocalCoords frameOrigin="O" xAxis="O-&gt;B" units="km" orient="CW">
+                <P idx="0" x="0.000000" y="0.000000" />
+                <P idx="1" x="235.930000" y="0.000000" />
+                <P idx="2" x="73.664858" y="-471.277507" />
+            </LocalCoords>
+            <Vertices>
+                <V idx="0" label="Bourges" node="SM1:T04:N0" nodeOrigin="SM1:T04:N0" type="O" />
+                <V idx="1" label="Saint-Amour" node="SM1:T04:N1" nodeOrigin="SM1:T04:N1" type="B" />
+                <V idx="2" label="Grotte de Lombrives" node="SM1:T04:N2" nodeOrigin="SM1:T04:N2"
+                    type="L" />
+            </Vertices>
+            <Edges>
+                <Edge id="SM1:T04:E0" idx="0" from="0" to="1" labels="Bourges–Saint-Amour"
+                    edgeLabelKey="Bourges|Saint-Amour" lengthKm="235.930">
+                    <Points>
+                        <P t="0.000000" node="SM1:T04:N0" nodeOrigin="SM1:T04:N0" />
+                        <P t="1.000000" node="SM1:T04:N1" nodeOrigin="SM1:T04:N1" />
+                    </Points>
+                    <Coverages>
+                        <C t0="0.000000" t1="1.000000" />
+                    </Coverages>
+                </Edge>
+                <Edge id="SM1:T04:E1" idx="1" from="1" to="2"
+                    labels="Saint-Amour–Grotte de Lombrives"
+                    edgeLabelKey="Grotte de Lombrives|Saint-Amour" lengthKm="498.430">
+                    <Points>
+                        <P t="0.000000" node="SM1:T04:N1" nodeOrigin="SM1:T04:N1" />
+                        <P t="1.000000" node="SM1:T04:N2" nodeOrigin="SM1:T04:N2" />
+                    </Points>
+                    <Coverages />
+                </Edge>
+                <Edge id="SM1:T04:E2" idx="2" from="2" to="0" labels="Grotte de Lombrives–Bourges"
+                    edgeLabelKey="Bourges|Grotte de Lombrives" lengthKm="477.000">
+                    <Points>
+                        <P t="0.000000" node="SM1:T04:N2" nodeOrigin="SM1:T04:N2" />
+                        <P t="1.000000" node="SM1:T04:N0" nodeOrigin="SM1:T04:N0" />
+                    </Points>
+                    <Coverages />
+                </Edge>
+            </Edges>
+        </Element>
+        <Element id="SM1:T05" name="Triangle 05" n="3" group="SM1:G006">
+            <ElementPose mirrored="0" tx="-156.381319" ty="-379.233425">
+                <R r00="0.891960693" r01="0.452112953" r10="-0.452112953" r11="0.891960693" />
+            </ElementPose>
+            <LocalCoords frameOrigin="O" xAxis="O-&gt;B" units="km" orient="CCW">
+                <P idx="0" x="0.000000" y="0.000000" />
+                <P idx="1" x="240.680000" y="0.000000" />
+                <P idx="2" x="-382.397784" y="311.936395" />
+            </LocalCoords>
+            <Vertices>
+                <V idx="0" label="Bourges" node="SM1:T06:N1" nodeOrigin="SM1:T05:N0" type="O" />
+                <V idx="1" label="Le Goulet" node="SM1:T05:N1" nodeOrigin="SM1:T05:N1" type="B" />
+                <V idx="2" label="Pic du Midi" node="SM1:T05:N2" nodeOrigin="SM1:T05:N2" type="L" />
+            </Vertices>
+            <Edges>
+                <Edge id="SM1:T05:E0" idx="0" from="0" to="1" labels="Bourges–Le Goulet"
+                    edgeLabelKey="Bourges|Le Goulet" lengthKm="240.680">
+                    <Points>
+                        <P t="0.000000" node="SM1:T06:N1" nodeOrigin="SM1:T05:N0" />
+                        <P t="1.000000" node="SM1:T05:N1" nodeOrigin="SM1:T05:N1" />
+                    </Points>
+                    <Coverages>
+                        <C t0="0.000000" t1="1.000000" />
+                    </Coverages>
+                </Edge>
+                <Edge id="SM1:T05:E1" idx="1" from="1" to="2" labels="Le Goulet–Pic du Midi"
+                    edgeLabelKey="Le Goulet|Pic du Midi" lengthKm="696.800">
+                    <Points>
+                        <P t="0.000000" node="SM1:T05:N1" nodeOrigin="SM1:T05:N1" />
+                        <P t="1.000000" node="SM1:T05:N2" nodeOrigin="SM1:T05:N2" />
+                    </Points>
+                    <Coverages />
+                </Edge>
+                <Edge id="SM1:T05:E2" idx="2" from="2" to="0" labels="Pic du Midi–Bourges"
+                    edgeLabelKey="Bourges|Pic du Midi" lengthKm="493.490">
+                    <Points>
+                        <P t="0.000000" node="SM1:T05:N2" nodeOrigin="SM1:T05:N2" />
+                        <P t="1.000000" node="SM1:T06:N1" nodeOrigin="SM1:T05:N0" />
+                    </Points>
+                    <Coverages />
+                </Edge>
+            </Edges>
+        </Element>
+        <Element id="SM1:T06" name="Triangle 06" n="3" group="SM1:G006">
+            <ElementPose mirrored="0" tx="58.295780" ty="-488.047971">
+                <R r00="-0.891960693" r01="-0.452112953" r10="0.452112953" r11="-0.891960693" />
+            </ElementPose>
+            <LocalCoords frameOrigin="O" xAxis="O-&gt;B" units="km" orient="CCW">
+                <P idx="0" x="0.000000" y="0.000000" />
+                <P idx="1" x="240.680000" y="0.000000" />
+                <P idx="2" x="91.345207" y="31.640829" />
+            </LocalCoords>
+            <Vertices>
+                <V idx="0" label="Bourges" node="SM1:T05:N1" nodeOrigin="SM1:T06:N0" type="O" />
+                <V idx="1" label="Le Goulet" node="SM1:T06:N1" nodeOrigin="SM1:T06:N1" type="B" />
+                <V idx="2" label="Beaugency" node="SM1:T06:N2" nodeOrigin="SM1:T06:N2" type="L" />
+            </Vertices>
+            <Edges>
+                <Edge id="SM1:T06:E0" idx="0" from="0" to="1" labels="Bourges–Le Goulet"
+                    edgeLabelKey="Bourges|Le Goulet" lengthKm="240.680">
+                    <Points>
+                        <P t="0.000000" node="SM1:T05:N1" nodeOrigin="SM1:T06:N0" />
+                        <P t="1.000000" node="SM1:T06:N1" nodeOrigin="SM1:T06:N1" />
+                    </Points>
+                    <Coverages>
+                        <C t0="0.000000" t1="1.000000" />
+                    </Coverages>
+                </Edge>
+                <Edge id="SM1:T06:E1" idx="1" from="1" to="2" labels="Le Goulet–Beaugency"
+                    edgeLabelKey="Beaugency|Le Goulet" lengthKm="152.650">
+                    <Points>
+                        <P t="0.000000" node="SM1:T06:N1" nodeOrigin="SM1:T06:N1" />
+                        <P t="1.000000" node="SM1:T06:N2" nodeOrigin="SM1:T06:N2" />
+                    </Points>
+                    <Coverages />
+                </Edge>
+                <Edge id="SM1:T06:E2" idx="2" from="2" to="0" labels="Beaugency–Bourges"
+                    edgeLabelKey="Beaugency|Bourges" lengthKm="96.670">
+                    <Points>
+                        <P t="0.000000" node="SM1:T06:N2" nodeOrigin="SM1:T06:N2" />
+                        <P t="1.000000" node="SM1:T05:N1" nodeOrigin="SM1:T06:N0" />
+                    </Points>
+                    <Coverages />
+                </Edge>
+            </Edges>
+        </Element>
+        <Element id="SM1:T07" name="Triangle 07" n="3" group="SM1:G008">
+            <ElementPose mirrored="0" tx="-364.284223" ty="-786.513873">
+                <R r00="0.642234148" r01="-0.766508512" r10="0.766508512" r11="0.642234148" />
+            </ElementPose>
+            <LocalCoords frameOrigin="O" xAxis="O-&gt;B" units="km" orient="CCW">
+                <P idx="0" x="0.000000" y="0.000000" />
+                <P idx="1" x="346.270000" y="0.000000" />
+                <P idx="2" x="286.810201" y="94.476395" />
+            </LocalCoords>
+            <Vertices>
+                <V idx="0" label="Bourges" node="SM1:T08:N1" nodeOrigin="SM1:T07:N0" type="O" />
+                <V idx="1" label="Pont de Noirmoutier" node="SM1:T07:N1" nodeOrigin="SM1:T07:N1"
+                    type="B" />
+                <V idx="2" label="Pertuis d'Antioche" node="SM1:T07:N2" nodeOrigin="SM1:T07:N2"
+                    type="L" />
+            </Vertices>
+            <Edges>
+                <Edge id="SM1:T07:E0" idx="0" from="0" to="1" labels="Bourges–Pont de Noirmoutier"
+                    edgeLabelKey="Bourges|Pont de Noirmoutier" lengthKm="346.270">
+                    <Points>
+                        <P t="0.000000" node="SM1:T08:N1" nodeOrigin="SM1:T07:N0" />
+                        <P t="1.000000" node="SM1:T07:N1" nodeOrigin="SM1:T07:N1" />
+                    </Points>
+                    <Coverages>
+                        <C t0="0.000000" t1="1.000000" />
+                    </Coverages>
+                </Edge>
+                <Edge id="SM1:T07:E1" idx="1" from="1" to="2"
+                    labels="Pont de Noirmoutier–Pertuis d'Antioche"
+                    edgeLabelKey="Pertuis d'Antioche|Pont de Noirmoutier" lengthKm="111.630">
+                    <Points>
+                        <P t="0.000000" node="SM1:T07:N1" nodeOrigin="SM1:T07:N1" />
+                        <P t="1.000000" node="SM1:T07:N2" nodeOrigin="SM1:T07:N2" />
+                    </Points>
+                    <Coverages />
+                </Edge>
+                <Edge id="SM1:T07:E2" idx="2" from="2" to="0" labels="Pertuis d'Antioche–Bourges"
+                    edgeLabelKey="Bourges|Pertuis d'Antioche" lengthKm="301.970">
+                    <Points>
+                        <P t="0.000000" node="SM1:T07:N2" nodeOrigin="SM1:T07:N2" />
+                        <P t="1.000000" node="SM1:T08:N1" nodeOrigin="SM1:T07:N0" />
+                    </Points>
+                    <Coverages />
+                </Edge>
+            </Edges>
+        </Element>
+        <Element id="SM1:T08" name="Triangle 08" n="3" group="SM1:G008">
+            <ElementPose mirrored="0" tx="-141.897805" ty="-521.094970">
+                <R r00="-0.642234148" r01="0.766508512" r10="-0.766508512" r11="-0.642234148" />
+            </ElementPose>
+            <LocalCoords frameOrigin="O" xAxis="O-&gt;B" units="km" orient="CCW">
+                <P idx="0" x="0.000000" y="0.000000" />
+                <P idx="1" x="346.270000" y="0.000000" />
+                <P idx="2" x="169.906783" y="25.026239" />
+            </LocalCoords>
+            <Vertices>
+                <V idx="0" label="Bourges" node="SM1:T07:N1" nodeOrigin="SM1:T08:N0" type="O" />
+                <V idx="1" label="Pont de Noirmoutier" node="SM1:T08:N1" nodeOrigin="SM1:T08:N1"
+                    type="B" />
+                <V idx="2" label="Mirebeau" node="SM1:T08:N2" nodeOrigin="SM1:T08:N2" type="L" />
+            </Vertices>
+            <Edges>
+                <Edge id="SM1:T08:E0" idx="0" from="0" to="1" labels="Bourges–Pont de Noirmoutier"
+                    edgeLabelKey="Bourges|Pont de Noirmoutier" lengthKm="346.270">
+                    <Points>
+                        <P t="0.000000" node="SM1:T07:N1" nodeOrigin="SM1:T08:N0" />
+                        <P t="1.000000" node="SM1:T08:N1" nodeOrigin="SM1:T08:N1" />
+                    </Points>
+                    <Coverages>
+                        <C t0="0.000000" t1="1.000000" />
+                    </Coverages>
+                </Edge>
+                <Edge id="SM1:T08:E1" idx="1" from="1" to="2" labels="Pont de Noirmoutier–Mirebeau"
+                    edgeLabelKey="Mirebeau|Pont de Noirmoutier" lengthKm="178.130">
+                    <Points>
+                        <P t="0.000000" node="SM1:T08:N1" nodeOrigin="SM1:T08:N1" />
+                        <P t="1.000000" node="SM1:T08:N2" nodeOrigin="SM1:T08:N2" />
+                    </Points>
+                    <Coverages />
+                </Edge>
+                <Edge id="SM1:T08:E2" idx="2" from="2" to="0" labels="Mirebeau–Bourges"
+                    edgeLabelKey="Bourges|Mirebeau" lengthKm="171.740">
+                    <Points>
+                        <P t="0.000000" node="SM1:T08:N2" nodeOrigin="SM1:T08:N2" />
+                        <P t="1.000000" node="SM1:T07:N1" nodeOrigin="SM1:T08:N0" />
+                    </Points>
+                    <Coverages />
+                </Edge>
+            </Edges>
+        </Element>
+    </Elements>
+    <Attachments>
+        <Attachment id="None" kind="edge-edge" source="manual" featureA="edge(SM1:T02,0)"
+            featureB="edge(SM1:T01,0)">
+            <Params>
+                <Param name="mapping" value="reverse" />
+            </Params>
+        </Attachment>
+        <Attachment id="SM1:A001" kind="edge-edge" source="manual" featureA="edge(SM1:T04,0)"
+            featureB="edge(SM1:T03,0)">
+            <Params>
+                <Param name="mapping" value="direct" />
+            </Params>
+        </Attachment>
+        <Attachment id="SM1:A002" kind="edge-edge" source="manual" featureA="edge(SM1:T06,0)"
+            featureB="edge(SM1:T05,0)">
+            <Params>
+                <Param name="mapping" value="reverse" />
+            </Params>
+        </Attachment>
+        <Attachment id="SM1:A003" kind="edge-edge" source="manual" featureA="edge(SM1:T08,0)"
+            featureB="edge(SM1:T07,0)">
+            <Params>
+                <Param name="mapping" value="reverse" />
+            </Params>
+        </Attachment>
+    </Attachments>
+</TopoDump>

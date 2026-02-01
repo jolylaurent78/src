@@ -411,6 +411,7 @@ class TriangleViewerManual(
         self.show_dico_panel = tk.BooleanVar(value=True)
         # État d'affichage du compas horaire (overlay horloge)
         self.show_clock_overlay = tk.BooleanVar(value=True)
+        self._clock_anchor_world = None
         # Mode "contours uniquement" : n'afficher que le contour de chaque groupe (pas les arêtes internes)
         self.show_only_group_contours = tk.BooleanVar(value=False)
 
