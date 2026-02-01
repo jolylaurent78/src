@@ -40,12 +40,8 @@ import xml.etree.ElementTree as ET
 
 # === Modules externalisés (découpage maintenable) ===
 from src.assembleur_core import (
-    _overlap_shrink,
-    _tri_shape,
     _group_shape_from_nodes,
     _build_local_triangle,
-    _pose_params,
-    _apply_R_T_on_P,
     ScenarioAssemblage,
     TopologyWorld, TopologyElement, TopologyNodeType,
     TopologyAttachment, TopologyFeatureRef, TopologyFeatureType,
@@ -4134,51 +4130,6 @@ class TriangleViewerManual(
             "mirrored": (ori == "CW"),   # reflet initial si orientation horaire
         }
 
-    def _layout_tris_horizontal(self, tris, gap=0.5, wrap_width=None):
-        """
-        Place les triangles les uns à côté des autres (dans le repère "monde"),
-        avec un espacement 'gap' (unités mêmes que les longueurs).
-        Si wrap_width est fourni (en unités monde), on passe à la ligne quand la largeur est dépassée.
-        Retour: liste de dict { 'labels', 'pts' (coordonnées MONDE après translation) }
-        """
-        placed = []
-        x_cursor = 0.0
-        y_cursor = 0.0
-        line_height = 0.0
-
-        if wrap_width is None:
-            # largeur de ligne par défaut : environ 20 unités de longueur
-            wrap_width = 20.0
-
-        for t in tris:
-            P = t["pts"]
-            xs = [float(P["O"][0]), float(P["B"][0]), float(P["L"][0])]
-            ys = [float(P["O"][1]), float(P["B"][1]), float(P["L"][1])]
-            mnx, mny, mxx, mxy = min(xs), min(ys), max(xs), max(ys)
-            w = (mxx - mnx)
-            h = (mxy - mny)
-
-            # saut de ligne si nécessaire
-            if x_cursor > 0.0 and (x_cursor + w) > wrap_width:
-                x_cursor = 0.0
-                y_cursor -= (line_height + gap)  # vers le bas (coord monde Y+ en haut -> inversé en écran)
-                line_height = 0.0
-
-            # translation pour placer ce triangle
-            dx = x_cursor - mnx
-            dy = y_cursor - mny
-            Pw = {
-                "O": np.array([P["O"][0] + dx, P["O"][1] + dy]),
-                "B": np.array([P["B"][0] + dx, P["B"][1] + dy]),
-                "L": np.array([P["L"][0] + dx, P["L"][1] + dy]),
-            }
-            placed.append({"labels": t["labels"], "pts": Pw, "id": t.get("id"), "mirrored": t.get("mirrored", False)})
-
-            x_cursor += w + gap
-            line_height = max(line_height, h)
-
-        return placed
-
     # ====== FRONTIER GRAPH HELPERS (factorisation) ===============================================
     def _ang_of_vec(self, vx, vy):
         import math
@@ -4436,22 +4387,6 @@ class TriangleViewerManual(
         y = self.offset[1] - float(p[1]) * self.zoom
         return x, y
 
-    def worldFromLambertKm(self, x_km: float, y_km: float):
-        """Convertit un point (Lambert93, en km) -> coordonnées monde (celles de la scène).
-
-        Nécessite que la calibration 3 points associée au fond soit chargée (data/<carte>.json).
-        """
-        data = self._bg_calib_data
-        if not data or not isinstance(data, dict) or "affineLambertKmToWorld" not in data:
-            raise RuntimeError("Calibration fond absente : lance d'abord la calibration (3 points) ou charge le fichier .json associé à la carte.")
-
-        aff = data.get("affineLambertKmToWorld", [])
-        if not (isinstance(aff, list) and len(aff) == 6):
-            raise RuntimeError("Calibration fond invalide : affineLambertKmToWorld manquant/incomplet (6 paramètres attendus).")
-        a, b, c, d, e, f = [float(v) for v in aff]
-        xw = a * float(x_km) + b * float(y_km) + c
-        yw = d * float(x_km) + e * float(y_km) + f
-        return (xw, yw)
 
     def _fit_to_view(self, placed):
         if not placed:
@@ -4683,34 +4618,6 @@ class TriangleViewerManual(
         if self._debug_snap_assist:
             print(msg)
 
-    def _dbgPoseCompare(self, label: str, R_tk, T_tk, R_core, T_core) -> None:
-        """Trace console (F10) pour comparer une pose Tk vs Core.
-
-        Affiche theta + translation + deltas. Aucun effet si F10 (snap assist) est OFF.
-        """
-        if not self._debug_snap_assist:
-            return
-        try:
-            import numpy as np
-            R_tk = np.array(R_tk, dtype=float)
-            T_tk = np.array(T_tk, dtype=float)
-            R_core = np.array(R_core, dtype=float)
-            T_core = np.array(T_core, dtype=float)
-
-            theta_tk = float(math.atan2(R_tk[1, 0], R_tk[0, 0]))
-            theta_core = float(math.atan2(R_core[1, 0], R_core[0, 0]))
-            dtheta = theta_core - theta_tk
-            dT = T_core - T_tk
-
-            self._dbgSnap(
-                f"[POSE-CHECK]{(' ' + str(label)) if label else ''}\n"
-                f"  Tk   : theta={theta_tk:+.6f}  T=({T_tk[0]:+.6f},{T_tk[1]:+.6f})\n"
-                f"  Core : theta={theta_core:+.6f}  T=({T_core[0]:+.6f},{T_core[1]:+.6f})\n"
-                f"  Δ    : dTheta={dtheta:+.6e}  dT=({dT[0]:+.6e},{dT[1]:+.6e})"
-            )
-        except Exception as e:
-            # Debug ne doit jamais casser le flow.
-            self._dbgSnap(f"[POSE-CHECK]{(' ' + str(label)) if label else ''}: erreur print: {e}")
 
     # --- helpers: mode déconnexion (CTRL) + curseur ---
     def _on_ctrl_down(self, event=None):
@@ -4945,94 +4852,6 @@ class TriangleViewerManual(
         s = str(raw or "").strip()
         return s
  
-    # --- Azimut Nord->horaire (repère monde: Y vers le haut).
-    #     Horloge : 360° = 12h et 360° = 60' (minutes d'horloge)
-    def _azimutDegEtMinute(self, pSrc, pDst):
-        """
-        Renvoie (degInt, minFloat, hourFloat) pour le vecteur pSrc->pDst :
-          - degInt    : angle depuis le Nord (sens horaire) en degrés entiers 0..359
-          - minFloat  : minutes d’horloge au dixième (0.0 .. ≤60.0)   [360° = 60' → 1' = 6°]
-          - hourFloat : heures d’horloge au dixième (0.0 .. ≤12.0)    [360° = 12h → 1h = 30°]
-        """
-        import math
-        x1, y1 = float(pSrc[0]), float(pSrc[1])
-        x2, y2 = float(pDst[0]), float(pDst[1])
-        dx, dy = (x2 - x1), (y2 - y1)
-        if abs(dx) < 1e-12 and abs(dy) < 1e-12:
-            return None
-        # Mesure depuis l'axe +Y (Nord) en tournant horaire
-        angRad = math.atan2(dx, dy)
-        angDeg = (math.degrees(angRad) + 360.0) % 360.0
-        degInt   = int(round(angDeg)) % 360
-        # Heures: 360° = 12h → 1h = 30° ; Minutes: 360° = 60' → 1' = 6°
-        hourFloat = round(angDeg / 30.0, 1)        # h = deg / 30
-        minFloat  = round(angDeg / 6.0, 1)         # ' = deg / 6  (0..60)
-        return (degInt, minFloat, hourFloat)
-
-    def _connected_vertices_from(self, v_world, gid, eps):
-        """
-        Depuis un sommet (ou un point tombant sur une arête), trouver toutes les
-        extrémités connectées à ce point dans le GROUPE `gid`.
-         Déduplique par direction et garde, sur une même direction, le point le plus éloigné.
-         Retourne une liste d'objets { "name": str, "pt": (x, y) }.
-        """
-        nodes = self._group_nodes(gid) if gid else []
-        out_candidates = []   # [(name, tid, dx, dy, dist, neigh_xy)]
-        for nd in nodes:
-            tid = nd.get("tid")
-            if tid is None or not (0 <= tid < len(self._last_drawn)):
-                continue
-            tri = self._last_drawn[tid]
-            Pt  = tri["pts"]
-            lab = tri.get("labels", ("Bourges","",""))
-            # 3 arêtes du triangle
-            edges = (("O","B"), ("B","L"), ("L","O"))
-            for a,b in edges:
-                A, B = Pt[a], Pt[b]
-                # 1) si v_world == A ➜ connecté à B ; si v_world == B ➜ connecté à A
-                if (abs(v_world[0]-A[0]) <= eps and abs(v_world[1]-A[1]) <= eps):
-                    name = self._display_name(b, lab)
-                    dx, dy = float(B[0]-v_world[0]), float(B[1]-v_world[1])
-                    dist = (dx*dx+dy*dy)**0.5
-                    if name:
-                        out_candidates.append((name, int(tid), dx, dy, dist, (float(B[0]), float(B[1]))))
-                    continue
-                if (abs(v_world[0]-B[0]) <= eps and abs(v_world[1]-B[1]) <= eps):
-                    name = self._display_name(a, lab)
-                    dx, dy = float(A[0]-v_world[0]), float(A[1]-v_world[1])
-                    dist = (dx*dx+dy*dy)**0.5
-                    if name:
-                        out_candidates.append((name, int(tid), dx, dy, dist, (float(A[0]), float(A[1]))))
-                    continue
-                # 2) sinon : le point est-il sur le SEGMENT [A,B] ? ➜ connecté aux deux extrémités
-                if self._point_on_segment(v_world, A, B, eps):
-                    name_a = self._display_name(a, lab)
-                    name_b = self._display_name(b, lab)
-                    dx, dy = float(A[0]-v_world[0]), float(A[1]-v_world[1])
-                    dist = (dx*dx+dy*dy)**0.5
-                    if name_a:
-                        out_candidates.append((name_a, int(tid), dx, dy, dist, (float(A[0]), float(A[1]))))
-                    dx, dy = float(B[0]-v_world[0]), float(B[1]-v_world[1])
-                    dist = (dx*dx+dy*dy)**0.5
-                    if name_b:
-                        out_candidates.append((name_b, int(tid), dx, dy, dist, (float(B[0]), float(B[1]))))
-        if not out_candidates:
-            return []
-        # Déduplication UNIQUE par (nom + tid + position voisine quantifiée)
-        by_key = {}  # key = (name, tid, qx, qy) -> (dist, pt)
-        def q(p):
-            return (round(p[0]/eps)*eps, round(p[1]/eps)*eps)
-        for (name, tid, dx, dy, dist, neigh_xy) in out_candidates:
-            qx, qy = q(neigh_xy)
-            key = (name, int(tid), qx, qy)
-            if (key not in by_key) or (dist > by_key[key][0]):
-                by_key[key] = (dist, neigh_xy)
-        # Restituer [{name, pt, tid}] triés par distance décroissante (optionnel)
-        out = []
-        for (name, tid, qx, qy), (dist, pt) in sorted(by_key.items(), key=lambda kv: -kv[1][0]):
-            out.append({"name": name, "pt": (float(pt[0]), float(pt[1])), "tid": int(tid)})
-
-        return out
 
     def _on_canvas_motion_update_drag(self, event):
         # Mode compas : mesure d'un azimut (relatif à la référence)
@@ -6247,92 +6066,6 @@ class TriangleViewerManual(
 
         return (left_gid, right_gid)
 
-    def _link_triangles_into_group(self, idx_mob: int, edge_mob: str, idx_tgt: int, edge_tgt: str) -> None:
-        """Crée un groupe (chaîne de 2 nodes) en stockant **explicitement** les arêtes partagées.
-
-        Contrat node:
-          - edge_in  : arête partagée avec le précédent (None si tête)
-          - edge_out : arête partagée avec le suivant   (None si queue)
-
-          (edge-only)
-        """
-        tri_m = self._last_drawn[idx_mob]
-        tri_t = self._last_drawn[idx_tgt]
-
-        self._ensure_group_fields(tri_m); self._ensure_group_fields(tri_t)
-        if tri_m["group_id"] is not None or tri_t["group_id"] is not None:
-            return
-
-        vkey_from_edge = {"OB": "L", "BL": "O", "LO": "B"}
-        if edge_mob not in ("OB","BL","LO") or edge_tgt not in ("OB","BL","LO"):
-            raise RuntimeError(f"Arête invalide pour chaînage: mob={edge_mob} tgt={edge_tgt}")
-        
-        gid = self._new_group_id()
-        nodes = [
-            {"tid": idx_mob, "edge_in": None, "edge_out": edge_mob},
-            {"tid": idx_tgt, "edge_in": edge_tgt, "edge_out": None},
-        ]
-        self.groups[gid] = {"id": gid, "nodes": nodes, "bbox": None}
-        tri_m["group_id"] = gid; tri_m["group_pos"] = 0
-        tri_t["group_id"] = gid; tri_t["group_pos"] = 1
-        self._recompute_group_bbox(gid)
-        self.status.config(text=f"Groupe #{gid} créé : tid{nodes[0]['tid']}({nodes[0]['edge_out']}) → tid{nodes[1]['tid']}({nodes[1]['edge_in']})")
-
-    # --- Ajout d'un triangle isolé sur une extrémité de groupe ---
-    def _append_triangle_to_group(self, gid: int, pos_tgt: int,
-                                  idx_new: int, edge_new: str, edge_tgt: str) -> None:
-        """
-        Ajoute le triangle 'idx_new' (isolé) au groupe 'gid'.
-        - Si pos_tgt == 0 -> PREPEND (le nouveau devient tête, relié à l'ancienne tête)
-        - Si pos_tgt == len(nodes)-1 -> APPEND (le nouveau devient queue, relié à l'ancienne queue)
-        edge_new : arête partagée côté 'nouveau' ("OB"/"BL"/"LO")
-        edge_tgt : arête partagée côté 'cible'  ("OB"/"BL"/"LO")
-        """
-        g = self.groups.get(gid)
-        if not g: return
-        nodes = g["nodes"]
-        n = len(nodes)
-        if n == 0: return
-
-        # sécurité : le mobile doit être isolé
-        self._ensure_group_fields(self._last_drawn[idx_new])
-        if self._last_drawn[idx_new]["group_id"] is not None:
-            return  # on ne gère pas l'insertion groupe↔groupe ici
-
-        if pos_tgt == 0:
-            # PREPEND : new -> head
-            if edge_new not in vkey_from_edge or edge_tgt not in vkey_from_edge:
-                raise RuntimeError(f"Arête invalide pour chaînage: new={edge_new} tgt={edge_tgt}")
-
-            head = nodes[0]
-            head["edge_in"] = edge_tgt
-
-            new_node = {"tid": idx_new, "edge_in": None, "edge_out": edge_new}
-            nodes.insert(0, new_node)
-        elif pos_tgt == n-1:
-            # APPEND : tail -> new
-            vkey_from_edge = {"OB": "L", "BL": "O", "LO": "B"}
-            if edge_new not in vkey_from_edge or edge_tgt not in vkey_from_edge:
-                raise RuntimeError(f"Arête invalide pour chaînage: new={edge_new} tgt={edge_tgt}")
-
-            tail = nodes[-1]
-            tail["edge_out"] = edge_tgt
-
-            new_node = {"tid": idx_new, "edge_in": edge_new, "edge_out": None}
-            nodes.append(new_node)
-        else:
-            # pas une extrémité -> on ne gère pas encore l'insertion au milieu
-            return
-
-        # MAJ meta group_id/group_pos et bbox
-        for i, nd in enumerate(nodes):
-            tid = nd["tid"]
-            if 0 <= tid < len(self._last_drawn):
-                self._ensure_group_fields(self._last_drawn[tid])
-                self._last_drawn[tid]["group_id"]  = gid
-                self._last_drawn[tid]["group_pos"] = i
-        self._recompute_group_bbox(gid)
-        self.status.config(text=f"Triangle ajouté au groupe #{gid}.")
 
     def _cancel_drag(self):
         # Mémoriser la source du drag avant de le remettre à zéro
@@ -6861,10 +6594,6 @@ class TriangleViewerManual(
         if (not arc_ok) and (bool(self._dico_filter_active) or (self._dico_filter_ref_angle_deg is not None)):
             if hasattr(self, "_simulation_cancel_dictionary_filter"):
                 self._simulation_cancel_dictionary_filter()
-
-    def _clock_update_compass_ctx_menu_states(self):
-        """Alias historique -> _update_compass_ctx_menu_and_dico_state."""
-        self._update_compass_ctx_menu_and_dico_state()
 
     def _azimuth_world_deg(self, a, b) -> float:
         """Azimut absolu en degrés (0°=Nord, 90°=Est) entre 2 points monde."""
@@ -8393,7 +8122,6 @@ class TriangleViewerManual(
         def tag_lower(self, *args, **kwargs): return
         def tag_raise(self, *args, **kwargs): return
         # alias Tk : Canvas.lift(...) fait la même chose que tag_raise(...)
-        def lift(self, *args, **kwargs): return
         def coords(self, *args, **kwargs): return
         def itemconfig(self, *args, **kwargs): return
 

@@ -2177,11 +2177,6 @@ class TopologyWorld:
         a = math.degrees(math.atan2(dx, dy_north))  # atan2(E, N)
         return float((a + 360.0) % 360.0)
 
-    def azimutDegFromPoints(self, p0_world: np.ndarray, p1_world: np.ndarray) -> float:
-        """Azimut standard de p0 vers p1 (0°=Nord, sens horaire)."""
-        dx = float(p1_world[0] - p0_world[0])
-        dy = float(p1_world[1] - p0_world[1])
-        return self.azimutDegFromDxDy(dx, dy)
 
     def format_node_id(self, element_id: str, vertex_index: int) -> str:
         tri = self.parse_tri_rank_from_element_id(element_id)
@@ -3053,32 +3048,6 @@ class TopologyWorld:
             return f"T{int(m.group(1)):02d}"
         return "T??"
 
-    def getNodeDisplayTriplet(self, node_id: str) -> tuple[str, str, str]:
-        """Triplet (type, triangleId, label) pour debug/tooltip.
-        - Pour un node canonique, triangleId peut être ambigu -> 'T*' si >1.
-        """
-        nid = str(node_id)
-        typ = str(self.node_type(nid))
-        if nid in self._node_parent:
-            c = self.find_node(nid)
-            tris = sorted({self._parseTriangleIdFromNodeId(m) for m in self.node_members(c)})
-            tri = tris[0] if len(tris) == 1 else "T*"
-            return (typ, tri, self.getNodeLabel(c))
-        return (typ, self._parseTriangleIdFromNodeId(nid), self.getAtomicNodeLabel(nid))
-
-    def getConnectedPointsTriplets(self, node_id: str) -> list[tuple[str, str, str]]:
-        """Liste (type, triangleId, nodeLabel) pour tous les points connectés via ATTACHMENTS.
-
-        IMPORTANT: nodeLabel = label métier (ville), pas 'N0/N1/N2'.
-        """
-        c = self.find_node(str(node_id))
-        out: list[tuple[str, str, str]] = []
-        for nid in sorted(self.node_members(c)):
-            typ = str(self.node_type(str(nid)))
-            tri_id = self._parseTriangleIdFromNodeId(str(nid))
-            lab = self.getAtomicNodeLabel(str(nid))
-            out.append((typ, tri_id, lab))
-        return out
 
     def _localPointOnEdge(self, el: "TopologyElement", edge: "TopologyEdge", t: float) -> np.ndarray:
         """Point local sur une arête (interpolation linéaire) via vertex_local_xy."""
@@ -3095,77 +3064,7 @@ class TopologyWorld:
         y = (1.0 - t) * float(p0[1]) + t * float(p1[1])
         return np.array([x, y], dtype=float)
 
-    def getNodeHalfRaysAzimuts(self, node_id: str) -> list[dict]:
-        """Demi-droites incidentes à un node topo + azimut.
-
-        Ajoute aussi: fromLabel/toLabel (labels métier) pour debug.
-        """
-        gid = self._infer_group_for_node(node_id)
-        if gid is not None:
-            self.ensureConceptGeom(gid)
-        c = self.find_node(str(node_id))
-        rays: list[dict] = []
-
-        for el in self.elements.values():
-            if not hasattr(el, "edges"):
-                continue
-            for edge in el.edges:
-                dp = self.buildDerivedSplitPointsForPhysEdge(el.element_id, edge.edge_index)
-                pts = [(float(sp["t"]), str(sp["nodeCanon"])) for sp in dp]
-
-                for (t0, n0), (t1, n1) in zip(pts[:-1], pts[1:]):
-                    if n0 == n1:
-                        continue
-                    p0_local = self._localPointOnEdge(el, edge, t0)
-                    p1_local = self._localPointOnEdge(el, edge, t1)
-                    p0_world = el.localToWorld(p0_local)
-                    p1_world = el.localToWorld(p1_local)
-
-                    if n0 == c:
-                        dx = float(p1_world[0] - p0_world[0])
-                        dy = float(p1_world[1] - p0_world[1])
-                        rays.append({
-                            "elementId": str(el.element_id),
-                            "edgeId": str(edge.edge_id()),
-                            "fromNode": str(n0),
-                            "toNode": str(n1),
-                            "fromLabel": self.getNodeLabel(n0),
-                            "toLabel": self.getNodeLabel(n1),
-                            "tFrom": float(t0),
-                            "tTo": float(t1),
-                            "dx": dx,
-                            "dy": dy,
-                            "azimutDeg": self.azimutDegFromDxDy(dx, dy),
-                        })
-                    if n1 == c:
-                        dx = float(p0_world[0] - p1_world[0])
-                        dy = float(p0_world[1] - p1_world[1])
-                        rays.append({
-                            "elementId": str(el.element_id),
-                            "edgeId": str(edge.edge_id()),
-                            "fromNode": str(n1),
-                            "toNode": str(n0),
-                            "fromLabel": self.getNodeLabel(n1),
-                            "toLabel": self.getNodeLabel(n0),
-                            "tFrom": float(t1),
-                            "tTo": float(t0),
-                            "dx": dx,
-                            "dy": dy,
-                            "azimutDeg": self.azimutDegFromDxDy(dx, dy),
-                        })
-
-        seen = set()
-        uniq: list[dict] = []
-        for r in rays:
-            key = (r["edgeId"], round(float(r["tFrom"]), 9), round(float(r["tTo"]), 9), r["toNode"])
-            if key in seen:
-                continue
-            seen.add(key)
-            uniq.append(r)
-        uniq.sort(key=lambda r: (float(r.get("azimutDeg", 0.0)), str(r.get("edgeId", ""))))
-        return uniq
-
-
+ 
     # --- export ---
     def validate_world(self) -> list[str]:
         errors: list[str] = []

@@ -521,23 +521,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
         - edge_in / edge_out : l'arête réellement partagée ("OB","BL","LO")
         # (legacy vkey_in/out supprimé : on ne stocke plus que edge_in/out)
         """
-        def edgeFromVkeys(a, b):
-            if not a or not b or a == b:
-                return None
-            s = {a, b}
-            if s == {"O", "B"}: return "OB"
-            if s == {"B", "L"}: return "BL"
-            if s == {"L", "O"}: return "LO"
-            return None
-
-        def oppVertex(a, b):
-            if not a or not b:
-                return None
-            for k in ("O", "B", "L"):
-                if k != a and k != b:
-                    return k
-            return None
-
         def qpt(p):
             return (round(float(p[0]) / Q) * Q, round(float(p[1]) / Q) * Q)
 
@@ -1506,20 +1489,3 @@ class MoteurSimulationAssemblage:
         R, T, pivot = _pose_params(Pm, am, bm, Vm, Pt, at, bt, Vt)
         return _apply_R_T_on_P(Pm, R, T, pivot)
 
-    def check_overlap(self, tri_or_group_nodes: List[Dict], occupied_nodes: List[Dict]) -> bool:
-        """Retourne True si chevauchement (overlap) après shrink, sinon False."""
-        v = self.viewer
-        if not occupied_nodes:
-            return False
-        last_drawn = getattr(v, "_last_drawn", []) or []
-        poly_new = _group_shape_from_nodes(tri_or_group_nodes, last_drawn)
-        poly_occ = _group_shape_from_nodes(occupied_nodes, last_drawn)
-        if (poly_new is None) or (poly_occ is None):
-            return False
-        # même règle que le mode manuel : shrink-only basé sur stroke_px et zoom
-        return _overlap_shrink(
-            poly_new,
-            poly_occ,
-            getattr(v, "stroke_px", 2),
-            max(self.getOverlapZoomRef(), 1e-9),
-        )
