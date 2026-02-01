@@ -250,7 +250,7 @@ class TopologyAttachment:
     - Supporte vertex↔vertex, vertex↔edge et edge↔edge (mapping direct|reverse).
     - La reconstruction (rebuild) depuis la liste d’attaches est la stratégie de référence.
     """
-    def __init__(self, attachment_id: str, kind: str,
+    def __init__(self, attachment_id: str | None, kind: str,
                  feature_a: TopologyFeatureRef, feature_b: TopologyFeatureRef,
                  params: dict | None = None, source: str = "manual"):
         self.attachment_id = str(attachment_id)
@@ -2535,6 +2535,9 @@ class TopologyWorld:
         """Applique une liste d'attachments (transaction simple V1) et retourne le gid canonique final."""
         gid_last: str | None = None
         for att in list(attachments or []):
+            # Si ID vide OU collision => on régénère ici.
+            if (att.attachment_id is None) or (str(att.attachment_id) in self.attachments):
+                att.attachment_id = self.new_attachment_id()
             gid_last = self.apply_attachment(att)
         return str(gid_last) if gid_last is not None else ""
 

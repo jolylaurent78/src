@@ -367,87 +367,89 @@ def createTopoQuadrilateral(
         )
         # IMPORTANT: crée un nouveau groupe topo pour cet élément
         world.add_element_as_new_group(el)
-
-    # --- 1) IDs éléments (déterministes) ---
-    elementIdOdd = TopologyWorld.format_element_id(topoScenarioId, int(triOddId))
-    elementIdEven = TopologyWorld.format_element_id(topoScenarioId, int(triEvenId))
-
-    # --- 2) Créer les 2 éléments (si absents) ---
-    _ensure_element_from_local(
-        elementId=elementIdOdd,
-        triId=int(triOddId),
-        pts_local={k: np.array(Podd_local[k], dtype=float) for k in ("O", "B", "L")},
-        labels=tOdd.get("labels"),
-        mirrored=bool(tOdd.get("mirrored", False)),
-    )
-    _ensure_element_from_local(
-        elementId=elementIdEven,
-        triId=int(triEvenId),
-        pts_local={k: np.array(Peven_local[k], dtype=float) for k in ("O", "B", "L")},
-        labels=tEven.get("labels"),
-        mirrored=bool(tEven.get("mirrored", False)),
-    )
-
-    # --- 3) Poser les 2 éléments (monde) ---
-    setElementPoseFromWorldPts(world, elementIdOdd, Podd_world, mirrored=False)
-    setElementPoseFromWorldPts(world, elementIdEven, Peven_world, mirrored=False)
-
-    # Injecter topoElementId dans les entrées graphiques si fournies
-    if entryOdd is not None:
-        entryOdd["topoElementId"] = elementIdOdd
-    if entryEven is not None:
-        entryEven["topoElementId"] = elementIdEven
-
-    # --- 4) Détecter l’arête commune (en local) ---
-    edges = [("O", "B"), ("O", "L"), ("B", "L")]
-    best = None  # (rel, (aO,bO), (aE,bE))
-    for aO, bO in edges:
-        lO = _edge_len(Podd_local, aO, bO)
-        for aE, bE in edges:
-            lE = _edge_len(Peven_local, aE, bE)
-            rel = abs(lO - lE) / max(lO, lE, 1e-9)
-            if rel <= float(tol_rel) and (best is None or rel < best[0]):
-                best = (rel, (aO, bO), (aE, bE))
-
-    if best is None:
-        raise ValueError("createTopoQuadrilateral: aucune arête commune détectée (tol_rel)")
-
-    _, (aO, bO), (aE, bE) = best
-    src_edge = _edge_code(aO, bO)
-    dst_edge = _edge_code(aE, bE)
-    if not src_edge or not dst_edge:
-        raise ValueError("createTopoQuadrilateral: edge code invalide")
-
-    # --- 5) Déterminer l’ordre des endpoints côté EVEN via les positions monde ---
-    # Objectif: que Peven_world[dst_a] corresponde à Podd_world[aO] (à eps_world près)
-    dst_a = aE
-    dst_b = bE
-    if np.linalg.norm(np.array(Peven_world[dst_a], float) - np.array(Podd_world[aO], float)) <= float(eps_world):
-        pass
-    elif np.linalg.norm(np.array(Peven_world[dst_b], float) - np.array(Podd_world[aO], float)) <= float(eps_world):
-        dst_a, dst_b = dst_b, dst_a
-    # sinon: on garde l'ordre, mais l'attachment edge-edge décidera mapping via vkeys (direct/reverse)
-
-    # --- 6) Créer + commit l’attachement interne edge-edge ---
-    epts = EdgeChoiceEpts(
-        Podd_world[aO], Podd_world[bO],
-        Peven_world[dst_a], Peven_world[dst_b],
-        src_owner_tid=int(triOddId), src_edge=src_edge,
-        dst_owner_tid=int(triEvenId), dst_edge=dst_edge,
-        src_vkey_at_mA=aO, src_vkey_at_mB=bO,
-        dst_vkey_at_tA=dst_a, dst_vkey_at_tB=dst_b,
-        kind="edge-edge",
-        elementIdSrc=elementIdOdd,
-        elementIdDst=elementIdEven,
-    )
-
-    atts = epts.createTopologyAttachments(world=world)
-    if not atts:
-        raise ValueError("createTopoQuadrilateral: attachments edge-edge introuvables")
-
+    
     world.beginTopoTransaction()
-    world.apply_attachments(atts)
-    world.commitTopoTransaction()
+    try:
+        # --- 1) IDs éléments (déterministes) ---
+        elementIdOdd = TopologyWorld.format_element_id(topoScenarioId, int(triOddId))
+        elementIdEven = TopologyWorld.format_element_id(topoScenarioId, int(triEvenId))
+
+        # --- 2) Créer les 2 éléments (si absents) ---
+        _ensure_element_from_local(
+            elementId=elementIdOdd,
+            triId=int(triOddId),
+            pts_local={k: np.array(Podd_local[k], dtype=float) for k in ("O", "B", "L")},
+            labels=tOdd.get("labels"),
+            mirrored=bool(tOdd.get("mirrored", False)),
+        )
+        _ensure_element_from_local(
+            elementId=elementIdEven,
+            triId=int(triEvenId),
+            pts_local={k: np.array(Peven_local[k], dtype=float) for k in ("O", "B", "L")},
+            labels=tEven.get("labels"),
+            mirrored=bool(tEven.get("mirrored", False)),
+        )
+
+        # --- 3) Poser les 2 éléments (monde) ---
+        setElementPoseFromWorldPts(world, elementIdOdd, Podd_world, mirrored=False)
+        setElementPoseFromWorldPts(world, elementIdEven, Peven_world, mirrored=False)
+
+        # Injecter topoElementId dans les entrées graphiques si fournies
+        if entryOdd is not None:
+            entryOdd["topoElementId"] = elementIdOdd
+        if entryEven is not None:
+            entryEven["topoElementId"] = elementIdEven
+
+        # --- 4) Détecter l’arête commune (en local) ---
+        edges = [("O", "B"), ("O", "L"), ("B", "L")]
+        best = None  # (rel, (aO,bO), (aE,bE))
+        for aO, bO in edges:
+            lO = _edge_len(Podd_local, aO, bO)
+            for aE, bE in edges:
+                lE = _edge_len(Peven_local, aE, bE)
+                rel = abs(lO - lE) / max(lO, lE, 1e-9)
+                if rel <= float(tol_rel) and (best is None or rel < best[0]):
+                    best = (rel, (aO, bO), (aE, bE))
+
+        if best is None:
+            raise ValueError("createTopoQuadrilateral: aucune arête commune détectée (tol_rel)")
+
+        _, (aO, bO), (aE, bE) = best
+        src_edge = _edge_code(aO, bO)
+        dst_edge = _edge_code(aE, bE)
+        if not src_edge or not dst_edge:
+            raise ValueError("createTopoQuadrilateral: edge code invalide")
+
+        # --- 5) Déterminer l’ordre des endpoints côté EVEN via les positions monde ---
+        # Objectif: que Peven_world[dst_a] corresponde à Podd_world[aO] (à eps_world près)
+        dst_a = aE
+        dst_b = bE
+        if np.linalg.norm(np.array(Peven_world[dst_a], float) - np.array(Podd_world[aO], float)) <= float(eps_world):
+            pass
+        elif np.linalg.norm(np.array(Peven_world[dst_b], float) - np.array(Podd_world[aO], float)) <= float(eps_world):
+            dst_a, dst_b = dst_b, dst_a
+        # sinon: on garde l'ordre, mais l'attachment edge-edge décidera mapping via vkeys (direct/reverse)
+
+        # --- 6) Créer + commit l’attachement interne edge-edge ---
+        epts = EdgeChoiceEpts(
+            Podd_world[aO], Podd_world[bO],
+            Peven_world[dst_a], Peven_world[dst_b],
+            src_owner_tid=int(triOddId), src_edge=src_edge,
+            dst_owner_tid=int(triEvenId), dst_edge=dst_edge,
+            src_vkey_at_mA=aO, src_vkey_at_mB=bO,
+            dst_vkey_at_tA=dst_a, dst_vkey_at_tB=dst_b,
+            kind="edge-edge",
+            elementIdSrc=elementIdOdd,
+            elementIdDst=elementIdEven,
+        )
+
+        atts = epts.createTopologyAttachments(world=world)
+        if not atts:
+            raise ValueError("createTopoQuadrilateral: attachments edge-edge introuvables")
+
+        world.apply_attachments(atts)
+    finally:
+        world.commitTopoTransaction()
 
     # --- 7) Groupe topo résultant (odd/even doivent maintenant être dans le même groupe) ---
     topoGroupId = world.get_group_of_element(elementIdOdd)
@@ -1024,7 +1026,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             # On construit le quad local dans l'ordre courant (odd->even)
             tOdd, tEven, Podd, Peven = _build_quad_local(tri_odd_id, tri_even_id)
 
-            def tryChainConnect(tOdd, tEven, Podd, Peven, triOddId, triEvenId):
+            def tryAttachMobQuadToDestChain(triangleMobFrom, triangleMobTo, triangleMobFromPts, triangleMobToPts, triangleMobFromId, triangleMobToId):
                 new_states = []
                 dbg_try = 0
                 dbg_overlap = 0
@@ -1039,25 +1041,27 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                     createTopoQuadrilateral(
                         world=topoWorld_prev,
                         topoScenarioId=topoScenarioId,
-                        triOddId=tri_odd_id,
-                        triEvenId=tri_even_id,
-                        tOdd=tOdd,
-                        tEven=tEven,
-                        Podd_local={k: np.array(tOdd["pts"][k], float) for k in ("O","B","L")},
-                        Peven_local={k: np.array(tEven["pts"][k], float) for k in ("O","B","L")},
-                        Podd_world=Podd,
-                        Peven_world=Peven,
+                        triOddId=triangleMobFromId,
+                        triEvenId=triangleMobToId,
+                        tOdd=triangleMobFrom,
+                        tEven=triangleMobTo,
+                        Podd_local={k: np.array(triangleMobFrom["pts"][k], float) for k in ("O","B","L")},
+                        Peven_local={k: np.array(triangleMobTo["pts"][k], float) for k in ("O","B","L")},
+                        Podd_world=triangleMobFromPts,
+                        Peven_world=triangleMobToPts,
                     )
 
                     # clone du last_drawn de la branche pour référencer les triangles temporaires
                     last_drawn_base = copy.deepcopy(last_drawn_prev)
 
+                    # On rajoute le quadrilatère mobile dans last_drawn_base
+                    # ET on la synchonise avec la topo pour avoir les coordonnées réels
                     pos0 = len(last_drawn_base)
                     last_drawn_base.append({
-                        "labels": tOdd.get("labels"),
-                        "pts": Podd,          # pose INITIALE (pas Podd_w)
-                        "id": triOddId,
-                        "mirrored": bool(tOdd.get("mirrored", False)),
+                        "labels": triangleMobFrom.get("labels"),
+                        "pts": triangleMobFromPts,          # pose INITIALE (pas Podd_w)
+                        "id": triangleMobFromId,
+                        "mirrored": bool(triangleMobFrom.get("mirrored", False)),
                         "group_id": 1,
                         "group_pos": pos0,
                     })
@@ -1068,10 +1072,10 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
 
                     pos1 = len(last_drawn_base)
                     last_drawn_base.append({
-                        "labels": tEven.get("labels"),
-                        "pts": Peven,         # pose INITIALE
-                        "id": triEvenId,
-                        "mirrored": bool(tEven.get("mirrored", False)),
+                        "labels": triangleMobTo.get("labels"),
+                        "pts": triangleMobToPts,         # pose INITIALE
+                        "id": triangleMobToId,
+                        "mirrored": bool(triangleMobTo.get("mirrored", False)),
                         "group_id": 1,
                         "group_pos": pos1,
                     })
@@ -1080,6 +1084,13 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                         entry=last_drawn_base[pos1],
                     )
 
+                    # On rebuild cache et contours pour éviter les surprises 
+                    topoWorld_prev.rebuildGroupElementLists()
+                    for gid in list(topoWorld_prev.groups.keys()):
+                        c = topoWorld_prev.ensureConceptGraph(gid)  
+
+                    pass  # Point de debug
+                                
                     # On teste sur les 4 cas LB-LB, LB-LO, LO-LB, LO - Lo
                     for mob_key in mob_keys:
                         for bt_key in ("O", "B"):
@@ -1088,8 +1099,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                             # --- Phase 3.1 : construire EdgeChoiceEpts (sans décision topo, juste préparation)
                             # Convention auto actuelle : raccord via L, arêtes LO/BL.
                             # Détermination explicite des arêtes testées
-                            anchor_edge = "LO" if bt_key == "O" else "BL"
-                            odd_edge    = "LO" if mob_key == "O" else "BL"
+                            destEdgeAtL = "LO" if bt_key == "O" else "BL"
+                            mobEdgeAtL    = "LO" if mob_key == "O" else "BL"
 
 
                             edgeChoiceEpts, edgeChoiceMeta = buildEdgeChoiceEptsForAutoChain(
@@ -1097,8 +1108,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                 last_drawn_base=last_drawn_base,
                                 pos_mobile=pos0,                        # mobile = triangle odd
                                 pos_dest=len(last_drawn_prev) - 1,      # destination = dernier triangle du groupe existant
-                                src_edge=odd_edge,                      # arêtes explicites
-                                dst_edge=anchor_edge,
+                                src_edge=mobEdgeAtL,                    # arêtes explicites
+                                dst_edge=destEdgeAtL,
                                 src_vkey="L",                           # sommet d’ancrage (toujours L en phase 3)
                                 dst_vkey="L",
                                 kind="vertex-edge",
@@ -1126,8 +1137,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                 return {k: (R @ np.array(P[k], float) + T) for k in ("O","B","L")}
   
                             R, T = edgeChoiceEpts.computeRigidTransform()
-                            Podd_w  = applyRT(Podd,  R, T)
-                            Peven_w = applyRT(Peven, R, T)
+                            Podd_w  = applyRT(triangleMobFromPts,  R, T)
+                            Peven_w = applyRT(triangleMobToPts, R, T)
 
                             poly_new = _group_shape_from_nodes(
                                 [{"tid": 0}, {"tid": 1}],
@@ -1140,16 +1151,16 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                             # bt_key = côté choisi sur l'ancre (L->O ou L->B)
                             # mob_key = côté choisi sur le triangle odd (L->O ou L->B)
                             # On encode l'arête incidente à L : "LO" ou "BL"
-                            anchor_edge = "LO" if bt_key == "O" else "BL"
-                            odd_edge = "LO" if mob_key == "O" else "BL"
-                            last_drawn_new[-1]["_chain_edge_out"] = anchor_edge
+                            destEdgeAtL = "LO" if bt_key == "O" else "BL"
+                            mobEdgeAtL = "LO" if mob_key == "O" else "BL"
+                            last_drawn_new[-1]["_chain_edge_out"] = destEdgeAtL
 
                             pos0 = len(last_drawn_new)
                             last_drawn_new.append({
-                                "labels": tOdd.get("labels"),
+                                "labels": triangleMobFrom.get("labels"),
                                 "pts": Podd_w,
-                                "id": triOddId,
-                                "mirrored": bool(tOdd.get("mirrored", False)),
+                                "id": triangleMobFromId,
+                                "mirrored": bool(triangleMobFrom.get("mirrored", False)),
                                 "group_id": 1,
                                 "group_pos": pos0,
                             })
@@ -1157,13 +1168,13 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                 topo_scenario_id=topoScenarioId,
                                 entry=last_drawn_new[pos0],
                             )
-                            last_drawn_new[pos0]["_chain_edge_in"] = odd_edge
+                            last_drawn_new[pos0]["_chain_edge_in"] = mobEdgeAtL
                             pos1 = len(last_drawn_new)
                             last_drawn_new.append({
-                                "labels": tEven.get("labels"),
+                                "labels": triangleMobTo.get("labels"),
                                 "pts": Peven_w,
-                                "id": triEvenId,
-                                "mirrored": bool(tEven.get("mirrored", False)),
+                                "id": triangleMobToId,
+                                "mirrored": bool(triangleMobTo.get("mirrored", False)),
                                 "group_id": 1,
                                 "group_pos": pos1,
                             })
@@ -1171,8 +1182,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                 topo_scenario_id=topoScenarioId,
                                 entry=last_drawn_new[pos1],
                             )
-                            # décision de raccord: anchor_edge (côté ancre), odd_edge (côté mobile odd)
-                            candKey = f"{baseKey}|{int(triOddId)}:{odd_edge}->{anchor_edge}"
+                            # décision de raccord: destEdgeAtL (côté ancre), mobEdgeAtL (côté mobile odd)
+                            candKey = f"{baseKey}|{int(triangleMobFromId)}:{mobEdgeAtL}->{destEdgeAtL}"
 
                             candidates.append((
                                 last_drawn_new,
@@ -1180,19 +1191,19 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                 {
                                     "odd": {
                                         "element_id": elem_id_odd,
-                                        "tri_id": int(triOddId),
+                                        "tri_id": int(triangleMobFromId),
                                         "pts_world": Podd_w,
-                                        "labels": tOdd.get("labels"),
-                                        "mirrored": bool(tOdd.get("mirrored", False)),
-                                        "pts_local": Podd,
+                                        "labels": triangleMobFrom.get("labels"),
+                                        "mirrored": bool(triangleMobFrom.get("mirrored", False)),
+                                        "pts_local": triangleMobFromPts,
                                     },
                                     "even": {
                                         "element_id": elem_id_even,
-                                        "tri_id": int(triEvenId),
+                                        "tri_id": int(triangleMobToId),
                                         "pts_world": Peven_w,
-                                        "labels": tEven.get("labels"),
-                                        "mirrored": bool(tEven.get("mirrored", False)),
-                                        "pts_local": Peven,
+                                        "labels": triangleMobTo.get("labels"),
+                                        "mirrored": bool(triangleMobTo.get("mirrored", False)),
+                                        "pts_local": triangleMobToPts,
                                     },
                                     "edgeChoice": {
                                         "ok": bool(edgeChoiceEpts),
@@ -1216,7 +1227,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                             # IMPORTANT (naming): la bifurcation correspond au triangle
                             # connecté au bloc précédent via le point de Lumière,
                             # c'est triOddId (triEvenId est "collé" au triOddId via BO).
-                            node_prev.branchTriId = int(triOddId)
+                            node_prev.branchTriId = int(triangleMobFromId)
                         else:
                             node_prev.branchTriId = None
 
@@ -1226,34 +1237,35 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                             topo_candidates = [topoWorld_prev for _ in candidates]
 
                         for (ld_new, poly_u, topo_meta), topo_new in zip(candidates, topo_candidates):
-                            for _key in ("odd", "even"):
-                                _info = topo_meta.get(_key, {})
-                                _elem_id = _info.get("element_id")
-                                _tri_id = _info.get("tri_id")
-                                _pts_local = _info.get("pts_local")
-                                if _elem_id and _tri_id and _pts_local is not None:
-                                    _ensure_element_from_local(
-                                        world=topo_new,
-                                        element_id=str(_elem_id),
-                                        tri_id=int(_tri_id),
-                                        pts_local={k: np.array(_pts_local[k], dtype=float) for k in ("O", "B", "L")},
-                                        labels=_info.get("labels"),
-                                        mirrored=bool(_info.get("mirrored", False)),
-                                    )
-                                if _elem_id and _info.get("pts_world") is not None:
-                                    # Pose from world points in simulation uses non-mirrored fit.
-                                    setElementPoseFromWorldPts(
-                                        topo_new,
-                                        str(_elem_id),
-                                        _info.get("pts_world"),
-                                        mirrored=False,
-                                    )
+                            topo_new.beginTopoTransaction()                            
+                            try:
+                                for _key in ("odd", "even"):
+                                    _info = topo_meta.get(_key, {})
+                                    _elem_id = _info.get("element_id")
+                                    _tri_id = _info.get("tri_id")
+                                    _pts_local = _info.get("pts_local")
+                                    if _elem_id and _tri_id and _pts_local is not None:
+                                        _ensure_element_from_local(
+                                            world=topo_new,
+                                            element_id=str(_elem_id),
+                                            tri_id=int(_tri_id),
+                                            pts_local={k: np.array(_pts_local[k], dtype=float) for k in ("O", "B", "L")},
+                                            labels=_info.get("labels"),
+                                            mirrored=bool(_info.get("mirrored", False)),
+                                        )
+                                    if _elem_id and _info.get("pts_world") is not None:
+                                        # Pose from world points in simulation uses non-mirrored fit.
+                                        setElementPoseFromWorldPts(
+                                            topo_new,
+                                            str(_elem_id),
+                                            _info.get("pts_world"),
+                                            mirrored=False,
+                                        )
 
-                            # On raccroche les 2 groupes via l'attachement
-                            atts = topo_meta.get("topoAttachments")
-                            if atts:
-                                topo_new.beginTopoTransaction()
+                                # On raccroche les 2 groupes via l'attachement
+                                atts = topo_meta.get("topoAttachments")
                                 topo_new.apply_attachments(atts)
+                            finally:
                                 topo_new.commitTopoTransaction()                            
 
                             child = _BranchNode(parent=node_prev, children=[], branchTriId=None)
@@ -1264,7 +1276,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 return new_states, dbg_try, dbg_overlap, dbg_added
 
             # 1) Tentative standard : mobile = odd (tri_odd_id)
-            new_states, dbg_try, dbg_overlap, dbg_added = tryChainConnect(
+            new_states, dbg_try, dbg_overlap, dbg_added = tryAttachMobQuadToDestChain(
                 tOdd, tEven, Podd, Peven, tri_odd_id, tri_even_id
             )
 
@@ -1272,7 +1284,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             #    (mobile = tri_even_id). Ça corrige la dépendance implicite à l'ordre.
             if not new_states:
                 tOdd2, tEven2, Podd2, Peven2 = _build_quad_local(tri_even_id, tri_odd_id)
-                new_states2, dbg_try2, dbg_overlap2, dbg_added2 = tryChainConnect(
+                new_states2, dbg_try2, dbg_overlap2, dbg_added2 = tryAttachMobQuadToDestChain(
                     tOdd2, tEven2, Podd2, Peven2, tri_even_id, tri_odd_id
                 )
                 if new_states2:

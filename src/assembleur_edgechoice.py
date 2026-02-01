@@ -123,7 +123,7 @@ class EdgeChoiceEpts:
                 return []
             atts.append(
                 TopologyAttachment(
-                    attachment_id=world.new_attachment_id(),
+                    attachment_id=None,
                     kind="edge-edge",
                     feature_a=TopologyFeatureRef(TopologyFeatureType.EDGE, elementIdSrc, int(em)),
                     feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE, elementIdDst, int(et)),
@@ -153,7 +153,7 @@ class EdgeChoiceEpts:
             edge_from = world.format_node_id(elementIdDst, int(vtA))
             atts.append(
                 TopologyAttachment(
-                    attachment_id=world.new_attachment_id(),
+                    attachment_id=None,
                     kind="vertex-edge",
                     feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdSrc, int(vmB)),
                     feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE,   elementIdDst, int(et_dst)),
@@ -163,7 +163,7 @@ class EdgeChoiceEpts:
             )
             atts.append(
                 TopologyAttachment(
-                    attachment_id=world.new_attachment_id(),
+                    attachment_id=None,
                     kind="vertex-vertex",
                     feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdSrc, int(vmA)),
                     feature_b=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdDst, int(vtA)),
@@ -176,7 +176,7 @@ class EdgeChoiceEpts:
             edge_from = world.format_node_id(elementIdSrc, int(vmA))
             atts.append(
                 TopologyAttachment(
-                    attachment_id=world.new_attachment_id(),
+                    attachment_id=None,
                     kind="vertex-edge",
                     feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdDst, int(vtB)),
                     feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE,   elementIdSrc, int(et_src)),
@@ -186,7 +186,7 @@ class EdgeChoiceEpts:
             )
             atts.append(
                 TopologyAttachment(
-                    attachment_id=world.new_attachment_id(),
+                    attachment_id=None,
                     kind="vertex-vertex",
                     feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdDst, int(vtA)),
                     feature_b=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdSrc, int(vmA)),
