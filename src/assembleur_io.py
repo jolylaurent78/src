@@ -80,18 +80,42 @@ def setAppConfigValue(viewer, key: str, value):
 
 def saveScenarioXml(viewer, path: str):
     """
-    Sauvegarde 'robuste' (v3) :
+    Sauvegarde 'robuste' (v4) :
       - source excel, view (zoom/offset), clock (pos + hm),
       - ids restants (listbox),
       - triangles affichés (id, mirrored, points monde O/B/L, group),
       - groupes (nodes complets : tid + edge_in/out),
       - associations triangle→mot (word,row,col).
     """
+    scen = viewer._get_active_scenario()
+    if scen is None:
+        raise ValueError("saveScenarioXml: aucun scenario actif, sauvegarde v4 impossible.")
+
+    viewer._ensureScenarioTopo(scen)
+    world = getattr(scen, "topoWorld", None)
+    if world is None:
+        raise ValueError("saveScenarioXml: topoWorld absent apres _ensureScenarioTopo.")
+
+    topo_tx_orientation = str(getattr(world, "_topoTxOrientation", "") or "").strip().lower()
+    if topo_tx_orientation not in {"cw", "ccw"}:
+        raise ValueError(
+            f"saveScenarioXml: _topoTxOrientation invalide ({topo_tx_orientation!r}), attendu 'cw' ou 'ccw'."
+        )
+
+    snapshot = world._exportPhysicalSnapshot()
+    if not isinstance(snapshot, dict):
+        raise ValueError(
+            f"saveScenarioXml: snapshot topo invalide ({type(snapshot).__name__}), dict attendu."
+        )
+
     root = ET.Element("scenario", {
         # v2 : contrat canonique groups/nodes = edge_in/edge_out
-        "version": "3",
-        "saved_at": _dt.datetime.now().isoformat(timespec="seconds")
+        "version": "4",
+        "saved_at": _dt.datetime.now().isoformat(timespec="seconds"),
+        "topo_tx_orientation": topo_tx_orientation,
     })
+    topo_snapshot_el = ET.SubElement(root, "topoSnapshot", {"encoding": "json"})
+    topo_snapshot_el.text = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
     # source
     ET.SubElement(root, "source", {
         "excel": os.path.abspath(viewer.excel_path) if getattr(viewer, "excel_path", None) else ""
@@ -191,40 +215,71 @@ def saveScenarioXml(viewer, path: str):
 
 def loadScenarioXml(viewer, path: str):
     """
-    Recharge un scénario v3 :
-      - tente de recharger le fichier Excel source,
-      - restaure vue, horloge, listbox, triangles posés (+mots), groupes (nodes complets),
+    Recharge un scenario v4:
+      - tente de recharger le fichier Excel source (mode degrade si absent),
+      - restaure vue, horloge, listbox, triangles poses (+mots), groupes,
+      - restaure la topologie core depuis <topoSnapshot encoding="json">,
       - redessine.
-
-    Contrat v3 :
-      - <scenario version="3"> obligatoire
-      - groups/group/node stocke tid + edge_in/edge_out
     """
     tree = ET.parse(path)
     root = tree.getroot()
     if root.tag != "scenario":
-        raise ValueError("Fichier scénario invalide (balise racine).")
+        raise ValueError("Fichier scenario invalide (balise racine).")
 
-    ver = str(root.get("version", "1") or "1").strip()
-    if ver != "3":
-        # on refuse les anciens formats.
-        raise ValueError(
-            f"Scenario XML incompatible (version={ver}). "
-            "Ce projet attend des scénarios v3 (nodes avec edge_in/edge_out + bloc <map>). "
-            "Ré-enregistre le scénario avec une version récente de l'outil."
-        )
+    ver = str(root.get("version", "") or "").strip()
+    if ver != "4":
+        raise ValueError(f"Unsupported scenario version: expected 4, got {ver}.")
 
-    # 1) Excel source
+    topo_tx_orientation = str(root.get("topo_tx_orientation", "") or "").strip().lower()
+    if topo_tx_orientation not in {"cw", "ccw"}:
+        raise ValueError("Missing or invalid topo_tx_orientation (expected cw|ccw).")
+
+    topo_snapshot_el = root.find("topoSnapshot")
+    topo_snapshot_txt = ""
+    if topo_snapshot_el is not None:
+        topo_snapshot_txt = str(topo_snapshot_el.text or "").strip()
+    if (
+        topo_snapshot_el is None
+        or str(topo_snapshot_el.get("encoding", "") or "").strip().lower() != "json"
+        or not topo_snapshot_txt
+    ):
+        raise ValueError("Missing topoSnapshot (encoding=json) in scenario v4.")
+
+    snapshot = json.loads(topo_snapshot_txt)
+    if not isinstance(snapshot, dict):
+        raise ValueError("Missing topoSnapshot (encoding=json) in scenario v4.")
+
+    scen = viewer._get_active_scenario()
+    if scen is None:
+        raise ValueError("loadScenarioXml: active scenario is required for v4 load.")
+
+    # 1) Excel source (degraded mode allowed)
     src = root.find("source")
-    excel = src.get("excel") if src is not None else ""
-    if excel and os.path.isfile(excel):
-        viewer.load_excel(excel)
-    # 2) vue (restaurer AVANT toute reconstruction pour que les conversions monde<->écran soient cohérentes)
+    excel = str(src.get("excel", "") if src is not None else "").strip()
+    excel_loaded = False
+    if excel:
+        if os.path.isfile(excel):
+            try:
+                viewer.load_excel(excel)
+                excel_loaded = True
+            except Exception as e:
+                _ioWarn(viewer, "loadScenarioXml(excel)", e)
+                if hasattr(viewer, "_status_warn"):
+                    viewer._status_warn(
+                        "Excel source not found; scenario loaded in degraded mode (no full triangle catalog)."
+                    )
+        else:
+            if hasattr(viewer, "_status_warn"):
+                viewer._status_warn(
+                    "Excel source not found; scenario loaded in degraded mode (no full triangle catalog)."
+                )
+
+    # 2) vue
     view = root.find("view")
     if view is not None:
         viewer.zoom = float(view.get("zoom", viewer.zoom))
-        ox = float(view.get("offset_x", viewer.offset[0] if hasattr(viewer,"offset") else 0.0))
-        oy = float(view.get("offset_y", viewer.offset[1] if hasattr(viewer,"offset") else 0.0))
+        ox = float(view.get("offset_x", viewer.offset[0] if hasattr(viewer, "offset") else 0.0))
+        oy = float(view.get("offset_y", viewer.offset[1] if hasattr(viewer, "offset") else 0.0))
         viewer.offset = np.array([ox, oy], dtype=float)
 
     # 2bis) map (fond)
@@ -244,12 +299,10 @@ def loadScenarioXml(viewer, path: str):
                 _ioWarn(viewer, "loadScenarioXml(map)", e)
                 viewer._bg_clear(persist=False)
         else:
-            if map_path:
+            if map_path and hasattr(viewer, "_status_warn"):
                 viewer._status_warn(f"Carte introuvable: {map_path}")
             viewer._bg_clear(persist=False)
 
-
-        # visibilité / opacité / scale (best-effort)
         if hasattr(viewer, "show_map_layer"):
             viewer.show_map_layer.set(str(map_el.get("visible", "1")) not in ("0", "false", "False"))
         if hasattr(viewer, "map_opacity"):
@@ -257,8 +310,8 @@ def loadScenarioXml(viewer, path: str):
         sc = str(map_el.get("scale", "") or "").strip()
         if sc:
             viewer._bg_scale_factor_override = float(sc)
- 
-    # État d’interaction propre (purge complète UI)
+
+    # Etat d'interaction propre
     viewer._sel = {"mode": None}
     viewer._clear_nearest_line()
     viewer._clear_edge_highlights()
@@ -273,20 +326,23 @@ def loadScenarioXml(viewer, path: str):
     if clock is not None:
         viewer._clock_cx = float(clock.get("x", "0"))
         viewer._clock_cy = float(clock.get("y", "0"))
-
-        h = int(clock.get("hour", "0")); m = int(clock.get("minute", "0"))
-        lbl = clock.get("label","")
+        h = int(clock.get("hour", "0"))
+        m = int(clock.get("minute", "0"))
+        lbl = clock.get("label", "")
         viewer._clock_state.update({"hour": h, "minute": m, "label": lbl})
 
     # 4) listbox (ids restants)
     lb = root.find("listbox")
     if lb is not None:
-
-        # ids des triangles encore présents dans la listbox au moment de la sauvegarde
         remain_ids = [int(e.get("id")) for e in lb.findall("tri") if e.get("id")]
         viewer.listbox.delete(0, "end")
-        # reconstruire la liste depuis df en conservant l'ordre original
-        if getattr(viewer, "df", None) is not None and not viewer.df.empty:
+
+        can_use_df = (
+            getattr(viewer, "df", None) is not None
+            and not viewer.df.empty
+            and (excel_loaded or not excel)
+        )
+        if can_use_df:
             if remain_ids:
                 wanted = set(remain_ids)
                 for _, r in viewer.df.iterrows():
@@ -294,75 +350,76 @@ def loadScenarioXml(viewer, path: str):
                     if tid in wanted:
                         viewer.listbox.insert("end", f"{tid:02d}. B:{r['B']}  L:{r['L']}")
             else:
-                # listbox vide dans le XML (ancien scénario ou bug) :
-                # on retombe sur le comportement par défaut = tous les triangles.
                 for _, r in viewer.df.iterrows():
                     tid = int(r["id"])
                     viewer.listbox.insert("end", f"{tid:02d}. B:{r['B']}  L:{r['L']}")
+        else:
+            for tid in remain_ids:
+                viewer.listbox.insert("end", f"{int(tid):02d}.")
 
-    # 5) triangles posés (monde)
-    # On reconstruit la liste en vidant d'abord celle du scénario actif,
-    # sans casser la référence partagée avec scen.last_drawn.
+    # 5) triangles poses (monde)
     viewer._last_drawn.clear()
     tris_xml = root.find("triangles")
     if tris_xml is not None:
         for t_el in tris_xml.findall("triangle"):
             tid = int(t_el.get("id"))
-            mirrored = (t_el.get("mirrored","0") == "1")
-            group_id = int(t_el.get("group","0"))
+            mirrored = (t_el.get("mirrored", "0") == "1")
+            _group_id_unused = int(t_el.get("group", "0"))
             P = {}
-            for k in ("O","B","L"):
+            for k in ("O", "B", "L"):
                 n = t_el.find(k)
                 if n is not None and n.text:
                     P[k] = viewer._xml_to_pt(n.text)
-            # Ne plus écrire 'group' (inconnu du runtime) ; initialiser les champs officiels
-            item = {"id": tid, "pts": P, "mirrored": mirrored}
-            item["group_id"] = None
-            item["group_pos"] = None
+
+            item = {
+                "id": tid,
+                "pts": P,
+                "mirrored": mirrored,
+                "group_id": None,
+                "group_pos": None,
+            }
+            topo_element_id = str(t_el.get("topoElementId", "") or "").strip()
+            topo_group_id = str(t_el.get("topoGroupId", "") or "").strip()
+            if topo_element_id:
+                item["topoElementId"] = topo_element_id
+            if topo_group_id:
+                item["topoGroupId"] = topo_group_id
             viewer._last_drawn.append(item)
 
-    # 5bis) compléter les 'labels' manquants (compat v1: non stockés dans le XML)
+    # 5bis) labels
     try:
-        if getattr(viewer, "df", None) is not None and not viewer.df.empty:
-            # dictionnaire id -> (B, L) sous forme de chaînes
-            _by_id = {int(r["id"]): (str(r["B"]), str(r["L"])) for _, r in viewer.df.iterrows()}
+        if getattr(viewer, "df", None) is not None and not viewer.df.empty and (excel_loaded or not excel):
+            by_id = {int(r["id"]): (str(r["B"]), str(r["L"])) for _, r in viewer.df.iterrows()}
             for t in viewer._last_drawn:
                 if "labels" not in t or not t["labels"]:
-                    b, l = _by_id.get(int(t.get("id", -1)), ("", ""))
+                    b, l = by_id.get(int(t.get("id", -1)), ("", ""))
                     t["labels"] = ("Bourges", b, l)
         else:
-            # DF absent : fallback neutre
             for t in viewer._last_drawn:
                 if "labels" not in t or not t["labels"]:
                     t["labels"] = ("Bourges", "", "")
     except Exception:
-        # sécurité : ne jamais laisser 'labels' absent
         for t in viewer._last_drawn:
             if "labels" not in t or not t["labels"]:
                 t["labels"] = ("Bourges", "", "")
 
-    # 5ter) tenir à jour les ids déjà posés (pour cohérence listbox / drag)
+    # 5ter) ids deja poses
     viewer._placed_ids = {int(t["id"]) for t in viewer._last_drawn}
-
-    # Mettre à jour l'affichage de la listbox en fonction des triangles déjà posés
     viewer._update_triangle_listbox_colors()
 
-    # 6) mots associés
+    # 6) mots associes
     viewer._tri_words = {}
     words_xml = root.find("words")
     if words_xml is not None:
         for w in words_xml.findall("w"):
             tid = int(w.get("tri_id"))
-
             viewer._tri_words[tid] = {
-                "word": w.get("text",""),
-                "row": int(w.get("row","0")) if w.get("row") else 0,
-                "col": int(w.get("col","0")) if w.get("col") else 0,
+                "word": w.get("text", ""),
+                "row": int(w.get("row", "0")) if w.get("row") else 0,
+                "col": int(w.get("col", "0")) if w.get("col") else 0,
             }
 
-    # 7) groupes (reconstruction complète: nodes + bboxes)
-    # Même logique : on réutilise le dict existant pour préserver
-    # le lien avec manual.groups (viewer.groups peut être une référence).
+    # 7) groupes
     viewer.groups.clear()
     groups_xml = root.find("groups")
     if groups_xml is not None:
@@ -391,60 +448,121 @@ def loadScenarioXml(viewer, path: str):
                     "edge_out": (nd_el.get("edge_out") or "").strip() or None,
                 }
 
-                # Validation stricte (contrat v2)
                 ein = nd.get("edge_in")
                 eout = nd.get("edge_out")
                 if ein is not None and ein not in allowed_edges:
                     raise ValueError(f"Scenario XML invalide: edge_in={ein!r} (gid={gid} i={nd_i})")
                 if eout is not None and eout not in allowed_edges:
                     raise ValueError(f"Scenario XML invalide: edge_out={eout!r} (gid={gid} i={nd_i})")
-
-                # Liaisons internes obligatoires: i>0 => edge_in
                 if nd_i > 0 and not ein:
                     raise ValueError(f"Scenario XML invalide: edge_in manquant (gid={gid} i={nd_i})")
 
                 nodes.append(nd)
-
-                # Marquage triangle: group_id/group_pos (invariant runtime)
                 viewer._last_drawn[tid]["group_id"] = gid
                 viewer._last_drawn[tid]["group_pos"] = len(nodes) - 1
                 if "group" in viewer._last_drawn[tid]:
                     del viewer._last_drawn[tid]["group"]
 
-            viewer.groups[gid] = {"id": gid, "nodes": nodes, "bbox": None}
+            grp = {"id": gid, "nodes": nodes, "bbox": None}
+            grp_topo_gid = str(g_el.get("topoGroupId", "") or "").strip()
+            if grp_topo_gid:
+                grp["topoGroupId"] = grp_topo_gid
+            viewer.groups[gid] = grp
             viewer._recompute_group_bbox(gid)
 
-            # Validation finale: pour une chaîne >=2, chaque node sauf le dernier doit avoir edge_out
             if len(nodes) >= 2:
                 for i in range(len(nodes) - 1):
                     if not nodes[i].get("edge_out"):
-                        raise ValueError(f"Scenario XML invalide: edge_out manquant (gid={gid} i={i})")
+                        # V2.1: edge_out est un champ UI non bloquant en v4.
+                        nodes[i]["edge_out"] = None
 
-    # Nettoyage global de compatibilité : purger toute trace résiduelle de 'group'
+    # 7bis) restore core world from snapshot + strict UI/core relink
+    from src.assembleur_core import TopologyWorld
+
+    sid = str(getattr(scen, "topoScenarioId", "") or "").strip() or "SCENARIO"
+    scen.topoScenarioId = sid
+    scen.topoWorld = TopologyWorld(sid)
+    world = scen.topoWorld
+    world._topoTxOrientation = topo_tx_orientation
+    world._importPhysicalSnapshot(snapshot)
+
+    elem_id_by_rank = {}
+    for _eid in world.elements.keys():
+        _rank = world.__class__.parse_tri_rank_from_element_id(_eid)
+        if _rank is None:
+            continue
+        if _rank not in elem_id_by_rank:
+            elem_id_by_rank[_rank] = str(_eid)
+
+    for t in viewer._last_drawn:
+        tid = t.get("id", "?")
+        topo_element_id = t.get("topoElementId", None)
+        if topo_element_id in (None, ""):
+            topo_element_id = elem_id_by_rank.get(int(tid), None)
+            if topo_element_id is not None:
+                t["topoElementId"] = topo_element_id
+
+        topo_element_id = str(topo_element_id)
+        if topo_element_id not in world.elements:
+            raise ValueError(f"Triangle {tid} references missing topoElementId {topo_element_id}.")
+
+        canonical_gid = world.find_group(topo_element_id)
+        if t.get("topoGroupId") in (None, ""):
+            t["topoGroupId"] = canonical_gid
+
+    for gid, g in (viewer.groups or {}).items():
+        nodes = list((g or {}).get("nodes", []) or [])
+        if not nodes:
+            continue
+
+        canonical_gid = None
+        for nd in nodes:
+            tid = int(nd.get("tid"))
+            tri = viewer._last_drawn[tid]
+            topo_element_id = tri.get("topoElementId", None)
+            if topo_element_id in (None, "") or str(topo_element_id) not in world.elements:
+                raise ValueError(
+                    f"Triangle {tri.get('id', tid)} references missing topoElementId {topo_element_id}."
+                )
+            cgid = world.find_group(str(topo_element_id))
+            if canonical_gid is None:
+                canonical_gid = cgid
+            elif str(canonical_gid) != str(cgid):
+                raise ValueError(f"Group {gid} topoGroupId mismatch with core DSU canonical.")
+
+        if canonical_gid is None or str(canonical_gid) not in world.groups:
+            raise ValueError(f"Group {gid} topoGroupId mismatch with core DSU canonical.")
+
+        ui_topo_gid = g.get("topoGroupId", None)
+        if ui_topo_gid in (None, ""):
+            g["topoGroupId"] = canonical_gid
+        elif str(ui_topo_gid) != str(canonical_gid):
+            raise ValueError(f"Group {gid} topoGroupId mismatch with core DSU canonical.")
+
+        for nd in nodes:
+            tid = int(nd.get("tid"))
+            viewer._last_drawn[tid]["topoGroupId"] = canonical_gid
+
+    # Nettoyage global de compatibilite: purger toute trace residuelle de 'group'
     for _t in viewer._last_drawn:
         if "group" in _t:
             del _t["group"]
-    # sécurité: prochain id de groupe
     viewer._next_group_id = (max(viewer.groups.keys()) + 1) if viewer.groups else 1
 
-
-    # 8) sélection et aides reset
+    # 8) selection et aides reset
     viewer._sel = {"mode": None}
     viewer._clear_nearest_line()
     viewer._clear_edge_highlights()
 
-    # 9) réappliquer les bindings (utile si le canvas a été recréé ou si Tk a perdu des liaisons)
+    # 9) re-appliquer les bindings
     viewer._bind_canvas_handlers()
 
-    # 10) redraw complet avec la vue restaurée + overlay
+    # 10) redraw complet
     viewer._redraw_from(viewer._last_drawn)
     viewer._redraw_overlay_only()
-    # [H6] reconstruire le pick-cache avec la vue effectivement restaurée
     viewer._rebuild_pick_cache()
     viewer._pick_cache_valid = True
 
-
-    # focus + rebind défensif (tooltips/drag)
     viewer.canvas.focus_set()
     viewer._bind_canvas_handlers()
 

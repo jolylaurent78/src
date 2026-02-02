@@ -3781,24 +3781,12 @@ class TriangleViewerManual(
 
         self.scenarios.append(scen)
 
-        try:
-            # On bascule sur ce nouveau scénario AVANT de charger,
-            # ainsi load_scenario_xml() écrit bien dans ses structures.
-            self._set_active_scenario(new_index)
-            self.load_scenario_xml(path)
-        except Exception:
-            # En cas d'erreur, on nettoie le scénario incomplet
-            self.scenarios.pop(new_index)
 
-            # On revient au scénario précédent (s'il existe encore)
-            if self.scenarios:
-                if 0 <= prev_index < len(self.scenarios):
-                    self._set_active_scenario(prev_index)
-                else:
-                    self._set_active_scenario(len(self.scenarios) - 1)
+        # On bascule sur ce nouveau scénario AVANT de charger,
+        # ainsi load_scenario_xml() écrit bien dans ses structures.
+        self._set_active_scenario(new_index)
+        self.load_scenario_xml(path)
 
-            self._refresh_scenario_listbox()
-            raise
 
         # Succès : rafraîchir la liste et le statut
         self._refresh_scenario_listbox()

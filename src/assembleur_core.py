@@ -924,6 +924,7 @@ class TopologyWorld:
         self._topoTxDepth = 0
         self._topoTxTouchedGroups: set[str] = set()
         self._topoTxOrientation = "cw"
+        self._isImportingSnapshot = False
 
     # ------------------------------------------------------------------
     # Topologie conceptuelle (MVP)
@@ -2505,6 +2506,8 @@ class TopologyWorld:
     # --- points on edge ---
     # --- attachments ---
     def _validate_attachment_p2(self, attachment: TopologyAttachment, eps_t: float = 1e-9) -> None:
+        if self._isImportingSnapshot:
+            return
         kind = str(getattr(attachment, "kind", "") or "")
         if kind not in ("vertex-vertex", "vertex-edge", "edge-edge"):
             raise ValueError(f"[P2][Attachment] invalid type={kind} id={attachment.attachment_id}")
@@ -2600,8 +2603,7 @@ class TopologyWorld:
         if group_id is not None:
             self.groups[self.find_group(group_id)].attachment_ids.append(attachment.attachment_id)
 
-    def apply_attachment(self, attachment: TopologyAttachment) -> str:
-        self._validate_attachment_p2(attachment)
+    def _apply_attachment_internal(self, attachment: TopologyAttachment) -> str:
         gA = self.get_group_of_element(attachment.feature_a.element_id)
         gB = self.get_group_of_element(attachment.feature_b.element_id)
         gC = self.union_groups(gA, gB) if gA != gB else gA
@@ -2624,10 +2626,10 @@ class TopologyWorld:
             if t is None:
                 t = vRef.t if vRef.t is not None else eRef.t
             if t is None:
-                raise ValueError("vertex-edge: paramètre t manquant")
+                raise ValueError("vertex-edge: parametre t manquant")
             edge_from = attachment.params.get("edgeFrom", None)
             if edge_from is None or str(edge_from).strip() == "":
-                raise ValueError("vertex-edge: paramètre edgeFrom manquant")
+                raise ValueError("vertex-edge: parametre edgeFrom manquant")
 
             v = self.get_vertex(vRef.element_id, vRef.index)
             e = self.get_edge(eRef.element_id, eRef.index)
@@ -2637,7 +2639,7 @@ class TopologyWorld:
             elif edge_from == str(e.v_end.node_id):
                 t_val = 1.0 - float(t)
             else:
-                raise ValueError(f"vertex-edge: edgeFrom incohérent (edgeFrom={edge_from})")
+                raise ValueError(f"vertex-edge: edgeFrom incoherent (edgeFrom={edge_from})")
             eps = float(getattr(self, "vertex_edge_endpoint_epsilon", 1e-6))
             if abs(t_val) <= eps:
                 self.union_nodes(v.node_id, e.v_start.node_id)
@@ -2663,12 +2665,86 @@ class TopologyWorld:
             eB.coverages.append(TopologyCoverageInterval(0.0, 1.0))
 
         else:
-            raise ValueError(f"Attachment kind non supporté: {kind}")
+            raise ValueError(f"Attachment kind non supporte: {kind}")
 
         self.record_attachment(attachment, group_id=gC)
         self.invalidateConceptGraph(gC)
         self._markTopoTouched(gC)
         return gC
+
+    def loadAttachment(self, attachment: TopologyAttachment) -> str:
+        """Load one attachment from snapshot in strict passive mode."""
+        gA = self.get_group_of_element(attachment.feature_a.element_id)
+        gB = self.get_group_of_element(attachment.feature_b.element_id)
+        gC = self.union_groups(gA, gB) if gA != gB else gA
+
+        kind = str(attachment.kind)
+        if kind == "vertex-vertex":
+            vA = self.get_vertex(attachment.feature_a.element_id, attachment.feature_a.index)
+            vB = self.get_vertex(attachment.feature_b.element_id, attachment.feature_b.index)
+            self.union_nodes(vA.node_id, vB.node_id)
+
+        elif kind == "vertex-edge":
+            if attachment.feature_a.feature_type == TopologyFeatureType.VERTEX and attachment.feature_b.feature_type == TopologyFeatureType.EDGE:
+                vRef, eRef = attachment.feature_a, attachment.feature_b
+            elif attachment.feature_a.feature_type == TopologyFeatureType.EDGE and attachment.feature_b.feature_type == TopologyFeatureType.VERTEX:
+                vRef, eRef = attachment.feature_b, attachment.feature_a
+            else:
+                raise ValueError("Snapshot invalide : vertex-edge attend un vertexRef et un edgeRef")
+
+            v = self.get_vertex(vRef.element_id, vRef.index)
+            e = self.get_edge(eRef.element_id, eRef.index)
+            edge_from = attachment.params.get("edgeFrom", None)
+            if edge_from is None:
+                raise ValueError("Snapshot invalide : edgeFrom non porte par l'arete referencee")
+            edge_from = str(edge_from)
+            s = str(e.v_start.node_id)
+            tnode = str(e.v_end.node_id)
+            if edge_from != s and edge_from != tnode:
+                raise ValueError("Snapshot invalide : edgeFrom non porte par l'arete referencee")
+
+            t_raw = attachment.params.get("t", None)
+            if t_raw is not None:
+                t_val = float(t_raw)
+                if edge_from == s:
+                    if t_val == 0.0:
+                        self.union_nodes(v.node_id, e.v_start.node_id)
+                    elif t_val == 1.0:
+                        self.union_nodes(v.node_id, e.v_end.node_id)
+                else:
+                    if t_val == 0.0:
+                        self.union_nodes(v.node_id, e.v_end.node_id)
+                    elif t_val == 1.0:
+                        self.union_nodes(v.node_id, e.v_start.node_id)
+
+        elif kind == "edge-edge":
+            eA = self.get_edge(attachment.feature_a.element_id, attachment.feature_a.index)
+            eB = self.get_edge(attachment.feature_b.element_id, attachment.feature_b.index)
+            mapping = str(attachment.params.get("mapping", "direct"))
+            a0, a1 = self._edge_endpoints_atomic_nodes(eA)
+            b0, b1 = self._edge_endpoints_atomic_nodes(eB)
+            if mapping == "direct":
+                self.union_nodes(a0, b0)
+                self.union_nodes(a1, b1)
+            elif mapping == "reverse":
+                self.union_nodes(a0, b1)
+                self.union_nodes(a1, b0)
+            else:
+                raise ValueError(f"Snapshot invalide : mapping edge-edge invalide ({mapping})")
+            eA.coverages.append(TopologyCoverageInterval(0.0, 1.0))
+            eB.coverages.append(TopologyCoverageInterval(0.0, 1.0))
+
+        else:
+            raise ValueError(f"Snapshot invalide : kind d'attachment non supporte ({kind})")
+
+        self.record_attachment(attachment, group_id=gC)
+        self.invalidateConceptGraph(gC)
+        self._markTopoTouched(gC)
+        return gC
+
+    def apply_attachment(self, attachment: TopologyAttachment) -> str:
+        self._validate_attachment_p2(attachment)
+        return self._apply_attachment_internal(attachment)
 
     def rebuild_from_attachments(self, attachments: list[TopologyAttachment]):
         self.attachments = {}
@@ -2757,79 +2833,84 @@ class TopologyWorld:
     def _importPhysicalSnapshot(self, snapshot: dict) -> None:
         if snapshot is None:
             raise ValueError("TopologyWorld._importPhysicalSnapshot: snapshot absent")
+        self._isImportingSnapshot = True
+        try:
+            config = snapshot.get("config", {}) or {}
+            if "fusion_distance_km" in config:
+                self.fusion_distance_km = float(config.get("fusion_distance_km", 1.0))
+            if "worldYAxisDown" in config:
+                self.worldYAxisDown = bool(config.get("worldYAxisDown", False))
+            if "vertex_edge_endpoint_epsilon" in config:
+                self.vertex_edge_endpoint_epsilon = float(config.get("vertex_edge_endpoint_epsilon", 1e-6))
 
-        config = snapshot.get("config", {}) or {}
-        if "fusion_distance_km" in config:
-            self.fusion_distance_km = float(config.get("fusion_distance_km", 1.0))
-        if "worldYAxisDown" in config:
-            self.worldYAxisDown = bool(config.get("worldYAxisDown", False))
-        if "vertex_edge_endpoint_epsilon" in config:
-            self.vertex_edge_endpoint_epsilon = float(config.get("vertex_edge_endpoint_epsilon", 1e-6))
-
-        elements_payload = list(snapshot.get("elements", []) or [])
-        for el in elements_payload:
-            eid = str(el.get("element_id"))
-            clone = TopologyElement(
-                element_id=eid,
-                name=str(el.get("name", "")),
-                vertex_labels=list(el.get("vertex_labels", [])),
-                vertex_types=list(el.get("vertex_types", [])),
-                edge_lengths_km=list(el.get("edge_lengths_km", [])),
-                intrinsic_sides_km=dict(el.get("intrinsic_sides_km", {}) or {}),
-                local_frame=dict(el.get("local_frame", {}) or {}),
-                vertex_local_xy=dict(el.get("vertex_local_xy", {}) or {}),
-                meta=dict(el.get("meta", {}) or {}),
-            )
-            self.add_element_as_new_group(clone)
-            pose = el.get("pose", {}) or {}
-            if pose:
-                self.setElementPose(
-                    eid,
-                    R=np.array(pose.get("R", np.eye(2)), float),
-                    T=np.array(pose.get("T", np.zeros(2)), float),
-                    mirrored=bool(pose.get("mirrored", False)),
+            elements_payload = list(snapshot.get("elements", []) or [])
+            for el in elements_payload:
+                eid = str(el.get("element_id"))
+                raw_vxy = el.get("vertex_local_xy", {}) or {}
+                vertex_local_xy = {}
+                for k, v in dict(raw_vxy).items():
+                    kk = int(k)
+                    vertex_local_xy[kk] = (float(v[0]), float(v[1]))
+                clone = TopologyElement(
+                    element_id=eid,
+                    name=str(el.get("name", "")),
+                    vertex_labels=list(el.get("vertex_labels", [])),
+                    vertex_types=list(el.get("vertex_types", [])),
+                    edge_lengths_km=list(el.get("edge_lengths_km", [])),
+                    intrinsic_sides_km=dict(el.get("intrinsic_sides_km", {}) or {}),
+                    local_frame=dict(el.get("local_frame", {}) or {}),
+                    vertex_local_xy=vertex_local_xy,
+                    meta=dict(el.get("meta", {}) or {}),
                 )
+                self.add_element_as_new_group(clone)
+                pose = el.get("pose", {}) or {}
+                if pose:
+                    self.setElementPose(
+                        eid,
+                        R=np.array(pose.get("R", np.eye(2)), float),
+                        T=np.array(pose.get("T", np.zeros(2)), float),
+                        mirrored=bool(pose.get("mirrored", False)),
+                    )
 
-        attachments_payload = list(snapshot.get("attachments", []) or [])
-        max_att_num = 0
-        for att in attachments_payload:
-            fa = att.get("feature_a", {}) or {}
-            fb = att.get("feature_b", {}) or {}
-            feature_a = TopologyFeatureRef(
-                feature_type=fa.get("feature_type"),
-                element_id=fa.get("element_id"),
-                index=int(fa.get("index", 0)),
-                t=fa.get("t", None),
-            )
-            feature_b = TopologyFeatureRef(
-                feature_type=fb.get("feature_type"),
-                element_id=fb.get("element_id"),
-                index=int(fb.get("index", 0)),
-                t=fb.get("t", None),
-            )
-            attachment = TopologyAttachment(
-                attachment_id=str(att.get("attachment_id")),
-                kind=str(att.get("kind")),
-                feature_a=feature_a,
-                feature_b=feature_b,
-                params=dict(att.get("params", {}) or {}),
-                source=str(att.get("source", "manual")),
-            )
-            try:
-                self.apply_attachment(attachment)
-            except Exception as exc:
-                raise ValueError(f"TopologyWorld._importPhysicalSnapshot: attachment invalide ({attachment.attachment_id})") from exc
-            m = re.search(r":A(\d+)$", str(attachment.attachment_id))
-            if m:
-                max_att_num = max(max_att_num, int(m.group(1)))
+            attachments_payload = list(snapshot.get("attachments", []) or [])
+            max_att_num = 0
+            for att in attachments_payload:
+                fa = att.get("feature_a", {}) or {}
+                fb = att.get("feature_b", {}) or {}
+                feature_a = TopologyFeatureRef(
+                    feature_type=fa.get("feature_type"),
+                    element_id=fa.get("element_id"),
+                    index=int(fa.get("index", 0)),
+                    t=fa.get("t", None),
+                )
+                feature_b = TopologyFeatureRef(
+                    feature_type=fb.get("feature_type"),
+                    element_id=fb.get("element_id"),
+                    index=int(fb.get("index", 0)),
+                    t=fb.get("t", None),
+                )
+                attachment = TopologyAttachment(
+                    attachment_id=str(att.get("attachment_id")),
+                    kind=str(att.get("kind")),
+                    feature_a=feature_a,
+                    feature_b=feature_b,
+                    params=dict(att.get("params", {}) or {}),
+                    source=str(att.get("source", "manual")),
+                )
+                self.loadAttachment(attachment)
+                m = re.search(r":A(\d+)$", str(attachment.attachment_id))
+                if m:
+                    max_att_num = max(max_att_num, int(m.group(1)))
 
-        if max_att_num > 0:
-            self._created_counter_attachments = max_att_num
+            if max_att_num > 0:
+                self._created_counter_attachments = max_att_num
 
-        self.rebuildGroupElementLists()
-        for gid in sorted(self.groups.keys()):
-            if gid == self.find_group(gid):
-                self.recomputeConceptAndBoundary(gid)
+            self.rebuildGroupElementLists()
+            for gid in sorted(self.groups.keys()):
+                if gid == self.find_group(gid):
+                    self.recomputeConceptAndBoundary(gid)
+        finally:
+            self._isImportingSnapshot = False
 
     def clonePhysicalState(self) -> "TopologyWorld":
         """Clone deterministe de l'etat physique (sans derives)."""
