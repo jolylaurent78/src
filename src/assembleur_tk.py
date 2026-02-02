@@ -133,9 +133,21 @@ class DialogSimulationAssembler(tk.Toplevel):
         self.algo_combo.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
 
         ttk.Label(frm, text="Nombre de triangles (n premiers) :").grid(row=2, column=0, sticky="w")
-        self.n_var = tk.IntVar(value=int(default_n))
-        self.n_spin = ttk.Spinbox(frm, from_=2, to=max(2, int(n_max)), textvariable=self.n_var, width=8)
-        self.n_spin.grid(row=2, column=1, sticky="e")
+        #self.n_var = tk.IntVar(value=int(default_n))
+        #self.n_spin = ttk.Spinbox(frm, from_=2, to=max(2, int(n_max)), textvariable=self.n_var, width=8)
+        vcmd = (self.register(self._validate_even), "%P")
+        self.var_nb_triangles = tk.IntVar(value=int(default_n))
+        self.spin_nb_triangles = ttk.Spinbox(
+            frm,
+            from_=2,                 # minimum pair
+            to=max(2, int(n_max)),
+            increment=2,             # flèches +2 / -2
+            textvariable=self.var_nb_triangles,
+            width=6,
+            validate="key",          # empêche les impairs au clavier
+            validatecommand=vcmd
+        )
+        self.spin_nb_triangles.grid(row=2, column=1, sticky="e")
 
         # --- Ordre d'assemblage ---
         d_order = str(default_order or "forward").strip().lower()
@@ -187,9 +199,16 @@ class DialogSimulationAssembler(tk.Toplevel):
 
         self.protocol("WM_DELETE_WINDOW", self._on_cancel)
 
-        self.n_spin.focus_set()
-        self.n_spin.selection_range(0, tk.END)
+        self.spin_nb_triangles.focus_set()
+        self.spin_nb_triangles.selection_range(0, tk.END)
 
+    def _validate_even(self, value):
+        if value == "":
+            return True
+        try:
+            return int(value) % 2 == 0
+        except ValueError:
+            return False
 
     def _on_cancel(self):
         self.result = None
@@ -198,7 +217,7 @@ class DialogSimulationAssembler(tk.Toplevel):
     def _on_ok(self):
         raw = str(self.algo_combo.get() or "")
         algo_id = raw.split(" - ", 1)[0].strip() if " - " in raw else raw.strip()
-        n = int(self.n_var.get())
+        n = int(self.var_nb_triangles.get())
 
 
         if n <= 0:
@@ -213,7 +232,7 @@ class DialogSimulationAssembler(tk.Toplevel):
             # n doit être pair : on ajuste silencieusement (pas de popup)
             print(f"[SIM] n impair -> utilisation de n={n2}")
             n = n2
-            self.n_var.set(n)
+            self.var_nb_triangles.set(n)
 
 
         order = str(self.order_var.get() or "forward")

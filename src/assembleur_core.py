@@ -14,21 +14,6 @@ from shapely.geometry import Polygon as _ShPoly, LineString as _ShLine, Point as
 from shapely.ops import unary_union as _sh_union
 
 
-def _overlap_shrink(S_m, S_t, stroke_px: float, zoom: float) -> bool:
-    """
-    Anti-chevauchement unique et partagé : SHRINK-ONLY sur les deux solides.
-    - Rétrécit S_m et S_t de 2× (stroke_px / zoom) en unités monde,
-      puis teste l'intersection des solides réduits.
-    - Retourne True si chevauchement détecté, False sinon.
-    """
-    shrink_world = 2.0 * (float(stroke_px) / max(zoom, 1e-9))
-    S_t_shrunk = S_t.buffer(-shrink_world).buffer(0)
-    S_m_shrunk = S_m.buffer(-shrink_world).buffer(0)
-    if S_t_shrunk.is_empty or S_m_shrunk.is_empty:
-        return False
-    return S_m_shrunk.intersects(S_t_shrunk)
-
-
 def _tri_shape(P: Dict[str, np.ndarray]):
     """Triangle → Polygon (brut, sans rétrécissement)."""
     poly = _ShPoly([tuple(map(float, P["O"])),
@@ -65,29 +50,6 @@ def _build_local_triangle(OB: float, OL: float, BL: float) -> dict:
         "L": np.array([float(x),  float(y)], dtype=float),
     }
 
-# --- Simulation d'une pose (pour filtrer le chevauchement après collage) ---
-def _apply_R_T_on_P(P: Dict[str,np.ndarray], R: np.ndarray, T: np.ndarray, pivot: np.ndarray) -> Dict[str,np.ndarray]:
-    """Applique une rotation R autour de 'pivot' puis une translation T aux points P."""
-    out = {}
-    for k in ("O","B","L"):
-        v = np.array(P[k], dtype=float)
-        out[k] = (R @ (v - pivot)) + pivot + T
-    return out
-
-def _pose_params(Pm: Dict[str,np.ndarray], am: str, bm: str, Vm: np.ndarray,
-                 Pt: Dict[str,np.ndarray], at: str, bt: str, Vt: np.ndarray):
-    """Retourne (R, T, pivot) pour la pose 'am->bm' alignée sur 'at->bt' avec Vm→Vt."""
-    vm_dir = np.array(Pm[bm], float) - np.array(Pm[am], float)
-    vt_dir = np.array(Pt[bt], float) - np.array(Pt[at], float)
-    ang_m = math.atan2(vm_dir[1], vm_dir[0])
-    ang_t = math.atan2(vt_dir[1], vt_dir[0])
-    dtheta = ang_t - ang_m
-    c, s = math.cos(dtheta), math.sin(dtheta)
-    R = np.array([[c, -s],[s, c]], float)
-    pivot = np.array(Vm, float)
-    Vm_rot = (R @ (np.array(Pm[am], float) - pivot)) + pivot
-    T = np.array(Vt, float) - Vm_rot
-    return R, T, pivot
 
 class ScenarioAssemblage:
     """
