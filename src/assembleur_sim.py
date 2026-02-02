@@ -11,7 +11,6 @@ import math
 import copy
 
 from src.assembleur_core import (
-    _overlap_shrink,
     _tri_shape,
     _group_shape_from_nodes,
     _build_local_triangle,
@@ -295,14 +294,14 @@ def createTopoQuadrilateral(
     *,
     world: TopologyWorld,
     topoScenarioId: str,
-    triOddId: int,
-    triEvenId: int,
-    tOdd: dict,
-    tEven: dict,
-    Podd_local: Dict[str, np.ndarray],
-    Peven_local: Dict[str, np.ndarray],
-    Podd_world: Dict[str, np.ndarray],
-    Peven_world: Dict[str, np.ndarray],
+    triangleMobFromId: int,
+    triangleMobToId: int,
+    triangleMobFrom: dict,
+    triangleMobTo: dict,
+    triangleMobFrom_PtsLocal: Dict[str, np.ndarray],
+    triangleMobTo_PtsLocal: Dict[str, np.ndarray],
+    triangleMobFromPts: Dict[str, np.ndarray],
+    triangleMobToPts: Dict[str, np.ndarray],
     entryOdd: dict | None = None,
     entryEven: dict | None = None,
     tol_rel: float = 1e-3,
@@ -371,28 +370,28 @@ def createTopoQuadrilateral(
     world.beginTopoTransaction()
     try:
         # --- 1) IDs éléments (déterministes) ---
-        elementIdOdd = TopologyWorld.format_element_id(topoScenarioId, int(triOddId))
-        elementIdEven = TopologyWorld.format_element_id(topoScenarioId, int(triEvenId))
+        elementIdOdd = TopologyWorld.format_element_id(topoScenarioId, int(triangleMobFromId))
+        elementIdEven = TopologyWorld.format_element_id(topoScenarioId, int(triangleMobToId))
 
         # --- 2) Créer les 2 éléments (si absents) ---
         _ensure_element_from_local(
             elementId=elementIdOdd,
-            triId=int(triOddId),
-            pts_local={k: np.array(Podd_local[k], dtype=float) for k in ("O", "B", "L")},
-            labels=tOdd.get("labels"),
-            mirrored=bool(tOdd.get("mirrored", False)),
+            triId=int(triangleMobFromId),
+            pts_local={k: np.array(triangleMobFrom_PtsLocal[k], dtype=float) for k in ("O", "B", "L")},
+            labels=triangleMobFrom.get("labels"),
+            mirrored=bool(triangleMobFrom.get("mirrored", False)),
         )
         _ensure_element_from_local(
             elementId=elementIdEven,
-            triId=int(triEvenId),
-            pts_local={k: np.array(Peven_local[k], dtype=float) for k in ("O", "B", "L")},
-            labels=tEven.get("labels"),
-            mirrored=bool(tEven.get("mirrored", False)),
+            triId=int(triangleMobToId),
+            pts_local={k: np.array(triangleMobTo_PtsLocal[k], dtype=float) for k in ("O", "B", "L")},
+            labels=triangleMobTo.get("labels"),
+            mirrored=bool(triangleMobTo.get("mirrored", False)),
         )
 
         # --- 3) Poser les 2 éléments (monde) ---
-        setElementPoseFromWorldPts(world, elementIdOdd, Podd_world, mirrored=False)
-        setElementPoseFromWorldPts(world, elementIdEven, Peven_world, mirrored=False)
+        setElementPoseFromWorldPts(world, elementIdOdd, triangleMobFromPts, mirrored=False)
+        setElementPoseFromWorldPts(world, elementIdEven, triangleMobToPts, mirrored=False)
 
         # Injecter topoElementId dans les entrées graphiques si fournies
         if entryOdd is not None:
@@ -404,9 +403,9 @@ def createTopoQuadrilateral(
         edges = [("O", "B"), ("O", "L"), ("B", "L")]
         best = None  # (rel, (aO,bO), (aE,bE))
         for aO, bO in edges:
-            lO = _edge_len(Podd_local, aO, bO)
+            lO = _edge_len(triangleMobFrom_PtsLocal, aO, bO)
             for aE, bE in edges:
-                lE = _edge_len(Peven_local, aE, bE)
+                lE = _edge_len(triangleMobTo_PtsLocal, aE, bE)
                 rel = abs(lO - lE) / max(lO, lE, 1e-9)
                 if rel <= float(tol_rel) and (best is None or rel < best[0]):
                     best = (rel, (aO, bO), (aE, bE))
@@ -421,21 +420,21 @@ def createTopoQuadrilateral(
             raise ValueError("createTopoQuadrilateral: edge code invalide")
 
         # --- 5) Déterminer l’ordre des endpoints côté EVEN via les positions monde ---
-        # Objectif: que Peven_world[dst_a] corresponde à Podd_world[aO] (à eps_world près)
+        # Objectif: que triangleMobToPts[dst_a] corresponde à triangleMobFromPts[aO] (à eps_world près)
         dst_a = aE
         dst_b = bE
-        if np.linalg.norm(np.array(Peven_world[dst_a], float) - np.array(Podd_world[aO], float)) <= float(eps_world):
+        if np.linalg.norm(np.array(triangleMobToPts[dst_a], float) - np.array(triangleMobFromPts[aO], float)) <= float(eps_world):
             pass
-        elif np.linalg.norm(np.array(Peven_world[dst_b], float) - np.array(Podd_world[aO], float)) <= float(eps_world):
+        elif np.linalg.norm(np.array(triangleMobToPts[dst_b], float) - np.array(triangleMobFromPts[aO], float)) <= float(eps_world):
             dst_a, dst_b = dst_b, dst_a
         # sinon: on garde l'ordre, mais l'attachment edge-edge décidera mapping via vkeys (direct/reverse)
 
         # --- 6) Créer + commit l’attachement interne edge-edge ---
         epts = EdgeChoiceEpts(
-            Podd_world[aO], Podd_world[bO],
-            Peven_world[dst_a], Peven_world[dst_b],
-            src_owner_tid=int(triOddId), src_edge=src_edge,
-            dst_owner_tid=int(triEvenId), dst_edge=dst_edge,
+            triangleMobFromPts[aO], triangleMobFromPts[bO],
+            triangleMobToPts[dst_a], triangleMobToPts[dst_b],
+            src_owner_tid=int(triangleMobFromId), src_edge=src_edge,
+            dst_owner_tid=int(triangleMobToId), dst_edge=dst_edge,
             src_vkey_at_mA=aO, src_vkey_at_mB=bO,
             dst_vkey_at_tA=dst_a, dst_vkey_at_tB=dst_b,
             kind="edge-edge",
@@ -731,61 +730,96 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             topoGroupId, elementIdOdd, elementIdEven, _, _ = createTopoQuadrilateral(
                 world=world,
                 topoScenarioId=topoScenarioId,
-                triOddId=int(tri1_id),
-                triEvenId=int(tri2_id),
-                tOdd=t1,
-                tEven=t2,
-                Podd_local=P1_local,
-                Peven_local=P2_local,
-                Podd_world=P1_world,
-                Peven_world=P2_world,
+                triangleMobFromId=int(tri1_id),
+                triangleMobToId=int(tri2_id),
+                triangleMobFrom=t1,
+                triangleMobTo=t2,
+                triangleMobFrom_PtsLocal=P1_local,
+                triangleMobTo_PtsLocal=P2_local,
+                triangleMobFromPts=P1_world,
+                triangleMobToPts=P2_world,
                 entryOdd=entryOdd,
                 entryEven=entryEven,
             )
 
             return topoGroupId
 
+        def _orient2d(a, b, c) -> float:
+            return (b[0]-a[0])*(c[1]-a[1]) - (b[1]-a[1])*(c[0]-a[0])
+
+        def _third_vertex(a: str, b: str) -> str:
+            for k in ("O", "B", "L"):
+                if k != a and k != b:
+                    return k
+            raise ValueError("edge invalid")
+
+        def _choose_mapping_by_orientation(Pm_local: dict, am: str, bm: str, Pt: dict, at: str, bt: str) -> str:
+            cm = _third_vertex(am, bm)
+            ct = _third_vertex(at, bt)
+
+            side_m = _orient2d(Pm_local[am], Pm_local[bm], Pm_local[cm])
+            # direct: dest edge oriented at->bt
+            side_t_direct = _orient2d(Pt[at], Pt[bt], Pt[ct])
+            # reverse: dest edge oriented bt->at
+            side_t_reverse = _orient2d(Pt[bt], Pt[at], Pt[ct])
+
+            eps = 1e-9
+            if abs(side_m) < eps or abs(side_t_direct) < eps:
+                # triangle quasi dégénéré par rapport à l’arête => décision instable
+                return "direct"
+
+            if side_m * side_t_direct < 0:
+                return "direct"
+            if side_m * side_t_reverse < 0:
+                return "reverse"
+
+            # aucun des deux ne met les triangles “de part et d’autre”
+            return "direct"
+
+        def _pose_triangle2_with_mapping(engine, v, Pm_local, am, bm, Pt, at, bt, poly_dest):
+            mapping = _choose_mapping_by_orientation(Pm_local, am, bm, Pt, at, bt)
+            (at2, bt2) = (at, bt) if mapping == "direct" else (bt, at)
+
+            Pmw = engine.pose_points_on_edge(
+                Pm=Pm_local, am=am, bm=bm,
+                Pt=Pt,      at=at2, bt=bt2,
+                Vm=Pm_local[am], Vt=Pt[at2],
+            )
+
+            def _dist(a, b):
+                return math.hypot(b[0]-a[0], b[1]-a[1])
+
+            def _edge_len(P, a, b):
+                return _dist(P[a], P[b])
+
+            def _len_close(l1, l2, rel=1e-4, abs_=1e-8):
+                return abs(l1 - l2) <= max(abs_, rel * max(l1, l2))
+
+            len_m = _edge_len(Pm_local, am, bm)
+            len_t = _edge_len(Pt, at, bt)
+
+            if not _len_close(len_m, len_t, rel=1e-4):
+                return None, mapping, True  # invalide (mismatch longueur)
+
+            return Pmw, mapping, False
 
         # ---- 3) Pose du triangle 2 : 2 essais (direct / inversé)
         poly1 = _tri_shape(P1)
+        poses = []
+        # si tu veux garder mapping pour debug:
+        # engine.debugInfo(... mapping=mapping)
+        P2w, mapping, is_overlap = _pose_triangle2_with_mapping(
+            engine, v,
+            P2_local, a2, b2,     # arête mobile
+            P1,      a1, b1,     # arête destination
+            poly1
+        )
 
-        poses: List[Dict[str,np.ndarray]] = []
-        dbg_try = 0
-        dbg_pose_exc = 0
-        dbg_overlap = 0
+        if is_overlap or P2w is None:
+            # échec propre : ce couple de triangles ne peut pas former un quad valide
+            return []   # ou raise / skip scénario selon ta logique actuelle
 
-        # Si on enchaîne (n>=4), on fige le 1er quad à la première pose valide
-        max_poses_first_pair = 2 if len(tri_ids) <= 2 else 1        
-        for (at, bt) in [(a1, b1), (b1, a1)]:  # direct puis inversé
-            dbg_try += 1
-            P2w = engine.pose_points_on_edge(
-                Pm=P2_local, am=a2, bm=b2,
-                Pt=P1, at=at, bt=bt,
-                Vm=P2_local[a2], Vt=P1[at],
-            )
-
-            # Chevauchement : utiliser EXACTEMENT la règle partagée "shrink-only"
-            poly2 = _tri_shape(P2w)
-            if _overlap_shrink(
-                poly2, poly1,
-                getattr(v, "stroke_px", 2),
-                engine.getOverlapZoomRef(),
-            ):
-                dbg_overlap += 1
-                continue
-
-            poses.append(P2w)
-
-            if len(poses) >= max_poses_first_pair:
-                break
-        if not poses:
-            engine.debugFail(
-                step="pair1",
-                pair=(tri1_id, tri2_id),
-                reason="Aucune pose valide pour la première paire",
-                detail=f"essais={dbg_try}, exceptions_pose={dbg_pose_exc}, prunes_overlap={dbg_overlap}",
-            )
-            return []
+        poses.append(P2w)
 
         # ---- 4) Si n=2 : même comportement qu'avant (1 ou 2 scénarios possibles)
         if len(tri_ids) <= 2:
@@ -941,25 +975,13 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             (_, (aA, bA), (aB, bB)) = best
 
             polyA = _tri_shape(PA)
-            PB = None
-            # 2 essais internes (direct/inversé) MAIS on fige à la 1ère pose valide
-            for (at, bt) in [(aA, bA), (bA, aA)]:
-                PBw = engine.pose_points_on_edge(
-                    Pm=PB_local, am=aB, bm=bB,
-                    Pt=PA, at=at, bt=bt,
-                    Vm=PB_local[aB], Vt=PA[at],
-                )
 
-                polyB = _tri_shape(PBw)
-                if _overlap_shrink(
-                    polyB, polyA,
-                    getattr(v, "stroke_px", 2),
-                    engine.getOverlapZoomRef(),
-                ):
-                    continue
-
-                PB = PBw
-                break
+            PB, mapping, is_overlap = _pose_triangle2_with_mapping(
+                engine, v,
+                PB_local, aB, bB,      # mobile
+                PA,       aA, bA,      # dest
+                polyA
+            )
 
             if PB is None:
                 raise ValueError("Aucune pose valide trouvée pour assembler le quadrilatère (A,B).")
@@ -1024,14 +1046,14 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                     createTopoQuadrilateral(
                         world=topoWorld_prev,
                         topoScenarioId=topoScenarioId,
-                        triOddId=triangleMobFromId,
-                        triEvenId=triangleMobToId,
-                        tOdd=triangleMobFrom,
-                        tEven=triangleMobTo,
-                        Podd_local={k: np.array(triangleMobFrom["pts"][k], float) for k in ("O","B","L")},
-                        Peven_local={k: np.array(triangleMobTo["pts"][k], float) for k in ("O","B","L")},
-                        Podd_world=triangleMobFromPts,
-                        Peven_world=triangleMobToPts,
+                        triangleMobFromId=triangleMobFromId,
+                        triangleMobToId=triangleMobToId,
+                        triangleMobFrom=triangleMobFrom,
+                        triangleMobTo=triangleMobTo,
+                        triangleMobFrom_PtsLocal={k: np.array(triangleMobFrom["pts"][k], float) for k in ("O","B","L")},
+                        triangleMobTo_PtsLocal={k: np.array(triangleMobTo["pts"][k], float) for k in ("O","B","L")},
+                        triangleMobFromPts=triangleMobFromPts,
+                        triangleMobToPts=triangleMobToPts,
                     )
 
                     # clone du last_drawn de la branche pour référencer les triangles temporaires
@@ -1416,13 +1438,6 @@ class MoteurSimulationAssemblage:
         # --- DEBUG (instrumentation minimaliste, sans console spam) ---
         # Rempli par les algos si un run() échoue et retourne [].
         self.debug_last: Dict | None = None
-
-        # IMPORTANT: la simulation ne doit pas dépendre du zoom écran courant.
-        # On fige un zoom de référence, clampé, utilisé uniquement pour _overlap_shrink().
-        z = float(getattr(viewer, "simulationOverlapZoomRef", getattr(viewer, "zoom", 1.0)))
-
-        # borne haute: évite shrink trop petit => faux chevauchement sur triangles collés
-        self.overlapZoomRef = min(max(z, 0.25), 8.0)
 
     # --- DEBUG helpers ---
     def debugReset(self, tri_ids: List[int] | None = None):

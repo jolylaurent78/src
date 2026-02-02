@@ -14,7 +14,7 @@
   "uiClockRefAzimuth": 173.79803238581732,
   "uiShowOnlyGroupContours": false,
   "simLastAlgoId": "quadris_par_paires",
-  "simLastN": 8,
+  "simLastN": 20,
   "simLastOrder": "reverse",
   "simLastFirstEdge": "BL",
   "uiAutoFitScenario": false,
@@ -23,7 +23,7 @@
       "reverse": {
         "ox": 288.39,
         "oy": 110.33,
-        "thetaDeg": -23.634098235781504
+        "thetaDeg": 0.0
       },
       "forward": {
         "ox": 260.4000000000001,
