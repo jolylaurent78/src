@@ -763,6 +763,72 @@ class TriangleViewerManual(
         world.setElementPose(str(element_id), R=R, T=T, mirrored=mirrored)
 
 
+    def _syncScenarioPosesToCoreFromGeometry(self, scen: ScenarioAssemblage) -> None:
+        """Sync les poses (R,T,mirrored) de TOUS les éléments d'un scénario vers son TopologyWorld,
+        en fittant sur les points monde déjà reconstruits (pts["O","B","L"])."""
+        if scen is None:
+            return
+        world = getattr(scen, "topoWorld", None)
+        if world is None:
+            return
+        last_drawn = getattr(scen, "last_drawn", None)
+        if not isinstance(last_drawn, list) or not last_drawn:
+            return
+
+        M = np.array([[1.0, 0.0], [0.0, -1.0]], dtype=float)
+
+        for tri in last_drawn:
+            element_id = tri.get("topoElementId", None)
+            if not element_id:
+                continue
+            el = world.elements.get(str(element_id))
+            if el is None:
+                continue
+
+            Pw = tri.get("pts", None) or tri.get("world_pts", None)
+            if not isinstance(Pw, dict) or not all(k in Pw for k in ("O", "B", "L")):
+                continue
+
+            # Points monde (issus de la géométrie UI déjà reconstruite)
+            Ow = np.array(Pw["O"], dtype=float)
+            Bw = np.array(Pw["B"], dtype=float)
+            Lw = np.array(Pw["L"], dtype=float)
+
+            # Points locaux (Core)
+            pO = np.array(el.vertex_local_xy.get(0, (0.0, 0.0)), dtype=float)
+            pB = np.array(el.vertex_local_xy.get(1, (0.0, 0.0)), dtype=float)
+            pL = np.array(el.vertex_local_xy.get(2, (0.0, 0.0)), dtype=float)
+
+            mirrored = bool(tri.get("poseMirrored", False))
+            pO2 = (M @ pO) if mirrored else pO
+            pB2 = (M @ pB) if mirrored else pB
+            pL2 = (M @ pL) if mirrored else pL
+
+            # Fit Kabsch (rotation pure det=+1) + translation
+            X = np.stack([pO2, pB2, pL2], axis=0)  # (3,2)
+            Y = np.stack([Ow,  Bw,  Lw ], axis=0)  # (3,2)
+            Xc = X - X.mean(axis=0)
+            Yc = Y - Y.mean(axis=0)
+            H = Xc.T @ Yc
+            U, _S, Vt = np.linalg.svd(H)
+            R = (Vt.T @ U.T)
+            if np.linalg.det(R) < 0.0:
+                Vt[1, :] *= -1.0
+                R = (Vt.T @ U.T)
+            T = Y.mean(axis=0) - (R @ X.mean(axis=0))
+
+            world.setElementPose(str(element_id), R=R, T=T, mirrored=mirrored)
+
+
+    def _autoSyncAllTopoPoses(self) -> None:
+        """Auto: repère global unique => synchroniser *tous* les topoWorld auto depuis la géométrie monde."""
+        for scen in (self.scenarios or []):
+            if getattr(scen, "source_type", "manual") != "auto":
+                continue
+            self._ensureScenarioTopo(scen)
+            self._syncScenarioPosesToCoreFromGeometry(scen)
+
+
     def _ensureScenarioTopo(self, scen: ScenarioAssemblage) -> None:
         """Garantit que le scénario possède un topoScenarioId + un TopologyWorld.
 
@@ -7364,6 +7430,25 @@ class TriangleViewerManual(
 
             return "break"
 
+        # Validation d'une rotation en cours : le clic gauche sert à COMMIT, pas à re-sélectionner.
+        if isinstance(self._sel, dict) and self._sel.get("mode") == "rotate_group":
+            if self._sel.get("auto_geom"):
+                self._autoSyncAllTopoPoses()
+                # Persistance "Même dernier run" (carte, ordre)
+                if self.auto_geom_state is not None:
+                    self._simulationPersistCurrentAutoPlacement(save=True)
+            else:
+                # Manuel: sync classique du groupe vers le core
+                gid_sync = self._sel.get("gid")
+                if gid_sync is not None:
+                    self._sync_group_elements_pose_to_core(int(gid_sync))
+
+
+            self._sel = None
+            self._reset_assist()
+            self._redraw_from(self._last_drawn)
+            return "break"
+
         # Nouveau clic gauche : purge l'éventuelle aide précédente (évite les fantômes)
         # et masque le tooltip s'il est visible.
         self._hide_tooltip()
@@ -7676,9 +7761,7 @@ class TriangleViewerManual(
             else:
                 self._clear_nearest_line()
                 self._clear_edge_highlights()
-        elif self._sel["mode"] == "rotate":
-            # désormais la rotation est gérée dans <Motion> (pas besoin de maintenir le clic)
-            pass
+
 
     def _on_canvas_left_up(self, event):
         # Horloge : fin de drag
@@ -7989,19 +8072,6 @@ class TriangleViewerManual(
             self._redraw_from(self._last_drawn)
             return
 
-
-        # NOTE: rotate_group : commit la pose au relâchement (pas pendant le drag)
-        if mode == "rotate_group":
-            gid_sync = self._sel.get("gid") if isinstance(self._sel, dict) else None
-            if gid_sync is not None:
-                # NOTE: scénarios auto utilisent auto_geom_state (transform global), on ne force pas la pose groupe.
-                # Il faudra revor ce point quadn on fait l'implémentation du mode auto
-                if not self._sel.get("auto_geom"):
-                    self._sync_group_elements_pose_to_core(int(gid_sync))
-
-        if isinstance(self._sel, dict) and self._sel.get("mode") == "rotate_group" and self._sel.get("auto_geom") and self.auto_geom_state is not None:
-            self._simulationPersistCurrentAutoPlacement(save=True)
-        
         # Autres modes : on nettoie juste 
         self._sel = None
         self._reset_assist()
