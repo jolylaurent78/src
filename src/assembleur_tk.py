@@ -698,7 +698,7 @@ class TriangleViewerManual(
             pL = np.array(el.vertex_local_xy.get(2, (0.0, 0.0)), dtype=float)
 
             # mirrored = état "flip" uniquement (par défaut False à la pose initiale)
-            mirrored = bool(tri.get("poseMirrored", False))
+            mirrored = bool(tri.get("mirrored", False))
 
             # local effectif : si flip, on applique une réflexion locale M (le Core appliquera aussi mirrored)
             # NB: On fit R,T sur X' = M@X afin d'obtenir Y ≈ R @ (M @ X) + T.
@@ -728,7 +728,7 @@ class TriangleViewerManual(
         Objectif:
         - éviter l'approximation "angle(O->B) + T=O"
         - fitter proprement (O,B,L) pour obtenir R (rotation pure det=+1) + T
-        - mirrored est réservé au flip utilisateur (poseMirrored) et n'est pas déduit d'orient Excel ici.
+        - mirrored est réservé au flip utilisateur (mirrored) et n'est pas déduit d'orient Excel ici.
         """
         if not (0 <= int(tid) < len(self._last_drawn)):
             return
@@ -759,7 +759,7 @@ class TriangleViewerManual(
         pL = np.array(el.vertex_local_xy.get(2, (0.0, 0.0)), dtype=float)
 
         # mirrored = flip utilisateur uniquement
-        mirrored = bool(tri.get("poseMirrored", False))
+        mirrored = bool(tri.get("mirrored", False))
         M = np.array([[1.0, 0.0], [0.0, -1.0]], dtype=float)
         pO2 = (M @ pO) if mirrored else pO
         pB2 = (M @ pB) if mirrored else pB
@@ -773,9 +773,11 @@ class TriangleViewerManual(
         H = Xc.T @ Yc
         U, _S, Vt = np.linalg.svd(H)
         R = (Vt.T @ U.T)
+
         if np.linalg.det(R) < 0.0:
             Vt[1, :] *= -1.0
             R = (Vt.T @ U.T)
+
         T = Y.mean(axis=0) - (R @ X.mean(axis=0))
 
         #  On pose toujours un triangle avec mirrored = 0. L'état a déjà été pris en compte dans les coordonnées locales
@@ -818,7 +820,7 @@ class TriangleViewerManual(
             pB = np.array(el.vertex_local_xy.get(1, (0.0, 0.0)), dtype=float)
             pL = np.array(el.vertex_local_xy.get(2, (0.0, 0.0)), dtype=float)
 
-            mirrored = bool(tri.get("poseMirrored", False))
+            mirrored = bool(tri.get("mirrored", False))
             pO2 = (M @ pO) if mirrored else pO
             pB2 = (M @ pB) if mirrored else pB
             pL2 = (M @ pL) if mirrored else pL
@@ -831,9 +833,11 @@ class TriangleViewerManual(
             H = Xc.T @ Yc
             U, _S, Vt = np.linalg.svd(H)
             R = (Vt.T @ U.T)
+
             if np.linalg.det(R) < 0.0:
                 Vt[1, :] *= -1.0
                 R = (Vt.T @ U.T)
+
             T = Y.mean(axis=0) - (R @ X.mean(axis=0))
 
             world.setElementPose(str(element_id), R=R, T=T, mirrored=mirrored)
@@ -5898,8 +5902,8 @@ class TriangleViewerManual(
             "labels": tri["labels"],
             "pts": Pw,
             "id": tri.get("id"),
-            "mirrored": tri.get("mirrored", False),
-        })
+            "mirrored": False,
+            })
         new_tid = len(self._last_drawn) - 1
 
 
@@ -5942,9 +5946,9 @@ class TriangleViewerManual(
 
                     # --- Orientation source (définition triangle) ---
                     # On l'enregistre côté Tk, et on en déduit le miroir de POSE (pas le miroir visuel Tk).
-                    # Convention: poseMirrored=False.. utilsé uniquement pour le flip 
+                    # Convention: mirrored=False.. utilsé uniquement pour le flip 
                     self._last_drawn[new_tid]["orient"] = orient
-                    self._last_drawn[new_tid]["poseMirrored"] = False
+                    self._last_drawn[new_tid]["mirrored"] = False
 
                     # labels/types : O/B/L dans l’ordre topo.
                     # (convention projet actuelle : O="Bourges", B=row["B"], L=row["L"])

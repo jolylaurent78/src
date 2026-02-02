@@ -288,29 +288,6 @@ class AlgorithmeAssemblage:
         """Lance la simulation et retourne une liste de scénarios."""
         raise NotImplementedError
 
-# --- Simulation d'une pose (pour filtrer le chevauchement après collage) ---
-def _apply_R_T_on_P(P: Dict[str,np.ndarray], R: np.ndarray, T: np.ndarray, pivot: np.ndarray) -> Dict[str,np.ndarray]:
-    """Applique une rotation R autour de 'pivot' puis une translation T aux points P."""
-    out = {}
-    for k in ("O","B","L"):
-        v = np.array(P[k], dtype=float)
-        out[k] = (R @ (v - pivot)) + pivot + T
-    return out
-
-def _pose_params(Pm: Dict[str,np.ndarray], am: str, bm: str, Vm: np.ndarray,
-                 Pt: Dict[str,np.ndarray], at: str, bt: str, Vt: np.ndarray):
-    """Retourne (R, T, pivot) pour la pose 'am->bm' alignée sur 'at->bt' avec Vm→Vt."""
-    vm_dir = np.array(Pm[bm], float) - np.array(Pm[am], float)
-    vt_dir = np.array(Pt[bt], float) - np.array(Pt[at], float)
-    ang_m = math.atan2(vm_dir[1], vm_dir[0])
-    ang_t = math.atan2(vt_dir[1], vt_dir[0])
-    dtheta = ang_t - ang_m
-    c, s = math.cos(dtheta), math.sin(dtheta)
-    R = np.array([[c, -s],[s, c]], float)
-    pivot = np.array(Vm, float)
-    Vm_rot = (R @ (np.array(Pm[am], float) - pivot)) + pivot
-    T = np.array(Vt, float) - Vm_rot
-    return R, T, pivot
 
 def createTopoQuadrilateral(
     *,
@@ -679,13 +656,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             raise ValueError("Aucune arête commune détectée entre les 2 triangles (tolérance 0.1%).")
 
         (_, (a1, b1), (a2, b2)) = best
-
-        def _edge_code(a: str, b: str) -> str | None:
-            s = {a, b}
-            if s == {"O", "B"}: return "OB"
-            if s == {"B", "L"}: return "BL"
-            if s == {"L", "O"}: return "LO"
-            return None
 
         def _ensure_element_from_local(
             *,
@@ -1516,6 +1486,30 @@ class MoteurSimulationAssemblage:
             "pts": P,
         }
 
+    def _pose_params(self, Pm: Dict[str,np.ndarray], am: str, bm: str, Vm: np.ndarray,
+                    Pt: Dict[str,np.ndarray], at: str, bt: str, Vt: np.ndarray):
+        """Retourne (R, T, pivot) pour la pose 'am->bm' alignée sur 'at->bt' avec Vm→Vt."""
+        vm_dir = np.array(Pm[bm], float) - np.array(Pm[am], float)
+        vt_dir = np.array(Pt[bt], float) - np.array(Pt[at], float)
+        ang_m = math.atan2(vm_dir[1], vm_dir[0])
+        ang_t = math.atan2(vt_dir[1], vt_dir[0])
+        dtheta = ang_t - ang_m
+        c, s = math.cos(dtheta), math.sin(dtheta)
+        R = np.array([[c, -s],[s, c]], float)
+        pivot = np.array(Vm, float)
+        Vm_rot = (R @ (np.array(Pm[am], float) - pivot)) + pivot
+        T = np.array(Vt, float) - Vm_rot
+        return R, T, pivot
+
+    # --- Simulation d'une pose (pour filtrer le chevauchement après collage) ---
+    def _apply_R_T_on_P(self, P: Dict[str,np.ndarray], R: np.ndarray, T: np.ndarray, pivot: np.ndarray) -> Dict[str,np.ndarray]:
+        """Applique une rotation R autour de 'pivot' puis une translation T aux points P."""
+        out = {}
+        for k in ("O","B","L"):
+            v = np.array(P[k], dtype=float)
+            out[k] = (R @ (v - pivot)) + pivot + T
+        return out
+
     def pose_points_on_edge(
         self,
         Pm: Dict[str, np.ndarray], am: str, bm: str,
@@ -1523,6 +1517,6 @@ class MoteurSimulationAssemblage:
         Vm: np.ndarray, Vt: np.ndarray,
     ) -> Dict[str, np.ndarray]:
         """Pose Pm (mobile) : aligne am→bm sur at→bt, en collant le point Vm sur Vt."""
-        R, T, pivot = _pose_params(Pm, am, bm, Vm, Pt, at, bt, Vt)
-        return _apply_R_T_on_P(Pm, R, T, pivot)
+        R, T, pivot = self._pose_params(Pm, am, bm, Vm, Pt, at, bt, Vt)
+        return self._apply_R_T_on_P(Pm, R, T, pivot)
 

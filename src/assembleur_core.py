@@ -2299,7 +2299,7 @@ class TopologyWorld:
         return el.get_pose()
 
     def setElementPose(self, element_id: str, R: np.ndarray, T: np.ndarray, mirrored: bool | None = None) -> None:
-        """Assigne la pose d'un élément (R,T,mirrored)."""
+        """Assigne la pose d'un élément (R,T,j'ai )."""
         el = self.elements.get(str(element_id))
         if el is None:
             raise ValueError(f"Element inconnu: {element_id}")
