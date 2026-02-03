@@ -292,7 +292,6 @@ class AlgorithmeAssemblage:
 def createTopoQuadrilateral(
     *,
     world: TopologyWorld,
-    topoScenarioId: str,
     triangleMobFromId: int,
     triangleMobToId: int,
     triangleMobFrom: dict,
@@ -319,11 +318,6 @@ def createTopoQuadrilateral(
       - topoGroupId (après commit)
     """
 
-    if world is None:
-        raise ValueError("createTopoQuadrilateral: world manquant")
-    topoScenarioId = str(topoScenarioId or "").strip()
-    if not topoScenarioId:
-        raise ValueError("createTopoQuadrilateral: topoScenarioId manquant")
 
     # --- helpers locaux ---
     def _edge_len(P: Dict[str, np.ndarray], a: str, b: str) -> float:
@@ -369,8 +363,8 @@ def createTopoQuadrilateral(
     world.beginTopoTransaction()
     try:
         # --- 1) IDs éléments (déterministes) ---
-        elementIdOdd = TopologyWorld.format_element_id(topoScenarioId, int(triangleMobFromId))
-        elementIdEven = TopologyWorld.format_element_id(topoScenarioId, int(triangleMobToId))
+        elementIdOdd = TopologyWorld.format_element_id(int(triangleMobFromId))
+        elementIdEven = TopologyWorld.format_element_id(int(triangleMobToId))
 
         # --- 2) Créer les 2 éléments (si absents) ---
         _ensure_element_from_local(
@@ -610,7 +604,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
         v = engine.viewer
 
         topoScenarioId = "SA_AUTO"
-        topoWorld0 = TopologyWorld(topoScenarioId)
+        topoWorld0 = TopologyWorld()
 
         t1 = engine.build_local_triangle(tri1_id)
         t2 = engine.build_local_triangle(tri2_id)
@@ -688,18 +682,16 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
 
         def _assign_topo_element_id_to_last_drawn(
             *,
-            topo_scenario_id: str,
             entry: dict,
         ) -> str:
             tri_id = int(entry.get("id"))
-            elem_id = TopologyWorld.format_element_id(topo_scenario_id, tri_id)
+            elem_id = TopologyWorld.format_element_id(tri_id)
             entry["topoElementId"] = elem_id
             return elem_id
 
         def _bootstrap_topo_first_pair(
             *,
             world: TopologyWorld,
-            topoScenarioId: str,
             tri1_id: int,
             tri2_id: int,
             t1: dict,
@@ -721,7 +713,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
 
             topoGroupId, elementIdOdd, elementIdEven, _, _ = createTopoQuadrilateral(
                 world=world,
-                topoScenarioId=topoScenarioId,
                 triangleMobFromId=int(tri1_id),
                 triangleMobToId=int(tri2_id),
                 triangleMobFrom=t1,
@@ -844,10 +835,9 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                     "group_id": 1,
                     "group_pos": 1,
                 })
-                topoWorld_scen = TopologyWorld(topoScenarioId)
+                topoWorld_scen = TopologyWorld()
                 _bootstrap_topo_first_pair(
                     world=topoWorld_scen,
-                    topoScenarioId=topoScenarioId,
                     tri1_id=tri1_id,
                     tri2_id=tri2_id,
                     t1=t1,
@@ -920,8 +910,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 "group_pos": 1,
             },
         ]
-        _assign_topo_element_id_to_last_drawn(topo_scenario_id=topoScenarioId, entry=base_last[0])
-        _assign_topo_element_id_to_last_drawn(topo_scenario_id=topoScenarioId, entry=base_last[1])
+        _assign_topo_element_id_to_last_drawn(entry=base_last[0])
+        _assign_topo_element_id_to_last_drawn(entry=base_last[1])
 
         def _orient_O_to_L_north(P: Dict[str,np.ndarray]) -> Dict[str,np.ndarray]:
             P = {k: np.array(P[k], dtype=float) for k in ("O","B","L")}
@@ -989,7 +979,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
 
         _bootstrap_topo_first_pair(
             world=topoWorld0,
-            topoScenarioId=topoScenarioId,
             tri1_id=tri1_id,
             tri2_id=tri2_id,
             t1=t1,
@@ -1037,7 +1026,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                     # --- Phase 3 : création du quadrilatère topo mobile (UNE FOIS)
                     createTopoQuadrilateral(
                         world=topoWorld_prev,
-                        topoScenarioId=topoScenarioId,
                         triangleMobFromId=triangleMobFromId,
                         triangleMobToId=triangleMobToId,
                         triangleMobFrom=triangleMobFrom,
@@ -1063,7 +1051,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                         "group_pos": pos0,
                     })
                     _assign_topo_element_id_to_last_drawn(
-                        topo_scenario_id=topoScenarioId,
                         entry=last_drawn_base[pos0],
                     )
 
@@ -1077,7 +1064,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                         "group_pos": pos1,
                     })
                     _assign_topo_element_id_to_last_drawn(
-                        topo_scenario_id=topoScenarioId,
                         entry=last_drawn_base[pos1],
                     )
 
@@ -1161,10 +1147,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                 "group_id": 1,
                                 "group_pos": pos0,
                             })
-                            elem_id_odd = _assign_topo_element_id_to_last_drawn(
-                                topo_scenario_id=topoScenarioId,
-                                entry=last_drawn_new[pos0],
-                            )
+                            elem_id_odd = _assign_topo_element_id_to_last_drawn(entry=last_drawn_new[pos0])
                             last_drawn_new[pos0]["_chain_edge_in"] = mobEdgeAtL
                             pos1 = len(last_drawn_new)
                             last_drawn_new.append({
@@ -1175,10 +1158,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                 "group_id": 1,
                                 "group_pos": pos1,
                             })
-                            elem_id_even = _assign_topo_element_id_to_last_drawn(
-                                topo_scenario_id=topoScenarioId,
-                                entry=last_drawn_new[pos1],
-                            )
+                            elem_id_even = _assign_topo_element_id_to_last_drawn(entry=last_drawn_new[pos1])
                             # décision de raccord: destEdgeAtL (côté ancre), mobEdgeAtL (côté mobile odd)
                             candKey = f"{baseKey}|{int(triangleMobFromId)}:{mobEdgeAtL}->{destEdgeAtL}"
 

@@ -88,15 +88,9 @@ def saveScenarioXml(viewer, path: str):
       - associations triangle→mot (word,row,col).
     """
     scen = viewer._get_active_scenario()
-    if scen is None:
-        raise ValueError("saveScenarioXml: aucun scenario actif, sauvegarde v4 impossible.")
+    world = scen.topoWorld
 
-    viewer._ensureScenarioTopo(scen)
-    world = getattr(scen, "topoWorld", None)
-    if world is None:
-        raise ValueError("saveScenarioXml: topoWorld absent apres _ensureScenarioTopo.")
-
-    topo_tx_orientation = str(getattr(world, "_topoTxOrientation", "") or "").strip().lower()
+    topo_tx_orientation = world._topoTxOrientation
     if topo_tx_orientation not in {"cw", "ccw"}:
         raise ValueError(
             f"saveScenarioXml: _topoTxOrientation invalide ({topo_tx_orientation!r}), attendu 'cw' ou 'ccw'."
@@ -454,8 +448,10 @@ def loadScenarioXml(viewer, path: str):
                     raise ValueError(f"Scenario XML invalide: edge_in={ein!r} (gid={gid} i={nd_i})")
                 if eout is not None and eout not in allowed_edges:
                     raise ValueError(f"Scenario XML invalide: edge_out={eout!r} (gid={gid} i={nd_i})")
+                # v4 : edge_in utilisé par la simulation d'assemblage automatique
+                # on laisse None 
                 if nd_i > 0 and not ein:
-                    raise ValueError(f"Scenario XML invalide: edge_in manquant (gid={gid} i={nd_i})")
+                    nd["edge_in"] = None
 
                 nodes.append(nd)
                 viewer._last_drawn[tid]["group_id"] = gid
@@ -481,11 +477,12 @@ def loadScenarioXml(viewer, path: str):
 
     sid = str(getattr(scen, "topoScenarioId", "") or "").strip() or "SCENARIO"
     scen.topoScenarioId = sid
-    scen.topoWorld = TopologyWorld(sid)
+    scen.topoWorld = TopologyWorld()
     world = scen.topoWorld
     world._topoTxOrientation = topo_tx_orientation
     world._importPhysicalSnapshot(snapshot)
 
+    # On construit une table elem_id_by_rank qui contient la liste des Triangles Txx du core
     elem_id_by_rank = {}
     for _eid in world.elements.keys():
         _rank = world.__class__.parse_tri_rank_from_element_id(_eid)
@@ -494,7 +491,9 @@ def loadScenarioXml(viewer, path: str):
         if _rank not in elem_id_by_rank:
             elem_id_by_rank[_rank] = str(_eid)
 
+    # On prend tous les elements de lastdrawn et on vérifie qu'ils sont bien mappés avec le core
     for t in viewer._last_drawn:
+        # On remappe chaque triangle
         tid = t.get("id", "?")
         topo_element_id = t.get("topoElementId", None)
         if topo_element_id in (None, ""):
@@ -506,9 +505,9 @@ def loadScenarioXml(viewer, path: str):
         if topo_element_id not in world.elements:
             raise ValueError(f"Triangle {tid} references missing topoElementId {topo_element_id}.")
 
-        canonical_gid = world.find_group(topo_element_id)
+        gid = world.get_group_of_element(topo_element_id)
         if t.get("topoGroupId") in (None, ""):
-            t["topoGroupId"] = canonical_gid
+            t["topoGroupId"] = gid
 
     for gid, g in (viewer.groups or {}).items():
         nodes = list((g or {}).get("nodes", []) or [])
@@ -524,7 +523,7 @@ def loadScenarioXml(viewer, path: str):
                 raise ValueError(
                     f"Triangle {tri.get('id', tid)} references missing topoElementId {topo_element_id}."
                 )
-            cgid = world.find_group(str(topo_element_id))
+            cgid = world.get_group_of_element(str(topo_element_id))
             if canonical_gid is None:
                 canonical_gid = cgid
             elif str(canonical_gid) != str(cgid):

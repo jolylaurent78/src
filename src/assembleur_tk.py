@@ -568,9 +568,6 @@ class TriangleViewerManual(
         manual.map_state = self._capture_map_state()
         self.scenarios.append(manual)
 
-        # Initialiser la topologie du scénario manuel de base
-        self._ensureScenarioTopo(manual)
-
         # --- Horloge (overlay fixe) : état par défaut ---
         # hour peut être un float (si l'aiguille des heures avance avec les minutes)
         self._clock_state = {"hour": 5.0, "minute": 9, "label": "Trouver — (5h, 9')"}
@@ -848,32 +845,8 @@ class TriangleViewerManual(
         for scen in (self.scenarios or []):
             if getattr(scen, "source_type", "manual") != "auto":
                 continue
-            self._ensureScenarioTopo(scen)
             self._syncScenarioPosesToCoreFromGeometry(scen)
 
-
-    def _ensureScenarioTopo(self, scen: ScenarioAssemblage) -> None:
-        """Garantit que le scénario possède un topoScenarioId + un TopologyWorld.
-
-        Décision : 1 world par scénario (pas global).
-        - manuels : SM1, SM2...
-        - autos   : SA1, SA2...
-        """
-        if scen is None:
-            return
-        if getattr(scen, "topoWorld", None) is not None and getattr(scen, "topoScenarioId", None):
-            return
-
-        src = str(getattr(scen, "source_type", "manual") or "manual").strip().lower()
-        if src == "auto":
-            sid = f"SA{self._topo_next_auto_id}"
-            self._topo_next_auto_id += 1
-        else:
-            sid = f"SM{self._topo_next_manual_id}"
-            self._topo_next_manual_id += 1
-
-        scen.topoScenarioId = sid
-        scen.topoWorld = TopologyWorld(sid)
 
     def _get_active_scenario(self) -> ScenarioAssemblage | None:
         if not self.scenarios:
@@ -886,16 +859,10 @@ class TriangleViewerManual(
     def _on_export_topodump_key(self, event=None):
         """Export TopoDump_<scenarioId>.xml du scénario actif (F11/F12)."""
         scen = self._get_active_scenario()
-        if scen is None:
-            return
-        self._ensureScenarioTopo(scen)
-        sid = str(getattr(scen, "topoScenarioId", "") or "").strip()
-        world = getattr(scen, "topoWorld", None)
-        if not sid or world is None:
-            return
-        out_name = f"TopoDump_{sid}.xml"
+        world = scen.topoWorld
+        out_name = f"TopoDump.xml"
         out_path = os.path.join(self.topo_xml_dir, out_name)
-        world.export_topo_dump_xml(sid, out_path, orientation="cw")
+        world.export_topo_dump_xml(out_path, orientation="cw")
         self.status.config(text=f"TopoDump exporté : {out_name}")
 
     # ---------- Dictionnaire : init ----------
@@ -3129,7 +3096,7 @@ class TriangleViewerManual(
         new_scen = ScenarioAssemblage(name=name, source_type="manual")
         new_scen.last_drawn = clone_last_drawn_world(getattr(scen, "last_drawn", None))
         new_scen.groups = clone_groups(getattr(scen, "groups", None))
-        self._ensureScenarioTopo(new_scen)
+        new_scen.topoWorld = scen.topoWorld.clonePhysicalState()
 
         # copier quelques métadonnées utiles
         for attr in ("algo_id", "tri_ids", "status"):
@@ -3173,9 +3140,6 @@ class TriangleViewerManual(
 
         scen = self.scenarios[index]
         self.active_scenario_index = index
-
-        # Assurer la topologie (1 world par scénario)
-        self._ensureScenarioTopo(scen)
 
         # Rattacher les structures géométriques du scénario courant
         self._last_drawn = scen.last_drawn
@@ -3306,7 +3270,6 @@ class TriangleViewerManual(
         # Scénario vide : nouvelles structures indépendantes
         scen.last_drawn = []
         scen.groups = {}
-        self._ensureScenarioTopo(scen)
 
         self.scenarios.append(scen)
         # Bascule sur ce nouveau scénario
@@ -3374,7 +3337,7 @@ class TriangleViewerManual(
         dup.last_drawn = copy.deepcopy(src.last_drawn)
         dup.groups = copy.deepcopy(src.groups)
         dup.status = src.status
-        self._ensureScenarioTopo(dup)
+        dup.topoWorld = src.topoWorld.clonePhysicalState()
 
         self.scenarios.append(dup)
         self._refresh_scenario_listbox()
@@ -5067,8 +5030,7 @@ class TriangleViewerManual(
             if topoWorld is not None and v_world is not None and vkey in ("O", "B", "L"):
                 vkey_to_n = {"O": 0, "B": 1, "L": 2}
                 triNum = int(self._last_drawn[idx].get("id", idx + 1))
-                scenario_id = scen.topoScenarioId if scen.topoScenarioId else scen.scenarioId
-                nodeId = f"{scenario_id}:T{triNum:02d}:N{vkey_to_n[vkey]}"
+                nodeId = topoWorld.format_node_id(element_id=f"T{triNum:02d}", vertex_index=vkey_to_n[vkey])
 
                 lines = ["Noeuds:"]
                 phys_nodes = topoWorld.getPhysicalNodesForConceptNode(nodeId)
@@ -5882,8 +5844,6 @@ class TriangleViewerManual(
 
         # --- Topologie (Core) : créer element + groupe singleton + pose monde au niveau groupe ---
         scen = self._get_active_scenario()
-        if scen is not None:
-            self._ensureScenarioTopo(scen)
 
         # 1) Ajout de l'item dans le document
         self._last_drawn.append({
@@ -5911,7 +5871,7 @@ class TriangleViewerManual(
 
             # Construire l'élément topo uniquement si on a un tri_rank valide
             if tri_rank_i is not None and tri_rank_i >= 1:
-                element_id = TopologyWorld.format_element_id(sid, tri_rank_i)
+                element_id = TopologyWorld.format_element_id(tri_rank_i)
                 world = scen.topoWorld
                 world.beginTopoTransaction()
                 try:
@@ -7917,8 +7877,6 @@ class TriangleViewerManual(
                 # ------------------------------------------------------------
                 new_core_gid = None
                 scen = self._get_active_scenario()
-                if scen is not None:
-                    self._ensureScenarioTopo(scen)
                 world = scen.topoWorld
 
                 tgt_gid = self._last_drawn[idx_t].get("group_id", None)

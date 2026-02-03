@@ -74,7 +74,7 @@ class ScenarioAssemblage:
         # État géométrique associé au scénario
         self.last_drawn: List[Dict] = []         # même structure que viewer._last_drawn
         self.groups: Dict[int, Dict] = {}        # même structure que viewer.groups
-        self.topoWorld = None                    # TopologyWorld (auto: clone physique par branche)
+        self.topoWorld = TopologyWorld()         # TopologyWorld
 
         # --- Vue & Carte ---
         # Vue: zoom + offset (pan). Stockée pour retrouver exactement l'affichage au switch.
@@ -94,10 +94,10 @@ class ScenarioAssemblage:
 # =============================================================================
 #
 # Convention d’identifiants lisibles :
-# - Element (triangle instance) : "<scenarioId>:T<triRank:02d>"         ex: "S1:T01"
-# - Node atomique (par sommet) : "<scenarioId>:T<triRank:02d}:N<idx>"   ex: "S1:T01:N0"
-# - Group (DSU)                : "<scenarioId>:G<k:03d>"                ex: "S1:G001"
-# - Attachment                 : "<scenarioId>:A<k:03d>"                ex: "S1:A003"
+# - Element (triangle instance) : "T<triRank:02d>"         ex: "T01"
+# - Node atomique (par sommet) : "T<triRank:02d}:N<idx>"   ex: "T01:N0"
+# - Group (DSU)                : "G<k:03d>"                ex: "G001"
+# - Attachment                 : "A<k:03d>"                ex: "A003"
 #
 # Remarques :
 # - Les IDs sont des strings pour une lisibilité maximale (TopoDump XML).
@@ -215,7 +215,7 @@ class TopologyAttachment:
     def __init__(self, attachment_id: str | None, kind: str,
                  feature_a: TopologyFeatureRef, feature_b: TopologyFeatureRef,
                  params: dict | None = None, source: str = "manual"):
-        self.attachment_id = str(attachment_id)
+        self.attachment_id = None if attachment_id is None else str(attachment_id)
         self.kind = str(kind)
         self.feature_a = feature_a
         self.feature_b = feature_b
@@ -892,8 +892,7 @@ class TopologyWorld:
     - Applique vertex↔vertex, vertex↔edge et edge↔edge (mapping direct|reverse) au niveau DSU + coverages.
     - Dégrouper/undo = suppression d’attaches puis rebuild complet (petits scénarios).
     """
-    def __init__(self, scenario_id: str):
-        self.scenario_id = str(scenario_id)
+    def __init__(self):
         self.fusion_distance_km: float = 1.0
 
         # Repère "monde" pour les calculs d'azimut (0°=Nord, sens horaire).
@@ -2109,15 +2108,24 @@ class TopologyWorld:
 
     # --- IDs helpers ---
     @staticmethod
-    def format_element_id(scenario_id: str, tri_rank_1based: int) -> str:
-        return f"{scenario_id}:T{int(tri_rank_1based):02d}"
+    def format_element_id(tri_rank_1based: int) -> str:
+        return f"T{int(tri_rank_1based):02d}"
 
+    def format_edge_id(self, element_id: str, edge_index: int) -> str:
+        return f"{str(element_id)}:E{int(edge_index)}"
+
+    def format_node_id(self, element_id: str, vertex_index: int) -> str:
+        return f"{str(element_id)}:N{int(vertex_index)}"
+
+    
     @staticmethod
     def parse_tri_rank_from_element_id(element_id: str) -> int | None:
-        m = re.search(r":T(\d+)$", str(element_id))
+        s = str(element_id or "").strip()
+        m = re.fullmatch(r"T(\d+)", s) or re.search(r":T(\d+)$", s)
         if not m:
             return None
         return int(m.group(1))
+
 
 
     # Azimut (C7) – Référence unique
@@ -2141,21 +2149,17 @@ class TopologyWorld:
         return float((a + 360.0) % 360.0)
 
 
-    def format_node_id(self, element_id: str, vertex_index: int) -> str:
-        tri = self.parse_tri_rank_from_element_id(element_id)
-        if tri is None:
-            return f"{self.scenario_id}:{element_id}:N{int(vertex_index)}"
-        return f"{self.scenario_id}:T{tri:02d}:N{int(vertex_index)}"
+
 
     def new_group_id(self) -> str:
         self._created_counter_groups += 1
-        gid = f"{self.scenario_id}:G{self._created_counter_groups:03d}"
+        gid = f"G{self._created_counter_groups:03d}"
         self._group_created_order[gid] = self._created_counter_groups
         return gid
 
     def new_attachment_id(self) -> str:
         self._created_counter_attachments += 1
-        return f"{self.scenario_id}:A{self._created_counter_attachments:03d}"
+        return f"A{self._created_counter_attachments:03d}"
 
     # --- DSU nodes ---
     def create_node_atomic(self, node_id: str, node_type: str) -> str:
@@ -2824,7 +2828,6 @@ class TopologyWorld:
             config_payload["vertex_edge_endpoint_epsilon"] = float(getattr(self, "vertex_edge_endpoint_epsilon"))
 
         return {
-            "scenario_id": str(self.scenario_id),
             "config": config_payload,
             "elements": elements_payload,
             "attachments": attachments_payload,
@@ -2918,7 +2921,7 @@ class TopologyWorld:
             raise ValueError("TopologyWorld.clonePhysicalState: transaction ouverte")
 
         snapshot = self._exportPhysicalSnapshot()
-        target = TopologyWorld(self.scenario_id)
+        target = TopologyWorld()
         target._importPhysicalSnapshot(snapshot)
         return target
 
@@ -2952,7 +2955,7 @@ class TopologyWorld:
             kept_atts.append(att)
 
         # 3) rebuild dans un nouveau world (propre)
-        neww = TopologyWorld(self.scenario_id)
+        neww = TopologyWorld()
         neww.fusion_distance_km = float(getattr(self, "fusion_distance_km", 1.0))
 
         # éviter collisions si on recrée des attachments plus tard
@@ -3001,29 +3004,45 @@ class TopologyWorld:
     # Helpers "Tooltip" (Core)
     # ------------------------------------------------------------------
     def _parseElementAndVertexIndexFromNodeId(self, node_id: str) -> tuple[str, int] | None:
-        """Parse un node_id atomique '<scenario>:Txx:Nn' -> (element_id, vertex_index)."""
-        m = re.search(r"^(.*):N(\d+)$", str(node_id))
+        """
+        Parse un node_id atomique 'Txx:Nn' -> (element_id, vertex_index).
+        Exemples valides :
+            'T01:N0' -> ('T01', 0)
+            'T12:N2' -> ('T12', 2)
+        """
+        if node_id is None:
+            return None
+
+        m = re.fullmatch(r"(T\d+):N(\d+)", str(node_id))
         if not m:
             return None
-        return (str(m.group(1)), int(m.group(2)))
+
+        element_id = m.group(1)
+        vertex_index = int(m.group(2))
+        return (element_id, vertex_index)
+
 
     def getAtomicNodeLabel(self, node_id: str) -> str:
-        """Retourne le label *métier* (ville) d'un node atomique.
+        """Retourne le label métier (ville) d'un node atomique.
         Fallback: 'N0', 'N1', ...
         """
         parsed = self._parseElementAndVertexIndexFromNodeId(str(node_id))
         if parsed is None:
-            return str(node_id).split(":")[-1]
+            return str(node_id)
+
         element_id, vidx = parsed
         el = self.elements.get(element_id)
         if el is None:
             return f"N{vidx}"
+
         # v4.3 : labels portés par TopologyVertex / vertex_labels
         if hasattr(el, "vertexes") and el.vertexes and 0 <= vidx < len(el.vertexes):
             return str(el.vertexes[vidx].label)
         if hasattr(el, "vertex_labels") and 0 <= vidx < len(el.vertex_labels):
             return str(el.vertex_labels[vidx])
+
         return f"N{vidx}"
+
 
     def getNodeType(self, nodeId: str) -> str:
         elementId, vidx = self._parseElementAndVertexIndexFromNodeId(nodeId)
@@ -3085,11 +3104,21 @@ class TopologyWorld:
         return "M"
 
     def _parseTriangleIdFromNodeId(self, node_id: str) -> str:
-        """Retourne 'Txx' à partir d'un node_id atomique '<scenario>:Txx:Nn'."""
-        m = re.search(r":T(\d+):N\d+$", str(node_id))
-        if m:
-            return f"T{int(m.group(1)):02d}"
-        return "T??"
+        """
+        Retourne 'Txx' à partir d'un node_id atomique 'Txx:Nn'.
+
+        Exemples :
+            'T01:N0' -> 'T01'
+            'T12:N2' -> 'T12'
+        """
+        if node_id is None:
+            return "T??"
+
+        m = re.fullmatch(r"(T\d+):N\d+", str(node_id))
+        if not m:
+            return "T??"
+        return m.group(1)
+
 
 
     def _localPointOnEdge(self, el: "TopologyElement", edge: "TopologyEdge", t: float) -> np.ndarray:
@@ -3217,13 +3246,12 @@ class TopologyWorld:
                                     )
         return errors
 
-    def export_topo_dump_xml(self, scenario_id: str, path: str, orientation: str = "cw") -> str:
+    def export_topo_dump_xml(self, path: str, orientation: str = "cw") -> str:
         self.assertNoPhysicalSplitPoints()
         root = _ET.Element("TopoDump", {
             "version": "4.3",
             "units": "km",
             "tFrame": "world",
-            "scenarioId": str(scenario_id),
         })
 
         groups_el = _ET.SubElement(root, "Groups")
