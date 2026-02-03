@@ -247,6 +247,9 @@ def plotScenarioWithToggles(
     Console friendly:
       from assembleur_debug import plotScenarioWithToggles
       plotScenarioWithToggles(last_drawn_base, topoWorld_prev)
+
+      from assembleur_debug import plotScenarioWithToggles
+      plotScenarioWithToggles(ld_new, topo_new)
     """
     plt.ion()
     fig, ax = plt.subplots()
@@ -288,6 +291,6 @@ def plotScenarioWithToggles(
 sid = "SA_AUTO"          # ou topoScenarioId réel si tu l’as
 from assembleur_core import export_topo_dump_xml
 out_path = r"D:\Dropbox\La Chouette\Python\AssembleurTriangles\exports\TopoXML\TopoDump_SA_AUTO_debug.xml"  
-topo_candidates.export_topo_dump_xml(out_path, orientation="cw")
+topoWorld_prev.export_topo_dump_xml(out_path, orientation="cw")
 
 """

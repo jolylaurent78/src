@@ -2901,7 +2901,7 @@ class TopologyWorld:
                     source=str(att.get("source", "manual")),
                 )
                 self.loadAttachment(attachment)
-                m = re.search(r":A(\d+)$", str(attachment.attachment_id))
+                m = re.search(r"(?:^A|:A)(\d+)$", str(attachment.attachment_id))
                 if m:
                     max_att_num = max(max_att_num, int(m.group(1)))
 
@@ -2924,81 +2924,6 @@ class TopologyWorld:
         target = TopologyWorld()
         target._importPhysicalSnapshot(snapshot)
         return target
-
-    def removeElementsAndRebuild(self, element_ids: list[str]) -> None:
-        """Supprime des éléments du world (et tout ce qui les référence), puis rebuild depuis les attachments restants.
-
-        - Purge les attachments dont featureA/featureB référence un élément supprimé.
-        - Reconstruit un world propre avec les éléments restants.
-        - Rejoue les attachments conservés (IDs conservés).
-        """
-        removed = {str(eid) for eid in (element_ids or []) if str(eid).strip()}
-        if not removed:
-            return
-
-        # 1) éléments conservés (snapshot complet)
-        kept_elements: list[TopologyElement] = []
-        kept_poses: dict[str, tuple[np.ndarray, np.ndarray, bool]] = {}
-        for eid, el in list(self.elements.items()):
-            if str(eid) in removed:
-                continue
-            kept_elements.append(el)
-            kept_poses[str(eid)] = el.get_pose()
-
-        # 2) attachments conservés
-        kept_atts: list[TopologyAttachment] = []
-        for att in self.attachments.values():
-            a = str(att.feature_a.element_id)
-            b = str(att.feature_b.element_id)
-            if a in removed or b in removed:
-                continue
-            kept_atts.append(att)
-
-        # 3) rebuild dans un nouveau world (propre)
-        neww = TopologyWorld()
-        neww.fusion_distance_km = float(getattr(self, "fusion_distance_km", 1.0))
-
-        # éviter collisions si on recrée des attachments plus tard
-        # (on se cale sur le max Axxx existant)
-        max_att_num = 0
-        for att in kept_atts:
-            m = re.search(r":A(\d+)$", str(att.attachment_id))
-            if m:
-                max_att_num = max(max_att_num, int(m.group(1)))
-        neww._created_counter_attachments = max_att_num
-
-        # re-créer les éléments (ne pas réutiliser les instances : on veut un état clean)
-        for old in kept_elements:
-            eid = str(old.element_id)
-            R, T, mirrored = kept_poses.get(eid, (np.eye(2), np.zeros(2), False))
-
-            clone = TopologyElement(
-                element_id=eid,
-                name=str(old.name),
-                vertex_labels=list(old.vertex_labels),
-                vertex_types=list(old.vertex_types),
-                edge_lengths_km=list(old.edge_lengths_km),
-                intrinsic_sides_km=dict(getattr(old, "intrinsic_sides_km", {}) or {}),
-                local_frame=dict(getattr(old, "local_frame", {}) or {}),
-                vertex_local_xy=dict(getattr(old, "vertex_local_xy", {}) or {}),
-                meta=dict(getattr(old, "meta", {}) or {}),
-            )
-            neww.add_element_as_new_group(clone)
-            neww.setElementPose(eid, R=R, T=T, mirrored=mirrored)
-
-        # rejouer les attachments conservés (IDs conservés)
-        for att in sorted(kept_atts, key=lambda a: str(a.attachment_id)):
-            neww.apply_attachment(att)
-
-        # on reconstruit les références aux groupes (sur le nouveau world)
-        neww.rebuildGroupElementLists()
-        for gid in sorted(neww.groups.keys()):
-            if gid == neww.find_group(gid):
-                neww.recomputeConceptAndBoundary(gid)
-
-        # 4) swap in-place (les refs Tk vers scen.topoWorld restent valides)
-        self.__dict__.clear()
-        self.__dict__.update(neww.__dict__)
 
     # ------------------------------------------------------------------
     # Helpers "Tooltip" (Core)
