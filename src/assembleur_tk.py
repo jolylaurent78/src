@@ -420,6 +420,8 @@ class TriangleViewerManual(
         # Épaisseur de trait (px) — utilisée pour le test de chevauchement "shrink seul"
         self.stroke_px = 2
 
+        # Le dico à créer
+        self.dicoSheet = None
         # Hauteur fixe du panneau "Dico" (en pixels) sous le canvas
         self.dico_panel_height = 290
         # État d'affichage du panneau dictionnaire (toggle via menu Visualisation)
@@ -835,7 +837,6 @@ class TriangleViewerManual(
         # Espace réservé: liste de fichiers du répertoire data (reconstruite dynamiquement)
         # On pose un placeholder que l'on remplace juste après.
         self._menu_triangle_files_start_index = self.menu_triangle.index("end") + 1 if self.menu_triangle.index("end") is not None else 2
-        self.menu_triangle.add_command(label="(scan en cours)")
 
         # Construit la liste de fichiers disponibles
         self._rebuild_triangle_file_list_menu()
@@ -1101,33 +1102,33 @@ class TriangleViewerManual(
         dans self.data_dir. Charge direct au clic.
         """
         m = self.menu_triangle
-        # Supprimer les anciens items listés entre la 1re séparatrice et la 2e.
-        # Organisation actuelle: [Ouvrir][sep][FICHIERS...][sep][Imprimer]
-        # On repère la 2e séparatrice en partant de la fin.
         last_index = m.index("end")
         if last_index is None:
             return
-        # Trouver l'index de la 2ème séparatrice (celle avant "Imprimer")
-        # Simplification: on sait que l’avant-dernier item est une séparatrice.
-        second_sep_index = last_index - 1
-        # On efface tous les items entre la 1re séparatrice (index 1) exclue et second_sep_index exclu
-        # Indices actuels: 0:"Ouvrir", 1:"sep", [2..n-2]=fichiers, n-1:"sep", n:"Imprimer"
-        # On retire de n-2 jusqu’à 2 pour éviter le décalage pendant la suppression
-        for i in range(second_sep_index - 1, 1, -1):
+
+        # Nouvelle organisation: [Ouvrir][sep][FICHIERS...]
+        files_start = 2  # 0:"Ouvrir", 1:"sep", 2..:"fichiers"
+        for i in range(last_index, files_start - 1, -1):
             m.delete(i)
 
-        # Repeupler
-        files = [f for f in os.listdir(self.data_dir) if f.lower().endswith(".xlsx")]
-
+        # On prend les fichiers Excel et on eclut les fichiers temporaires
+        files = [
+            f for f in os.listdir(self.data_dir)
+            if f.lower().endswith(".xlsx") and not f.lstrip().startswith("~$")
+        ]
         if not files:
-            m.insert_command(2, label="(aucun fichier trouvé dans data)", state="disabled")
-        else:
-            # Trier par nom lisible
-            files.sort(key=lambda s: s.lower())
-            for idx, fname in enumerate(files):
-                full = os.path.join(self.data_dir, fname)
-                # Insérer à partir de l’index 2 (après la 1re séparatrice)
-                m.insert_command(2 + idx, label=fname, command=lambda p=full: self.load_excel(p))
+            m.insert_command(files_start, label="(aucun fichier trouvé dans data)", state="disabled")
+            return
+
+        files.sort(key=lambda s: s.lower())
+        for idx, fname in enumerate(files):
+            full = os.path.join(self.data_dir, fname)
+            m.insert_command(
+                files_start + idx,
+                label=fname,
+                command=lambda p=full: self.open_excel(p)
+            )
+
 
     # ---------- Icônes ----------
     def _load_icon(self, filename: str):
@@ -1926,7 +1927,12 @@ class TriangleViewerManual(
                 # Important : si Chemins reste en stretch="always", il reprendra toute la hauteur.
                 pw.paneconfigure(chemins_frame, stretch="never")
                 pw.paneconfigure(chemins_frame, minsize=chemins_minsize_collapsed, height=chemins_minsize_collapsed)
+                # ... et Scénarios absorbe TOUT le reste => plus de vide en bas
+                pw.paneconfigure(scen_frame, stretch="always")
             else:
+                # Scénarios redevient "fixe" ...
+                pw.paneconfigure(scen_frame, stretch="never")
+
                 pw.paneconfigure(chemins_frame, stretch="always")
                 target_h = _calcCheminsExpandedHeightPx()
                 target_h = max(int(chemins_minsize_expanded), int(target_h))

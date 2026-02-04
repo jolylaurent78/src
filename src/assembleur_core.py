@@ -972,17 +972,10 @@ class TopologyWorld:
 
     def _markTopoTouched(self, group_id: str) -> None:
         gid = self.find_group(str(group_id))
-        print(
-            f"[TOPO-TOUCH] gid={gid} "
-            f"topoTxDepth={self._topoTxDepth}"
-        )
         if self._topoTxDepth > 0:
             self._topoTxTouchedGroups.add(gid)
             return
         
-        # hors transaction
-        print(f"[TOPO-TOUCH] WARNING: touch hors transaction pour gid={gid}")
-
     def recomputeConceptAndBoundary(self, group_id: str) -> None:
         gid = self.find_group(str(group_id))
         self.invalidateConceptGraph(gid)

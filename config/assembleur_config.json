@@ -1,7 +1,7 @@
 {
   "lastTriangleExcel": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_v7.xlsx",
-  "uiShowDicoPanel": false,
-  "uiShowClockOverlay": false,
+  "uiShowDicoPanel": true,
+  "uiShowClockOverlay": true,
   "bgSvgPath": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\maps\\899 - Alsace.jpg",
   "bgWorldRect": {
     "x0": -2100.39,

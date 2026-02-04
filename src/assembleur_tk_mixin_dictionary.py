@@ -12,7 +12,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 from tksheet import Sheet
 
-
+from src.DictionnaireEnigmes import DictionnaireEnigmes
 
 class TriangleViewerDictionaryMixin:
     """Mixin: méthodes extraites de assembleur_tk.py."""
