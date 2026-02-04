@@ -91,10 +91,6 @@ def saveScenarioXml(viewer, path: str):
     world = scen.topoWorld
 
     topo_tx_orientation = world._topoTxOrientation
-    if topo_tx_orientation not in {"cw", "ccw"}:
-        raise ValueError(
-            f"saveScenarioXml: _topoTxOrientation invalide ({topo_tx_orientation!r}), attendu 'cw' ou 'ccw'."
-        )
 
     snapshot = world._exportPhysicalSnapshot()
     if not isinstance(snapshot, dict):

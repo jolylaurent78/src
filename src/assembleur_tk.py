@@ -638,7 +638,7 @@ class TriangleViewerManual(
     # ======================================================================
     #  Topologie (bridge minimal Tk -> Core)
     # ======================================================================
-    def _sync_group_elements_pose_to_core(self, ui_gid: int) -> None:
+    def _sync_group_elements_pose_to_core(self, ui_gid: int, scen: ScenarioAssemblage = None) -> None:
         """Synchronise les poses (R,T,mirrored) de TOUS les éléments du groupe UI vers le Core.
 
         Important:
@@ -646,10 +646,9 @@ class TriangleViewerManual(
         - Le Core ne porte AUCUNE pose de groupe : les groupes sont topologiques.
         - La vérité géométrique persistable est donc : pose par élément.
         """
-        scen = self._get_active_scenario()
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
-        if world is None:
-            return
+        if scen is  None:
+            scen = self._get_active_scenario()
+        world = scen.topoWorld 
 
         grp = self.groups.get(ui_gid)
         if not grp:
@@ -719,134 +718,15 @@ class TriangleViewerManual(
 
             world.setElementPose(str(element_id), R=R, T=T, mirrored=mirrored)
 
-    def _sync_element_pose_to_core(self, tid: int) -> None:
-        """Sync la pose monde d'un SEUL élément Core à partir des points monde UI (Tk).
-
-        Objectif:
-        - éviter l'approximation "angle(O->B) + T=O"
-        - fitter proprement (O,B,L) pour obtenir R (rotation pure det=+1) + T
-        - mirrored est réservé au flip utilisateur (mirrored) et n'est pas déduit d'orient Excel ici.
-        """
-        if not (0 <= int(tid) < len(self._last_drawn)):
-            return
-        tri = self._last_drawn[int(tid)]
-        element_id = tri.get("topoElementId", None)
-        if not element_id:
-            return
-        scen = self._get_active_scenario()
-        if scen is None or getattr(scen, "topoWorld", None) is None:
-            return
-        world = scen.topoWorld
-        el = world.elements.get(str(element_id), None)
-        if el is None:
-            return
-
-        Pw = tri.get("pts", None)
-        if not isinstance(Pw, dict) or not all(k in Pw for k in ("O", "B", "L")):
-            return
-
-        # Points monde UI
-        Ow = np.array(Pw["O"], dtype=float)
-        Bw = np.array(Pw["B"], dtype=float)
-        Lw = np.array(Pw["L"], dtype=float)
-
-        # Points locaux "référence" issus du core (coords locales du triangle)
-        pO = np.array(el.vertex_local_xy.get(0, (0.0, 0.0)), dtype=float)
-        pB = np.array(el.vertex_local_xy.get(1, (0.0, 0.0)), dtype=float)
-        pL = np.array(el.vertex_local_xy.get(2, (0.0, 0.0)), dtype=float)
-
-        # mirrored = flip utilisateur uniquement
-        mirrored = bool(tri.get("mirrored", False))
-        M = np.array([[1.0, 0.0], [0.0, -1.0]], dtype=float)
-        pO2 = (M @ pO) if mirrored else pO
-        pB2 = (M @ pB) if mirrored else pB
-        pL2 = (M @ pL) if mirrored else pL
-
-        # Fit orthonormal 2D sur 3 points (Kabsch) — forcer det(R)=+1 (rotation pure)
-        X = np.stack([pO2, pB2, pL2], axis=0)  # (3,2)
-        Y = np.stack([Ow,  Bw,  Lw ], axis=0)  # (3,2)
-        Xc = X - X.mean(axis=0)
-        Yc = Y - Y.mean(axis=0)
-        H = Xc.T @ Yc
-        U, _S, Vt = np.linalg.svd(H)
-        R = (Vt.T @ U.T)
-
-        if np.linalg.det(R) < 0.0:
-            Vt[1, :] *= -1.0
-            R = (Vt.T @ U.T)
-
-        T = Y.mean(axis=0) - (R @ X.mean(axis=0))
-
-        #  On pose toujours un triangle avec mirrored = 0. L'état a déjà été pris en compte dans les coordonnées locales
-        world.setElementPose(str(element_id), R=R, T=T, mirrored=mirrored)
-
-
-    def _syncScenarioPosesToCoreFromGeometry(self, scen: ScenarioAssemblage) -> None:
-        """Sync les poses (R,T,mirrored) de TOUS les éléments d'un scénario vers son TopologyWorld,
-        en fittant sur les points monde déjà reconstruits (pts["O","B","L"])."""
-        if scen is None:
-            return
-        world = getattr(scen, "topoWorld", None)
-        if world is None:
-            return
-        last_drawn = getattr(scen, "last_drawn", None)
-        if not isinstance(last_drawn, list) or not last_drawn:
-            return
-
-        M = np.array([[1.0, 0.0], [0.0, -1.0]], dtype=float)
-
-        for tri in last_drawn:
-            element_id = tri.get("topoElementId", None)
-            if not element_id:
-                continue
-            el = world.elements.get(str(element_id))
-            if el is None:
-                continue
-
-            Pw = tri.get("pts", None) or tri.get("world_pts", None)
-            if not isinstance(Pw, dict) or not all(k in Pw for k in ("O", "B", "L")):
-                continue
-
-            # Points monde (issus de la géométrie UI déjà reconstruite)
-            Ow = np.array(Pw["O"], dtype=float)
-            Bw = np.array(Pw["B"], dtype=float)
-            Lw = np.array(Pw["L"], dtype=float)
-
-            # Points locaux (Core)
-            pO = np.array(el.vertex_local_xy.get(0, (0.0, 0.0)), dtype=float)
-            pB = np.array(el.vertex_local_xy.get(1, (0.0, 0.0)), dtype=float)
-            pL = np.array(el.vertex_local_xy.get(2, (0.0, 0.0)), dtype=float)
-
-            mirrored = bool(tri.get("mirrored", False))
-            pO2 = (M @ pO) if mirrored else pO
-            pB2 = (M @ pB) if mirrored else pB
-            pL2 = (M @ pL) if mirrored else pL
-
-            # Fit Kabsch (rotation pure det=+1) + translation
-            X = np.stack([pO2, pB2, pL2], axis=0)  # (3,2)
-            Y = np.stack([Ow,  Bw,  Lw ], axis=0)  # (3,2)
-            Xc = X - X.mean(axis=0)
-            Yc = Y - Y.mean(axis=0)
-            H = Xc.T @ Yc
-            U, _S, Vt = np.linalg.svd(H)
-            R = (Vt.T @ U.T)
-
-            if np.linalg.det(R) < 0.0:
-                Vt[1, :] *= -1.0
-                R = (Vt.T @ U.T)
-
-            T = Y.mean(axis=0) - (R @ X.mean(axis=0))
-
-            world.setElementPose(str(element_id), R=R, T=T, mirrored=mirrored)
-
 
     def _autoSyncAllTopoPoses(self) -> None:
         """Auto: repère global unique => synchroniser *tous* les topoWorld auto depuis la géométrie monde."""
         for scen in (self.scenarios or []):
             if getattr(scen, "source_type", "manual") != "auto":
                 continue
-            self._syncScenarioPosesToCoreFromGeometry(scen)
-
+            # On parcours chaque groupe du scénario automatique (en principe un seul) et on synchronise le core
+            for gid in scen.groups:
+                self._sync_group_elements_pose_to_core(gid, scen)
 
     def _get_active_scenario(self) -> ScenarioAssemblage | None:
         if not self.scenarios:
@@ -956,8 +836,7 @@ class TriangleViewerManual(
         # On pose un placeholder que l'on remplace juste après.
         self._menu_triangle_files_start_index = self.menu_triangle.index("end") + 1 if self.menu_triangle.index("end") is not None else 2
         self.menu_triangle.add_command(label="(scan en cours)")
-        self.menu_triangle.add_separator()
-        self.menu_triangle.add_command(label="Imprimer", command=self.print_triangles_dialog)
+
         # Construit la liste de fichiers disponibles
         self._rebuild_triangle_file_list_menu()
 
@@ -2992,53 +2871,61 @@ class TriangleViewerManual(
         if self.auto_geom_state is None:
             self.auto_geom_state = {"ox": float(anchor[0]), "oy": float(anchor[1]), "thetaDeg": 0.0}
 
-    def _autoRebuildWorldGeometry(self, redraw: bool = True):
-        """Recalcule scen.last_drawn (monde) pour tous les scénarios auto en mémoire, depuis last_drawn_local + auto_geom_state."""
+
+    def _autoRebuildWorldGeometryScenario(self, scen: ScenarioAssemblage = None) -> None:
         if self.auto_geom_state is None:
             return
+        if scen is None:
+            scen = self._get_active_scenario()
+        if scen.source_type != "auto":
+            return
+
+        # garantir la géométrie locale
+        self._autoEnsureLocalGeometry(scen)
+
+        local = scen.last_drawn_local
+        if not local:
+            return
+
         ox = float(self.auto_geom_state.get("ox", 0.0))
         oy = float(self.auto_geom_state.get("oy", 0.0))
         thetaDeg = float(self.auto_geom_state.get("thetaDeg", 0.0))
+
         th = math.radians(thetaDeg)
         c, s = math.cos(th), math.sin(th)
         R = np.array([[c, -s], [s, c]], dtype=float)
         origin = np.array([ox, oy], dtype=float)
 
-        active_idx = int(self.active_scenario_index or 0)
+        world = []
+        for tloc in local:
+            tt = dict(tloc)
+            Ploc = tloc.get("pts", {})
+            Pw = {}
+            for k in ("O", "B", "L"):
+                if k in Ploc:
+                    v = np.array(Ploc[k], dtype=float)
+                    Pw[k] = origin + (R @ v)
+            tt["pts"] = Pw
+            world.append(tt)
 
-        for i, scen in enumerate(self.scenarios or []):
-            if getattr(scen, "source_type", "manual") != "auto":
+        scen.last_drawn = world
+
+        # si c'est le scénario actif, on raccorde l'UI
+        if scen is self._get_active_scenario():
+            self._last_drawn = scen.last_drawn
+            self.groups = scen.groups
+            for gid in list(self.groups.keys()):
+                self._recompute_group_bbox(gid)
+
+
+    def _autoRebuildWorldGeometry(self, redraw: bool = True) -> None:
+        for scen in (self.scenarios or []):
+            if scen.source_type != "auto":
                 continue
-            self._autoEnsureLocalGeometry(scen)
-            local = getattr(scen, "last_drawn_local", None)
-            if not local:
-                continue
-
-            world = []
-            for tloc in local:
-                tt = dict(tloc)
-                Ploc = tloc.get("pts", {})
-                Pw = {}
-                for k in ("O", "B", "L"):
-                    if k in Ploc:
-                        v = np.array(Ploc[k], dtype=float)
-                        Pw[k] = origin + (R @ v)
-                tt["pts"] = Pw
-                world.append(tt)
-
-            scen.last_drawn = world
-
-            # si c'est le scénario actif, rattacher les pointeurs UI
-            if i == active_idx:
-                self._last_drawn = scen.last_drawn
-                self.groups = scen.groups
-                # recompute bbox groupes
-                if isinstance(self.groups, dict):
-                    for gid in list(self.groups.keys()):
-                        self._recompute_group_bbox(gid)
-
+            self._autoRebuildWorldGeometryScenario(scen)
         if redraw:
             self._redraw_from(self._last_drawn)
+
 
     def _autoInitFromGeneratedScenarios(self, base_idx: int, order: str):
         """Après génération d'autos, construit les géométries locales + initialise le transform global."""
@@ -3046,7 +2933,7 @@ class TriangleViewerManual(
             return
         for i in range(int(base_idx), len(self.scenarios)):
             scen = self.scenarios[i]
-            if getattr(scen, "source_type", "manual") != "auto":
+            if scen.source_type != "auto":
                 continue
             scen.autoOrder = str(order or "forward")
             # ensure local + possibly init auto_geom_state
@@ -3058,7 +2945,7 @@ class TriangleViewerManual(
     def _convertActiveAutoToManualSnapshot(self):
         """Convertit le scénario auto actif en un nouveau scénario manuel (snapshot monde), et retourne son index."""
         scen = self._get_active_scenario()
-        if scen is None or getattr(scen, "source_type", "manual") != "auto":
+        if scen.source_type != "auto":
             return None
 
         # Snapshot monde courant (déjà transformé par auto_geom_state)
@@ -4099,32 +3986,6 @@ class TriangleViewerManual(
         # Aucun triangle n'est encore utilisé dans le scénario actif        self._placed_ids = set()
         self._update_triangle_listbox_colors()
 
-    # ---------- Triangles (données locales) ----------
-    def _triangles_local(self, start, n):
-        """
-        Construit les triangles (coord. locales) à partir du DF pour [start:start+n].
-        Retour: liste de dict { 'labels':(O,B,L), 'pts':{'O','B','L'} }
-        """
-        if self.df is None or self.df.empty:
-            raise RuntimeError("Pas de données — ouvre d'abord l’Excel.")
-        sub = self.df.iloc[start:start+n]
-        out = []
-        for _, r in sub.iterrows():
-            P = _build_local_triangle(float(r["len_OB"]), float(r["len_OL"]), float(r["len_BL"]))
-            # Si orientation = CW, on applique une symétrie verticale (y -> -y)
-            ori = str(r.get("orient", "CCW")).upper()
-
-            if ori == "CW":
-                P = {"O": np.array([P["O"][0], -P["O"][1]]),
-                     "B": np.array([P["B"][0], -P["B"][1]]),
-                     "L": np.array([P["L"][0], -P["L"][1]])}
-            out.append({
-                "labels": ( "Bourges", str(r["B"]), str(r["L"]) ),  # O,B,L
-                "pts": P,
-                "id": int(r["id"]),
-                "mirrored": (ori == "CW"),
-            })
-        return out
 
     # ---------- Mise en page simple (aperçu brut) ----------
     def _triangle_from_index(self, idx):
@@ -4934,39 +4795,7 @@ class TriangleViewerManual(
                 self.canvas.coords(self._drag_preview_id, *coords)
             return
 
-        # 2) Mode rotation : suivre la souris sans bouton appuyé
-        if self._sel and self._sel.get("mode") == "rotate":
-            idx = self._sel["idx"]
-            sel = self._sel
-            pivot = sel["pivot"]
-            wx = (event.x - self.offset[0]) / self.zoom
-            wy = (self.offset[1] - event.y) / self.zoom
-            cur_angle = math.atan2(wy - pivot[1], wx - pivot[0])
-            dtheta = cur_angle - sel["start_angle"]
-
-            # AUTO: rotation globale partagée (doit impacter TOUS les scénarios auto)
-            if sel.get("auto_geom"):
-                if self.auto_geom_state is None:
-                    self._autoEnsureLocalGeometry(self._get_active_scenario())
-                if self.auto_geom_state is None:
-                    return
-                theta0 = float(sel.get("auto_theta0", float(self.auto_geom_state.get("thetaDeg", 0.0))))
-                self.auto_geom_state["thetaDeg"] = float(theta0 + math.degrees(dtheta))
-                self._autoRebuildWorldGeometry(redraw=False)
-                self._redraw_from(self._last_drawn)
-                return
-
-            # MANUEL: rotation géométrique des points autour du pivot
-            c, s = math.cos(dtheta), math.sin(dtheta)
-            R = np.array([[c, -s], [s, c]], dtype=float)
-            P = self._last_drawn[idx]["pts"]
-            for k in ("O", "B", "L"):
-                v = sel["orig_pts"][k] - pivot
-                P[k] = (R @ v) + pivot
-            self._redraw_from(self._last_drawn)
-            self._sel["last_angle"] = cur_angle
-            return
-        # 2b) Mode rotation de GROUPE : suivre la souris (sans bouton appuyé)
+        # 2) Mode rotation de GROUPE : suivre la souris (sans bouton appuyé)
         if self._sel and self._sel.get("mode") == "rotate_group":
             sel = self._sel
             gid = sel["gid"]
@@ -4984,11 +4813,12 @@ class TriangleViewerManual(
                     return
                 theta0 = float(sel.get("auto_theta0", float(self.auto_geom_state.get("thetaDeg", 0.0))))
                 self.auto_geom_state["thetaDeg"] = float(theta0 + math.degrees(dtheta))
-                self._autoRebuildWorldGeometry(redraw=False)
+                self._autoRebuildWorldGeometryScenario(None)
                 self._redraw_from(self._last_drawn)
                 self._sel["last_angle"] = cur_angle
                 return
 
+            # MANUAL
             c, s = math.cos(dtheta), math.sin(dtheta)
             R = np.array([[c, -s], [s, c]], dtype=float)
             g = self.groups.get(gid)
@@ -5027,7 +4857,7 @@ class TriangleViewerManual(
             topoWorld = scen.topoWorld
             
             tooltip_txt = ""
-            if topoWorld is not None and v_world is not None and vkey in ("O", "B", "L"):
+            if v_world is not None and vkey in ("O", "B", "L"):
                 vkey_to_n = {"O": 0, "B": 1, "L": 2}
                 triNum = int(self._last_drawn[idx].get("id", idx + 1))
                 nodeId = topoWorld.format_node_id(element_id=f"T{triNum:02d}", vertex_index=vkey_to_n[vkey])
@@ -5163,8 +4993,6 @@ class TriangleViewerManual(
             raise ValueError(f"TopoGroupId manquant pour le groupe {gid}")
 
         scen = self._get_active_scenario()
-        if scen is None or scen.topoWorld is None:
-            raise ValueError("TopologyWorld indisponible pour le scenario actif")
         topoWorld = scen.topoWorld
 
         segments = topoWorld.getBoundarySegments(str(core_gid))
@@ -5857,76 +5685,69 @@ class TriangleViewerManual(
 
         # Annoter l'objet Tk : elementId topo (si possible)
         scen = self._get_active_scenario()
-        if scen is not None and getattr(scen, "topoWorld", None) is not None:
-            sid = str(getattr(scen, "topoScenarioId", "") or "")
-            tri_rank = tri.get("id", None)
-            # tri_rank attendu : 1..32 (rang importé)
-            if tri_rank is not None:
-                try:
-                    tri_rank_i = int(tri_rank)
-                except Exception:
-                    tri_rank_i = None
-            else:
-                tri_rank_i = None
-
-            # Construire l'élément topo uniquement si on a un tri_rank valide
-            if tri_rank_i is not None and tri_rank_i >= 1:
-                element_id = TopologyWorld.format_element_id(tri_rank_i)
-                world = scen.topoWorld
-                world.beginTopoTransaction()
-                try:
-
-                    # ------------------------------------------------------------
-                    # Intrinsèque : on prend les longueurs + sens (orient) depuis self.df
-                    # (et non depuis les coords monde Pw).
-                    # Colonnes attendues dans df : len_OB, len_OL, len_BL, orient, B, L
-                    # O est fixé à "Bourges" dans ton modèle actuel (voir _triangle_from_index()).
-                    # ------------------------------------------------------------
-                    if tri_rank_i - 1 < 0 or tri_rank_i - 1 >= len(self.df):
-                        raise ValueError(f"Topology: triRank hors df: {tri_rank_i} (len(df)={len(self.df)})")
-
-                    row = self.df.iloc[tri_rank_i - 1]
-                    len_OB = float(row["len_OB"])
-                    len_OL = float(row["len_OL"])
-                    len_BL = float(row["len_BL"])
-                    orient = str(row.get("orient", "")).strip().upper()
+        world = scen.topoWorld
 
 
-                    # --- Orientation source (définition triangle) ---
-                    # On l'enregistre côté Tk, et on en déduit le miroir de POSE (pas le miroir visuel Tk).
-                    # Convention: mirrored=False.. utilsé uniquement pour le flip 
-                    self._last_drawn[new_tid]["orient"] = orient
-                    self._last_drawn[new_tid]["mirrored"] = False
+        tri_rank = tri.get("id", None)
+        # tri_rank attendu : 1..32 (rang importé)
+        if tri_rank is not None:
+            tri_rank_i = int(tri_rank)
+        elif (tri_rank_i - 1 < 0) or (tri_rank_i - 1 >= len(self.df)):
+            raise ValueError(f"Topology: triRank hors df: {tri_rank_i} (len(df)={len(self.df)})")
 
-                    # labels/types : O/B/L dans l’ordre topo.
-                    # (convention projet actuelle : O="Bourges", B=row["B"], L=row["L"])
-                    v_labels = ["Bourges", str(row["B"]), str(row["L"])]
-                    v_types = [TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE]
+        # Construire l'élément topo uniquement si on a un tri_rank valide
+        element_id = TopologyWorld.format_element_id(tri_rank_i)
 
-                    # Longueurs d’arêtes dans l’ordre du cycle O->B, B->L, L->O
-                    edge_lengths_km = [len_OB, len_BL, len_OL]
+        world.beginTopoTransaction()
+        try:
+            # ------------------------------------------------------------
+            # Intrinsèque : on prend les longueurs + sens (orient) depuis self.df
+            # (et non depuis les coords monde Pw).
+            # Colonnes attendues dans df : len_OB, len_OL, len_BL, orient, B, L
+            # O est fixé à "Bourges" dans ton modèle actuel (voir _triangle_from_index()).
+            # ------------------------------------------------------------
 
-                    # element (coordonnées locales canonisées par le core)
-                    el = TopologyElement(
-                        element_id=element_id,
-                        name=f"Triangle {tri_rank_i:02d}",
-                        vertex_labels=v_labels,
-                        vertex_types=v_types,
-                        edge_lengths_km=edge_lengths_km,
-                        meta={"orient": orient},
-                    )
 
-                    # Ajouter au core (nouveau groupe singleton)
-                    core_gid = world.add_element_as_new_group(el)
+            row = self.df.iloc[tri_rank_i - 1]
+            len_OB = float(row["len_OB"])
+            len_OL = float(row["len_OL"])
+            len_BL = float(row["len_BL"])
+            orient = str(row.get("orient", "")).strip().upper()
 
-                    # Annotation Tk (pont UI↔Core)
-                    self._last_drawn[new_tid]["topoElementId"] = element_id
-                    self._last_drawn[new_tid]["topoGroupId"] = core_gid
 
-                    # Pose monde de l'ELEMENT : fit rigoureux sur (O,B,L) (pas l'approx O->B)
-                    self._sync_element_pose_to_core(new_tid)
-                finally:
-                    world.commitTopoTransaction()
+            # --- Orientation source (définition triangle) ---
+            # On l'enregistre côté Tk, et on en déduit le miroir de POSE (pas le miroir visuel Tk).
+            # Convention: mirrored=False.. utilsé uniquement pour le flip 
+            self._last_drawn[new_tid]["orient"] = orient
+            self._last_drawn[new_tid]["mirrored"] = False
+
+            # labels/types : O/B/L dans l’ordre topo.
+            # (convention projet actuelle : O="Bourges", B=row["B"], L=row["L"])
+            v_labels = ["Bourges", str(row["B"]), str(row["L"])]
+            v_types = [TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE]
+
+            # Longueurs d’arêtes dans l’ordre du cycle O->B, B->L, L->O
+            edge_lengths_km = [len_OB, len_BL, len_OL]
+
+            # element (coordonnées locales canonisées par le core)
+            el = TopologyElement(
+                element_id=element_id,
+                name=f"Triangle {tri_rank_i:02d}",
+                vertex_labels=v_labels,
+                vertex_types=v_types,
+                edge_lengths_km=edge_lengths_km,
+                meta={"orient": orient},
+            )
+
+            # Ajouter au core (nouveau groupe singleton)
+            core_gid = world.add_element_as_new_group(el)
+
+            # Annotation Tk (pont UI↔Core)
+            self._last_drawn[new_tid]["topoElementId"] = element_id
+            self._last_drawn[new_tid]["topoGroupId"] = core_gid
+
+        finally:
+            world.commitTopoTransaction()
 
         # 2) Création d'un groupe singleton
         self._ensure_group_fields(self._last_drawn[new_tid])
@@ -5940,11 +5761,12 @@ class TriangleViewerManual(
         self._last_drawn[new_tid]["group_pos"] = 0
         self._recompute_group_bbox(gid)
 
-        # Lier group UI -> group Core (si disponible)
-        if scen is not None and getattr(scen, "topoWorld", None) is not None:
-            core_gid = self._last_drawn[new_tid].get("topoGroupId", None)
-            if core_gid:
-                self.groups[gid]["topoGroupId"] = core_gid
+        # 2bis) Synchroniser le group avec la topo
+        self._sync_group_elements_pose_to_core(gid)
+        
+        # Lier group UI -> group Core 
+        core_gid = self._last_drawn[new_tid].get("topoGroupId", None)
+        self.groups[gid]["topoGroupId"] = core_gid
 
         # 3) UI
         self._redraw_from(self._last_drawn)
@@ -6156,7 +5978,7 @@ class TriangleViewerManual(
                 # AUTO: rollback du transform global
                 if self._sel.get("auto_geom") and self._sel.get("auto_state0") is not None:
                     self.auto_geom_state = dict(self._sel.get("auto_state0") or {})
-                    self._autoRebuildWorldGeometry(redraw=False)
+                    self._autoRebuildWorldGeometryScenario(None)
                     self._sel = None
                     self.status.config(text="Rotation auto annulée (ESC).")
                     self._clear_nearest_line()
@@ -6183,6 +6005,7 @@ class TriangleViewerManual(
                     for tid, pts in orig.items():
                         if 0 <= tid < len(self._last_drawn):
                             self._last_drawn[tid]["pts"] = {k: np.array(pts[k].copy()) for k in ("O","B","L")}
+                    self._autoRebuildWorldGeometryScenario(None)
                     self._recompute_group_bbox(gid)
                     self._redraw_from(self._last_drawn)
                 self._sel = None
@@ -6936,16 +6759,16 @@ class TriangleViewerManual(
 
         # 0) TOPO : capturer les elementId Core AVANT toute modif de _last_drawn
         scen = self._get_active_scenario()
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
+        world = scen.topoWorld
         removed_element_ids = []
-        if world is not None:
-            # tids du groupe (dans l'ordre inverse, comme le reste du code)
-            _tids = sorted({nd["tid"] for nd in g["nodes"] if "tid" in nd}, reverse=True)
-            for tid in _tids:
-                if 0 <= tid < len(self._last_drawn):
-                    eid = self._last_drawn[tid].get("topoElementId")
-                    if eid:
-                        removed_element_ids.append(str(eid))
+
+        # tids du groupe (dans l'ordre inverse, comme le reste du code)
+        _tids = sorted({nd["tid"] for nd in g["nodes"] if "tid" in nd}, reverse=True)
+        for tid in _tids:
+            if 0 <= tid < len(self._last_drawn):
+                eid = self._last_drawn[tid].get("topoElementId")
+                if eid:
+                    removed_element_ids.append(str(eid))
 
         # 1) Réinsertion listbox (avant de modifier _last_drawn)
         removed_tids = sorted({nd["tid"] for nd in g["nodes"] if "tid" in nd}, reverse=True)
@@ -7004,52 +6827,29 @@ class TriangleViewerManual(
         self._ctx_target_idx = None
         if idx is None or not (0 <= idx < len(self._last_drawn)):
             return
-        # Si le triangle fait partie d'un groupe : PIVOTER LE GROUPE
+        # le triangle fait toujours partie d'un groupe : PIVOTER LE GROUPE
         gid = self._get_group_of_triangle(idx)
-        if gid:
-            # AUTO: pivot = origine globale (0,0) commune ; MANUAL: barycentre groupe
-            auto_geom = self._is_active_auto_scenario()
-            if auto_geom:
-                if self.auto_geom_state is None:
-                    self._autoEnsureLocalGeometry(self._get_active_scenario())
-                if self.auto_geom_state is None:
-                    return
-                pivot = (float(self.auto_geom_state.get("ox", 0.0)), float(self.auto_geom_state.get("oy", 0.0)))
-            else:
-                pivot = self._group_centroid(gid)
-                if pivot is None:
-                    return
-            # snapshot complet du groupe pour rollback
-            orig_group_pts = {}
-            for node in self._group_nodes(gid):
-                tid = node["tid"]
-                if 0 <= tid < len(self._last_drawn):
-                    Pt = self._last_drawn[tid]["pts"]
-                    orig_group_pts[tid] = {k: np.array(Pt[k].copy()) for k in ("O","B","L")}
-            # angle de départ = angle (pivot -> curseur au clic droit)
-            if self._ctx_last_rclick:
-                sx, sy = self._ctx_last_rclick
-            else:
-                sx, sy = self._world_to_screen(pivot)
-            wx = (sx - self.offset[0]) / self.zoom
-            wy = (self.offset[1] - sy) / self.zoom
-            start_angle = math.atan2(wy - pivot[1], wx - pivot[0])
-            self._sel = {
-                "mode": "rotate_group",
-                "gid": gid,
-                "orig_group_pts": orig_group_pts,
-                "pivot": np.array(pivot, dtype=float),
-                "start_angle": start_angle,
-                "auto_geom": bool(auto_geom),
-                "auto_theta0": float(self.auto_geom_state.get("thetaDeg", 0.0)) if auto_geom and self.auto_geom_state else 0.0,
-                "auto_state0": dict(self.auto_geom_state) if auto_geom and self.auto_geom_state else None,
-            }
-            self.status.config(text=f"Mode pivoter GROUPE #{gid} : bouge la souris pour tourner, clic gauche pour valider, ESC pour annuler.")
-            return
-        # Sinon : rotation TRIANGLE seul (comportement existant)
-        P = self._last_drawn[idx]["pts"]
-        pivot = self._tri_centroid(P)
-        orig_pts = {k: np.array(P[k].copy()) for k in ("O","B","L")}
+
+        # AUTO: pivot = origine globale (0,0) commune ; MANUAL: barycentre groupe
+        auto_geom = self._is_active_auto_scenario()
+        if auto_geom:
+            if self.auto_geom_state is None:
+                self._autoEnsureLocalGeometry(self._get_active_scenario())
+            if self.auto_geom_state is None:
+                return
+            pivot = (float(self.auto_geom_state.get("ox", 0.0)), float(self.auto_geom_state.get("oy", 0.0)))
+        else:
+            pivot = self._group_centroid(gid)
+            if pivot is None:
+                return
+        # snapshot complet du groupe pour rollback
+        orig_group_pts = {}
+        for node in self._group_nodes(gid):
+            tid = node["tid"]
+            if 0 <= tid < len(self._last_drawn):
+                Pt = self._last_drawn[tid]["pts"]
+                orig_group_pts[tid] = {k: np.array(Pt[k].copy()) for k in ("O","B","L")}
+        # angle de départ = angle (pivot -> curseur au clic droit)
         if self._ctx_last_rclick:
             sx, sy = self._ctx_last_rclick
         else:
@@ -7058,13 +6858,18 @@ class TriangleViewerManual(
         wy = (self.offset[1] - sy) / self.zoom
         start_angle = math.atan2(wy - pivot[1], wx - pivot[0])
         self._sel = {
-            "mode": "rotate",
-            "idx": idx,
-            "orig_pts": orig_pts,
+            "mode": "rotate_group",
+            "gid": gid,
+            "orig_group_pts": orig_group_pts,
             "pivot": np.array(pivot, dtype=float),
             "start_angle": start_angle,
+            "auto_geom": bool(auto_geom),
+            "auto_theta0": float(self.auto_geom_state.get("thetaDeg", 0.0)) if auto_geom and self.auto_geom_state else 0.0,
+            "auto_state0": dict(self.auto_geom_state) if auto_geom and self.auto_geom_state else None,
         }
-        self.status.config(text="Mode pivoter : bouge la souris pour tourner, clic gauche pour valider, ESC pour annuler.")
+        self.status.config(text=f"Mode pivoter GROUPE #{gid} : bouge la souris pour tourner, clic gauche pour valider, ESC pour annuler.")
+        return
+
  
     def _ctx_orient_segment_north(self, from_key: str, to_key: str, status_label: str):
         """
@@ -7327,13 +7132,12 @@ class TriangleViewerManual(
         # AUTO: on déplace le référentiel global (commun à tous les scénarios auto)
         if self._is_active_auto_scenario():
             if self.auto_geom_state is None:
-                # fallback: init à partir du scénario actif
                 self._autoEnsureLocalGeometry(self._get_active_scenario())
-            if self.auto_geom_state is None:
                 return
+
             self.auto_geom_state["ox"] = float(self.auto_geom_state.get("ox", 0.0) + float(dx_w))
             self.auto_geom_state["oy"] = float(self.auto_geom_state.get("oy", 0.0) + float(dy_w))
-            self._autoRebuildWorldGeometry(redraw=False)
+            self._autoRebuildWorldGeometryScenario(None)
             return
 
         g = self.groups.get(gid)
@@ -7404,6 +7208,7 @@ class TriangleViewerManual(
         # Validation d'une rotation en cours : le clic gauche sert à COMMIT, pas à re-sélectionner.
         if isinstance(self._sel, dict) and self._sel.get("mode") == "rotate_group":
             if self._sel.get("auto_geom"):
+                self._autoRebuildWorldGeometry(redraw=True)
                 self._autoSyncAllTopoPoses()
                 # Persistance "Même dernier run" (carte, ordre)
                 if self.auto_geom_state is not None:
@@ -8034,7 +7839,9 @@ class TriangleViewerManual(
 
             # Fin (pas de snap : simple dépôt à la dernière position)
             # AUTO: persister position/rotation globale (carte, ordre)
-            if isinstance(self._sel, dict) and self._sel.get("auto_geom") and self.auto_geom_state is not None:
+            if isinstance(self._sel, dict) and self.auto_geom_state is not None:
+                self._autoRebuildWorldGeometry(redraw=False)
+                self._autoSyncAllTopoPoses()
                 self._simulationPersistCurrentAutoPlacement(save=True)
             self._sel = None
             self._reset_assist()
@@ -8548,186 +8355,6 @@ class TriangleViewerManual(
 
         c.showPage()
         c.save()
-
-    # ---------- Impression PDF (A4) ----------
-    def _export_triangles_pdf(
-        self, path, triangles, scale_mm=1.5,
-        page_margin_mm=12, cell_pad_mm=6,
-        stroke_pt=1.2, font_size_pt=9, label_inset=0.35,
-        pack_mode="shelf",           # "shelf" = rangées à hauteur variable
-        rotate_to_fit=True           # rotation 90° si ça réduit la largeur en rangée
-    ):
-        """
-        PDF A4 portrait, triangles à la même échelle, placement 'shelf packing'.
-        """
-        from reportlab.pdfgen import canvas
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib.units import mm
-
-        if not triangles:
-            raise ValueError("Aucun triangle à imprimer.")
-
-        S = float(scale_mm) * float(mm)      # points par unité
-        page_w, page_h = A4
-        margin = float(page_margin_mm) * float(mm)
-        pad    = float(cell_pad_mm) * float(mm)
-
-        # Prépare bboxes à l’échelle (orientation normale OU rotée)
-        items = []  # pour chaque tri : dict avec bbox_n (w,h) et bbox_r (w,h)
-        for t in triangles:
-            P = t["pts"]
-            xs = [float(P["O"][0]), float(P["B"][0]), float(P["L"][0])]
-            ys = [float(P["O"][1]), float(P["B"][1]), float(P["L"][1])]
-            mnx, mny, mxx, mxy = min(xs), min(ys), max(xs), max(ys)
-
-            tri_w = (mxx - mnx) * S
-            tri_h = (mxy - mny) * S
-            wN, hN = tri_w + 2*pad, tri_h + 2*pad            # normal
-            wR, hR = tri_h + 2*pad, tri_w + 2*pad            # roté 90°
-
-            items.append({
-                "data": t,
-                "bbox_world": (mnx, mny, mxx, mxy),
-                "wN": wN, "hN": hN,
-                "wR": wR, "hR": hR,
-            })
-
-        # Espace utile page
-        content_w = page_w - 2*margin
-        content_h = page_h - 2*margin
-
-        # Placement 'shelf' (rangées)
-        def new_page():
-            return {"rows": [], "height_used": 0.0}
-
-        def close_row(page, row):
-            page["rows"].append(row)
-            page["height_used"] += row["H"]
-
-        page_list  = []
-        page = new_page()
-        row  = {"X": 0.0, "Y": 0.0, "H": 0.0, "items": []}
-
-        for it in items:
-            cand = []
-            if rotate_to_fit:
-                cand.append(("R", it["wR"], it["hR"]))
-            cand.append(("N", it["wN"], it["hN"]))
-            cand.sort(key=lambda x: x[1])  # largeur croissante
-
-            placed = False
-            for rot, w, h in cand:
-                if row["X"] + w <= content_w or row["X"] == 0.0:
-                    Hnew = max(row["H"], h) if row["H"] > 0 else h
-                    if (page["height_used"] + Hnew) > content_h and row["X"] == 0.0:
-                        if row["H"] > 0:
-                            close_row(page, row)
-                        page_list.append(page)
-                        page = new_page()
-                        row  = {"X": 0.0, "Y": 0.0, "H": 0.0, "items": []}
-
-                    if row["X"] + w <= content_w or row["X"] == 0.0:
-                        row["items"].append({"x": row["X"], "y": page["height_used"], "w": w, "h": h, "rot": (rot=="R"), "it": it})
-                        row["X"] += w
-                        row["H"] = max(row["H"], h)
-                        placed = True
-                        break
-
-            if not placed:
-                close_row(page, row)
-                row  = {"X": 0.0, "Y": page["height_used"], "H": 0.0, "items": []}
-                rot, w, h = cand[0]
-                if page["height_used"] + h > content_h:
-                    page_list.append(page)
-                    page = new_page()
-                    row  = {"X": 0.0, "Y": 0.0, "H": 0.0, "items": []}
-                row["items"].append({"x": row["X"], "y": page["height_used"], "w": w, "h": h, "rot": (rot=="R"), "it": it})
-                row["X"] += w
-                row["H"] = max(row["H"], h)
-
-        if row["items"]:
-            close_row(page, row)
-        page_list.append(page)
-
-        # Dessin
-        c = canvas.Canvas(path, pagesize=A4)
-        c.setStrokeColorRGB(0, 0, 0)
-        c.setFillColorRGB(0, 0, 0)
-
-        def draw_tri(at_x, at_y, box_w, box_h, item, rot90):
-            t   = item["data"]
-            P   = t["pts"]
-            Oname, Bname, Lname = t["labels"]
-            mnx, mny, mxx, mxy = item["bbox_world"]
-
-            tri_w = (mxx - mnx) * S
-            tri_h = (mxy - mny) * S
-            draw_w = tri_h if rot90 else tri_w
-            draw_h = tri_w if rot90 else tri_h
-
-            cx = margin + at_x + (box_w - draw_w) / 2.0
-            cy = margin + at_y + (box_h - draw_h) / 2.0
-
-            def to_page(p):
-                x = (float(p[0]) - mnx) * S
-                y = (float(p[1]) - mny) * S
-                return (x, y)
-
-            O = to_page(P["O"]); B = to_page(P["B"]); L = to_page(P["L"])
-
-            c.saveState()
-            c.translate(cx, cy)
-            if rot90:
-                c.translate(0, draw_h)
-                c.rotate(-90)
-
-            # traits
-            c.setLineWidth(stroke_pt)
-            c.line(O[0], O[1], B[0], B[1])
-            c.line(B[0], B[1], L[0], L[1])
-            c.line(L[0], L[1], O[0], O[1])
-
-            # labels
-            c.setFont("Helvetica", float(font_size_pt))
-            gx = (O[0] + B[0] + L[0]) / 3.0
-            gy = (O[1] + B[1] + L[1]) / 3.0
-            for (px, py), txt in zip((O, B, L), (Oname, Bname, Lname)):
-                lx = (1.0 - label_inset) * px + label_inset * gx
-                ly = (1.0 - label_inset) * py + label_inset * gy
-                c.drawCentredString(lx, ly, txt)
-            c.restoreState()
-
-        for pg in page_list:
-            for row in pg["rows"]:
-                for cell in row["items"]:
-                    draw_tri(cell["x"], cell["y"], cell["w"], cell["h"], cell["it"], cell["rot"])
-            c.showPage()
-        c.save()
-
-    def print_triangles_dialog(self):
-        from tkinter import simpledialog, filedialog
-        if self.df is None or self.df.empty:
-            messagebox.showwarning("Imprimer", "Charge d'abord le fichier Excel.")
-            return
-
-        # Paramètres
-        start = max(1, int(self.start_index.get()))
-        nmax = int(self.df.shape[0] - (start-1))
-        n = simpledialog.askinteger("Imprimer", f"Nombre de triangles (max {nmax}) :", initialvalue=min(8, nmax), minvalue=1, maxvalue=nmax)
-        if not n:
-            return
-
-        scale = simpledialog.askfloat("Imprimer", "Échelle (mm par unité de longueur) :", initialvalue=1.5, minvalue=0.1, maxvalue=100.0)
-        if not scale:
-            return
-
-        path = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF", "*.pdf")], initialfile="triangles.pdf")
-        if not path:
-            return
-
-        tris = self._triangles_local(start-1, n)
-        self._export_triangles_pdf(path, tris, scale_mm=scale)
-        self.status.config(text=f"PDF généré : {path}")
 
 # ---------- Entrée ----------
 if __name__ == "__main__":
