@@ -14,16 +14,16 @@
   "uiClockRefAzimuth": 173.79803238581732,
   "uiShowOnlyGroupContours": false,
   "simLastAlgoId": "quadris_par_paires",
-  "simLastN": 10,
+  "simLastN": 4,
   "simLastOrder": "reverse",
   "simLastFirstEdge": "BL",
   "uiAutoFitScenario": false,
   "simAutoPlacementByMap": {
     "899 - Alsace.jpg": {
       "reverse": {
-        "ox": 565.39,
-        "oy": 141.32999999999998,
-        "thetaDeg": 270.0793572040359
+        "ox": 231.39,
+        "oy": 143.32999999999998,
+        "thetaDeg": -49.697776154200945
       },
       "forward": {
         "ox": 260.4000000000001,

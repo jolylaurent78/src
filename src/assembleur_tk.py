@@ -6884,9 +6884,6 @@ class TriangleViewerManual(
         if idx is None or not (0 <= idx < len(self._last_drawn)):
             return
 
-        # Déterminer le groupe (si présent)
-        gid = self._get_group_of_triangle(idx)
-
         # Triangle de référence
         P_ref = self._last_drawn[idx]["pts"]
         v = np.array(
@@ -6896,11 +6893,36 @@ class TriangleViewerManual(
 
         if float(np.hypot(v[0], v[1])) < 1e-12:
             return  # triangle dégénéré, rien à faire
-
+        
         # Orientation cible : Nord = +Y
         cur = math.atan2(v[1], v[0])
         target = math.pi / 2.0
         dtheta = target - cur
+
+        scen = self._get_active_scenario()
+        # --- CAS AUTO : rotation globale partagée ---
+        if scen.source_type == "auto":
+            if self.auto_geom_state is None:
+                self._autoEnsureLocalGeometry(scen)
+                return
+
+            theta0 = float(self.auto_geom_state.get("thetaDeg", 0.0))
+            self.auto_geom_state["thetaDeg"] = float(theta0 + math.degrees(dtheta))
+
+            self._autoRebuildWorldGeometry(redraw=False)   # rebuild monde pour TOUS les autos
+            self._autoSyncAllTopoPoses()                   # sync topoWorld pour TOUS les autos
+
+            self._redraw_from(self._last_drawn)
+            self.status.config(text=f"Orientation appliquée : AUTO — {status_label} au Nord (0°).")
+            return
+        
+        # --- CAS MANUEL : rotation UI puis sync core ---    
+        # Déterminer le groupe (si présent)
+        gid = self._get_group_of_triangle(idx)
+
+
+
+
         c, s = math.cos(dtheta), math.sin(dtheta)
         R = np.array([[c, -s], [s, c]], dtype=float)
 
@@ -6912,27 +6934,26 @@ class TriangleViewerManual(
             pt = np.array(pt, dtype=float)
             return (R @ (pt - pivot)) + pivot
 
-        # Appliquer à tout le groupe si groupé, sinon au seul triangle
-        if gid and len(self._group_nodes(gid) or []) > 1:
-            g = self.groups.get(gid)
-            if not g:
-                return
-            for node in g["nodes"]:
-                tid = node.get("tid")
-                if tid is None or not (0 <= tid < len(self._last_drawn)):
-                    continue
-                Pt = self._last_drawn[tid]["pts"]
-                for k in ("O", "B", "L"):
-                    Pt[k] = rot_point(Pt[k])
-            self._recompute_group_bbox(gid)
-            self._redraw_from(self._last_drawn)
-            self.status.config(text=f"Orientation appliquée : GROUPE — {status_label} au Nord (0°).")
-        else:
-            P = P_ref
+        # Appliquer à tout le groupe 
+        g = self.groups.get(gid)
+        if not g:
+            return
+        for node in g["nodes"]:
+            tid = node.get("tid")
+            if tid is None or not (0 <= tid < len(self._last_drawn)):
+                continue
+            Pt = self._last_drawn[tid]["pts"]
             for k in ("O", "B", "L"):
-                P[k] = rot_point(P[k])
-            self._redraw_from(self._last_drawn)
-            self.status.config(text=f"Orientation appliquée : {status_label} au Nord (0°).")
+                Pt[k] = rot_point(Pt[k])
+        self._recompute_group_bbox(gid)
+        
+        # On est en manuel, on alimente la topo Core
+        self._sync_group_elements_pose_to_core(gid)
+        
+        # On raffraichit l'affichage courant
+        self._redraw_from(self._last_drawn)
+        self.status.config(text=f"Orientation appliquée : GROUPE — {status_label} au Nord (0°).")
+
 
     def _ctx_orient_OL_north(self):
         return self._ctx_orient_segment_north("O", "L", "O→L")
