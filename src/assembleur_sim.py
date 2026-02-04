@@ -337,7 +337,7 @@ def createTopoQuadrilateral(
         triId: int,
         pts_local: Dict[str, np.ndarray],
         labels: tuple | list | None,
-        mirrored: bool,
+        orient: str,
     ) -> None:
         if str(elementId) in world.elements:
             return
@@ -348,7 +348,7 @@ def createTopoQuadrilateral(
             _edge_len(pts_local, "B", "L"),
             _edge_len(pts_local, "L", "O"),
         ]
-        orient = "CW" if bool(mirrored) else "CCW"
+
         el = TopologyElement(
             element_id=str(elementId),
             name=f"Triangle {int(triId):02d}",
@@ -372,14 +372,14 @@ def createTopoQuadrilateral(
             triId=int(triangleMobFromId),
             pts_local={k: np.array(triangleMobFrom_PtsLocal[k], dtype=float) for k in ("O", "B", "L")},
             labels=triangleMobFrom.get("labels"),
-            mirrored=bool(triangleMobFrom.get("mirrored", False)),
+            orient=triangleMobFrom.get("orient", False),
         )
         _ensure_element_from_local(
             elementId=elementIdEven,
             triId=int(triangleMobToId),
             pts_local={k: np.array(triangleMobTo_PtsLocal[k], dtype=float) for k in ("O", "B", "L")},
             labels=triangleMobTo.get("labels"),
-            mirrored=bool(triangleMobTo.get("mirrored", False)),
+            orient=triangleMobTo.get("orient", False),
         )
 
         # --- 3) Poser les 2 éléments (monde) ---
@@ -658,7 +658,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             tri_id: int,
             pts_local: Dict[str, np.ndarray],
             labels: tuple | list,
-            mirrored: bool,
+            orient: str,
         ) -> None:
             if element_id in world.elements:
                 return
@@ -669,7 +669,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 _edge_len(pts_local, "B", "L"),
                 _edge_len(pts_local, "L", "O"),
             ]
-            orient = "CW" if bool(mirrored) else "CCW"
+
             el = TopologyElement(
                 element_id=element_id,
                 name=f"Triangle {int(tri_id):02d}",
@@ -1228,7 +1228,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                             tri_id=int(_tri_id),
                                             pts_local={k: np.array(_pts_local[k], dtype=float) for k in ("O", "B", "L")},
                                             labels=_info.get("labels"),
-                                            mirrored=bool(_info.get("mirrored", False)),
+                                            orient=_info.get("orient", False),
                                         )
                                     if _elem_id and _info.get("pts_world") is not None:
                                         # Pose from world points in simulation uses non-mirrored fit.
@@ -1451,8 +1451,7 @@ class MoteurSimulationAssemblage:
         # Orientation : si CW → symétrie verticale (y -> -y)
         ori = str(r.get("orient", "CCW")).upper().strip()
 
-        mirrored = (ori == "CW")
-        if mirrored:
+        if ori == "CW":
             P = {
                 "O": np.array([P["O"][0], -P["O"][1]], dtype=float),
                 "B": np.array([P["B"][0], -P["B"][1]], dtype=float),
@@ -1462,7 +1461,8 @@ class MoteurSimulationAssemblage:
         return {
             "labels": ("Bourges", str(r["B"]), str(r["L"])),  # (O,B,L) labels
             "id": int(tri_id),
-            "mirrored": mirrored,
+            "mirrored": False,
+            "orient":ori,
             "pts": P,
         }
 
