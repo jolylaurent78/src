@@ -826,7 +826,7 @@ class TopologyBoundaries:
         self.cycle = cycle
         self.edges = edges
         self.index = {n: i for i, n in enumerate(cycle)}
-    
+  
         signed = _signed_area(cycle)
         computed = "cw" if signed < 0.0 else "ccw"
         self.orientation = computed
@@ -871,6 +871,267 @@ class ConceptGroupCache:
             self.nodeOccurrencesByCid = {}
         if self.boundaries is None:
             self.boundaries = TopologyBoundaries()
+
+class TopologyCheminTriplet:
+    """Triplet de chemin A-O-B (structure + geometrie calculee a la demande)."""
+
+    def __init__(self, nodeA: str, nodeO: str, nodeB: str) -> None:
+        """Construit un triplet combinatoire avec geometrie invalide par defaut."""
+        self.nodeA = str(nodeA)
+        self.nodeO = str(nodeO)
+        self.nodeB = str(nodeB)
+        if len({self.nodeA, self.nodeO, self.nodeB}) != 3:
+            raise ValueError("[Chemins] triplet invalide: nodes non distincts")
+
+        # Etat normatif a la creation combinatoire.
+        self.azOA = 0.0
+        self.azOB = 0.0
+        self.distOA_km = 0.0
+        self.distOB_km = 0.0
+        self.angleDeg = 0.0
+        self.isGeometrieValide = False
+
+    def calculerGeometrie(self, world: "TopologyWorld", groupId: str) -> None:
+        """Calcule azimuts, distances et angle oriente a partir du world courant."""
+        gid = str(groupId)
+        xA, yA = world.getConceptNodeWorldXY(self.nodeA, gid)
+        xO, yO = world.getConceptNodeWorldXY(self.nodeO, gid)
+        xB, yB = world.getConceptNodeWorldXY(self.nodeB, gid)
+
+        dxOA = float(xA - xO)
+        dyOA = float(yA - yO)
+        dxOB = float(xB - xO)
+        dyOB = float(yB - yO)
+
+        self.azOA = world.azimutDegFromDxDy(dxOA, dyOA)
+        self.azOB = world.azimutDegFromDxDy(dxOB, dyOB)
+        self.distOA_km = float(math.hypot(dxOA, dyOA))
+        self.distOB_km = float(math.hypot(dxOB, dyOB))
+        self.angleDeg = float((self.azOB - self.azOA + 360.0) % 360.0)
+        self.isGeometrieValide = True
+
+
+class TopologyChemins:
+    """Chemin unique du scenario : snapshot, mask, ordre, triplets et geometrie."""
+
+    def __init__(self, world: "TopologyWorld") -> None:
+        """Initialise un conteneur de chemin attache a un TopologyWorld."""
+        self._world = world
+        self._resetUndefined()
+
+    def _resetUndefined(self) -> None:
+        self.isDefined: bool = False
+        self.groupId: str | None = None
+        self.startNodeId: str | None = None
+        self.orientationUser: str | None = None
+        self.borderSnapshotNodes: list[str] = []
+        self.selectionMask: list[bool] = []
+        self.pathNodesOrdered: list[str] = []
+        self.triplets: list[TopologyCheminTriplet] = []
+
+    @staticmethod
+    def _normalizeOrientation(orientationUser: str) -> str:
+        orient = str(orientationUser).strip().lower()
+        if orient not in ("cw", "ccw"):
+            raise ValueError(f"[Chemins] orientationUser invalide: {orientationUser}")
+        return orient
+
+    @staticmethod
+    def _buildPathNodesOrdered(
+        borderSnapshotNodes: list[str],
+        selectionMask: list[bool],
+        orientationUser: str,
+        boundaryOrientation: str,
+    ) -> list[str]:
+        """Construit pathNodesOrdered sans modifier snapshot ni mask."""
+        if len(selectionMask) != len(borderSnapshotNodes):
+            raise ValueError("[Chemins] mask/snapshot tailles differentes")
+        if orientationUser not in ("cw", "ccw"):
+            raise ValueError(f"[Chemins] orientationUser invalide: {orientationUser}")
+        if boundaryOrientation not in ("cw", "ccw"):
+            raise ValueError(f"[Chemins] boundaryOrientation invalide: {boundaryOrientation}")
+
+        # Invariant spec: filtrage dans l'ordre snapshot, puis inversion eventuelle.
+        filtered = [
+            str(borderSnapshotNodes[i])
+            for i in range(len(borderSnapshotNodes))
+            if bool(selectionMask[i])
+        ]
+        if orientationUser == boundaryOrientation:
+            return filtered
+        return list(reversed(filtered))
+
+    @staticmethod
+    def _buildTriplets(pathNodesOrdered: list[str]) -> list[TopologyCheminTriplet]:
+        """Construit les triplets combinatoires (pas de 2, couverture complete)."""
+        L = [str(n) for n in list(pathNodesOrdered)]
+        n = len(L)
+        if n < 3:
+            raise ValueError("[Chemins] calculerTriplets: pathNodesOrdered < 3")
+
+        covered: set[str] = set()
+        target: set[str] = set(L)
+        triplets: list[TopologyCheminTriplet] = []
+        i = 0
+        while covered != target:
+            A = L[i % n]
+            O = L[(i + 1) % n]
+            B = L[(i + 2) % n]
+            if len({A, O, B}) != 3:
+                raise RuntimeError(f"[Chemins] triplet degenere: ({A},{O},{B})")
+            triplets.append(TopologyCheminTriplet(nodeA=A, nodeO=O, nodeB=B))
+            covered.add(A)
+            covered.add(O)
+            covered.add(B)
+            i += 2
+        return triplets
+
+    def _assertDefinedInvariants(self) -> None:
+        """Verifie les invariants d'etat pour les phases suivantes."""
+        if not self.isDefined:
+            if self.groupId is not None or self.startNodeId is not None or self.orientationUser is not None:
+                raise RuntimeError("[Chemins] invariant brise: undefined avec ids non nuls")
+            if self.borderSnapshotNodes or self.selectionMask or self.pathNodesOrdered or self.triplets:
+                raise RuntimeError("[Chemins] invariant brise: undefined avec contenu")
+            return
+
+        if self.groupId is None or self.startNodeId is None or self.orientationUser is None:
+            raise RuntimeError("[Chemins] invariant brise: chemin defini incomplet")
+        if len(self.borderSnapshotNodes) < 3:
+            raise RuntimeError("[Chemins] invariant brise: snapshot trop court")
+        if self.borderSnapshotNodes[0] != self.startNodeId:
+            raise RuntimeError("[Chemins] invariant brise: snapshot non pivote sur startNodeId")
+        if len(self.selectionMask) != len(self.borderSnapshotNodes):
+            raise RuntimeError("[Chemins] invariant brise: mask/snapshot tailles differentes")
+        if not all(isinstance(v, bool) for v in self.selectionMask):
+            raise RuntimeError("[Chemins] invariant brise: selectionMask doit etre booleen")
+        if len(self.pathNodesOrdered) < 3:
+            raise RuntimeError("[Chemins] invariant brise: pathNodesOrdered trop court")
+        boundary_orientation = self._world.getBoundaryOrientation(str(self.groupId))
+        expected_path = self._buildPathNodesOrdered(
+            self.borderSnapshotNodes,
+            self.selectionMask,
+            str(self.orientationUser),
+            boundary_orientation,
+        )
+        if self.pathNodesOrdered != expected_path:
+            raise RuntimeError("[Chemins] invariant brise: pathNodesOrdered incoherent")
+        covered: set[str] = set()
+        for t in self.triplets:
+            if len({t.nodeA, t.nodeO, t.nodeB}) != 3:
+                raise RuntimeError("[Chemins] invariant brise: triplet non distinct")
+            covered.add(t.nodeA)
+            covered.add(t.nodeO)
+            covered.add(t.nodeB)
+        if not set(self.pathNodesOrdered).issubset(covered):
+            raise RuntimeError("[Chemins] invariant brise: couverture triplets incomplete")
+
+    def _requireDefined(self) -> None:
+        if not self.isDefined:
+            raise ValueError("[Chemins] chemin non defini")
+
+    def creerDepuisGroupe(self, groupId: str, startNodeId: str, orientationUser: str) -> None:
+        """Cree un chemin depuis un groupe + start node + orientation utilisateur."""
+        orient = self._normalizeOrientation(orientationUser)
+        gid = self._world.find_group(str(groupId))
+        start = self._world.find_node(str(startNodeId))
+
+        self._world.computeBoundary(gid)
+        cycle = self._world.getBoundaryCycle(gid, start)
+        if len(cycle) < 3:
+            raise ValueError("[Chemins] boundary invalide: moins de 3 nodes")
+
+        # Construction en local puis commit final: aucun rollback try/except requis.
+        snapshotLocal = [str(n) for n in cycle]
+        maskLocal = [True] * len(snapshotLocal)
+        boundary_orientation = self._world.getBoundaryOrientation(gid)
+        pathLocal = self._buildPathNodesOrdered(snapshotLocal, maskLocal, orient, boundary_orientation)
+        if len(pathLocal) < 3:
+            raise ValueError("[Chemins] pathNodesOrdered invalide: moins de 3 nodes")
+        tripletsLocal = self._buildTriplets(pathLocal)
+        for t in tripletsLocal:
+            t.calculerGeometrie(self._world, gid)
+
+        self.isDefined = True
+        self.groupId = gid
+        self.startNodeId = start
+        self.orientationUser = orient
+        self.borderSnapshotNodes = snapshotLocal
+        self.selectionMask = maskLocal
+        self.pathNodesOrdered = pathLocal
+        self.triplets = tripletsLocal
+        self._assertDefinedInvariants()
+
+    def appliquerEdition(self, orientationUser: str, selectionMask: list[bool]) -> None:
+        """Applique orientation + mask sur le snapshot puis recalcule path/triplets/geometrie."""
+        self._requireDefined()
+        orient = self._normalizeOrientation(orientationUser)
+        mask = [bool(v) for v in list(selectionMask)]
+        if len(mask) != len(self.borderSnapshotNodes):
+            raise ValueError("[Chemins] selectionMask incompatible avec snapshot")
+
+        # Snapshot immuable en edition: seul le mask et le sens utilisateur changent.
+        snapshotLocal = list(self.borderSnapshotNodes)
+        boundary_orientation = self._world.getBoundaryOrientation(str(self.groupId))
+        pathLocal = self._buildPathNodesOrdered(snapshotLocal, mask, orient, boundary_orientation)
+        if len(pathLocal) < 3:
+            raise ValueError("[Chemins] edition invalide: moins de 3 nodes selectionnes")
+        tripletsLocal = self._buildTriplets(pathLocal)
+        for t in tripletsLocal:
+            t.calculerGeometrie(self._world, str(self.groupId))
+
+        self.orientationUser = orient
+        self.selectionMask = mask
+        self.pathNodesOrdered = pathLocal
+        self.triplets = tripletsLocal
+        self._assertDefinedInvariants()
+
+    def calculerPathNodesOrdered(self) -> None:
+        """Recalcule pathNodesOrdered depuis snapshot/mask/orientationUser."""
+        self._requireDefined()
+        boundary_orientation = self._world.getBoundaryOrientation(str(self.groupId))
+        self.pathNodesOrdered = self._buildPathNodesOrdered(
+            self.borderSnapshotNodes,
+            self.selectionMask,
+            str(self.orientationUser),
+            boundary_orientation,
+        )
+
+    def calculerTriplets(self) -> None:
+        """Recalcule les triplets combinatoires a partir de pathNodesOrdered."""
+        self._requireDefined()
+        self.triplets = self._buildTriplets(self.pathNodesOrdered)
+
+    def calculerGeometrieTriplets(self) -> None:
+        """Met a jour la geometrie de tous les triplets sans changer la combinatoire."""
+        self._requireDefined()
+        gid = str(self.groupId)
+        for t in self.triplets:
+            t.calculerGeometrie(self._world, gid)
+
+    def getTriplets(self) -> list[TopologyCheminTriplet]:
+        """Retourne une copie superficielle de la liste des triplets."""
+        return list(self.triplets)
+
+    def getTripletAt(self, i: int) -> TopologyCheminTriplet:
+        """Retourne le triplet d'index i avec controle de borne strict."""
+        idx = int(i)
+        if idx < 0 or idx >= len(self.triplets):
+            raise IndexError(f"[Chemins] index triplet hors borne: {i}")
+        return self.triplets[idx]
+
+    def getTripletSegmentsWorld(self, i: int) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float]]:
+        """Retourne les segments monde (O->A) et (O->B) du triplet i."""
+        self._requireDefined()
+        gid = str(self.groupId)
+        t = self.getTripletAt(i)
+        xA, yA = self._world.getConceptNodeWorldXY(t.nodeA, gid)
+        xO, yO = self._world.getConceptNodeWorldXY(t.nodeO, gid)
+        xB, yB = self._world.getConceptNodeWorldXY(t.nodeB, gid)
+        return (
+            (float(xO), float(yO), float(xA), float(yA)),
+            (float(xO), float(yO), float(xB), float(yB)),
+        )
 
 class TopologyWorld:
     """Racine métier du modèle topologique (Core, sans Tk).
@@ -924,6 +1185,7 @@ class TopologyWorld:
         self._topoTxTouchedGroups: set[str] = set()
         self._topoTxOrientation = "cw"
         self._isImportingSnapshot = False
+        self.topologyChemins = TopologyChemins(self)
 
     # ------------------------------------------------------------------
     # Topologie conceptuelle (MVP)
@@ -1343,6 +1605,13 @@ class TopologyWorld:
             raise ValueError("[Boundary] not computed")
         idx = c.boundaryIndex[start]
         return c.boundaryCycle[idx:] + c.boundaryCycle[:idx]
+
+    def getBoundaryOrientation(self, group_id: str) -> str:
+        gid = self.find_group(str(group_id))
+        c = self._concept_cache(gid)
+        if not c.boundaryOrientation:
+            raise ValueError("[Boundary] not computed")
+        return str(c.boundaryOrientation)
 
     def getBoundaryNeighbors(self, group_id: str, nodeId: str) -> tuple[str, str]:
         gid = self.find_group(str(group_id))
