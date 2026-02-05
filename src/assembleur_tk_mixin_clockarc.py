@@ -21,150 +21,136 @@ class TriangleViewerClockArcMixin:
     def _clock_update_snap_target(self, sx: float, sy: float):
         """Calcule le sommet de triangle le plus proche du curseur (en écran/canvas) et l'affiche en rouge."""
         prev = getattr(self, "_clock_snap_target", None)
-        # Pas de triangles -> rien à viser
-        if not getattr(self, "_last_drawn", None):
-            self._clock_clear_snap_target()
-            # Si on quitte un ancrage (plus de snap), on perd aussi l'arc persisté + dico
-            if prev is not None and self._clock_arc_is_available():
-                self._clock_arc_clear_last()
-            return
-
+        world = self._get_active_scenario().topoWorld
         w = self._screen_to_world(sx, sy)
         v_world = np.array([float(w[0]), float(w[1])], dtype=float)
 
-        found = self._find_nearest_vertex(v_world, exclude_idx=None, exclude_gid=None)
-        if found is None:
+        # On trouve le Node DSU       
+        hit = world.findNearestBoundaryNode(None, v_world)
+        if hit is None:
             self._clock_clear_snap_target()
             if prev is not None and self._clock_arc_is_available():
                 self._clock_arc_clear_last()
             return
+        nodeDsu = str(hit["nodeId"])
+        topoGroupId = str(hit["groupId"])
 
-        idx, vkey, wbest = found
+        # On trouve son Vertex
+        ref = world.getElementVertexFromAnyNodeId(hit["nodeId"], groupId=hit["groupId"])
+        if ref is None:
+            raise RuntimeError(f"[ClockSnap] Topo hit but cannot resolve nodeId to element/vertex: {hit}")
+        vkey = str(ref["vkey"])
+        wbest = tuple(ref["wbest"])
+
+        # On récupère son Tid
+        idx = self.getTidForTopoElementId(ref["elementId"])
+        if idx is None:
+            raise RuntimeError(f"[ClockSnap] Topo elementId '{ref['elementId']}' not found in GUI last_drawn")
+
         # Si on change de noeud (idx/vkey), l'arc mesuré n'est plus valide => on reset arc + dico
         if prev is not None:
-            prev_key = (int(prev.get("idx")), str(prev.get("vkey")))
-            new_key = (int(idx), str(vkey))
-            if prev_key is not None and new_key != prev_key and self._clock_arc_is_available():
+            prev_key = (prev.get("topoGroupId"), prev.get("nodeDsu"))
+            new_key = (topoGroupId, nodeDsu)
+            if new_key != prev_key and self._clock_arc_is_available():
                 self._clock_arc_clear_last()
-        self._clock_snap_target = {"idx": int(idx), "vkey": str(vkey), "world": np.array(wbest, dtype=float)}
+
+        self._clock_snap_target = {
+            "idx": int(idx), 
+            "vkey": str(vkey), 
+            "world": np.array(wbest, dtype=float),
+            "nodeDsu": nodeDsu,
+            "topoGroupId": topoGroupId,
+            }
 
         # Auto-mesure : si on vient de s'accrocher à un nouveau noeud,
         # on calcule automatiquement l'angle entre les 2 segments EXTÉRIEURS
         # incidents à ce noeud (sur le contour du groupe).
-        prev_key = (int(prev.get("idx")), str(prev.get("vkey"))) if isinstance(prev, dict) else None
-        new_key = (int(idx), str(vkey))
-
+        prev_key = (prev.get("topoGroupId"), prev.get("nodeDsu")) if isinstance(prev, dict) else None
+        new_key  = (topoGroupId, nodeDsu)
 
         if new_key is not None and new_key != prev_key:
-            self._clock_arc_auto_measure_from_snap()
+            self._clock_arc_auto_from_snap_target(self._clock_snap_target , drag = True)
 
         # Marqueur visuel : un anneau rouge autour du sommet
-        if getattr(self, "canvas", None):
-            self.canvas.delete("clock_snap_target")
-            px, py = self._world_to_screen(wbest)
-            r = 10  # rayon px fixe
-            self.canvas.create_oval(px - r, py - r, px + r, py + r,
-                                    outline="#FF0000", width=3,
-                                    fill="", tags="clock_snap_target")
-            self.canvas.tag_raise("clock_snap_target")
+        self.canvas.delete("clock_snap_target")
+        px, py = self._world_to_screen(wbest)
+        r = 10  # rayon px fixe
+        self.canvas.create_oval(px - r, py - r, px + r, py + r,
+                                outline="#FF0000", width=3,
+                                fill="", tags="clock_snap_target")
+        self.canvas.tag_raise("clock_snap_target")
 
 
 
-    def _clock_arc_auto_get_two_neighbors(self, idx: int, v_world, outline_eps=None):
-        """Helper commun (compas) : retourne 2 voisins (w1, w2) sur le contour (outline)
-        incident au point v_world.
+    def _clock_arc_auto_from_snap_target(self, snap_tgt: dict, drag: bool, 
+        prevNodeDsu: str | None = None, nextNodeDsu: str | None = None
+    ) -> bool:
+        """Auto-mesure d'arc (EXT) UNIQUEMENT via topologie, azimuts en MONDE.
 
-        Objectif : éviter la duplication entre _clock_arc_auto_measure_from_snap() et
-        _clock_arc_auto_from_snap_target().
+        - drag=True  : pendant le drag -> update overlay (sans persister l'arc).
+        - drag=False : au relâché / compas fixé -> persiste la mesure (_clock_arc_last...).
 
-        - outline_eps=None : utiliser l'outline par défaut (ne pas changer le comportement)
-        - outline_eps=float : forcer un eps spécifique lors du calcul de l'outline
-
-        Retourne (w1, w2) en coordonnées monde (np.array), ou None.
+        snap_tgt doit contenir:
+        - topoGroupId
+        - nodeDsu
         """
-        idx = int(idx)
-        v_world = np.array(v_world, dtype=float)
-        if not (0 <= idx < len(self._last_drawn)):
-            return None
+        if not self.show_clock_overlay.get():
+            return False
+        if not isinstance(snap_tgt, dict):
+            return False
+        if not snap_tgt.get("topoGroupId") or not snap_tgt.get("nodeDsu"):
+            return False
 
-        # Outline = contour du groupe auquel appartient idx
-        if outline_eps is None:
-            outline = self._outline_for_item(idx) or []
+        scen = self._get_active_scenario()
+        world = scen.topoWorld
+
+        gid = str(snap_tgt["topoGroupId"])
+        node = str(snap_tgt["nodeDsu"])
+
+        if (prevNodeDsu is None) ^ (nextNodeDsu is None):
+            raise RuntimeError("[ClockArc] prevNodeDsu and nextNodeDsu must be provided together")
+
+        if prevNodeDsu is None:
+            # Mode auto (boundary)
+            prevNode, nextNode = world.getBoundaryNeighbors(gid, node)
+            if prevNode is None or nextNode is None:
+                raise RuntimeError(f"[ClockArc] Boundary neighbors not found for node '{node}' in group '{gid}'")
         else:
-            outline = self._outline_for_item(idx, eps=float(outline_eps)) or []
-        if not outline:
-            return None
+            # Mode imposé (TreeView triplet)
+            prevNode = str(prevNodeDsu)
+            nextNode = str(nextNodeDsu)
 
-        # 2 segments extérieurs incidents à v_world
-        g = self._build_boundary_graph(outline)
-        tol_world = max(
-            float(EPS_WORLD),
-            float(getattr(self, "stroke_px", 2.0)) / max(float(getattr(self, "zoom", 1.0)), 1e-9)
-        )
-        inc = self._incident_half_edges_at_point(g, v_world, outline, eps=tol_world) or []
-        if len(inc) < 2:
-            return None
+        # coords monde (concept)
+        v_world = np.array(world.getConceptNodeWorldXY(node, gid), dtype=float)
+        w1 = np.array(world.getConceptNodeWorldXY(prevNode, gid), dtype=float)
+        w2 = np.array(world.getConceptNodeWorldXY(nextNode, gid), dtype=float)
 
-        w1 = np.array(inc[0][1], dtype=float)
-        w2 = np.array(inc[1][1], dtype=float)
-
-        return (w1, w2)
-
-
-
-    def _clock_arc_auto_measure_from_snap(self):
-        """Si le compas est accroché à un noeud, calcule automatiquement l'angle (arc) entre
-        les 2 arêtes **EXTÉRIEURES** incidentes à ce noeud (c'est-à-dire sur l'outline du groupe).
-        La mesure est persistée dans self._clock_arc_last (comme la mesure manuelle)."""
-        # NOTE: ici on calcule justement la mesure persistée.
-        # Ne PAS dépendre de _clock_arc_is_available(), sinon la fonction ne se déclenche jamais.
-        if not getattr(self, "canvas", None):
-            return
-        if not getattr(self, "show_clock_overlay", None) or not self.show_clock_overlay.get():
-            return
-        tgt = getattr(self, "_clock_snap_target", None)
-        if not (isinstance(tgt, dict) and tgt.get("world") is not None):
-            # Plus d'ancrage : ne pas garder une mesure invalide
-            self._clock_arc_clear_last()
-            return
-
-        idx = int(tgt.get("idx"))
-        v_world = np.array(tgt.get("world"), dtype=float)
-
-
-        # IMPORTANT (compas) : on veut des sommets "tels quels" (pas l'eps de rendu),
-        # sinon le buffer décale légèrement les sommets et v_world ne tombe plus sur un sommet du graphe.
-        neigh = self._clock_arc_auto_get_two_neighbors(idx, v_world, outline_eps=EPS_WORLD)
-        if not neigh:
-            self._clock_arc_clear_last()
-            return
-
-        w1, w2 = neigh
-
-        # Point d'ancrage = centre du compas = noeud snap
+        # centre compas (affichage seulement)
         cx, cy = self._world_to_screen(v_world)
-        # Forcer le centre sur le noeud ancré (overlay cohérent)
         self._clock_cx = float(cx)
         self._clock_cy = float(cy)
 
-        # Azimuts vers les 2 voisins (en écran)
-        sx1, sy1 = self._world_to_screen(w1)
-        sx2, sy2 = self._world_to_screen(w2)
-        az1 = float(self._clock_compute_azimuth_deg(int(sx1), int(sy1)))
-        az2 = float(self._clock_compute_azimuth_deg(int(sx2), int(sy2)))
+        # azimuts EN MONDE (0°=Nord, horaire)
+        az1 = float(self._azimuth_world_deg(v_world, w1))
+        az2 = float(self._azimuth_world_deg(v_world, w2))
         angle_deg = float(self._clock_arc_compute_angle_deg(az1, az2))
 
-        # Persister : même format que la mesure manuelle
+        # persister (même format que la mesure manuelle)
         self._clock_arc_last = {"az1": az1, "az2": az2, "angle": angle_deg}
         self._clock_arc_last_angle_deg = float(angle_deg)
 
-        # Rafraîchir l'overlay (et donc le filtre dico s'il est activé)
         self._draw_clock_overlay()
-
-        # Rafraîchir l'overlay + états UI (menu compas / dico)
-        self._update_compass_ctx_menu_and_dico_state()
         self._redraw_overlay_only()
-        self.status.config(text=f"Arc auto (EXT) : {angle_deg:0.0f}°")
+
+        if drag:
+            # preview uniquement (ne pas persister)
+            return True
+
+        # Filtrer automatiquement le dictionnaire par l'arc courant
+        self._ctx_filter_dictionary_by_clock_arc()
+
+        return True
+
 
     # ==========================
     # Calibration fond (3 points)
@@ -320,43 +306,6 @@ class TriangleViewerClockArcMixin:
         self._update_compass_ctx_menu_and_dico_state()
 
 
-    def _clock_arc_auto_from_snap_target(self, snap_tgt: dict) -> bool:
-        """Calcule automatiquement un arc (EXT) quand le compas s'accroche à un noeud.
-
-        Objectif : reproduire "Mesure un arc d'angle" sans interaction utilisateur,
-       en utilisant les 2 directions de frontière *extérieures* au point d'accroche.
-
-        Retourne True si une mesure a été calculée/persistée.
-
-        Remarques:
-        - Le point d'accroche peut être un sommet *ou* un point sur une arête (noeud connecté à une arête).
-        - En cas d'ambiguïté (>2 arêtes incidentes), on applique la même heuristique que
-          _incident_half_edges_at_vertex (2 extrêmes angulaires).
-        """
-        if not isinstance(snap_tgt, dict) or snap_tgt.get("world") is None:
-            return False
-
-        idx = int(snap_tgt.get("idx"))
-        v_world = snap_tgt.get("world")
-        if not (0 <= idx < len(self._last_drawn)):
-            return False
-
-        neigh = self._clock_arc_auto_get_two_neighbors(idx, v_world, outline_eps=None)
-        if not neigh:
-            return False
-
-        w1, w2 = neigh
-
-        # Récupérer 2 directions (azimuts) depuis le point d'ancrage
-        az1 = float(self._azimuth_world_deg(v_world, w1))
-        az2 = float(self._azimuth_world_deg(v_world, w2))
-        angle_deg = float(self._clock_arc_compute_angle_deg(az1, az2))
-
-        self._clock_arc_last = {"az1": az1, "az2": az2, "angle": angle_deg}
-        self._clock_arc_last_angle_deg = float(angle_deg)
-        self._update_compass_ctx_menu_and_dico_state()
-        self.status.config(text=f"Arc auto (EXT) : {angle_deg:0.0f}°")
-        return True
 
 
 

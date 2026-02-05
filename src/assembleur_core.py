@@ -3497,12 +3497,57 @@ class TopologyWorld:
         return list(self.node_members(cn))
 
     def getNodeTypeAtomic(self, node_id: str) -> str:
-        try:
-            return str(self._node_type[str(node_id)])
-        except KeyError:
-            raise KeyError(
-                f"[EXPORT][ConceptNode] unknown nodeId={node_id} in getNodeTypeAtomic()"
-            )
+        return str(self._node_type[str(node_id)])
+
+
+
+    def resolvePhysicalNodeIdDeterministic(self, nodeId: str) -> str | None:
+        """Retourne un nodeId physique 'Txx:Nn' depuis un nodeId (DSU canon ou déjà physique).
+        Stratégie: si DSU -> getPhysicalNodesForConceptNode(canon) triés, prendre le 1er."""
+        if nodeId is None:
+            return None
+
+        s = str(nodeId)
+
+        # déjà physique ?
+        if self._parseElementAndVertexIndexFromNodeId(s) is not None:
+            return s
+
+        canon = str(self.find_node(s))
+        phys = self.getPhysicalNodesForConceptNode(canon) or []   # retourne node_members(canon)
+        if not phys:
+            return None
+        return sorted(str(p) for p in phys)[0]
+
+    def getElementVertexFromAnyNodeId(self, nodeId: str, groupId: str | None = None) -> dict | None:
+        """Retourne une ref exploitable par Tk:
+        - elementId, vertexIndex, vkey
+        - wbest (position monde du concept node)
+        """
+        physId = self.resolvePhysicalNodeIdDeterministic(nodeId)
+        if physId is None:
+            return None
+        parsed = self._parseElementAndVertexIndexFromNodeId(physId)
+        if parsed is None:
+            return None
+
+        elementId, vertexIndex = parsed
+
+        # vkey = type atomique ("O","B","L") du noeud physique
+        vkey = str(self.getNodeTypeAtomic(physId))
+        gid = str(groupId) if groupId is not None else str(self._infer_group_for_node(physId))
+
+        canon = str(self.find_node(physId))
+        wbest = self.getConceptNodeWorldXY(canon, gid)
+
+        return {
+            "nodeCanon": canon,
+            "nodePhys": str(physId),
+            "elementId": str(elementId),
+            "vertexIndex": int(vertexIndex),
+            "vkey": str(vkey),
+            "wbest": (float(wbest[0]), float(wbest[1])),
+        }
 
     def computeConceptNodeTypeOptionB(self, member_ids: list[str]) -> str:
         types = {self.getNodeTypeAtomic(mid) for mid in member_ids}
@@ -3909,3 +3954,118 @@ class TopologyWorld:
 
         _ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
         return path
+
+
+    @staticmethod
+    def _distPointToSegment2D(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> tuple[float, np.ndarray, float]:
+        """Distance point-segment (2D).
+        Retourne (dist, proj, t) avec proj = a + t*(b-a), t clampé dans [0,1]."""
+        p = np.array(p, dtype=float)
+        a = np.array(a, dtype=float)
+        b = np.array(b, dtype=float)
+        ab = b - a
+        ab2 = float(ab[0] * ab[0] + ab[1] * ab[1])
+        if ab2 <= 1e-24:
+            # segment dégénéré
+            d = float(np.linalg.norm(p - a))
+            return (d, a, 0.0)
+        t = float(((p - a)[0] * ab[0] + (p - a)[1] * ab[1]) / ab2)
+        if t < 0.0:
+            t = 0.0
+        elif t > 1.0:
+            t = 1.0
+        proj = a + ab * t
+        d = float(np.linalg.norm(p - proj))
+        return (d, proj, t)
+
+    def findNearestBoundaryNode(self, groupId: str | None, pWorld: tuple[float, float] | np.ndarray) -> dict | None:
+        """Trouve le node DSU (canonique) le plus proche d'un point monde,
+        en ne considérant QUE la boundary.
+
+        - Si groupId est fourni -> comportement actuel (1 groupe)
+        - Si groupId est None -> scanne tous les groupes disponibles et renvoie le meilleur hit
+
+        Retour:
+            None si pas de boundary exploitable.
+            Sinon dict:
+            {
+                "groupId": <gid canonique>,
+                "nodeId": <node canonique>,
+                "distKm": <distance>,
+                "ptOnBoundary": (x,y),
+                "segment": (a,b),
+                "t": <0..1>
+            }
+        """
+        p = np.array(pWorld, dtype=float)
+
+        def _hit_for_gid(gid_in: str) -> dict | None:
+            gid = self.find_group(str(gid_in))
+
+            # boundary + géométrie conceptuelle requises
+            self.computeBoundary(gid)  # no-op si déjà calculé/caché
+            c = self.ensureConceptGeom(gid)
+
+            if not c.boundaryCycle or len(c.boundaryCycle) < 2:
+                return None
+
+            segs = self.getBoundarySegments(gid)
+            if not segs:
+                return None
+
+            best = None  # (dist, proj, t, a, b)
+            for s in segs:
+                a = str(s.conceptA)
+                b = str(s.conceptB)
+
+                pa = np.array(self.getConceptNodeWorldXY(a, gid), dtype=float)
+                pb = np.array(self.getConceptNodeWorldXY(b, gid), dtype=float)
+
+                d, proj, t = self._distPointToSegment2D(p, pa, pb)
+                if (best is None) or (d < best[0]):
+                    best = (d, proj, t, a, b)
+
+            if best is None:
+                return None
+
+            d, proj, t, a, b = best
+
+            # Retourner un *node DSU* => choisir l'endpoint le plus proche du point
+            pa = np.array(self.getConceptNodeWorldXY(a, gid), dtype=float)
+            pb = np.array(self.getConceptNodeWorldXY(b, gid), dtype=float)
+            da = float(np.linalg.norm(p - pa))
+            db = float(np.linalg.norm(p - pb))
+            node = a if da <= db else b
+
+            return {
+                "groupId": str(gid),
+                "nodeId": str(node),
+                "distKm": float(min(da, db)),
+                "ptOnBoundary": (float(proj[0]), float(proj[1])),
+                "segment": (str(a), str(b)),
+                "t": float(t),
+            }
+
+        # ---- mode 1 groupe (compat) ----
+        if groupId is not None:
+            return _hit_for_gid(str(groupId))
+
+        # ---- mode scan global ----
+        bestHit = None  # (distKm, hit_dict)
+        seen = set()
+
+        for gid0 in list(self.groups.keys()):
+            gid = str(self.find_group(str(gid0)))
+            if gid in seen:
+                continue
+            seen.add(gid)
+
+            hit = _hit_for_gid(gid)
+            if hit is None:
+                continue
+
+            d = float(hit["distKm"])
+            if (bestHit is None) or (d < bestHit[0]):
+                bestHit = (d, hit)
+
+        return None if bestHit is None else bestHit[1]

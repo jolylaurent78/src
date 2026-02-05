@@ -511,6 +511,13 @@ class TriangleViewerManual(
     # ======================================================================
     #  Topologie (bridge minimal Tk -> Core)
     # ======================================================================
+    def getTidForTopoElementId(self, topoElementId: str) -> int | None:
+        e = str(topoElementId)
+        for tid, tri in enumerate(self._last_drawn or []):
+            if str(tri.get("topoElementId", "")) == e:
+                return int(tid)
+        return None
+
     def _sync_group_elements_pose_to_core(self, ui_gid: int, scen: ScenarioAssemblage = None) -> None:
         """Synchronise les poses (R,T,mirrored) de TOUS les éléments du groupe UI vers le Core.
 
@@ -1880,7 +1887,8 @@ class TriangleViewerManual(
         self.chemins_tree.heading("angle", text="Angle")
         self.chemins_tree.column("triplet", width=170, stretch=True, anchor="w")
         self.chemins_tree.column("angle", width=70, stretch=False, anchor="center")
-
+        self.chemins_tree.bind("<<TreeviewSelect>>", self._onCheminsTreeSelect)
+                       
         self.chemins_scroll = ttk.Scrollbar(
             chemins_lb_frame, orient="vertical", command=self.chemins_tree.yview
         )
@@ -1908,7 +1916,6 @@ class TriangleViewerManual(
             return
         tree = self.scenario_tree
 
- 
         def _parseScenarioDisplayId(name: str):
             """Extrait l'ID affiché (#n) depuis un libellé de scénario."""
             s = str(name or "").strip()
@@ -1917,13 +1924,11 @@ class TriangleViewerManual(
             m = re.match(r"^#(\d+)", s)
             return int(m.group(1)) if m else None
 
- 
         def _parseScenarioRefId(name: str):
             """Extrait la référence (#q) depuis un libellé du type '#n=#q+(tri)'."""
             s = str(name or "")
             m = re.search(r"=#(\d+)\+\(", s)
             return int(m.group(1)) if m else None
-
  
         def _parseScenarioBranchTriId(name: str):
             """Extrait le triangle '(id)' depuis un libellé du type '#n=#q+(id)'."""
@@ -1940,8 +1945,7 @@ class TriangleViewerManual(
                 if m:
                     selected_tri = int(m.group(1))
 
- 
-         # --- Recalcul des valeurs possibles de la combo (sur l'ensemble des scénarios auto) ---
+        # --- Recalcul des valeurs possibles de la combo (sur l'ensemble des scénarios auto) ---
         tri_values = set()
         for _sc in (self.scenarios or []):
             if getattr(_sc, "source_type", None) != "auto":
@@ -2040,7 +2044,6 @@ class TriangleViewerManual(
         tree.item(grp_manual, text=f"Manuels ({manual_count})")
         tree.item(grp_auto,   text=f"Automatiques ({auto_count})")
 
-
         # Sélectionner le scénario actif si possible
         if 0 <= self.active_scenario_index < len(self.scenarios):
             active_iid = f"scen_{self.active_scenario_index}"
@@ -2061,33 +2064,68 @@ class TriangleViewerManual(
     # =========================
     #  CHEMINS (V1 : UI uniquement)
     # =========================
+    def _onCheminsTreeSelect(self, _evt=None) -> None:
+        if not hasattr(self, "chemins_tree"):
+            return
+        tree = self.chemins_tree
+        sel = tree.selection()
+        if not sel:
+            return
+
+        # On récupère le topology chemin et le GroupID de la bordure
+        world = self._get_active_scenario().topoWorld
+        tc = world.topologyChemins
+        groupId = tc.groupId
+
+        iid = sel[0]
+        t = self._cheminsTripletByIid[iid]
+
+        # 3 noeuds DSU (IDs)
+        nodePrevId = t.nodeA
+        nodeCenterId = t.nodeO
+        nodeNextId = t.nodeB
+
+        # Construire un snap_target minimal centré sur nodeO
+        snapTarget = {
+            "nodeDsu": nodeCenterId,
+            "topoGroupId": str(groupId),
+        }
+
+        # --- world coords du node central (obligatoire pour déplacer la clock)
+        xO, yO = world.getConceptNodeWorldXY(nodeCenterId, groupId)
+        wO = (float(xO), float(yO))
+        sx, sy = self._world_to_screen(wO)
+
+        # on positionne la clock sur le noeud
+        self._clock_anchor_world = np.array(wO, dtype=float)
+        self._clock_cx, self._clock_cy = float(sx), float(sy)
+
+        # On met à jour les informations d'azimut
+        self._clock_arc_auto_from_snap_target(
+            snapTarget,
+            prevNodeDsu=nodePrevId,
+            nextNodeDsu=nodeNextId,
+            drag=False,
+        )
+
+
+    def _onCheminsTreeActivate(self, evt=None) -> None:
+        # simple alias si tu veux déclencher seulement au double-clic
+        self._onCheminsTreeSelect(evt)
+
+
     def refreshCheminTreeView(self) -> None:
         """Rafraîchit la TreeView Chemins depuis world.topologyChemins (lecture seule)."""
         if not hasattr(self, "chemins_tree"):
             return
         tree = self.chemins_tree
-
+        self._cheminsTripletByIid = {}
+        
         for iid in tree.get_children(""):
             tree.delete(iid)
 
         scen = self._get_active_scenario()
-        if scen is None:
-            if hasattr(self, "chemins_edit_btn"):
-                self.chemins_edit_btn.configure(state=tk.DISABLED)
-            if hasattr(self, "chemins_recalc_btn"):
-                self.chemins_recalc_btn.configure(state=tk.DISABLED)
-            if hasattr(self, "chemins_delete_btn"):
-                self.chemins_delete_btn.configure(state=tk.DISABLED)
-            return
         world = scen.topoWorld
-        if world is None:
-            if hasattr(self, "chemins_edit_btn"):
-                self.chemins_edit_btn.configure(state=tk.DISABLED)
-            if hasattr(self, "chemins_recalc_btn"):
-                self.chemins_recalc_btn.configure(state=tk.DISABLED)
-            if hasattr(self, "chemins_delete_btn"):
-                self.chemins_delete_btn.configure(state=tk.DISABLED)
-            return
         tc = world.topologyChemins
         isDefined = bool(tc.isDefined)
         if hasattr(self, "chemins_edit_btn"):
@@ -2108,7 +2146,8 @@ class TriangleViewerManual(
                 f"{world.getNodeLabel(t.nodeB)}"
             )
             angleStr = f"{float(t.angleDeg):.2f}°"
-            tree.insert("", tk.END, values=(tripletStr, angleStr))
+            iid = tree.insert("", tk.END, values=(tripletStr, angleStr))
+            self._cheminsTripletByIid[iid] = t
 
     def onEditerChemin(self) -> None:
         """Édition V6 du chemin: orientationUser + selectionMask (ordre snapshot)."""
@@ -3022,7 +3061,6 @@ class TriangleViewerManual(
             for gid in list(self.groups.keys()):
                 self._recompute_group_bbox(gid)
 
-
     def _autoRebuildWorldGeometry(self, redraw: bool = True) -> None:
         for scen in (self.scenarios or []):
             if scen.source_type != "auto":
@@ -3030,7 +3068,6 @@ class TriangleViewerManual(
             self._autoRebuildWorldGeometryScenario(scen)
         if redraw:
             self._redraw_from(self._last_drawn)
-
 
     def _autoInitFromGeneratedScenarios(self, base_idx: int, order: str):
         """Après génération d'autos, construit les géométries locales + initialise le transform global."""
@@ -3202,10 +3239,8 @@ class TriangleViewerManual(
                 if _core_gid is not None:
                     scen.groups[_gid]["topoGroupId"] = _core_gid
 
-
         # Recalibrer _next_group_id si besoin
         self._next_group_id = (max(self.groups.keys()) + 1) if self.groups else 1
-
 
         # Recalcule la liste des triangles déjà utilisés pour ce scénario
         self._placed_ids = {
@@ -3272,7 +3307,6 @@ class TriangleViewerManual(
 
         self.status.config(text=f"Nouveau scénario créé : {scen.name}")
 
-
     def _scenario_edit_properties(self):
         """
         Modifie les propriétés du scénario actif (pour l'instant : uniquement le nom).
@@ -3297,7 +3331,6 @@ class TriangleViewerManual(
         scen.name = new_name
         self._refresh_scenario_listbox()
         self.status.config(text=f"Nom du scénario mis à jour : {scen.name}")
-
 
     def _scenario_duplicate(self):
         """
@@ -3356,7 +3389,6 @@ class TriangleViewerManual(
         # Si on supprime le scénario de référence, on efface la référence
         if self.ref_scenario_token is not None and id(scen) == self.ref_scenario_token:
             self.ref_scenario_token = None
-
 
         if idx == 0 and scen.source_type == "manual":
             messagebox.showinfo("Supprimer le scénario",
@@ -3462,7 +3494,6 @@ class TriangleViewerManual(
         cw_now = int(self.canvas.winfo_width() or 0)
         ch_now = int(self.canvas.winfo_height() or 0)
 
-
         # Si la taille a réellement changé, on programme un redraw complet.
         # (sinon, le fond de carte reste « figé » jusqu'au prochain pan/zoom)
         if cw_now > 2 and ch_now > 2:
@@ -3474,7 +3505,6 @@ class TriangleViewerManual(
 
                 self._resize_redraw_after_id = self.after(40, self._do_resize_redraw)
 
-
         if self._bg_defer_redraw and self._bg:
             cw = int(self.canvas.winfo_width() or 0)
             ch = int(self.canvas.winfo_height() or 0)
@@ -3482,7 +3512,6 @@ class TriangleViewerManual(
                 # Un seul redraw complet (sinon c'est lourd)
                 self._bg_defer_redraw = False
                 self._redraw_from(self._last_drawn)
-
 
         # Overlay + pick-cache (après le redraw complet, car _redraw_from() fait delete('all'))
         self._redraw_overlay_only()
@@ -7398,7 +7427,7 @@ class TriangleViewerManual(
             # on tente une mesure d'arc automatique (EXT). Sinon on reset.
             measured = False
             if (not self._ctrl_down) and isinstance(snap_tgt, dict):
-                measured = bool(self._clock_arc_auto_from_snap_target(snap_tgt))
+                measured = bool(self._clock_arc_auto_from_snap_target(snap_tgt, False))
             if not measured:
                 self._clock_arc_clear_last()
             self._redraw_overlay_only()

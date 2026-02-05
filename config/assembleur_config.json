@@ -1,6 +1,6 @@
 {
   "lastTriangleExcel": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_v7.xlsx",
-  "uiShowDicoPanel": false,
+  "uiShowDicoPanel": true,
   "uiShowClockOverlay": true,
   "bgSvgPath": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\maps\\899 - Alsace.jpg",
   "bgWorldRect": {
@@ -11,7 +11,7 @@
     "aspect": 0.8128587830080367
   },
   "uiMapOpacity": 43,
-  "uiClockRefAzimuth": 173.79803238581732,
+  "uiClockRefAzimuth": 359.86830132223395,
   "uiShowOnlyGroupContours": true,
   "simLastAlgoId": "quadris_par_paires",
   "simLastN": 6,
