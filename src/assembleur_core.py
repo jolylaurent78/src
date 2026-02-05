@@ -1113,6 +1113,149 @@ class TopologyChemins:
         for t in self.triplets:
             t.calculerGeometrie(self._world, gid, str(self.orientationUser))
 
+    def _saveToXml(self, parent: _ET.Element) -> None:
+        chemins_el = _ET.SubElement(parent, "chemins", {
+            "isDefined": "1" if bool(self.isDefined) else "0",
+        })
+        if not self.isDefined:
+            return
+
+        self._assertDefinedInvariants()
+
+        chemins_el.set("groupId", str(self.groupId))
+        chemins_el.set("startNodeId", str(self.startNodeId))
+        chemins_el.set("orientationUser", str(self.orientationUser))
+
+        border_el = _ET.SubElement(chemins_el, "borderSnapshot")
+        for nid in self.borderSnapshotNodes:
+            _ET.SubElement(border_el, "n", {"id": str(nid)})
+
+        mask_el = _ET.SubElement(chemins_el, "selectionMask")
+        for selected in self.selectionMask:
+            _ET.SubElement(mask_el, "m", {"v": "1" if bool(selected) else "0"})
+
+        path_el = _ET.SubElement(chemins_el, "pathNodesOrdered")
+        for nid in self.pathNodesOrdered:
+            _ET.SubElement(path_el, "n", {"id": str(nid)})
+
+        triplets_el = _ET.SubElement(chemins_el, "triplets")
+        for t in self.triplets:
+            if not bool(t.isGeometrieValide):
+                raise RuntimeError(
+                    f"[CheminsSave] triplet sans geometrie valide: ({t.nodeA},{t.nodeO},{t.nodeB})"
+                )
+            _ET.SubElement(triplets_el, "t", {
+                "a": str(t.nodeA),
+                "o": str(t.nodeO),
+                "b": str(t.nodeB),
+                "azOA": self._world._format_chemin_angle(t.azOA),
+                "azOB": self._world._format_chemin_angle(t.azOB),
+                "distOA_km": self._world._format_chemin_distance(t.distOA_km),
+                "distOB_km": self._world._format_chemin_distance(t.distOB_km),
+                "angleDeg": self._world._format_chemin_angle(t.angleDeg),
+            })
+
+    def _loadFromXml(self, cheminsNode: _ET.Element | None) -> None:
+        if cheminsNode is None:
+            self._resetUndefined()
+            self._assertDefinedInvariants()
+            return
+
+        raw_defined = str(cheminsNode.get("isDefined", "") or "").strip()
+        if raw_defined == "0":
+            self._resetUndefined()
+            self._assertDefinedInvariants()
+            return
+        if raw_defined != "1":
+            raise ValueError("[CheminsLoad] isDefined invalide (attendu 0/1)")
+
+        groupId = str(cheminsNode.get("groupId", "") or "").strip()
+        startNodeId = str(cheminsNode.get("startNodeId", "") or "").strip()
+        orientationUser = str(cheminsNode.get("orientationUser", "") or "").strip().lower()
+        if not groupId or not startNodeId:
+            raise ValueError("[CheminsLoad] groupId/startNodeId manquants")
+        orient = self._normalizeOrientation(orientationUser)
+
+        border_el = cheminsNode.find("borderSnapshot")
+        if border_el is None:
+            raise ValueError("[CheminsLoad] borderSnapshot manquant")
+        newSnapshot: list[str] = []
+        for n_el in border_el.findall("n"):
+            nid = str(n_el.get("id", "") or "").strip()
+            if not nid:
+                raise ValueError("[CheminsLoad] borderSnapshot: id manquant")
+            newSnapshot.append(nid)
+
+        mask_el = cheminsNode.find("selectionMask")
+        if mask_el is None:
+            raise ValueError("[CheminsLoad] selectionMask manquant")
+        newMask: list[bool] = []
+        for m_el in mask_el.findall("m"):
+            v = str(m_el.get("v", "") or "").strip()
+            if v not in ("0", "1"):
+                raise ValueError("[CheminsLoad] selectionMask: valeur invalide (attendu 0/1)")
+            newMask.append(v == "1")
+        if len(newMask) != len(newSnapshot):
+            raise ValueError("[CheminsLoad] selectionMask/borderSnapshot tailles differentes")
+
+        path_el = cheminsNode.find("pathNodesOrdered")
+        if path_el is None:
+            raise ValueError("[CheminsLoad] pathNodesOrdered manquant")
+        newPath: list[str] = []
+        for n_el in path_el.findall("n"):
+            nid = str(n_el.get("id", "") or "").strip()
+            if not nid:
+                raise ValueError("[CheminsLoad] pathNodesOrdered: id manquant")
+            newPath.append(nid)
+        if len(newPath) < 3:
+            raise ValueError("[CheminsLoad] pathNodesOrdered trop court")
+
+        triplets_el = cheminsNode.find("triplets")
+        if triplets_el is None:
+            raise ValueError("[CheminsLoad] triplets manquants")
+        newTriplets: list[TopologyCheminTriplet] = []
+        for t_el in triplets_el.findall("t"):
+            a = str(t_el.get("a", "") or "").strip()
+            o = str(t_el.get("o", "") or "").strip()
+            b = str(t_el.get("b", "") or "").strip()
+            if not a or not o or not b:
+                raise ValueError("[CheminsLoad] triplet avec ids vides")
+            azOA = t_el.get("azOA")
+            azOB = t_el.get("azOB")
+            distOA = t_el.get("distOA_km")
+            distOB = t_el.get("distOB_km")
+            angleDeg = t_el.get("angleDeg")
+            if azOA is None or azOB is None or distOA is None or distOB is None or angleDeg is None:
+                raise ValueError("[CheminsLoad] triplet incomplet (valeurs géométriques manquantes)")
+            t = TopologyCheminTriplet(nodeA=a, nodeO=o, nodeB=b)
+            t.azOA = float(azOA)
+            t.azOB = float(azOB)
+            t.distOA_km = float(distOA)
+            t.distOB_km = float(distOB)
+            t.angleDeg = float(angleDeg)
+            t.isGeometrieValide = True
+            newTriplets.append(t)
+
+        boundary_orientation = None
+        for cand in ("cw", "ccw"):
+            expected = self._buildPathNodesOrdered(newSnapshot, newMask, orient, cand)
+            if expected == newPath:
+                boundary_orientation = cand
+                break
+        if boundary_orientation is None:
+            raise ValueError("[CheminsLoad] pathNodesOrdered incoherent")
+        self._world._concept_cache(groupId).boundaryOrientation = boundary_orientation
+
+        self.isDefined = True
+        self.groupId = groupId
+        self.startNodeId = startNodeId
+        self.orientationUser = orient
+        self.borderSnapshotNodes = newSnapshot
+        self.selectionMask = newMask
+        self.pathNodesOrdered = newPath
+        self.triplets = newTriplets
+        self._assertDefinedInvariants()
+
     def recalculerChemin(self) -> None:
         """Reconstruit snapshot/mask/path/triplets depuis le contour courant en conservant start/sens."""
         self._requireDefined()

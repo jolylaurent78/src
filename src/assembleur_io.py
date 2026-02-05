@@ -106,6 +106,7 @@ def saveScenarioXml(viewer, path: str):
     })
     topo_snapshot_el = ET.SubElement(root, "topoSnapshot", {"encoding": "json"})
     topo_snapshot_el.text = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
+    world.topologyChemins._saveToXml(root)
     # source
     ET.SubElement(root, "source", {
         "excel": os.path.abspath(viewer.excel_path) if getattr(viewer, "excel_path", None) else ""
@@ -477,6 +478,7 @@ def loadScenarioXml(viewer, path: str):
     world = scen.topoWorld
     world._topoTxOrientation = topo_tx_orientation
     world._importPhysicalSnapshot(snapshot)
+    world.topologyChemins._loadFromXml(root.find("chemins"))
 
     # On construit une table elem_id_by_rank qui contient la liste des Triangles Txx du core
     elem_id_by_rank = {}
