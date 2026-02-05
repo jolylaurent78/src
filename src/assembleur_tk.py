@@ -1,42 +1,22 @@
 
 import os
-import json
 import datetime as _dt
 import math
 import numpy as np
 import re
 import copy
-import io
 import pandas as pd
-from typing import Optional, List, Dict, Tuple, Type
-from pyproj import Transformer
+from typing import Optional, List, Dict, Tuple
 
 from tkinter import filedialog, messagebox, simpledialog
 import tkinter as tk
 from tkinter import ttk
 import tkinter.font as tkfont
-from tksheet import Sheet
 
+from PIL import Image
 
-from PIL import Image, ImageTk
-
-# --- SVG rasterization (svglib/reportlab) ---
-# IMPORTANT:
-# - On utilise svglib + reportlab (renderPDF) + pdfium pour rasteriser le SVG.
-# - On évite volontairement renderPM ici : sur certains environnements (notamment Windows/Python 3.13),
-#   reportlab peut tenter d'utiliser un backend Cairo absent et planter dès l'import.
-from svglib.svglib import svg2rlg
-from reportlab.graphics import renderPDF
-from reportlab.pdfgen import canvas as _rl_canvas
-import pypdfium2 as pdfium
-
-from shapely.geometry import Polygon as _ShPoly, LineString as _ShLine, Point as _ShPoint
+from shapely.geometry import Polygon as _ShPoly
 from shapely.ops import unary_union as _sh_union
-from shapely.ops import unary_union
-from shapely.affinity import rotate, translate 
-
-import xml.etree.ElementTree as ET
-
 
 # === Modules externalisés (découpage maintenable) ===
 from src.assembleur_core import (
@@ -44,12 +24,9 @@ from src.assembleur_core import (
     _build_local_triangle,
     ScenarioAssemblage,
     TopologyWorld, TopologyElement, TopologyNodeType,
-    TopologyAttachment, TopologyFeatureRef, TopologyFeatureType,
 )
 
 from src.assembleur_sim import (
-    AlgorithmeAssemblage,
-    AlgoQuadrisParPaires,
     MoteurSimulationAssemblage,
     ALGOS,
 )
@@ -69,9 +46,6 @@ from src.assembleur_tk_mixin_bg import TriangleViewerBackgroundMapMixin
 from src.assembleur_tk_mixin_clockarc import TriangleViewerClockArcMixin
 from src.assembleur_edgechoice import buildEdgeChoiceEptsFromBest
 
-
-# --- Dictionnaire (chargement livre.txt) ---
-from src.DictionnaireEnigmes import DictionnaireEnigmes
 
 EPS_WORLD = 1e-6
 
@@ -133,8 +107,6 @@ class DialogSimulationAssembler(tk.Toplevel):
         self.algo_combo.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
 
         ttk.Label(frm, text="Nombre de triangles (n premiers) :").grid(row=2, column=0, sticky="w")
-        #self.n_var = tk.IntVar(value=int(default_n))
-        #self.n_spin = ttk.Spinbox(frm, from_=2, to=max(2, int(n_max)), textvariable=self.n_var, width=8)
         vcmd = (self.register(self._validate_even), "%P")
         self.var_nb_triangles = tk.IntVar(value=int(default_n))
         self.spin_nb_triangles = ttk.Spinbox(
@@ -219,7 +191,6 @@ class DialogSimulationAssembler(tk.Toplevel):
         algo_id = raw.split(" - ", 1)[0].strip() if " - " in raw else raw.strip()
         n = int(self.var_nb_triangles.get())
 
-
         if n <= 0:
             messagebox.showerror("Assembler", "Nombre de triangles invalide.")
             return
@@ -234,9 +205,7 @@ class DialogSimulationAssembler(tk.Toplevel):
             n = n2
             self.var_nb_triangles.set(n)
 
-
         order = str(self.order_var.get() or "forward")
-
         first_raw = str(self.first_edge_var.get() or "OL")
         if "Même" in first_raw or "même" in first_raw:
             first_edge = "__LASTRUN__"
@@ -244,106 +213,6 @@ class DialogSimulationAssembler(tk.Toplevel):
             first_edge = "BL" if "BL" in first_raw else "OL"
 
         self.result = (algo_id, int(n), order, first_edge)
-
-        self.destroy()
-
-
-class DialogCreateCheminParams(tk.Toplevel):
-    """Boîte de dialogue 'Créer un chemin…' (V1: paramètres uniquement)."""
-    def __init__(self, parent, triangle_label: str, vertex_key: str, vertex_city: str):
-        super().__init__(parent)
-        self.title("Créer un chemin…")
-        self.resizable(False, False)
-        self.transient(parent)
-        self.grab_set()
-
-        self.result = None  # dict {limit: bool, maxPoints: int, orientation: 'cw'|'ccw'}
-
-        frm = ttk.Frame(self, padding=10)
-        frm.grid(row=0, column=0, sticky="nsew")
-
-        # Infos (premier point choisi automatiquement)
-        # Format demandé : "Premier point: Ville (Triangle XX)" sur 1 seule ligne
-        city = str(vertex_city or "").strip()
-        tri_txt = str(triangle_label or "").strip()
-        info = f"Premier point: {city} (Triangle {tri_txt})"
-        ttk.Label(frm, text=info, justify="left").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
-
-        # Orientation du contour pour définir le chemin
-        ttk.Label(frm, text="Orientation :").grid(row=1, column=0, sticky="w")
-        self.orientation_var = tk.StringVar(value="cw")  # cw=horaire (défaut) | ccw=inverse
-        orient_frm = ttk.Frame(frm)
-        orient_frm.grid(row=1, column=1, sticky="e")
-        ttk.Radiobutton(orient_frm, text="Sens horaire", value="cw", variable=self.orientation_var)\
-            .grid(row=0, column=0, padx=(0, 10))
-        ttk.Radiobutton(orient_frm, text="Sens inverse", value="ccw", variable=self.orientation_var)\
-            .grid(row=0, column=1)
-
-        # Limiter le nombre de points
-        self.limit_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(frm, text="Limiter le nombre de sommets parcourus", variable=self.limit_var)\
-            .grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
-
-        ttk.Label(frm, text="Nombre max :").grid(row=3, column=0, sticky="w", pady=(6, 0))
-        # IMPORTANT: valeurs impaires (1,3,5,7,...) car (1,2,3)(3,4,5)...
-        self.max_var = tk.IntVar(value=7)
-        self.max_spin = ttk.Spinbox(
-            frm,
-            from_=1,
-            to=199,
-            increment=2,
-            textvariable=self.max_var,
-            width=8
-        )
-        self.max_spin.grid(row=3, column=1, sticky="e", pady=(6, 0))
-
-        def _enforce_odd_value(event=None):
-            v = int(self.max_var.get())
-            if v < 1:
-                v = 1
-            # forcer impair
-            if v % 2 == 0:
-                v = v + 1
-            self.max_var.set(int(v))
-
-        # Si l'utilisateur tape au clavier, corriger au focus out / Return
-        self.max_spin.bind("<FocusOut>", _enforce_odd_value)
-        self.max_spin.bind("<Return>", _enforce_odd_value)
-
-        # Activer/désactiver la combo selon checkbox
-        def _update_enable(*_):
-            st = "normal" if self.limit_var.get() else "disabled"
-            self.max_spin.configure(state=st)
-        self.limit_var.trace_add("write", _update_enable)
-        _update_enable()
-
-        btns = ttk.Frame(frm)
-        btns.grid(row=4, column=0, columnspan=2, sticky="e", pady=(12, 0))
-        ttk.Button(btns, text="Annuler", command=self._on_cancel).grid(row=0, column=0, padx=(0, 8))
-        ttk.Button(btns, text="OK", command=self._on_ok).grid(row=0, column=1)
-
-        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
-
-    def _on_cancel(self):
-        self.result = None
-        self.destroy()
-
-    def _on_ok(self):
-        limit = bool(self.limit_var.get())
-        maxPoints = int(self.max_var.get())
-        # sécuriser impair
-        if maxPoints < 1:
-            maxPoints = 1
-        if maxPoints % 2 == 0:
-            maxPoints += 1
-
-        if limit and maxPoints <= 2:
-            messagebox.showerror("Créer un chemin…", "Le nombre max doit être > 2.")
-            return
-        orient = str(self.orientation_var.get() or "cw").strip().lower()
-        if orient not in ("cw", "ccw"):
-            orient = "cw"
-        self.result = {"limit": limit, "maxPoints": int(maxPoints), "orientation": orient}
 
         self.destroy()
 
@@ -383,27 +252,29 @@ class TriangleViewerManual(
         self.simulationOverlapZoomRef = 1.0
         self.zoom = 1.0
         self.offset = np.array([400.0, 350.0], dtype=float)
-        self._drag = None             # état de drag & drop depuis la liste
-        self._drag_preview_id = None  # id du polygone "fantôme" sur le canvas
-        self._sel = None              # sélection sur canvas: {'mode': 'move'|'vertex', 'idx': int}
-        self._hit_px = 12             # tolérance de hit (pixels) pour les sommets
-        self._center_hit_px = 12      # même défaut que hit_px historique
-        self._marker_px = 6           # rayon des marqueurs (cercles) dessinés aux sommets
+        self._drag = None              # état de drag & drop depuis la liste
+        self._drag_preview_id = None   # id du polygone "fantôme" sur le canvas
+        self._sel = None               # sélection sur canvas: {'mode': 'move'|'vertex', 'idx': int}
+        self._hit_px = 12              # tolérance de hit (pixels) pour les sommets
+        self._center_hit_px = 12       # même défaut que hit_px historique
+        self._marker_px = 6            # rayon des marqueurs (cercles) dessinés aux sommets
         self._pan_anchor = None
         self._offset_anchor = None
         self._last_canvas_size = (0, 0)
         self._resize_redraw_after_id = None
 
-        self._ctx_target_idx = None   # index du triangle visé par clic droit (menu contextuel)
-        self._ctx_last_rclick = None  # dernière position écran du clic droit (pour pivoter)
+        self._ctx_target_idx = None    # index du triangle visé par clic droit (menu contextuel)
+        self._ctx_last_rclick = None   # dernière position écran du clic droit (pour pivoter)
         self._ctx_nearest_vertex_key = None  # 'O'|'B'|'L' sommet le plus proche du clic droit        
-        self._placed_ids = set()      # ids déjà posés dans le scénario actif
-        self._nearest_line_id = None  # trait d'aide "sommet le plus proche"
-        self._edge_highlight_ids = [] # surlignage des 2 arêtes (mobile/cible)
-        self._edge_choice = None      # (i_mob, key_mob, edge_m, i_tgt, key_tgt, edge_t)
-        self._edge_highlights = None  # données brutes des aides (candidates + best)
-        self._tooltip = None          # tk.Toplevel
-        self._tooltip_label = None    # tk.Label
+        self.ctxGroupId = None         # contexte chemin: groupId Core canonique (clic droit)
+        self.ctxStartNodeId = None     # contexte chemin: startNodeId DSU canonique (clic droit)
+        self._placed_ids = set()       # ids déjà posés dans le scénario actif
+        self._nearest_line_id = None   # trait d'aide "sommet le plus proche"
+        self._edge_highlight_ids = []  # surlignage des 2 arêtes (mobile/cible)
+        self._edge_choice = None       # (i_mob, key_mob, edge_m, i_tgt, key_tgt, edge_t)
+        self._edge_highlights = None   # données brutes des aides (candidates + best)
+        self._tooltip = None           # tk.Toplevel
+        self._tooltip_label = None     # tk.Label
 
         # --- cache pick (écran) régénéré après load / zoom / pan ---
         self._pick_cache_valid = False
@@ -648,7 +519,7 @@ class TriangleViewerManual(
         - Le Core ne porte AUCUNE pose de groupe : les groupes sont topologiques.
         - La vérité géométrique persistable est donc : pose par élément.
         """
-        if scen is  None:
+        if scen is None:
             scen = self._get_active_scenario()
         world = scen.topoWorld 
 
@@ -706,7 +577,7 @@ class TriangleViewerManual(
 
             # Fit orthonormal 2D sur 3 points (Kabsch) — R DOIT être une rotation (det=+1)
             X = np.stack([pO2, pB2, pL2], axis=0)  # (3,2)
-            Y = np.stack([Ow,  Bw,  Lw ], axis=0)  # (3,2)
+            Y = np.stack([Ow,  Bw,  Lw], axis=0)  # (3,2)
             Xc = X - X.mean(axis=0)
             Yc = Y - Y.mean(axis=0)
             H = Xc.T @ Yc
@@ -742,7 +613,7 @@ class TriangleViewerManual(
         """Export TopoDump_<scenarioId>.xml du scénario actif (F11/F12)."""
         scen = self._get_active_scenario()
         world = scen.topoWorld
-        out_name = f"TopoDump.xml"
+        out_name = "TopoDump.xml"
         out_path = os.path.join(self.topo_xml_dir, out_name)
         world.export_topo_dump_xml(out_path, orientation="cw")
         self.status.config(text=f"TopoDump exporté : {out_name}")
@@ -1129,8 +1000,7 @@ class TriangleViewerManual(
                 command=lambda p=full: self.open_excel(p)
             )
 
-
-    # ---------- Icônes ----------
+    # ---------- Icônes ----------  
     def _load_icon(self, filename: str):
         """
         Charge une icône depuis le dossier images.
@@ -1952,24 +1822,48 @@ class TriangleViewerManual(
         chemins_title.bind("<Button-1>", lambda _e: _toggleCheminsPanel())
         chemins_header.bind("<Button-1>", lambda _e: _toggleCheminsPanel())
 
-        # Barre d'actions (✎ éditer, 🗑 supprimer)
+        # Barre d'actions (éditer, recalculer, supprimer)
         chemins_toolbar = tk.Frame(self._ui_chemins_content, bd=0, highlightthickness=0)
         chemins_toolbar.pack(anchor="w", padx=6, pady=(0, 2), fill="x")
+        self.icon_chemin_recalc = self._load_icon("refresh-cw.png")
 
-        tk.Button(
+        def _make_chemin_btn(parent, icon, text, cmd, tooltip_text: str):
+            if icon is not None:
+                b = tk.Button(parent, image=icon, command=cmd, relief=tk.FLAT)
+            else:
+                kwargs = {"text": text, "command": cmd, "relief": tk.FLAT}
+                if len(str(text)) <= 2:
+                    kwargs["width"] = 2
+                b = tk.Button(parent, **kwargs)
+            self._ui_attach_tooltip(b, tooltip_text)
+            return b
+
+        self.chemins_edit_btn = _make_chemin_btn(
             chemins_toolbar,
-            text="✎",
-            width=2,
-            command=self._chemins_edit_selected,
-            relief=tk.FLAT,
-        ).pack(side=tk.LEFT, padx=1)
-        tk.Button(
+            self.icon_scen_props,
+            "✎",
+            self.onEditerChemin,
+            "Éditer le chemin",
+        )
+        self.chemins_edit_btn.pack(side=tk.LEFT, padx=1)
+
+        self.chemins_recalc_btn = _make_chemin_btn(
             chemins_toolbar,
-            text="🗑",
-            width=2,
-            command=self._chemins_delete_selected,
-            relief=tk.FLAT,
-        ).pack(side=tk.LEFT, padx=1)
+            self.icon_chemin_recalc,
+            "Recalculer le chemin",
+            self.onRecalculerChemin,
+            "Recalculer le chemin",
+        )
+        self.chemins_recalc_btn.pack(side=tk.LEFT, padx=1)
+
+        self.chemins_delete_btn = _make_chemin_btn(
+            chemins_toolbar,
+            self.icon_scen_del,
+            "🗑",
+            self._chemins_delete_selected,
+            "Supprimer le chemin",
+        )
+        self.chemins_delete_btn.pack(side=tk.LEFT, padx=1)
 
         chemins_lb_frame = tk.Frame(self._ui_chemins_content, bd=0, highlightthickness=0)
         chemins_lb_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
@@ -1977,14 +1871,14 @@ class TriangleViewerManual(
         # Treeview "Chemins" (vide en V1)
         self.chemins_tree = ttk.Treeview(
             chemins_lb_frame,
-            columns=("abc", "angle"),
+            columns=("triplet", "angle"),
             show="headings",
             selectmode="browse",
             height=6,
         )
-        self.chemins_tree.heading("abc", text="A,B,C")
+        self.chemins_tree.heading("triplet", text="Triplet")
         self.chemins_tree.heading("angle", text="Angle")
-        self.chemins_tree.column("abc", width=170, stretch=True, anchor="w")
+        self.chemins_tree.column("triplet", width=170, stretch=True, anchor="w")
         self.chemins_tree.column("angle", width=70, stretch=False, anchor="center")
 
         self.chemins_scroll = ttk.Scrollbar(
@@ -2006,6 +1900,7 @@ class TriangleViewerManual(
 
         # Remplir la liste des scénarios existants (pour l'instant : le manuel)
         self._refresh_scenario_listbox()
+        self.refreshCheminTreeView()
 
     def _refresh_scenario_listbox(self):
         """Met à jour la liste visible des scénarios (Treeview) dans le panneau de gauche."""
@@ -2166,13 +2061,217 @@ class TriangleViewerManual(
     # =========================
     #  CHEMINS (V1 : UI uniquement)
     # =========================
+    def refreshCheminTreeView(self) -> None:
+        """Rafraîchit la TreeView Chemins depuis world.topologyChemins (lecture seule)."""
+        if not hasattr(self, "chemins_tree"):
+            return
+        tree = self.chemins_tree
+
+        for iid in tree.get_children(""):
+            tree.delete(iid)
+
+        scen = self._get_active_scenario()
+        if scen is None:
+            if hasattr(self, "chemins_edit_btn"):
+                self.chemins_edit_btn.configure(state=tk.DISABLED)
+            if hasattr(self, "chemins_recalc_btn"):
+                self.chemins_recalc_btn.configure(state=tk.DISABLED)
+            if hasattr(self, "chemins_delete_btn"):
+                self.chemins_delete_btn.configure(state=tk.DISABLED)
+            return
+        world = scen.topoWorld
+        if world is None:
+            if hasattr(self, "chemins_edit_btn"):
+                self.chemins_edit_btn.configure(state=tk.DISABLED)
+            if hasattr(self, "chemins_recalc_btn"):
+                self.chemins_recalc_btn.configure(state=tk.DISABLED)
+            if hasattr(self, "chemins_delete_btn"):
+                self.chemins_delete_btn.configure(state=tk.DISABLED)
+            return
+        tc = world.topologyChemins
+        isDefined = bool(tc.isDefined)
+        if hasattr(self, "chemins_edit_btn"):
+            self.chemins_edit_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
+        if hasattr(self, "chemins_recalc_btn"):
+            self.chemins_recalc_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
+        if hasattr(self, "chemins_delete_btn"):
+            self.chemins_delete_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
+        if not isDefined:
+            return
+
+        for t in tc.getTriplets():
+            if not t.isGeometrieValide:
+                raise RuntimeError("Triplet sans géométrie valide")
+            tripletStr = (
+                f"{world.getNodeLabel(t.nodeA)} - "
+                f"{world.getNodeLabel(t.nodeO)} - "
+                f"{world.getNodeLabel(t.nodeB)}"
+            )
+            angleStr = f"{float(t.angleDeg):.2f}°"
+            tree.insert("", tk.END, values=(tripletStr, angleStr))
+
+    def onEditerChemin(self) -> None:
+        """Édition V6 du chemin: orientationUser + selectionMask (ordre snapshot)."""
+        scen = self._get_active_scenario()
+        if scen is None:
+            return
+        world = scen.topoWorld
+        if world is None:
+            return
+        tc = world.topologyChemins
+        if not tc.isDefined:
+            return
+
+        snapshotNodes = [str(n) for n in list(tc.borderSnapshotNodes)]
+        currentMask = [bool(v) for v in list(tc.selectionMask)]
+        n = len(snapshotNodes)
+        if n != len(currentMask):
+            raise RuntimeError("Édition du chemin impossible : mask/snapshot incohérents.")
+
+        groupId = str(tc.groupId)
+        boundaryOrientation = str(world.getBoundaryOrientation(groupId)).strip().lower()
+        if boundaryOrientation not in ("cw", "ccw"):
+            raise RuntimeError(f"Édition du chemin impossible : boundaryOrientation invalide ({boundaryOrientation}).")
+
+        currentOrientation = str(tc.orientationUser).strip().lower()
+        if currentOrientation not in ("cw", "ccw"):
+            raise RuntimeError(f"Édition du chemin impossible : orientationUser invalide ({currentOrientation}).")
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Éditer le chemin")
+        dlg.transient(self)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        root = tk.Frame(dlg, padx=10, pady=10)
+        root.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(root, text="Sens").pack(anchor="w")
+        orientationVar = tk.StringVar(value=currentOrientation)
+        orientRow = tk.Frame(root)
+        orientRow.pack(fill=tk.X, pady=(2, 8))
+        tk.Radiobutton(orientRow, text="Sens horaire", value="cw", variable=orientationVar).pack(side=tk.LEFT, padx=(0, 10))
+        tk.Radiobutton(orientRow, text="Sens inverse", value="ccw", variable=orientationVar).pack(side=tk.LEFT)
+
+        tk.Label(root, text="Liste des nœuds").pack(anchor="w", pady=(0, 2))
+        listFrame = tk.Frame(root, bd=1, relief=tk.GROOVE)
+        listFrame.pack(fill=tk.BOTH, expand=True)
+
+        nodesFrame = tk.Frame(listFrame)
+        nodesFrame.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+
+        viewVars: list[tk.BooleanVar] = []
+        viewInverted = (str(orientationVar.get() or "cw").strip().lower() != boundaryOrientation)
+
+        def _snapshotIndexFromView(viewIndex: int, count: int, inverted: bool) -> int:
+            if not inverted:
+                return int(viewIndex)
+            if int(viewIndex) == 0:
+                return 0
+            return int(count - viewIndex)
+
+        def _syncMaskFromCurrentView(inverted: bool) -> None:
+            if len(viewVars) != n:
+                return
+            for viewIndex, var in enumerate(viewVars):
+                snapshotIndex = _snapshotIndexFromView(viewIndex, n, inverted)
+                currentMask[snapshotIndex] = bool(var.get())
+
+        def _rebuildView() -> None:
+            nonlocal viewInverted
+            _syncMaskFromCurrentView(viewInverted)
+            for w in nodesFrame.winfo_children():
+                w.destroy()
+            viewVars.clear()
+
+            inverted = str(orientationVar.get() or "cw").strip().lower() != boundaryOrientation
+            viewInverted = inverted
+            for viewIndex in range(n):
+                snapshotIndex = _snapshotIndexFromView(viewIndex, n, inverted)
+                conceptNodeId = str(snapshotNodes[snapshotIndex])
+                rawLabel = world.getConceptNodeLabel(conceptNodeId)
+                displayLabel = str(rawLabel).strip() if rawLabel is not None else ""
+                if not displayLabel:
+                    displayLabel = "(sans label)"
+                var = tk.BooleanVar(value=bool(currentMask[snapshotIndex]))
+                viewVars.append(var)
+                tk.Checkbutton(
+                    nodesFrame,
+                    text=displayLabel,
+                    variable=var,
+                    anchor="w",
+                    justify="left",
+                ).pack(anchor="w")
+
+        _rebuildView()
+        orientationVar.trace_add("write", lambda *_: _rebuildView())
+
+        actions = tk.Frame(root)
+        actions.pack(fill=tk.X, pady=(8, 0))
+
+        def _onOk() -> None:
+            newOrientationUser = str(orientationVar.get() or "cw").strip().lower()
+            if newOrientationUser not in ("cw", "ccw"):
+                raise RuntimeError(f"Édition du chemin impossible : orientationUser invalide ({newOrientationUser}).")
+
+            newSelectionMaskSnapshotOrder = [False] * n
+            inverted = newOrientationUser != boundaryOrientation
+            for viewIndex, var in enumerate(viewVars):
+                snapshotIndex = _snapshotIndexFromView(viewIndex, n, inverted)
+                newSelectionMaskSnapshotOrder[snapshotIndex] = bool(var.get())
+
+            if sum(1 for v in newSelectionMaskSnapshotOrder if v) < 3:
+                messagebox.showerror("Éditer le chemin", "Au moins 3 nœuds doivent rester sélectionnés.", parent=dlg)
+                return
+
+            world.topologyChemins.appliquerEdition(newOrientationUser, newSelectionMaskSnapshotOrder)
+            dlg.destroy()
+            self.refreshCheminTreeView()
+
+        def _onCancel() -> None:
+            dlg.destroy()
+
+        tk.Button(actions, text="Annuler", command=_onCancel).pack(side=tk.RIGHT)
+        tk.Button(actions, text="OK", command=_onOk).pack(side=tk.RIGHT, padx=(0, 6))
+
+        dlg.protocol("WM_DELETE_WINDOW", _onCancel)
+        dlg.wait_visibility()
+        dlg.focus_set()
+        dlg.wait_window()
+
+    def onRecalculerChemin(self) -> None:
+        """Demande au Core de recalculer le chemin courant puis rafraîchit l'UI."""
+        scen = self._get_active_scenario()
+        tc = scen.topoWorld.topologyChemins
+        if not tc.isDefined:
+            return
+
+        tc.recalculerChemin()
+
+        self.refreshCheminTreeView()
+
     def _chemins_edit_selected(self):
-        """V1: stub. L'édition sera implémentée plus tard."""
-        messagebox.showinfo("Chemins", "V1 : édition non implémentée")
+        """Compat: redirige vers l'éditeur V6."""
+        self.onEditerChemin()
 
     def _chemins_delete_selected(self):
-        """V1: stub. La suppression sera implémentée plus tard."""
-        messagebox.showinfo("Chemins", "V1 : suppression non implémentée")
+        """Supprime le chemin courant (Core) après confirmation."""
+        scen = self._get_active_scenario()
+        if scen is None:
+            return
+        world = scen.topoWorld
+        if world is None:
+            return
+        tc = world.topologyChemins
+        if not tc.isDefined:
+            self.refreshCheminTreeView()
+            return
+
+        if not messagebox.askokcancel("Supprimer le chemin", "Supprimer le chemin ?"):
+            return
+
+        tc.supprimerChemin()
+        self.refreshCheminTreeView()
 
     # =========================
     # Scénarios: propriétés calculées (Treeview)
@@ -3140,6 +3239,7 @@ class TriangleViewerManual(
                 tree.selection_set(active_iid)
                 tree.see(active_iid)
 
+        self.refreshCheminTreeView()
 
         self.status.config(text=f"Scénario actif : {scen.name}")
 
@@ -3326,7 +3426,7 @@ class TriangleViewerManual(
         self._ctx_menu.add_command(label="OL=0°", command=self._ctx_orient_OL_north)
         self._ctx_menu.add_command(label="BL=0°", command=self._ctx_orient_BL_north)
         self._ctx_menu.add_separator()
-        self._ctx_menu.add_command(label="Créer un chemin…", command=self._ctx_create_chemin)
+        self._ctx_menu.add_command(label="Créer un chemin…", command=self._ctx_CreerChemin)
 
         # Mémoriser l'index des entrées "OL=0°" / "BL=0°" pour pouvoir les (dés)activer au vol
         self._ctx_idx_ol0 = 4
@@ -5147,249 +5247,6 @@ class TriangleViewerManual(
         return outline
 
 
-    # ---------- CHEMIN : extraction liste de points ordonnée depuis l'outline ----------
-    def _outline_to_ordered_points(self, outline, start_world=None, orientation="cw", eps: float = EPS_WORLD):
-        """Convertit une liste de segments (p1,p2) en une liste ordonnée de points (non fermée).
-
-        - Utilise le graphe de frontière (même utilitaire que snap/assist) : _build_boundary_graph
-        - start_world : np.array([x,y]) monde, on prend le sommet de l'outline le plus proche
-        - orientation : "cw" (horaire) ou "ccw" (inverse)
-        """
-        if not outline:
-            return []
-
-        g = self._build_boundary_graph(outline)
-        pts_map = g.get("pts", {}) or {}
-        adj = g.get("adj", {}) or {}
-        if not pts_map:
-            return []
-
-        # IMPORTANT: toutes les clés manipulées pendant le parcours doivent utiliser la même granularité
-        # que celle utilisée pour construire le graphe (EPS_WORLD par défaut).
-        keyEps = float(eps)
-
-        # --- CHEMIN: lissage du graphe si la frontière est "polluée" (sommets quasi-identiques) ---
-        # On détecte le problème via les degrés != 2 (cycle cassé).
-        bad0 = [k for k, v in adj.items() if len(v) != 2]
-        if bad0:
-            # tolérance de snap dédiée chemin: plus large que EPS_WORLD, mais locale au CHEMIN
-            epsSnap = max(float(eps) * 50.0, 1e-5)
-            g2 = self._smooth_boundary_graph_for_chemin(g, epsSnap=epsSnap)
-            pts_map2 = g2.get("pts", {}) or {}
-            adj2 = g2.get("adj", {}) or {}
-            # n'accepter le lissage que s'il améliore réellement le cycle
-            bad1 = [k for k, v in adj2.items() if len(v) != 2]
-            if len(bad1) <= len(bad0) and pts_map2:
-                g = g2
-                pts_map = pts_map2
-                adj = adj2
-                keyEps = float(epsSnap)
-
-        # 1) choisir vertex départ : le plus proche de start_world si fourni, sinon un arbitraire
-        if start_world is not None:
-            sx, sy = float(start_world[0]), float(start_world[1])
-            best_k = None
-            best_d2 = None
-            for kk, p in pts_map.items():
-                px, py = float(p[0]), float(p[1])
-                d2 = (px - sx)*(px - sx) + (py - sy)*(py - sy)
-                if best_d2 is None or d2 < best_d2:
-                    best_d2 = d2
-                    best_k = kk
-            start_key = best_k
-        else:
-            start_key = next(iter(pts_map.keys()))
-
-        if start_key is None:
-            return []
-
-        # 2) vérif degrés (debug utile)
-        bad = [k for k,v in adj.items() if len(v) != 2]
-        if bad:
-            # On ne bloque pas ici : on tente quand même (certaines unions peuvent produire des sommets colinéaires)
-            print(f"[CHEMIN][WARN] sommets degré!=2 : {len(bad)} (ex: {bad[:5]})")
-
-        # 3) parcours du cycle
-        start_pt = pts_map[start_key]
-        neighs = adj.get(start_key, [])
-        if not neighs:
-            return []
-        prev_key = None
-        cur_key = start_key
-        cur_pt = pts_map[cur_key]
-        out_pts = [ (float(cur_pt[0]), float(cur_pt[1])) ]
-
-        # choisir un premier voisin (arbitraire)
-        next_pt = neighs[0]
-        next_key = self._pt_key_eps(next_pt, eps=keyEps)
-
-        guard = 0
-        while guard < 4096:
-            guard += 1
-            prev_key = cur_key
-            cur_key = next_key
-            cur_pt = pts_map.get(cur_key, (float(next_pt[0]), float(next_pt[1])))
-            out_pts.append((float(cur_pt[0]), float(cur_pt[1])))
-
-            # stop si on revient au départ (cycle fermé)
-            if cur_key == start_key:
-                break
-
-            neighs = adj.get(cur_key, [])
-            if not neighs:
-                break
-            # choisir le voisin différent du précédent
-            k0 = self._pt_key_eps(neighs[0], eps=keyEps)
-            k1 = self._pt_key_eps(neighs[1], eps=keyEps) if len(neighs) > 1 else None
-            if k1 is None:
-                next_key = k0
-            else:
-                next_key = (k1 if k0 == prev_key else k0)
-
-        # enlever le dernier si c'est un doublon de fermeture
-        if len(out_pts) >= 2:
-            x0,y0 = out_pts[0]
-            x1,y1 = out_pts[-1]
-            if abs(x0-x1) <= eps and abs(y0-y1) <= eps:
-                out_pts = out_pts[:-1]
-
-        # 4) orientation demandée (aire signée)
-        def signed_area(poly_pts):
-            if not poly_pts or len(poly_pts) < 3:
-                return 0.0
-            s = 0.0
-            n = len(poly_pts)
-            for i in range(n):
-                x1,y1 = poly_pts[i]
-                x2,y2 = poly_pts[(i+1) % n]
-                s += x1*y2 - x2*y1
-            return 0.5*s
-
-        want = str(orientation or "cw").strip().lower()
-        area = signed_area(out_pts)
-        is_ccw = (area > 0.0)
-        if (want == "cw" and is_ccw) or (want == "ccw" and (not is_ccw)):
-            out_pts = list(reversed(out_pts))
-
-        return out_pts
-
-    def _map_outline_points_to_vertices(self, gid: int, pts, eps: float = EPS_WORLD):
-        """Associe chaque point du contour à un nom de ville + triangles candidats (debug)."""
-        out = []
-        g = self.groups.get(gid) or {}
-        nodes = g.get("nodes", []) or []
-
-        # index sommets groupe : liste d'entrées (coord, name, tri_id, vkey)
-        verts = []
-        for nd in nodes:
-            tid = nd.get("tid")
-            if tid is None or not (0 <= tid < len(self._last_drawn)):
-                continue
-            t = self._last_drawn[tid]
-            tri_id = t.get("id", tid)
-            labels = t.get("labels", ("", "", ""))
-            P = t.get("pts", {})
-            for k, idx in (("O",0),("B",1),("L",2)):
-                w = P.get(k, None)
-                if w is None:
-                    continue
-                name = str(labels[idx] if len(labels) > idx else "")
-                verts.append((float(w[0]), float(w[1]), name, tri_id, str(k)))
-
-        # pour chaque point contour, trouver les sommets proches
-        e2 = float(eps) * float(eps)
-        # priorité si chevauchement : Base(B) > Lumière(L) > Ouverture(O)
-        vkeyPriority = {"L": 0, "B": 1, "O": 2}
-        for p in (pts or []):
-            px, py = float(p[0]), float(p[1])
-            cands = []
-            best = None  # (d2, prio, name, tri_id, vkey)
-            choices = []  # [{"tri":..,"vkey":..,"name":..}, ...]
-            for (vx, vy, name, tri_id, vkey) in verts:
-                d2 = (vx-px)*(vx-px) + (vy-py)*(vy-py)
-                # tolérance un peu plus large que eps (outline shapely peut bouger)
-                if d2 <= max(e2*25.0, 1e-12):
-                    cands.append(tri_id)
-                    choices.append({"tri": tri_id, "vkey": str(vkey), "name": str(name)})
-                    pr = int(vkeyPriority.get(str(vkey), 9))
-                    key = (float(d2), pr, str(name), tri_id, str(vkey))
-                    if best is None or key < best:
-                        best = key
-            # dédoublonner tri candidates
-            cands2 = []
-            for tid in cands:
-                if tid not in cands2:
-                    cands2.append(tid)
-            nm = best[2] if best and best[2] else "(intermédiaire)"
-            bestTri = best[3] if best else None
-            out.append({
-                "pt": (px, py),
-                "name": nm,
-                "triangles": cands2,
-                "choices": choices,
-                "bestTri": bestTri,
-            })
-        return out
-
-
-    def _chemin_allocate_points_two_per_triangle(self, gid: int, mapped_points: list):
-        """
-        Allocation logique des points partagés pour favoriser "au moins 2 points par triangle".
-        - mapped_points: [{"pt":(x,y), "name":str, "triangles":[tri_id,...]}, ...] (ordre du contour)
-        Retourne:
-          {
-            "order": [tri_id,...] (ordre des triangles dans le groupe),
-            "counts": {tri_id: n},
-            "owners": [ownerTriId or None] (par point, dans l'ordre),
-            "perTriangle": {tri_id: [idxPoint,...]} (index des points du contour attribués)
-          }
-        """
-        g = self.groups.get(int(gid)) or {}
-        nodes = g.get("nodes", []) or []
-        tri_order = []
-        for nd in nodes:
-            tid = nd.get("tid")
-            if tid is None or not (0 <= tid < len(self._last_drawn)):
-                continue
-            t = self._last_drawn[tid]
-            tri_id = t.get("id", tid)
-            if tri_id not in tri_order:
-                tri_order.append(tri_id)
-
-        order_index = {tri_id: i for i, tri_id in enumerate(tri_order)}
-        counts = {tri_id: 0 for tri_id in tri_order}
-        perTri = {tri_id: [] for tri_id in tri_order}
-        owners = []
-
-        for i, it in enumerate(mapped_points or []):
-            cands = list(it.get("triangles", []) or [])
-            if not cands:
-                owners.append(None)
-                continue
-
-            # Filtrer candidats connus dans le groupe
-            cands = [c for c in cands if c in order_index]
-            if not cands:
-                owners.append(None)
-                continue
-
-            # Choisir le triangle avec le moins de points alloués
-            # Tie-breaker: ordre du groupe
-            best = None  # (count, orderIdx, tri_id)
-            for tri_id in cands:
-                c = int(counts.get(tri_id, 0))
-                oi = int(order_index.get(tri_id, 10**9))
-                key = (c, oi, tri_id)
-                if best is None or key < best:
-                    best = key
-            owner = best[2] if best else cands[0]
-
-            owners.append(owner)
-            counts[owner] = int(counts.get(owner, 0)) + 1
-            perTri[owner].append(i)
-
-        return {"order": tri_order, "counts": counts, "owners": owners, "perTriangle": perTri}
-
     # --- util: segments d'enveloppe (groupe ou triangle seul) ---
     def _outline_for_item(self, idx: int, eps: float | None = None):
         """
@@ -6141,6 +5998,7 @@ class TriangleViewerManual(
         if self._is_point_in_clock(event.x, event.y):
             self._ctx_target_idx = None
             self._ctx_last_rclick = (event.x, event.y)
+            self._ctx_clear_chemin_context()
             self._update_compass_ctx_menu_and_dico_state()
             self._ctx_menu_compass.tk_popup(event.x_root, event.y_root)
             self._ctx_menu_compass.grab_release()
@@ -6148,12 +6006,17 @@ class TriangleViewerManual(
 
         mode, idx, extra = self._hit_test(event.x, event.y)
         if idx is None:
+            self._ctx_clear_chemin_context()
             return
         # On ne propose Supprimer que si on est sur un triangle
         if mode in ("center", "vertex"):
             self._ctx_target_idx = idx
             self._ctx_last_rclick = (event.x, event.y)
             self._ctx_nearest_vertex_key = self._ctx_compute_nearest_vertex_key(idx, event.x, event.y)
+            try:
+                self._ctx_capture_chemin_context(idx, event.x, event.y)
+            except (ValueError, RuntimeError):
+                self._ctx_clear_chemin_context()
 
             # "OL=0°" et "BL=0°" sont valables aussi sur un groupe :
             # on oriente tout le groupe en prenant le triangle cliqué comme référence.
@@ -6187,154 +6050,92 @@ class TriangleViewerManual(
                 best_k = k
         return best_k or "L"
 
-    def _ctx_create_chemin(self):
-        """Entrée menu: ouvrir la fenêtre de paramètres 'Créer un chemin…' (V1: GUI only)."""
-        if self._ctx_target_idx is None or not (0 <= self._ctx_target_idx < len(self._last_drawn)):
-            return
-        tri = self._last_drawn[self._ctx_target_idx]
-        tri_id = tri.get("id", "?")
-        labels = tri.get("labels", ("", "", ""))
-        label_str = f"{int(tri_id):02d}" if str(tri_id).isdigit() else str(tri_id)
+    def _ctx_clear_chemin_context(self) -> None:
+        """Réinitialise le contexte minimal de création de chemin."""
+        self.ctxGroupId = None
+        self.ctxStartNodeId = None
 
-        k = str(self._ctx_nearest_vertex_key or "L").upper()
-        if k not in ("O", "B", "L"):
-            k = "L"
-
-        if k == "O":
-            city = str(labels[0] if len(labels) > 0 else "")
-        elif k == "B":
-            city = str(labels[1] if len(labels) > 1 else "")
-        else:
-            city = str(labels[2] if len(labels) > 2 else "")
-
-
-        dlg = DialogCreateCheminParams(self, triangle_label=label_str, vertex_key=k, vertex_city=city)
-        self.wait_window(dlg)
-        if not getattr(dlg, "result", None):
-            return
-
-        # --- V1 "Création du chemin" : extraire le contour du groupe et imprimer la liste ordonnée ---
-        res = dlg.result if isinstance(dlg.result, dict) else {}
-
-        gid = tri.get("group_id", None)
-        if gid is None:
-            messagebox.showerror("Chemin", "Triangle sans group_id : impossible de calculer le contour.")
-            return
-
-        # point de départ (coord monde) = sommet du triangle le plus proche du clic droit
-        start_world = np.array(tri["pts"][k], dtype=float)
-
-        outline = self._group_outline_segments(int(gid), eps=float(EPS_WORLD))
-        pts = self._outline_to_ordered_points(outline, start_world=start_world, orientation=str(res.get("orientation","cw")), eps=float(EPS_WORLD))
-        if not pts:
-            messagebox.showerror("Chemin", "Contour vide ou non ordonnable (outline).")
-            return
-
-        # mapping points -> ville + triangles candidats (debug)
-        mapped = self._map_outline_points_to_vertices(int(gid), pts, eps=float(EPS_WORLD))
-
-        # --- Déduplication CHEMIN (géométrique) ---
-        # Objectif: ne pas compter/traiter des points quasi-identiques (pollution shapely / chevauchements).
-        def _dedupMappedPoints(mappedList, epsDedup: float):
-            epsDedup = float(epsDedup)
-            if epsDedup <= 0.0:
-                return list(mappedList or [])
-            outL = []
-            lastKey = None
-            for it in (mappedList or []):
-                p = it.get("pt", None)
-                if not p:
+    def _ctx_get_ui_group_from_triangle_index(self, tri_idx: int) -> Optional[int]:
+        """Retourne le groupId UI qui contient le triangle tri_idx."""
+        idx = int(tri_idx)
+        for gid, grp in (self.groups or {}).items():
+            for nd in grp.get("nodes", []):
+                try:
+                    tid = int(nd.get("tid", -1))
+                except (TypeError, ValueError):
                     continue
-                k = self._pt_key_eps((float(p[0]), float(p[1])), eps=epsDedup)
-                if lastKey is not None and k == lastKey:
-                    continue
-                outL.append(it)
-                lastKey = k
-            return outL
+                if tid == idx:
+                    return gid
+        return None
 
-        mapped = _dedupMappedPoints(mapped, epsDedup=max(float(EPS_WORLD) * 50.0, 1e-5))
+    def _ctx_capture_chemin_context(self, tri_idx: int, sx: float, sy: float) -> None:
+        """
+        Mémorise ctxGroupId + ctxStartNodeId depuis le clic droit.
 
-        # --- Recalage du cycle sur le point de départ (start_world) ---
-        # Un contour est cyclique : après mapping+dedup, l'index 0 peut être "roté".
-        # On force donc le point le plus proche de start_world à être en position 0,
-        # ce qui rend la fermeture (append mapped[0]) cohérente.
-        if start_world is not None and mapped:
-            sx, sy = float(start_world[0]), float(start_world[1])
-            best_i = 0
-            best_d2 = None
-            for i, it in enumerate(mapped):
-                p = it.get("pt", None)
-                if not p:
-                    continue
-                dx = float(p[0]) - sx
-                dy = float(p[1]) - sy
-                d2 = dx*dx + dy*dy
-                if best_d2 is None or d2 < best_d2:
-                    best_d2 = d2
-                    best_i = i
-            if best_i != 0:
-                mapped = list(mapped[best_i:]) + list(mapped[:best_i])
+        Règle V3: contexte minimal seulement (groupId Core + startNodeId DSU),
+        sans lecture des structures boundary internes.
+        """
+        scen = self._get_active_scenario()
+        if scen is None or scen.topoWorld is None:
+            raise RuntimeError("scenario topologique introuvable")
+        world = scen.topoWorld
 
-        # --- Fermeture + contrainte "nombre impair" ---
-        # On ne ferme que si on n'est PAS en mode "limit" (sinon on autorise un chemin non fermé).
-        if not bool(res.get("limit", False)):
-            if len(mapped) >= 2 and (len(mapped) % 2 == 0):
-                mapped = list(mapped) + [mapped[0]]
+        ui_gid = self._ctx_get_ui_group_from_triangle_index(int(tri_idx))
+        if ui_gid is None:
+            raise ValueError("groupe UI introuvable")
+        g_ui = self.groups.get(ui_gid, {})
+        core_gid = g_ui.get("topoGroupId", None)
+        if not core_gid:
+            raise ValueError(f"topoGroupId manquant pour le groupe UI {ui_gid}")
+        gid = str(world.find_group(str(core_gid)))
 
-        # Limite optionnelle (maxPoints impaire) APRES dedup
-        if bool(res.get("limit", False)):
-            mp = int(res.get("maxPoints", 0))
-            if mp > 0:
-                if mp % 2 == 0:
-                    mp += 1
-                mapped = list(mapped)[:mp]
+        world.computeBoundary(gid)
+        segments = world.getBoundarySegments(gid)
+        if not segments:
+            raise ValueError("frontière vide")
+        boundary_nodes = sorted(
+            {str(seg.fromNodeId) for seg in segments}.union({str(seg.toNodeId) for seg in segments})
+        )
+        if not boundary_nodes:
+            raise ValueError("aucun noeud de frontière")
 
-        # réaligner pts sur mapped (cohérence logs + traitements)
-        pts = [it.get("pt") for it in (mapped or []) if it.get("pt") is not None]
- 
-        print("\n" + "="*80)
-        print(f"[CHEMIN] gid={gid} triangle={label_str} start={k} city={city} orientation={res.get('orientation','cw')} limit={res.get('limit',False)} maxPoints={res.get('maxPoints',None)}")
-        print(f"[CHEMIN] outline segments: {len(outline)} | ordered points: {len(pts)}")
-        print("-"*80)
-        for i, it in enumerate(mapped):
-            nm = it.get("name","")
-            tri_ids = it.get("triangles", [])
-            p = it.get("pt", (None,None))
-            print(f"{i+1:02d}. {nm:20s}  tri={tri_ids}   p=({p[0]:.3f},{p[1]:.3f})")
+        wx, wy = self._screen_to_world(float(sx), float(sy))
+        best_node = None
+        best_d2 = None
+        for nid in boundary_nodes:
+            px, py = world.getConceptNodeWorldXY(str(nid), gid)
+            dx = float(px) - float(wx)
+            dy = float(py) - float(wy)
+            d2 = dx * dx + dy * dy
+            if best_d2 is None or d2 < best_d2:
+                best_d2 = d2
+                best_node = str(world.find_node(str(nid)))
+        if best_node is None:
+            raise RuntimeError("impossible de résoudre le noeud de départ")
 
-        # allocation logique (sert uniquement à produire une liste "définitive" lisible)
-        alloc = self._chemin_allocate_points_two_per_triangle(int(gid), mapped)
-        owners = list(alloc.get("owners", []) or [])
+        self.ctxGroupId = gid
+        self.ctxStartNodeId = best_node
 
-        def _fmt_best_or_choices(it):
-            """Affiche le triangle associé au choix retenu (bestTri). Si absent, fallback sur candidats."""
-            bt = it.get("bestTri", None)
-            if bt is not None:
-                return f"(T{int(bt):02d})"
-            tris = list(it.get("triangles", []) or [])
-            tris2 = []
-            for t in tris:
-                if t not in tris2:
-                    tris2.append(t)
-            if not tris2:
-                return "(T?)"
-            if len(tris2) == 1:
-                return f"(T{int(tris2[0]):02d})"
-            return "(" + "|".join([f"T{int(t):02d}" for t in tris2]) + ")"
+    def _ctx_CreerChemin(self) -> None:
+        """Crée un chemin Core depuis le contexte du clic droit."""
+        gid = self.ctxGroupId
+        startNodeId = self.ctxStartNodeId
+        if not gid or not startNodeId:
+            messagebox.showerror("Créer un chemin", "Création du chemin impossible : contexte invalide.")
+            return
+        scen = self._get_active_scenario()
+        world = scen.topoWorld
 
-        print("="*80)
-        print(f"[CHEMIN] gid={int(gid)} triangle={label_str} start={k} city={city} orientation={res.get('orientation','cw')} limit={bool(res.get('limit',False))} maxPoints={int(res.get('maxPoints',0))}")
-        print(f"[CHEMIN] outline segments: {len(outline)} | ordered points: {len(mapped)}")
-        print("-"*80)
-        # LISTE DEFINITIVE (lisible)
-        for i, it in enumerate(mapped, start=1):
-            nm = str(it.get('name', '') or '')
-            suffix = _fmt_best_or_choices(it)
-            print(f"{i:02d}. {nm} {suffix}")
-        print("="*80)
+        boundaryOrientation = world.getBoundaryOrientation(gid)
+        orientationUser = str(boundaryOrientation)
 
-        self.status.config(text=f"Chemin: contour gid={gid} ({len(pts)} points) imprimé console")
- 
+        if bool(world.topologyChemins.isDefined):
+            if not messagebox.askokcancel("Créer un chemin", "Un chemin existe déjà. Remplacer ?"):
+                return
+
+        world.topologyChemins.creerDepuisGroupe(gid, startNodeId, orientationUser)
+        self.refreshCheminTreeView()
+
 
 
     def _is_point_in_clock(self, sx: float, sy: float) -> bool:

@@ -653,9 +653,7 @@ class TopologyBoundaries:
            - `orientation` (orientation mesurée via l’aire).
            Si l’orientation mesurée ne correspond pas à celle demandée, inverse le cycle.
         """
-        orient = str(orientation).strip().lower()
-        if orient not in ("cw", "ccw"):
-            raise ValueError(f"[Boundary] invalid orientation={orientation}")
+        orient = TopologyChemins._normalizeOrientation(orientation)
         gid = world.find_group(str(gid))
         c = world.ensureConceptGeom(gid)
 
@@ -891,9 +889,11 @@ class TopologyCheminTriplet:
         self.angleDeg = 0.0
         self.isGeometrieValide = False
 
-    def calculerGeometrie(self, world: "TopologyWorld", groupId: str) -> None:
+    def calculerGeometrie(self, world: "TopologyWorld", groupId: str, orientationUser: str) -> None:
         """Calcule azimuts, distances et angle oriente a partir du world courant."""
         gid = str(groupId)
+        orient = TopologyChemins._normalizeOrientation(orientationUser)
+
         xA, yA = world.getConceptNodeWorldXY(self.nodeA, gid)
         xO, yO = world.getConceptNodeWorldXY(self.nodeO, gid)
         xB, yB = world.getConceptNodeWorldXY(self.nodeB, gid)
@@ -907,7 +907,10 @@ class TopologyCheminTriplet:
         self.azOB = world.azimutDegFromDxDy(dxOB, dyOB)
         self.distOA_km = float(math.hypot(dxOA, dyOA))
         self.distOB_km = float(math.hypot(dxOB, dyOB))
-        self.angleDeg = float((self.azOB - self.azOA + 360.0) % 360.0)
+        angle = float((self.azOB - self.azOA + 360.0) % 360.0)
+        if orient == "ccw":
+            angle = float((360.0 - angle) % 360.0)
+        self.angleDeg = angle
         self.isGeometrieValide = True
 
 
@@ -959,7 +962,8 @@ class TopologyChemins:
         ]
         if orientationUser == boundaryOrientation:
             return filtered
-        return list(reversed(filtered))
+        # Inversion "pivot A": le start node (index 0 du snapshot filtre) reste en tete.
+        return filtered[:1] + list(reversed(filtered[1:]))
 
     @staticmethod
     def _buildTriplets(pathNodesOrdered: list[str]) -> list[TopologyCheminTriplet]:
@@ -1050,7 +1054,7 @@ class TopologyChemins:
             raise ValueError("[Chemins] pathNodesOrdered invalide: moins de 3 nodes")
         tripletsLocal = self._buildTriplets(pathLocal)
         for t in tripletsLocal:
-            t.calculerGeometrie(self._world, gid)
+            t.calculerGeometrie(self._world, gid, orient)
 
         self.isDefined = True
         self.groupId = gid
@@ -1078,7 +1082,7 @@ class TopologyChemins:
             raise ValueError("[Chemins] edition invalide: moins de 3 nodes selectionnes")
         tripletsLocal = self._buildTriplets(pathLocal)
         for t in tripletsLocal:
-            t.calculerGeometrie(self._world, str(self.groupId))
+            t.calculerGeometrie(self._world, str(self.groupId), orient)
 
         self.orientationUser = orient
         self.selectionMask = mask
@@ -1107,7 +1111,78 @@ class TopologyChemins:
         self._requireDefined()
         gid = str(self.groupId)
         for t in self.triplets:
-            t.calculerGeometrie(self._world, gid)
+            t.calculerGeometrie(self._world, gid, str(self.orientationUser))
+
+    def recalculerChemin(self) -> None:
+        """Reconstruit snapshot/mask/path/triplets depuis le contour courant en conservant start/sens."""
+        self._requireDefined()
+
+        oldSnapshot = list(self.borderSnapshotNodes)
+        oldMask = [bool(v) for v in list(self.selectionMask)]
+        oldStart = str(self.startNodeId)
+        oldOrient = self._normalizeOrientation(str(self.orientationUser))
+
+        gid = str(self.groupId)
+        self._world.computeBoundary(gid)
+        try:
+            newCycle = self._world.getBoundaryCycle(gid, oldStart)
+        except Exception as e:
+            raise ValueError("[Chemins] recalcul invalide: startNodeId absent du nouveau contour") from e
+        if len(newCycle) < 3:
+            raise ValueError("[Chemins] recalcul invalide: boundary < 3 nodes")
+        oldStartCanon = str(self._world.find_node(oldStart))
+        newCycleCanon = {str(self._world.find_node(str(n))) for n in newCycle}
+        if oldStartCanon not in newCycleCanon:
+            raise ValueError("[Chemins] recalcul invalide: startNodeId absent du nouveau contour")
+
+        newSnapshot = [str(n) for n in list(newCycle)]
+
+        # Rejoue les désactivations sur les mêmes ConceptNodeId canoniques.
+        oldMaskFalseByCanonicalNode: set[str] = set()
+        for i, nodeId in enumerate(oldSnapshot):
+            if not bool(oldMask[i]):
+                oldMaskFalseByCanonicalNode.add(str(self._world.find_node(str(nodeId))))
+
+        newMask: list[bool] = []
+        for nodeId in newSnapshot:
+            canonNodeId = str(self._world.find_node(str(nodeId)))
+            newMask.append(canonNodeId not in oldMaskFalseByCanonicalNode)
+
+        if sum(1 for v in newMask if bool(v)) < 3:
+            raise ValueError("[Chemins] recalcul invalide: moins de 3 nodes actifs")
+
+        boundaryOrientation = self._world.getBoundaryOrientation(gid)
+        newPath = self._buildPathNodesOrdered(newSnapshot, newMask, oldOrient, boundaryOrientation)
+        if len(newPath) < 3:
+            raise ValueError("[Chemins] recalcul invalide: pathNodesOrdered < 3")
+
+        newTriplets = self._buildTriplets(newPath)
+        for t in newTriplets:
+            t.calculerGeometrie(self._world, gid, oldOrient)
+
+        oldPath = list(self.pathNodesOrdered)
+        oldTriplets = list(self.triplets)
+        try:
+            self.borderSnapshotNodes = newSnapshot
+            self.selectionMask = newMask
+            self.orientationUser = oldOrient
+            self.pathNodesOrdered = newPath
+            self.triplets = newTriplets
+            self._assertDefinedInvariants()
+        except Exception:
+            self.borderSnapshotNodes = oldSnapshot
+            self.selectionMask = oldMask
+            self.orientationUser = oldOrient
+            self.pathNodesOrdered = oldPath
+            self.triplets = oldTriplets
+            raise
+
+    def supprimerChemin(self) -> None:
+        """Supprime le chemin courant et restaure l'etat undefined."""
+        if not self.isDefined:
+            return
+        self._resetUndefined()
+        self._assertDefinedInvariants()
 
     def getTriplets(self) -> list[TopologyCheminTriplet]:
         """Retourne une copie superficielle de la liste des triplets."""
@@ -3251,6 +3326,10 @@ class TopologyWorld:
             return uniq[0]
         return "|".join([str(x) for x in uniq])
 
+    def getConceptNodeLabel(self, node_id: str) -> str:
+        """Label métier d'un concept node (DSU canonique)."""
+        return self.getNodeLabel(self.find_node(str(node_id)))
+
     def getPhysicalNodeName(self, node_id: str) -> str:
         node_type = self.getNodeTypeAtomic(node_id)
         label = self.getAtomicNodeLabel(str(node_id))
@@ -3433,6 +3512,71 @@ class TopologyWorld:
                                     )
         return errors
 
+    @staticmethod
+    def _format_chemin_angle(value: float) -> str:
+        """Stable decimal format for azimuths and angles."""
+        v = float(value)
+        if not math.isfinite(v):
+            raise RuntimeError(f"[CheminsDump] valeur non finie: {value}")
+        return f"{v:.2f}"
+
+    @staticmethod
+    def _format_chemin_distance(value: float) -> str:
+        """Stable decimal format for distances in km."""
+        v = float(value)
+        if not math.isfinite(v):
+            raise RuntimeError(f"[CheminsDump] valeur non finie: {value}")
+        return f"{v:.3f}"
+
+    def _dump_chemins_to_xml(self, parent: _ET.Element) -> None:
+        """Serialise topologyChemins in a deterministic and diff-friendly XML section."""
+        tc = self.topologyChemins
+        chemins_el = _ET.SubElement(parent, "chemins", {
+            "isDefined": "1" if bool(tc.isDefined) else "0",
+        })
+
+        if not tc.isDefined:
+            return
+
+        if tc.groupId is None or tc.startNodeId is None:
+            raise RuntimeError("[CheminsDump] chemin defini incomplet: groupId/startNodeId")
+        orient = TopologyChemins._normalizeOrientation(tc.orientationUser)
+        if len(tc.selectionMask) != len(tc.borderSnapshotNodes):
+            raise RuntimeError("[CheminsDump] borderSnapshot/selectionMask tailles differentes")
+
+        chemins_el.set("groupId", str(tc.groupId))
+        chemins_el.set("startNodeId", str(tc.startNodeId))
+        chemins_el.set("orientationUser", orient)
+
+        border_el = _ET.SubElement(chemins_el, "borderSnapshot")
+        for nid in tc.borderSnapshotNodes:
+            _ET.SubElement(border_el, "node", {"id": str(nid)})
+
+        mask_el = _ET.SubElement(chemins_el, "selectionMask")
+        for selected in tc.selectionMask:
+            _ET.SubElement(mask_el, "m", {"v": "1" if bool(selected) else "0"})
+
+        path_el = _ET.SubElement(chemins_el, "pathNodesOrdered")
+        for nid in tc.pathNodesOrdered:
+            _ET.SubElement(path_el, "node", {"id": str(nid)})
+
+        triplets_el = _ET.SubElement(chemins_el, "triplets")
+        for t in tc.triplets:
+            if not bool(t.isGeometrieValide):
+                raise RuntimeError(
+                    f"[CheminsDump] triplet sans geometrie valide: ({t.nodeA},{t.nodeO},{t.nodeB})"
+                )
+            _ET.SubElement(triplets_el, "triplet", {
+                "A": str(t.nodeA),
+                "O": str(t.nodeO),
+                "B": str(t.nodeB),
+                "azOA": self._format_chemin_angle(t.azOA),
+                "azOB": self._format_chemin_angle(t.azOB),
+                "distOA_km": self._format_chemin_distance(t.distOA_km),
+                "distOB_km": self._format_chemin_distance(t.distOB_km),
+                "angleDeg": self._format_chemin_angle(t.angleDeg),
+            })
+
     def export_topo_dump_xml(self, path: str, orientation: str = "cw") -> str:
         self.assertNoPhysicalSplitPoints()
         root = _ET.Element("TopoDump", {
@@ -3525,6 +3669,7 @@ class TopologyWorld:
                 for nid in ccache.boundaryCycle:
                     _ET.SubElement(cycle_el, "N", {"id": str(nid)})
 
+        self._dump_chemins_to_xml(root)
 
         elements_el = _ET.SubElement(root, "Elements")
         for eid in sorted(self.elements.keys()):

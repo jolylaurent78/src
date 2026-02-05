@@ -557,6 +557,8 @@ def loadScenarioXml(viewer, path: str):
     viewer._redraw_overlay_only()
     viewer._rebuild_pick_cache()
     viewer._pick_cache_valid = True
+    if hasattr(viewer, "refreshCheminTreeView"):
+        viewer.refreshCheminTreeView()
 
     viewer.canvas.focus_set()
     viewer._bind_canvas_handlers()
