@@ -20,8 +20,6 @@ class LigneCirculaire:
         return self.ligne[index]
 
 
-
-
 class DictionnaireEnigmes:
     def __init__(self, cheminFichier, tagExclure: str = None, bonSens: bool = True):
         self.filtrageGlobal = False
@@ -29,8 +27,8 @@ class DictionnaireEnigmes:
 
     def getFiltrageGlobal(self):
         return self.filtrageGlobal
-    
-    def setFiltrageGlobal(self, filtrage = True):
+
+    def setFiltrageGlobal(self, filtrage=True):
         self.filtrageGlobal = filtrage
 
     def chargerFichier(self, cheminFichier, tagExclure: str = None, bonSens: bool = True):
@@ -48,7 +46,7 @@ class DictionnaireEnigmes:
             "mesure": [False, []],
             "utilisable": [False, []]
         }
-        
+
         with open(cheminFichier, "r", encoding="utf-8") as fichier:
             lignes = fichier.readlines()
             # On inverse les lignes si dans le contre sens
@@ -85,14 +83,12 @@ class DictionnaireEnigmes:
 
                 self.dictionnaire.append((titre, ligneSansTags))
 
-
-
     def getCategories(self):
         return list(self.indexCategories.keys())
 
     def getListeCategorie(self, categorie):
         return self.indexCategories[categorie][1]
-    
+
     def getIndexCategories(self):
         return self.indexCategories
 
@@ -101,7 +97,7 @@ class DictionnaireEnigmes:
 
     def activerCategorie(self, nomCategorie, actif=True):
         if nomCategorie in self.indexCategories:
-            self.indexCategories[nomCategorie][0]=actif
+            self.indexCategories[nomCategorie][0] = actif
 
     def getMot(self, enigmeIndex, motIndex):
         if enigmeIndex >= len(self.dictionnaire):
@@ -145,6 +141,109 @@ class DictionnaireEnigmes:
         _, ligne = self.dictionnaire[ligneIdx]
         return len(ligne)
 
+    # ============================
+    # API Extended (nouvelle)
+    # ============================
+
+    def getNbEnigmes(self) -> int:
+        return len(self.dictionnaire)
+
+    def getPlageMax(self) -> int:
+        return int(self.nbMotMax())
+
+    def getMotExtended(self, rowExt: int, colExt: int) -> str:
+        rowExt = int(rowExt)
+        colExt = int(colExt)
+
+        if colExt == 0:
+            raise ValueError("colExt=0 interdit en référentiel Extended")
+
+        plage = int(self.getPlageMax())
+        if abs(colExt) > plage:
+            raise IndexError(f"colExt hors plage: {colExt} (plageMax={plage})")
+
+        enigmeIndex = rowExt - 1
+        if enigmeIndex < 0 or enigmeIndex >= self.getNbEnigmes():
+            raise IndexError(f"rowExt hors limites: {rowExt}")
+
+        # mapping Extended -> index interne 0-based
+        motIndex0 = (colExt - 1) if colExt > 0 else colExt  # -1 => dernier mot (via modulo)
+
+        return self.getMot(enigmeIndex, motIndex0)
+
+    def getExtendedColumns(self, plageMax=None) -> list[int]:
+        p = self.getPlageMax() if plageMax is None else int(plageMax)
+        cols = list(range(-p, 0)) + list(range(1, p+1))
+        return cols
+
+    def getRowLabelsAbs(self) -> list[int]:
+        """
+        Labels de lignes en ABS (Extended row) : 1..10, wrap modulo 10.
+        r0 est l'origine en index de ligne TkSheet (0-based).
+        """
+        return [((i % 10) + 1) for i in range(self.getNbEnigmes())]
+
+    def getRelativeColumns(self, colRefExt: int, plageMax=None, *, refMode: str = "origin") -> list[int]:
+        """
+        Retourne les labels de colonnes en référentiel RELATIF, dans l'ordre Extended:
+            [-plageMax..-1] U [1..plageMax]
+
+        - colRefExt : référence en Extended (≠0)
+        - refMode   : "origin" (delta = col - ref) ou "target" (delta = -(col - ref))
+        - delta=0 est autorisé (label relatif)
+        """
+        colRefExt = int(colRefExt)
+        if colRefExt == 0:
+            raise ValueError("colRefExt=0 interdit en référentiel Extended")
+
+        if refMode not in ("origin", "target"):
+            raise ValueError(f"refMode invalide: {refMode}")
+
+        colsExt = self.getExtendedColumns(plageMax=plageMax)
+        sign = -1 if refMode == "target" else 1
+        return [sign * (int(c) - colRefExt) for c in colsExt]
+
+    def getRowLabelsRel(self, r0: int, *, refMode: str = "origin") -> list[int]:
+        """
+        Labels REL (delta) pour toutes les énigmes du dico.
+        """
+        if refMode not in ("origin", "target"):
+            raise ValueError(f"refMode invalide: {refMode}")
+        sign = -1 if refMode == "target" else 1
+        n = self.getNbEnigmes()
+        return [sign * ((i - r0) % 10) for i in range(n)]
+
+    def applyRelativeToExtended(self, colRefExt: int, deltaCol: int, *, refMode: str = "origin") -> int:
+        """
+        Convertit un déplacement RELATIF (deltaCol) appliqué à une référence Extended (colRefExt)
+        en une colonne Extended.
+
+        - refMode="origin": ext = ref + delta
+        - refMode="target": ext = ref - delta  (car les deltas affichés sont inversés)
+
+        Règle "pas de 0" (normative):
+        - si le résultat vaut 0, on force à +1 si delta>=0, sinon -1.
+        """
+        colRefExt = int(colRefExt)
+        deltaCol = int(deltaCol)
+        if colRefExt == 0:
+            raise ValueError("colRefExt=0 interdit en référentiel Extended")
+
+        if refMode not in ("origin", "target"):
+            raise ValueError(f"refMode invalide: {refMode}")
+
+        ext = (colRefExt - deltaCol) if refMode == "target" else (colRefExt + deltaCol)
+
+        if ext == 0:
+            ext = 1 if deltaCol >= 0 else -1
+
+        plage = int(self.getPlageMax())
+        if abs(ext) > plage:
+            raise IndexError(f"Résultat hors plage: {ext} (plageMax={plage})")
+
+        return int(ext)
+
+
 class SequenceCategorie:
     def __init__(self, dictionnaire):
         super().__init__()
@@ -158,7 +257,7 @@ class SequenceCategorie:
 
     def ajouterCategorie(self, categorie):
         if categorie in self.dictionnaire.getCategories():
-            self.listeCategories.append(categorie)   
+            self.listeCategories.append(categorie)
             self.selections.append([])              # aucune sélection au départ
             return len(self.listeCategories)-1
         return None
@@ -168,7 +267,6 @@ class SequenceCategorie:
             del self.listeCategories[index]
             del self.selections[index]
 
-    
     def mettreAJourCategorie(self, index, nouvelleCategorie):
         if nouvelleCategorie not in self.dictionnaire.getCategories():
             return False  # Catégorie inconnue
@@ -181,7 +279,6 @@ class SequenceCategorie:
             self.ajouterCategorie(nouvelleCategorie)
             return True
         return False
-
 
     def ajouterMotSelectionne(self, indexCategorie, indexEnigme, indexMot):
         if 0 <= indexCategorie < len(self.selections):
@@ -200,7 +297,7 @@ class SequenceCategorie:
 
     def getCategories(self):
         return self.listeCategories
-    
+
     def getCategorie(self, indexCategorie):
         if 0 <= indexCategorie < len(self.listeCategories):
             return self.listeCategories[indexCategorie]
@@ -209,24 +306,22 @@ class SequenceCategorie:
     def afficheSequence(self):
         listeStr = ""
         for c in self.listeCategories:
-            listeStr+=f"{c} : "
+            listeStr += f"{c} : "
         print(listeStr)
 
-
     def getComplexiteSequence(self):
-        i =0
+        i = 0
         complexite = 1
         for index in range(len(self.listeCategories)):
-            if len(self.selections[index])>0:
-                i+=1
-                complexite*=len(self.selections[index])
+            if len(self.selections[index]) > 0:
+                i += 1
+                complexite *= len(self.selections[index])
             else:
                 break
-        if i ==0:
+        if i == 0:
             return 0, 0
         else:
-            return i, complexite 
-
+            return i, complexite
 
     def listeToutesSequencesPossibles(self):
         if not self.selections or any(len(sel) == 0 for sel in self.selections):
@@ -284,10 +379,8 @@ class SequenceCategorie:
         return deltaEnigme, deltaMot
 
 
-
 if __name__ == "__main__":
     dico = DictionnaireEnigmes("data/livre.txt")
     print(dico[5][10])
     for categorie in dico.getCategories():
-        print(categorie, ":",dico.getIndexCategories()[categorie])
-
+        print(categorie, ":", dico.getIndexCategories()[categorie])

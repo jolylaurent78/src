@@ -31,7 +31,7 @@ from src.assembleur_sim import (
     ALGOS,
 )
 
-from src.assembleur_sim import (
+from src.assembleur_decryptor import (
     DecryptorBase,
     ClockDicoDecryptor,
     DECRYPTORS,
@@ -5309,44 +5309,50 @@ class TriangleViewerManual(
 
         from math import atan2, pi
 
-        def _to_np(p): return np.array([float(p[0]), float(p[1])], dtype=float)
+        def _to_np(p):
+            return np.array([float(p[0]), float(p[1])], dtype=float)
+
         def _azim(a, b):
             # tuple-safe: accepte tuples ou np.array
-            from math import atan2
             return atan2(float(b[1]) - float(a[1]), float(b[0]) - float(a[0]))
+
         def _ang_dist(a, b):
-             from math import pi
-             d = abs(a - b) % (2*pi)
-             return d if d <= pi else (2*pi - d)
-        def _almost_eq(a,b,eps=EPS_WORLD): return abs(a[0]-b[0])<=eps and abs(a[1]-b[1])<=eps
+            d = abs(a - b) % (2*pi)
+            return d if d <= pi else (2*pi - d)
+
+        def _almost_eq(a, b, eps=EPS_WORLD):
+            return abs(a[0]-b[0]) <= eps and abs(a[1]-b[1]) <= eps
 
         # Sommets & groupes
-        tri_m = self._last_drawn[mob_idx];  Pm = tri_m["pts"]; vm = _to_np(Pm[vkey_m])
-        tri_t = self._last_drawn[tgt_idx];  Pt = tri_t["pts"]; vt = _to_np(Pt[tgt_vkey])
-        gid_m = tri_m.get("group_id"); gid_t = tri_t.get("group_id")
+        tri_m = self._last_drawn[mob_idx]
+        Pm = tri_m["pts"]
+        vm = _to_np(Pm[vkey_m])
+        tri_t = self._last_drawn[tgt_idx]
+        Pt = tri_t["pts"]
+        vt = _to_np(Pt[tgt_vkey])
+        gid_m = tri_m.get("group_id")
+        gid_t = tri_t.get("group_id")
         if gid_m is None or gid_t is None:
-            self._clear_edge_highlights(); self._edge_choice = None; return
+            self._clear_edge_highlights()
+            self._edge_choice = None
+            return
 
         # On récupère la topo
         scen = self._get_active_scenario()
         world = scen.topoWorld
         # On récupère les ID des TopoNodes mA et tA
-        tAElementId  = str(tri_t["topoElementId"])
-        idx = {"O":0, "B":1, "L":2}[tgt_vkey]
+        tAElementId = str(tri_t["topoElementId"])
+        idx = {"O": 0, "B":1, "L": 2}[tgt_vkey]
         tAId = world.format_node_id(tAElementId, idx)
 
-        mAElementId  = str(tri_m["topoElementId"])
-        idx = {"O":0, "B":1, "L":2}[vkey_m]
+        mAElementId = str(tri_m["topoElementId"])
+        idx = {"O": 0, "B": 1, "L": 2}[vkey_m]
         mAId = world.format_node_id(mAElementId, idx)
-
 
         # DEBUG
         self._dbgSnap(
             f"[snap] update_edge_highlights mob={mob_idx}:{vkey_m} (gid={gid_m}) -> tgt={tgt_idx}:{tgt_vkey} (gid={gid_t})"
         )
-
-        # Tolérance (utile à d'autres endroits si besoin)
-        tol_world = max(1e-9, float(self.stroke_px) / max(self.zoom, 1e-9))
 
         # === Collecte via graphe de frontière puis argmin global (Δ-angle) ===
         # 1) outlines des deux groupes
@@ -5574,11 +5580,9 @@ class TriangleViewerManual(
             })
         new_tid = len(self._last_drawn) - 1
 
-
         # Annoter l'objet Tk : elementId topo (si possible)
         scen = self._get_active_scenario()
         world = scen.topoWorld
-
 
         tri_rank = tri.get("id", None)
         # tri_rank attendu : 1..32 (rang importé)
@@ -5773,7 +5777,6 @@ class TriangleViewerManual(
                 self._last_drawn[tid]["group_pos"] = i
         self._recompute_group_bbox(gid)
 
-
     def _split_group_at(self, gid: int, split_after_pos: int):
         """
         Scinde le groupe 'gid' ENTRE split_after_pos et split_after_pos+1.
@@ -5789,7 +5792,7 @@ class TriangleViewerManual(
         if not (0 <= split_after_pos < len(nodes)-1):
             return (gid, None)  # rien à couper
 
-        left_nodes  = [dict(n) for n in nodes[:split_after_pos+1]]
+        left_nodes = [dict(n) for n in nodes[:split_after_pos+1]]
         right_nodes = [dict(n) for n in nodes[split_after_pos+1:]]
 
         # Corriger les arêtes aux frontières : tête/queue
@@ -5816,7 +5819,6 @@ class TriangleViewerManual(
             right_gid = new_gid
 
         return (left_gid, right_gid)
-
 
     def _cancel_drag(self):
         # Mémoriser la source du drag avant de le remettre à zéro
@@ -5881,7 +5883,7 @@ class TriangleViewerManual(
                 if gid is not None and isinstance(orig, dict):
                     for tid, pts in orig.items():
                         if 0 <= tid < len(self._last_drawn):
-                            self._last_drawn[tid]["pts"] = {k: np.array(pts[k].copy()) for k in ("O","B","L")}
+                            self._last_drawn[tid]["pts"] = {k: np.array(pts[k].copy()) for k in ("O", "B", "L")}
                     self._recompute_group_bbox(gid)
                     self._redraw_from(self._last_drawn)
                 self._sel = None
@@ -5896,7 +5898,7 @@ class TriangleViewerManual(
                 if gid is not None and isinstance(orig, dict):
                     for tid, pts in orig.items():
                         if 0 <= tid < len(self._last_drawn):
-                            self._last_drawn[tid]["pts"] = {k: np.array(pts[k].copy()) for k in ("O","B","L")}
+                            self._last_drawn[tid]["pts"] = {k: np.array(pts[k].copy()) for k in ("O", "B", "L")}
                     self._autoRebuildWorldGeometryScenario(None)
                     self._recompute_group_bbox(gid)
                     self._redraw_from(self._last_drawn)
@@ -5909,7 +5911,7 @@ class TriangleViewerManual(
             idx = self._sel.get("idx")
             orig = self._sel.get("orig_pts")
             if idx is not None and orig is not None and 0 <= idx < len(self._last_drawn):
-                self._last_drawn[idx]["pts"] = {k: np.array(orig[k].copy()) for k in ("O","B","L")}
+                self._last_drawn[idx]["pts"] = {k: np.array(orig[k].copy()) for k in ("O", "B", "L")}
                 self._redraw_from(self._last_drawn)
             self._sel = None
             self.status.config(text="Action annulée (rollback).")
@@ -6165,15 +6167,13 @@ class TriangleViewerManual(
         world.topologyChemins.creerDepuisGroupe(gid, startNodeId, orientationUser)
         self.refreshCheminTreeView()
 
-
-
     def _is_point_in_clock(self, sx: float, sy: float) -> bool:
         """True si (sx,sy) est dans le disque du compas (coords canvas)."""
         if not self.show_clock_overlay or not self.show_clock_overlay.get():
             return False
         cx = float(self._clock_cx)
         cy = float(self._clock_cy)
-        R  = float(self._clock_R)
+        R = float(self._clock_R)
         if cx is None or cy is None:
             return False
         dx = float(sx) - cx
@@ -6201,7 +6201,6 @@ class TriangleViewerManual(
 
         self.status.config(text="Définir azimut de référence : clic gauche pour valider, ESC pour annuler.")
 
-
     # ---- Compas : mesure interactive d'un azimut (relatif à l'azimut de référence) ---------
     def _ctx_measure_clock_azimuth(self):
         """Entrée de menu : active le mode 'mesurer un azimut' (relatif à l'azimut de référence)."""
@@ -6223,8 +6222,8 @@ class TriangleViewerManual(
 
         self.status.config(text="Mesurer un azimut : clic gauche pour valider, ESC pour annuler. (Snap noeuds, CTRL = désactiver snap)")
 
-
     # ---- Compas : mesure interactive d'un arc d'angle (entre 2 points) -------------------
+
     def _ctx_measure_clock_arc_angle(self):
         """Entrée de menu : active le mode 'mesurer un arc d'angle' (entre 2 points)."""
         # Repartir d'un état propre

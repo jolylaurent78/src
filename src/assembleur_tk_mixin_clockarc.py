@@ -5,12 +5,7 @@ Ce module est généré pour découper assembleur_tk.py.
 """
 
 from __future__ import annotations
-import os, re, math, json, copy
 import numpy as np
-import pandas as pd
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog, simpledialog
-from tksheet import Sheet
 
 EPS_WORLD = 1e-6
 

@@ -5,14 +5,13 @@ Ce module est généré pour découper assembleur_tk.py.
 """
 
 from __future__ import annotations
-import os, re, math, json, copy
-import numpy as np
-import pandas as pd
+import os
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog, simpledialog
+from tkinter import ttk, messagebox
 from tksheet import Sheet
 
 from src.DictionnaireEnigmes import DictionnaireEnigmes
+
 
 class TriangleViewerDictionaryMixin:
     """Mixin: méthodes extraites de assembleur_tk.py."""
@@ -33,9 +32,7 @@ class TriangleViewerDictionaryMixin:
         except Exception as e:
             self.status.config(text=f"Dico: échec de chargement — {e}")
 
-
     # ---------- Dictionnaire : affichage dans le panneau bas ----------
-
     def _build_dico_grid(self):
         """
         Construit/affiche la grille tksheet du dictionnaire dans self.dicoPanel.
@@ -59,13 +56,12 @@ class TriangleViewerDictionaryMixin:
         # On affiche toujours 2N colonnes correspondant à j ∈ [-N .. N-1].
         # Le "0 logique" doit correspondre au premier mot du livre (j=0),
         # donc à la colonne physique c = N (pas à la colonne 0).
-        nb_mots_max = int(self.dico.nbMotMax())
-        self._dico_nb_mots_max = int(nb_mots_max)
- 
+        self._dico_nb_mots_max = self.dico.nbMotMax()
+
         # Origine logique = cellule physique (row0,col0) qui correspond à (0,0) logique.
         # Par défaut / reset : (0, N) physique => 0 logique sur le 1er mot du livre.
         if not hasattr(self, "_dico_origin_cell") or self._dico_origin_cell is None:
-            self._dico_origin_cell = (0, int(nb_mots_max))
+            self._dico_origin_cell = (0, self._dico_nb_mots_max)
 
         # Mode de référence (volatile, RAM) :
         #   None      -> mode ABS
@@ -73,11 +69,10 @@ class TriangleViewerDictionaryMixin:
         #   "target"  -> relatif inversé (soustraction)
         # Compat : si une origine non-default existe sans mode, on considère "origin".
         if not hasattr(self, "_dico_ref_mode"):
-            default_origin = (0, int(nb_mots_max))
+            default_origin = (0, self._dico_nb_mots_max)
             self._dico_ref_mode = "origin" if tuple(self._dico_origin_cell) != tuple(default_origin) else None
 
         # --- Layout du panneau bas : [sidebar catégories] | [grille] ---
-        from tkinter import ttk
         container = tk.Frame(self.dicoPanel, bg="#f3f3f3")
         container.pack(fill="both", expand=True)
         # colonne gauche (catégories + liste)
@@ -89,7 +84,7 @@ class TriangleViewerDictionaryMixin:
         right.pack(side="left", fill="both", expand=True)
 
         # ===== Barre "catégories" =====
-        tk.Label(left, text="Catégorie :", anchor="w", bg="#f3f3f3").pack(anchor="w", padx=8, pady=(8,2))
+        tk.Label(left, text="Catégorie :", anchor="w", bg="#f3f3f3").pack(anchor="w", padx=8, pady=(8, 2))
         cats = list(self.dico.getCategories())
 
         # Préserver la catégorie sélectionnée lors d'un rebuild
@@ -98,10 +93,11 @@ class TriangleViewerDictionaryMixin:
             cat_default = (cats[0] if cats else "")
         self._dico_cat_var = tk.StringVar(value=cat_default)
         self._dico_cat_combo = ttk.Combobox(left, state="readonly", values=cats, textvariable=self._dico_cat_var)
-        self._dico_cat_combo.pack(fill="x", padx=8, pady=(0,6))
+        self._dico_cat_combo.pack(fill="x", padx=8, pady=(0, 6))
 
         # Liste des mots de la catégorie sélectionnée
-        lb_frame = tk.Frame(left, bg="#f3f3f3"); lb_frame.pack(fill="both", expand=True, padx=6, pady=(0,8))
+        lb_frame = tk.Frame(left, bg="#f3f3f3")
+        lb_frame.pack(fill="both", expand=True, padx=6, pady=(0, 8))
         self._dico_cat_list = tk.Listbox(lb_frame, exportselection=False)
         self._dico_cat_list.pack(side="left", fill="both", expand=True)
         sb = tk.Scrollbar(lb_frame, orient="vertical", command=self._dico_cat_list.yview)
@@ -110,6 +106,10 @@ class TriangleViewerDictionaryMixin:
 
         # Remplissage initial + binding de la combo
         self._dico_cat_items = []
+
+        # cellule visée par le clic-droit (row,col) en coordonnées TkSheet
+        self._dico_ctx_cell = None
+
         def _refresh_cat_list(*_):
             cat = self._dico_cat_var.get()
             self._dico_cat_selected = cat
@@ -125,21 +125,20 @@ class TriangleViewerDictionaryMixin:
             # Afficher: "mot — (eDisp, mDisp)" (index d’affichage)
             # - Mode ABS (origine par défaut) : colonnes sans 0 (1=1er mot), lignes 1..10
             # - Mode DELTA (origine cliquée) : colonnes/énigmes en delta avec 0 (pas d’énigmes négatives -> modulo 10)
-            nb_mots_max = self._dico_nb_mots_max if hasattr(self, "_dico_nb_mots_max") else self.dico.nbMotMax()
-            default_origin = (0, int(nb_mots_max))
+            default_origin = (0, self._dico_nb_mots_max)
             r0, c0 = (self._dico_origin_cell or default_origin)
             refMode = getattr(self, "_dico_ref_mode", None)
             isDelta = (tuple((r0, c0)) != tuple(default_origin)) and (refMode in ("origin", "target"))
             isTarget = (refMode == "target")
 
-            origin_indexMot = int(c0) - int(nb_mots_max)
+            origin_indexMot = int(c0) - self._dico_nb_mots_max
             for mot, e, m in items:
                 # Lignes : pas d’énigmes négatives
                 eLogRaw = int(e) - int(r0)
                 eLog = (-int(eLogRaw) % 10) if isTarget else (int(eLogRaw) % 10)
                 eDisp = int(eLog) if isDelta else (int(eLog) + 1)
 
-                # Colonnes : indexMot (absolu) ou delta                
+                # Colonnes : indexMot (absolu) ou delta
                 mLog = int(m) - int(origin_indexMot)
                 if isDelta:
                     mDisp = int(mLog)  # delta, 0 autorisé
@@ -152,7 +151,6 @@ class TriangleViewerDictionaryMixin:
         self._dico_cat_combo.bind("<<ComboboxSelected>>", _refresh_cat_list)
         _refresh_cat_list()
 
-
         # Synchronisation: clic/double-clic dans la liste -> centrer/sélectionner le mot dans la grille
         def _goto_selected_word(event=None):
             if not getattr(self, "dicoSheet", None):
@@ -164,16 +162,13 @@ class TriangleViewerDictionaryMixin:
             mot, enigme, indexMot = self._dico_cat_items[i]
 
             # convertir indexMot [-N..N) -> colonne [0..2N)
-            nb_mots_max = self._dico_nb_mots_max if hasattr(self, "_dico_nb_mots_max") else self.dico.nbMotMax()
-
-            col = int(indexMot) + int(nb_mots_max)
+            col = int(indexMot) + self._dico_nb_mots_max
             row = int(enigme)
             # sélectionner et faire voir la cellule ; see() centre autant que possible
             self.dicoSheet.select_cell(row, col, redraw=False)
             self.dicoSheet.see(row=row, column=col)
             # MAJ horloge (sélection indirecte via la liste)
             self._update_clock_from_cell(row, col)
-
 
         # Clic et double-clic compatibles
         self._dico_cat_list.bind("<<ListboxSelect>>", _goto_selected_word)
@@ -184,56 +179,51 @@ class TriangleViewerDictionaryMixin:
         # Deux modes d’affichage :
         # - Mode ABS (origine par défaut (0, nbm)) : colonnes sans 0 (1=1er mot), lignes 1..10
         # - Mode DELTA (origine cliquée) : colonnes/énigmes en delta avec 0 (lignes en modulo 10)
-        default_origin = (0, int(nb_mots_max))
+        default_origin = (0, self._dico_nb_mots_max)
         r0, c0 = (self._dico_origin_cell or default_origin)
-        refMode = getattr(self, "_dico_ref_mode", None)
+        refMode = self._dico_ref_mode
         isDelta = (tuple((r0, c0)) != tuple(default_origin)) and (refMode in ("origin", "target"))
-        isTarget = (refMode == "target")
+
+        # ---- Colonnes Extended (sans 0) : [-N..-1] U [1..N] ----
+        colsExt = self.dico.getExtendedColumns()
 
         # Entêtes d'affichage
         if isDelta:
             # DELTA : 0 sur la colonne d’origine
-            headers = [-(int(c) - int(c0)) if isTarget else (int(c) - int(c0))
-                       for c in range(0, 2 * int(nb_mots_max))]
+            # ---- Colonnes Extended (sans 0) : [-N-j0..N-j0] ----
+            j0 = int(c0) - self._dico_nb_mots_max
+            colRefExt = int(j0) if int(j0) < 0 else (int(j0) + 1)
+            headers = self.dico.getRelativeColumns(colRefExt, refMode=refMode)
         else:
             # ABS : 1 = 1er mot (j=0), pas de colonne 0
-            # Physique c ∈ [0..2N-1] ↔ j = c - N ∈ [-N..N-1]
-            headers = []
-            for c in range(0, 2 * int(nb_mots_max)):
-                j = int(c) - int(nb_mots_max)
-                headers.append(int(j) if int(j) < 0 else (int(j) + 1))
+            # ---- Colonnes Extended (sans 0) : [-N..-1] U [1..N] ----
+            headers = colsExt
 
+        # On remplit la TkSheet de [-N..-1] U [1..N] indépendamment de isDelta
         data = []
-        for i in range(len(self.dico)):
-            try:
-                row = [self.dico[i][j] for j in range(-nb_mots_max, nb_mots_max)]
-            except Exception:
-                # en cas de dépassement, remplir de chaînes vides
-                row = ["" for _ in range(2 * nb_mots_max)]
+        for rowExt in range(1, self.dico.getNbEnigmes() + 1):
+            row = [self.dico.getMotExtended(rowExt, colExt) for colExt in colsExt]
             data.append(row)
 
-
-        row_titles_raw = self.dico.getTitres()   # ["530", "780", ...]
-
-
         # utilisé par le decryptor / compas (NE PAS TOUCHER)
+        row_titles_raw = self.dico.getTitres()   # ["530", "780", ...]
         self._dico_row_index = list(row_titles_raw)
 
         # affichage UI : indexes
         # - DELTA : lignes en modulo 10 (pas d'énigmes négatives), origine = 0
         # - ABS   : 1..10
         if isDelta:
-            row_index_display = [f'{((-(i - int(r0))) % 10) if isTarget else ((i - int(r0)) % 10)} - "{t}"'
-                                for i, t in enumerate(row_titles_raw)]
+            labels = self.dico.getRowLabelsRel(r0, refMode=refMode)
         else:
-            row_index_display = [f'{(((i - int(r0)) % 10) + 1)} - "{t}"' for i, t in enumerate(row_titles_raw)]
+            labels = self.dico.getRowLabelsAbs()
+        rowIndexDisplay = [f'{lab} - "{t}"' for lab, t in zip(labels, row_titles_raw)]
 
         # Créer la grille
         self.dicoSheet = Sheet(
             right,
             data=data,
             headers=headers,
-            row_index=row_index_display,
+            row_index=rowIndexDisplay,
             show_row_index=True,
             height=max(120, getattr(self, "dico_panel_height", 220) - 10),
             empty_vertical=0,
@@ -241,8 +231,8 @@ class TriangleViewerDictionaryMixin:
         # NOTE: on désactive le menu contextuel interne TkSheet ("copy", etc.)
         # car il entre en conflit avec notre menu "Définir comme origine (0,0)".
         self.dicoSheet.enable_bindings((
-            "single_select","row_select","column_select",
-            "arrowkeys","copy","rc_select","double_click"
+            "single_select", "row_select", "column_select",
+            "arrowkeys", "copy", "rc_select", "double_click"
         ))
         self.dicoSheet.align_columns(columns="all", align="center")
         self.dicoSheet.set_options(cell_align="center")
@@ -253,35 +243,18 @@ class TriangleViewerDictionaryMixin:
             # La sélection directe dans la grille doit toujours synchroniser le compas.
             # Source unique de vérité : cellule actuellement sélectionnée
             sel = self.dicoSheet.get_selected_cells()
-            r = c = None
             if sel:
-                # tksheet peut renvoyer un set({(r,c), ...}) ou une liste([(r,c), ...])
-                if isinstance(sel, set):
-                    r, c = next(iter(sel))
-                elif isinstance(sel, (list, tuple)):
-                    r, c = sel[0]
-            if r is None or c is None:
-                # Secours léger : cellule "courante" si aucune sélection renvoyée
-                cur = self.dicoSheet.get_currently_selected()
-                if isinstance(cur, tuple) and len(cur) == 2 and cur[0] == "cell":
-                    r, c = cur[1]
-            if r is None or c is None:
-                return
-            self._update_clock_from_cell(int(r), int(c))
+                r, c = next(iter(sel))
+                self._update_clock_from_cell(int(r), int(c))
 
         # Un seul binding tksheet, propre : "cell_select"
         def _on_dico_double_click(event=None):
             # On ne traite QUE si double-clic sur une cellule.
             # (évite les pièges : header / row_index / vide)
             cur = self.dicoSheet.get_currently_selected()
-            if not (isinstance(cur, tuple) and len(cur) == 2 and cur[0] == "cell"):
-                return
-            rr, cc = cur[1]
-            rr = int(rr); cc = int(cc)
+            rr, cc = int(cur.row), int(cur.column)
 
             # Toggle : même cellule => reset défaut (0 logique = 1er mot du livre)
-            nbm = int(getattr(self, "_dico_nb_mots_max", 50))
-            default_origin = (0, nbm)
             self._dico_origin_cell = (rr, cc)
             self._dico_ref_mode = "origin"
             # Rebuild complet (robuste vis-à-vis des API TkSheet)
@@ -334,8 +307,6 @@ class TriangleViewerDictionaryMixin:
                 state=tk.DISABLED,
             )
             self._ctx_dico_idx_next = self._ctx_menu_dico.index("end")
-        # cellule visée par le clic-droit (row,col) en coordonnées TkSheet
-        self._dico_ctx_cell = None
 
         def _dico_cell_from_event(event):
             """Retourne (row, col) pour la cellule sous la souris (clic droit).
@@ -359,7 +330,6 @@ class TriangleViewerDictionaryMixin:
                 if r is None or c is None:
                     return None
                 return int(r), int(c)
-
 
             # 1) Priorité à MainTable (MT) si présent
             for meth_row, meth_col in (
@@ -398,7 +368,6 @@ class TriangleViewerDictionaryMixin:
         self.dicoSheet.select_cell(int(r0), int(c0), redraw=False)
         self.dicoSheet.see(row=int(r0), column=int(c0))  # amène la colonne 0 logique dans la vue (le plus centré possible)
 
-
         # La sélection du dico doit rester possible pour synchroniser le compas,
         # même si aucun arc n'est disponible (le filtrage, lui, restera grisé).
         self._dico_set_selection_enabled(True)
@@ -414,21 +383,14 @@ class TriangleViewerDictionaryMixin:
 
     def _dico_set_origin_from_context_cell(self):
         # Action "Set as (0,0)" : utiliser la cellule du clic-droit (robuste, sans dépendre de la sélection)
-        if not getattr(self, "_dico_ctx_cell", None):
-            return
         rr, cc = self._dico_ctx_cell
-        rr = int(rr); cc = int(cc)
         self._dico_origin_cell = (rr, cc)
         self._dico_ref_mode = "origin"  # exclusif
         self._build_dico_grid()
 
-
     def _dico_set_target_from_context_cell(self):
         # Action "Set as target (0,0)" : cellule du clic-droit
-        if not getattr(self, "_dico_ctx_cell", None):
-            return
         rr, cc = self._dico_ctx_cell
-        rr = int(rr); cc = int(cc)
         self._dico_origin_cell = (rr, cc)
         self._dico_ref_mode = "target"  # exclusif
         self._build_dico_grid()
@@ -439,32 +401,25 @@ class TriangleViewerDictionaryMixin:
         """Retourne la colonne de la prochaine occurrence du même mot sur la même ligne.
         direction = +1 (droite) ou -1 (gauche). Recherche dans la grille affichée uniquement.
         """
-        if not getattr(self, "dicoSheet", None):
-            return None
+        n_cols = 2 * self._dico_nb_mots_max
 
-        nbm = int(getattr(self, "_dico_nb_mots_max", 0) or 0)
-        n_cols = int(2 * nbm) if nbm > 0 else 0
-        if n_cols <= 0:
-            return None
-
-        if row < 0 or row >= len(self.dico):
+        if row < 0 or row >= self.dico.getNbEnigmes():
             return None
         if col < 0 or col >= n_cols:
             return None
 
-        w0 = str(self.dicoSheet.get_cell_data(int(row), int(col))).strip()
+        w0 = str(self.dicoSheet.get_cell_data(row, col)).strip()
         if not w0:
             return None
 
-        c = int(col) + int(direction)
+        c = col + direction
         while 0 <= c < n_cols:
-            w = str(self.dicoSheet.get_cell_data(int(row), int(c))).strip()
+            w = str(self.dicoSheet.get_cell_data(row, c)).strip()
             if w and w == w0:
-                return int(c)
-            c += int(direction)
+                return c
+            c += direction
 
         return None
-
 
     def _dico_update_occurrence_ctx_menu_state(self):
         """Active/désactive 'Occurrence précédente/suivante' selon le mot cliqué."""
@@ -476,101 +431,95 @@ class TriangleViewerDictionaryMixin:
         prev_state = tk.DISABLED
         next_state = tk.DISABLED
 
-        rc = getattr(self, "_dico_ctx_cell", None)
-        if rc is not None and getattr(self, "dicoSheet", None):
-            rr, cc = int(rc[0]), int(rc[1])
-            if self._dico_find_occurrence_in_row(rr, cc, -1) is not None:
-                prev_state = tk.NORMAL
-            if self._dico_find_occurrence_in_row(rr, cc, +1) is not None:
-                next_state = tk.NORMAL
+        rr, cc = self._dico_ctx_cell
+        if self._dico_find_occurrence_in_row(rr, cc, -1) is not None:
+            prev_state = tk.NORMAL
+        if self._dico_find_occurrence_in_row(rr, cc, +1) is not None:
+            next_state = tk.NORMAL
 
         self._ctx_menu_dico.entryconfig(self._ctx_dico_idx_prev, state=prev_state)
         self._ctx_menu_dico.entryconfig(self._ctx_dico_idx_next, state=next_state)
 
-
     def _dico_move_context_occurrence(self, direction: int):
         """Déplace la sélection vers l'occurrence précédente/suivante du même mot (même ligne)."""
-        if not getattr(self, "dicoSheet", None):
-            return
-
-        rc = getattr(self, "_dico_ctx_cell", None)
-        if rc is None:
-            return
-
-        rr, cc = int(rc[0]), int(rc[1])
-        new_c = self._dico_find_occurrence_in_row(rr, cc, int(direction))
+        rr, cc = self._dico_ctx_cell
+        new_c = self._dico_find_occurrence_in_row(rr, cc, direction)
         if new_c is None:
             self._dico_update_occurrence_ctx_menu_state()
             return
 
         # Mettre à jour le "contexte" pour permettre des clics successifs
-        self._dico_ctx_cell = (rr, int(new_c))
+        self._dico_ctx_cell = (rr, new_c)
 
-        self.dicoSheet.select_cell(rr, int(new_c), redraw=False)
-        self.dicoSheet.see(row=rr, column=int(new_c))
-        self._update_clock_from_cell(rr, int(new_c))
+        self.dicoSheet.select_cell(rr, new_c, redraw=False)
+        self.dicoSheet.see(row=rr, column=new_c)
+        self._update_clock_from_cell(rr, new_c)
 
         self._dico_update_occurrence_ctx_menu_state()
-
 
     def _dico_reset_origin(self):
         # Origine par défaut = 1er mot du livre :
         #  - ligne physique 0 (énigme 0)
         #  - colonne physique nbm (car headers = [-nbm..0..+nbm])
-        nbm = int(getattr(self, "_dico_nb_mots_max", 50))
-        self._dico_origin_cell = (0, nbm)
+        self._dico_origin_cell = (0, self._dico_nb_mots_max)
         self._dico_ref_mode = None   # retour ABS (donc style bleu)
         self._build_dico_grid()
 
-
     # ---------- DICO → Horloge ----------
+    def _tkToExtAbs(self, row: int, col: int, *, nbm: int) -> tuple[int, int]:
+        """
+        TkSheet (row,col) -> (rowAbs 1..10, colExt sans 0) en mode ABS.
+        """
+        rowAbs = (row % 10) + 1
+        j = col - nbm          # [-nbm..nbm-1]
+        colExt = j if j < 0 else j + 1  # pas de 0
+        return rowAbs, colExt
+
+    def _tkToRel(self, row: int, col: int, *, r0: int, c0: int, refMode: str) -> tuple[int, int]:
+        """
+        TkSheet (row,col) -> (dRow 0..9, dCol signé) en mode DELTA.
+        """
+        dr = (row - r0) % 10
+        dc = col - c0
+        if refMode == "target":
+            dr = (-dr) % 10
+            dc = -dc
+        return dr, dc
 
     def _update_clock_from_cell(self, row: int, col: int):
         """Met à jour l'horloge à partir d'une cellule de la grille Dico.
-        La conversion (row,col)->(hour,minute,label) est déléguée au decryptor actif.
+        row et col sont des colonne Tk. Ex en Mode Abs Col Tk 100 = 1
+                La conversion (row,col)->(hour,minute,label) est déléguée au decryptor actif.
         """
         if not getattr(self, "dicoSheet", None):
             return
 
- 
-        nbm = int(getattr(self, "_dico_nb_mots_max", 50))
-        row_titles = getattr(self, "_dico_row_index", [])
         word = str(self.dicoSheet.get_cell_data(int(row), int(col))).strip()
 
- 
         # Externalisation : conversion via decryptor
         # --- Passage en référentiel LOGIQUE pour le compas/decryptor ---
-        nbm = int(getattr(self, "_dico_nb_mots_max", 50))
-
-        default_origin = (0, int(nbm))
+        default_origin = (0, self._dico_nb_mots_max)
         r0, c0 = (self._dico_origin_cell or default_origin)
-        refMode = getattr(self, "_dico_ref_mode", None)
+        refMode = self._dico_ref_mode  # "origin" / "target"
         isDelta = (tuple((int(r0), int(c0))) != tuple(default_origin)) and (refMode in ("origin", "target"))
-        isTarget = (refMode == "target")
-        mode = "delta" if isDelta else "abs"
 
         if isDelta:
             # DELTA : 0 autorisé. Lignes en modulo 10 (pas d’énigmes négatives)
-            dr = (int(row) - int(r0)) % 10
-            dc = int(col) - int(c0)
-            rowVal = (-dr) % 10 if isTarget else dr
-            colVal = -dc if isTarget else dc
+            rowVal, colVal = self._tkToRel(row, col, r0=r0, c0=c0, refMode=refMode)
+            mode = "delta"
         else:
             # ABS : pas de 0. Lignes 1..10, Colonnes … -2, -1, 1, 2, …
-            rowVal = ((int(row) - int(r0)) % 10) + 1
-            j = int(col) - int(nbm)  # j ∈ [-nbm..nbm-1]
-            colVal = int(j) if int(j) < 0 else (int(j) + 1)
+            rowVal, colVal = self._tkToExtAbs(row, col, nbm=self._dico_nb_mots_max)
+            mode = "abs"
 
         st = self.decryptor.clockStateFromDicoCell(
-            row=int(rowVal),
-            col=int(colVal),
-            nbMotsMax=int(nbm),
-            rowTitles=list(row_titles) if row_titles else None,
+            row=rowVal,
+            col=colVal,
             word=word,
-            mode=str(mode),
+            mode=mode,
         )
 
-        self._clock_state.update({"hour": float(st.hour), "minute": int(st.minute), "label": str(st.label)})
+        self._clock_state.update({"hour": float(st.hour), "minute": st.minute, "label": st.label})
         self._redraw_overlay_only()
 
     # ---------- DICO : filtrage visuel par angle ----------
@@ -587,35 +536,22 @@ class TriangleViewerDictionaryMixin:
         if not hasattr(self.dicoSheet, "highlight_cells"):
             raise AttributeError("tksheet.Sheet.highlight_cells non disponible")
 
-        nbm = int(getattr(self, "_dico_nb_mots_max", 50))
-        row_titles = getattr(self, "_dico_row_index", [])
-        n_rows = int(len(self.dico)) if self.dico is not None else 0
-        n_cols = int(2 * nbm)
-
-        ref = float(self._dico_filter_ref_angle_deg) % 180.0
-        tol = float(getattr(self, "_dico_filter_tolerance_deg", 4.0))
-
-        default_origin = (0, int(nbm))
+        default_origin = (0, self._dico_nb_mots_max)
         r0, c0 = (self._dico_origin_cell or default_origin)
-        refMode = getattr(self, "_dico_ref_mode", None)
+        refMode = self._dico_ref_mode
         isDelta = (tuple((int(r0), int(c0))) != tuple(default_origin)) and (refMode in ("origin", "target"))
-        isTarget = (refMode == "target")
-        mode = "delta" if isDelta else "abs"
-        for r in range(n_rows):
-            for c in range(n_cols):
+        for r in range(self.dico.getNbEnigmes()):
+            for c in range(2 * self._dico_nb_mots_max):
                 word = str(self.dicoSheet.get_cell_data(r, c)).strip()
                 if not word:
                     continue
                 # --- Passage en référentiel LOGIQUE pour l'angle ---
                 if isDelta:
-                    dr = (int(r) - int(r0)) % 10
-                    dc = int(c) - int(c0)
-                    rowVal = (-dr) % 10 if isTarget else dr
-                    colVal = -dc if isTarget else dc
+                    rowVal, colVal = self._tkToRel(r, c, r0=r0, c0=c0, refMode=refMode)
+                    mode = "delta"
                 else:
-                    rowVal = ((int(r) - int(r0)) % 10) + 1
-                    j = int(c) - int(nbm)
-                    colVal = int(j) if int(j) < 0 else (int(j) + 1)
+                    rowVal, colVal = self._tkToExtAbs(r, c, nbm=self._dico_nb_mots_max)      
+                    mode = "abs"
 
                 # IMPORTANT:
                 #   Le filtre doit être cohérent avec ce que le compas affichera quand on clique une cellule.
@@ -624,19 +560,13 @@ class TriangleViewerDictionaryMixin:
                 #   On n'utilise donc PAS deltaAngleFromDicoCell (qui peut avoir une convention différente)
                 #   mais exactement la même définition que l'overlay du compas.
                 st = self.decryptor.clockStateFromDicoCell(
-                    row=int(rowVal),
-                    col=int(colVal),
-                    nbMotsMax=int(nbm),
-                    rowTitles=list(row_titles) if row_titles else None,
+                    row=rowVal,
+                    col=colVal,
                     word=word,
-                    mode=str(mode),
+                    mode=mode,
                 )
-                hFloat = float(getattr(st, "hour", 0.0)) % 12.0
-                m = int(getattr(st, "minute", 0)) % 60
-                ang_hour = (hFloat * 30.0) % 360.0
-                ang_min = (m * 6.0) % 360.0
-                ang = float(self._clock_arc_compute_angle_deg(float(ang_hour), float(ang_min)))
-                ok = abs(ang - ref) <= tol
+                ref = float(self._dico_filter_ref_angle_deg) % 180.0       
+                ok = abs(st.deltaDeg180 - ref) <= self._dico_filter_tolerance_deg  
                 if ok:
                     # Match: texte noir + fond légèrement marqué
                     self.dicoSheet.highlight_cells(r, c, fg="#000000", bg="#E8E8E8")
@@ -649,7 +579,6 @@ class TriangleViewerDictionaryMixin:
 
         if hasattr(self.dicoSheet, "refresh"):
             self.dicoSheet.refresh()
-
 
     def _dico_clear_filter_styles(self):
         """Réinitialise les styles appliqués par _dico_apply_filter_styles."""
@@ -666,7 +595,6 @@ class TriangleViewerDictionaryMixin:
         self._dico_apply_origin_style()
         if hasattr(self.dicoSheet, "refresh"):
             self.dicoSheet.refresh()
-
 
     def _dico_apply_origin_style(self):
         """Applique le style visuel de la cellule origine (0,0) logique."""
@@ -690,21 +618,12 @@ class TriangleViewerDictionaryMixin:
         sel = self.dicoSheet.get_selected_cells()
         r = c = None
         if sel:
-            if isinstance(sel, set):
-                r, c = next(iter(sel))
-            elif isinstance(sel, (list, tuple)):
-                r, c = sel[0]
-        if r is None or c is None:
-            cur = self.dicoSheet.get_currently_selected()
-            if isinstance(cur, tuple) and len(cur) == 2 and cur[0] == "cell":
-                r, c = cur[1]
-        if r is None or c is None:
-            return None
-        word = str(self.dicoSheet.get_cell_data(int(r), int(c))).strip()
+            r, c = next(iter(sel))
+        word = str(self.dicoSheet.get_cell_data(r, c)).strip()
 
         if not word:
             return None
-        return (word, int(r), int(c))
+        return (word, r, c)
 
     # ---------- Contexte : actions mot <-> triangle ----------
 
@@ -722,7 +641,6 @@ class TriangleViewerDictionaryMixin:
         self._tri_words[tri_id] = {"word": word, "row": row, "col": col}
         self._redraw_from(self._last_drawn)
 
-
     def _ctx_clear_word(self):
         """Efface l'association de mot du triangle ciblé, si présente."""
         if self._ctx_target_idx is None or not (0 <= self._ctx_target_idx < len(self._last_drawn)):
@@ -732,7 +650,6 @@ class TriangleViewerDictionaryMixin:
         if tri_id in self._tri_words:
             del self._tri_words[tri_id]
             self._redraw_from(self._last_drawn)
-
 
     def _rebuild_ctx_word_entries(self):
         """Reconstruit la partie 'mot' du menu contextuel en fonction du triangle visé + sélection dico."""
@@ -768,7 +685,6 @@ class TriangleViewerDictionaryMixin:
         self._ctx_menu.add_command(label=label_add, command=cmd_add, state=("normal" if cmd_add and has_target else "disabled"))
         self._ctx_menu.add_command(label=label_del, command=(self._ctx_clear_word if exists else None),
                                    state=("normal" if exists else "disabled"))
-
 
     # ---------- DEBUG: toggle du filtre d'intersection au highlight ----------
 
@@ -806,7 +722,6 @@ class TriangleViewerDictionaryMixin:
         if refresh and hasattr(self.dicoSheet, 'refresh'):
             self.dicoSheet.refresh()
 
-
     def _dico_set_selection_enabled(self, enabled: bool):
         """(De)sactive la selection utilisateur sur la TkSheet du dictionnaire.
 
@@ -838,5 +753,3 @@ class TriangleViewerDictionaryMixin:
 
         if hasattr(self.dicoSheet, 'refresh'):
             self.dicoSheet.refresh()
-
-
