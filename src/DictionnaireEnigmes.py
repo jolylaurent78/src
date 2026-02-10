@@ -1,5 +1,16 @@
 from itertools import product
 
+import unicodedata
+
+def _normalizeWordLocal(w: str) -> str:
+    s = w.strip()
+    # Décomposition Unicode
+    s = unicodedata.normalize("NFD", s)
+    # Suppression des diacritiques (accents)
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+    # Majuscules
+    s = s.upper()
+    return s
 
 class LigneCirculaire:
     def __init__(self, ligne, masque=None):
@@ -69,16 +80,20 @@ class DictionnaireEnigmes:
                 for mot in motSource:
                     # On détecte les mots avec des [] ex: cherche[localise] cherche = Mot / localise= Tag
                     if "[" in mot and mot.endswith("]"):
-                        motNettoye, tag = mot.split("[")
+                        motBrut, tag = mot.split("[")
                         tag = tag.rstrip("]")
+
+                        motNorm = _normalizeWordLocal(motBrut)
+
                         # On ne rajoute pas les mots dont le tag est "exclure"
                         if tag != tagExclure:
-                            ligneSansTags.append(motNettoye)
+                            ligneSansTags.append(motNorm)
                             if tag in self.indexCategories:
-                                self.indexCategories[tag][1].append((motNettoye, numeroEnigme, i))
+                                self.indexCategories[tag][1].append((motNorm, numeroEnigme, i))
                             i += 1
                     else:
-                        ligneSansTags.append(mot)
+                        motNorm = _normalizeWordLocal(mot)
+                        ligneSansTags.append(motNorm)
                         i += 1
 
                 self.dictionnaire.append((titre, ligneSansTags))
