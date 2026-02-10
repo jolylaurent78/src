@@ -1,10 +1,29 @@
 from itertools import product
+from enum import Enum
+from typing import Iterator
 import re
 import unicodedata
 
 PATTERN_MIN_TOKENS = 2
 PATTERN_MAX_TOKENS = 5
 LISTEPATTERNS_MAX = 8
+
+
+class DicoScope(Enum):
+    STRICT = "STRICT"
+    MIRRORING = "MIRRORING"
+    EXTENDED = "EXTENDED"
+
+
+def _normalize_scope(scope) -> DicoScope:
+    if isinstance(scope, DicoScope):
+        return scope
+    if isinstance(scope, str):
+        key = scope.strip().upper()
+        for s in DicoScope:
+            if s.name == key or s.value == key:
+                return s
+    raise ValueError(f"scope invalide: {scope}")
 
 def _normalizeWordLocal(w: str) -> str:
     s = w.strip()
@@ -161,11 +180,31 @@ class DictionnaireEnigmes:
         return len(ligne)
 
     # ============================
+    # API DicoScope / ABS-REL V1
+    # ============================
+
+    def getNbLignes(self) -> int:
+        return len(self.dictionnaire)
+
+    def normalizeRow(self, rowExt: int) -> int:
+        n = int(self.getNbLignes())
+        if n <= 0:
+            raise ValueError("nbLignes=0")
+        rowExt = int(rowExt)
+        return ((rowExt - 1) % n) + 1
+
+    def getRowSize(self, rowExt: int) -> int:
+        rowReal = self.normalizeRow(rowExt)
+        enigmeIndex = rowReal - 1
+        _, ligne = self.dictionnaire[enigmeIndex]
+        return len(ligne)
+
+    # ============================
     # API Extended (nouvelle)
     # ============================
 
     def getNbEnigmes(self) -> int:
-        return len(self.dictionnaire)
+        return self.getNbLignes()
 
     def getPlageMax(self) -> int:
         return int(self.nbMotMax())
@@ -190,6 +229,97 @@ class DictionnaireEnigmes:
 
         return self.getMot(enigmeIndex, motIndex0)
 
+    def iterCoords(self, scope: DicoScope) -> Iterator[tuple[int, int]]:
+        scope_norm = _normalize_scope(scope)
+        n = int(self.getNbLignes())
+        if n <= 0:
+            return
+            yield  # pragma: no cover (generator empty)
+
+        for rowExt in range(1, n + 1):
+            if scope_norm == DicoScope.EXTENDED:
+                max_col = int(self.getPlageMax())
+            else:
+                max_col = int(self.getRowSize(rowExt))
+
+            if scope_norm == DicoScope.STRICT:
+                for colExt in range(1, max_col + 1):
+                    yield (rowExt, colExt)
+                continue
+
+            # MIRRORING / EXTENDED: nÃ©gatifs puis positifs
+            for colExt in range(-max_col, 0):
+                yield (rowExt, colExt)
+            for colExt in range(1, max_col + 1):
+                yield (rowExt, colExt)
+
+    def computeDeltaAbs(self, originAbs: tuple[int, int], targetAbs: tuple[int, int]) -> tuple[int, int]:
+        rowO, colO = originAbs
+        rowT, colT = targetAbs
+        rowO = int(rowO)
+        rowT = int(rowT)
+        colO = int(colO)
+        colT = int(colT)
+
+        n = int(self.getNbLignes())
+        if n <= 0:
+            raise ValueError("nbLignes=0")
+
+        if not (1 <= rowO <= n):
+            raise IndexError(f"rowO hors limites: {rowO}")
+        if not (1 <= rowT <= n):
+            raise IndexError(f"rowT hors limites: {rowT}")
+        if colO == 0 or colT == 0:
+            raise ValueError("col=0 interdit en ABS")
+
+        deltaRow = (rowT - rowO) % n
+        deltaCol = colT - colO
+        return (int(deltaRow), int(deltaCol))
+
+    def applyDeltaAbs(self, originAbs: tuple[int, int], deltaRel: tuple[int, int]) -> tuple[int, int]:
+        rowO, colO = originAbs
+        deltaRow, deltaCol = deltaRel
+        rowO = int(rowO)
+        colO = int(colO)
+        deltaRow = int(deltaRow)
+        deltaCol = int(deltaCol)
+
+        n = int(self.getNbLignes())
+        if n <= 0:
+            raise ValueError("nbLignes=0")
+        if not (1 <= rowO <= n):
+            raise IndexError(f"rowO hors limites: {rowO}")
+        if colO == 0:
+            raise ValueError("colO=0 interdit en ABS")
+
+        if deltaRow < 0 or deltaRow >= n:
+            raise ValueError(f"deltaRow hors bornes: {deltaRow} (0..{n-1})")
+
+        rowT = self.normalizeRow(rowO + deltaRow)
+        colT = colO + deltaCol
+
+        if colT == 0: 
+            raise ValueError("colT=0 interdit en ABS")
+        
+        return (int(rowT), int(colT))
+
+    def recalageAbs(self, rowExt: int, colExt: int) -> tuple[int, int]:
+        rowExt = int(rowExt)
+        colExt = int(colExt)
+        if colExt == 0:
+            raise ValueError("colExt=0 interdit en ABS")
+
+        rowReal = self.normalizeRow(rowExt)
+        nrow = int(self.getRowSize(rowReal))
+        if nrow <= 0:
+            raise ValueError("Ligne vide")
+
+        # mapping Extended -> index interne 0-based (mÃªme convention que getMotExtended)
+        motIndex0 = (colExt - 1) if colExt > 0 else colExt
+        motIndex0Real = motIndex0 % nrow
+        colReal = motIndex0Real + 1
+        return (int(rowReal), int(colReal))
+
     def getExtendedColumns(self, plageMax=None) -> list[int]:
         p = self.getPlageMax() if plageMax is None else int(plageMax)
         cols = list(range(-p, 0)) + list(range(1, p+1))
@@ -197,11 +327,15 @@ class DictionnaireEnigmes:
 
     def getRowLabelsAbs(self) -> list[int]:
         """
-        Labels de lignes en ABS (Extended row) : 1..10, wrap modulo 10.
+        Labels de lignes en ABS (Extended row) : 1..nbLignes.
         r0 est l'origine en index de ligne TkSheet (0-based).
         """
-        return [((i % 10) + 1) for i in range(self.getNbEnigmes())]
+        n = int(self.getNbLignes())
+        if n <= 0:
+            return []
+        return [i + 1 for i in range(n)]
 
+    # UI-only (refMode)
     def getRelativeColumns(self, colRefExt: int, plageMax=None, *, refMode: str = "origin") -> list[int]:
         """
         Retourne les labels de colonnes en référentiel RELATIF, dans l'ordre Extended:
@@ -222,6 +356,7 @@ class DictionnaireEnigmes:
         sign = -1 if refMode == "target" else 1
         return [sign * (int(c) - colRefExt) for c in colsExt]
 
+    # UI-only (refMode)
     def getRowLabelsRel(self, r0: int, *, refMode: str = "origin") -> list[int]:
         """
         Labels REL (delta) pour toutes les énigmes du dico.
@@ -229,9 +364,10 @@ class DictionnaireEnigmes:
         if refMode not in ("origin", "target"):
             raise ValueError(f"refMode invalide: {refMode}")
         sign = -1 if refMode == "target" else 1
-        n = self.getNbEnigmes()
-        return [sign * ((i - r0) % 10) for i in range(n)]
+        n = int(self.getNbLignes())
+        return [sign * ((i - r0) % n) for i in range(n)]
 
+    # UI-only (refMode)
     def applyRelativeToExtended(self, colRefExt: int, deltaCol: int, *, refMode: str = "origin") -> int:
         """
         Convertit un déplacement RELATIF (deltaCol) appliqué à une référence Extended (colRefExt)
