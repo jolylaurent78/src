@@ -4,6 +4,7 @@ import unicodedata
 
 PATTERN_MIN_TOKENS = 2
 PATTERN_MAX_TOKENS = 5
+LISTEPATTERNS_MAX = 8
 
 def _normalizeWordLocal(w: str) -> str:
     s = w.strip()
@@ -296,16 +297,17 @@ class Pattern:
     def getSyntax(self) -> str:
         return self._syntax
 
-    def setSyntax(self, syntax: str) -> tuple[bool, str]:
+    def setSyntax(self, syntax: str, *, allow_short: bool = False) -> tuple[bool, str]:
         if syntax is None:
             return False, "Pattern vide"
 
         raw_tokens = syntax.split()
         n = len(raw_tokens)
+        min_tokens = 1 if allow_short else PATTERN_MIN_TOKENS
 
         if n == 0:
             return False, "Pattern vide"
-        if n < PATTERN_MIN_TOKENS:
+        if n < min_tokens:
             return False, f"Pattern trop court (min = {PATTERN_MIN_TOKENS})"
         if n > PATTERN_MAX_TOKENS:
             return False, f"Pattern trop long (max = {PATTERN_MAX_TOKENS})"
@@ -420,6 +422,139 @@ class Pattern:
         if k < n:
             return "MAYBE"
         return "YES"
+
+
+class PatternStateSet:
+    def __init__(self, patternCount: int, packed: int = 0):
+        if patternCount < 0 or patternCount > LISTEPATTERNS_MAX:
+            raise ValueError(f"patternCount invalide: {patternCount}")
+
+        self._patternCount = int(patternCount)
+
+        # Masque des bits utiles (2 bits par pattern)
+        bitCount = 2 * self._patternCount
+        mask = (1 << bitCount) - 1 if bitCount > 0 else 0
+
+        # 1) Interdire les bits hors plage (BUG)
+        if packed & ~mask:
+            raise RuntimeError(f"packed hors plage: {packed}")
+
+        self._packed = int(packed) & mask
+
+        # 2) Interdire l'état réservé 0b11 (BUG)
+        for i in range(self._patternCount):
+            v = (self._packed >> (2 * i)) & 0b11
+            if v == 0b11:
+                raise RuntimeError(f"Etat reserve 0b11 detecte pour pattern {i}")
+
+    def getPacked(self) -> int:
+        return int(self._packed)
+
+    def getPatternCount(self) -> int:
+        return int(self._patternCount)
+
+    def _checkIndex(self, index: int) -> None:
+        if index < 0 or index >= self._patternCount:
+            raise IndexError(f"index hors bornes: {index}")
+
+    def getState(self, index: int) -> str:
+        self._checkIndex(index)
+        shift = 2 * index
+        val = (self._packed >> shift) & 0b11
+        if val == 0b00:
+            return "NO"
+        if val == 0b01:
+            return "MAYBE"
+        if val == 0b10:
+            return "YES"
+        raise RuntimeError(f"Etat invalide (11) pour index {index}")
+
+    def setState(self, index: int, state: str) -> None:
+        self._checkIndex(index)
+        if state == "NO":
+            val = 0b00
+        elif state == "MAYBE":
+            val = 0b01
+        elif state == "YES":
+            val = 0b10
+        else:
+            raise ValueError(f"state invalide: {state}")
+
+        shift = 2 * index
+        mask = 0b11 << shift
+        self._packed = (self._packed & ~mask) | (val << shift)
+
+    def hasMaybe(self) -> bool:
+        for i in range(self._patternCount):
+            shift = 2 * i
+            val = (self._packed >> shift) & 0b11
+            if val == 0b01:
+                return True
+            if val == 0b11:
+                raise RuntimeError(f"Etat invalide (11) pour index {i}")
+        return False
+
+    def getYesIndexes(self) -> list[int]:
+        res = []
+        for i in range(self._patternCount):
+            shift = 2 * i
+            val = (self._packed >> shift) & 0b11
+            if val == 0b10:
+                res.append(i)
+            elif val == 0b11:
+                raise RuntimeError(f"Etat invalide (11) pour index {i}")
+        return res
+
+
+class ListePatterns:
+    def __init__(self, dico: DictionnaireEnigmes, patternsSyntax: list[str]):
+        n = len(patternsSyntax)
+        if n < 1 or n > LISTEPATTERNS_MAX:
+            raise ValueError(f"Nombre de patterns invalide: {n}")
+
+        self._patterns = []
+        for syntax in patternsSyntax:
+            p = Pattern(dico)
+            allow_short = len(str(syntax).split()) == 1
+            ok, msg = p.setSyntax(syntax, allow_short=allow_short)
+            if not ok:
+                raise ValueError(msg)
+            p.loadCache()
+            self._patterns.append(p)
+
+    def getPatternCount(self) -> int:
+        return len(self._patterns)
+
+    def getPackedInitialState(self) -> int:
+        ps = PatternStateSet(len(self._patterns))
+        for i in range(len(self._patterns)):
+            ps.setState(i, "MAYBE")
+        return ps.getPacked()
+
+    def validateSequence(self, sequenceWords: list[str], mode: str) -> tuple[bool, list[int], int]:
+        if len(sequenceWords) < 1:
+            raise ValueError("sequenceWords vide")
+        if mode not in ("safe", "last"):
+            raise ValueError(f"mode invalide: {mode}")
+
+        for p in self._patterns:
+            if not p.isReady():
+                raise RuntimeError("Pattern non pret")
+
+        ps = PatternStateSet(len(self._patterns))
+
+        for i, p in enumerate(self._patterns):
+            if len(sequenceWords) > p.getTokenCount():
+                ri = "NO"
+            else:
+                ri = p.validateSequence(sequenceWords, mode)
+            ps.setState(i, ri)
+
+        continueExplore = ps.hasMaybe()
+        yesIndexes = ps.getYesIndexes()
+        packedState = ps.getPacked()
+
+        return continueExplore, yesIndexes, packedState
 
 
 class SequenceCategorie:
