@@ -4,7 +4,10 @@ Moteur + algorithmes d'assemblage automatique (sans dépendance Tk).
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, Tuple, Type, Optional
+from typing import Dict, Tuple, Type, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.assembleur_core import TopologyCheminTriplet
 
 
 # ============================================================
@@ -182,7 +185,74 @@ class ClockDicoDecryptor(DecryptorBase):
         )
 
 
-# Petit registre (optionnel) pour brancher d’autres décryptages
+@dataclass(frozen=True)
+class DecryptorConfig:
+    """Immutable configuration for matching geometry measures."""
+
+    decryptor: DecryptorBase
+    useAzA: bool
+    useAzB: bool
+    useAngle180: bool
+    toleranceDeg: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.decryptor, DecryptorBase):
+            raise TypeError("decryptor must be a DecryptorBase instance")
+        for name, value in (
+            ("useAzA", self.useAzA),
+            ("useAzB", self.useAzB),
+            ("useAngle180", self.useAngle180),
+        ):
+            if not isinstance(value, bool):
+                raise TypeError(f"{name} must be a bool")
+        if isinstance(self.toleranceDeg, bool) or not isinstance(self.toleranceDeg, (int, float)):
+            raise TypeError("toleranceDeg must be a number")
+
+        tol = float(self.toleranceDeg)
+        object.__setattr__(self, "toleranceDeg", tol)
+
+        if not (self.useAzA or self.useAzB or self.useAngle180):
+            raise ValueError("at least one measure must be active")
+        if tol < 0.0:
+            raise ValueError("toleranceDeg must be >= 0")
+
+    def match(self, triplet: "TopologyCheminTriplet", clock: ClockState) -> bool:
+        if triplet is None or clock is None:
+            raise TypeError("triplet and clock must be provided")
+
+        if self.useAzA:
+            azA_target = triplet.azOA
+            azA_cand = clock.azHourDeg
+            if azA_target is None or azA_cand is None:
+                raise ValueError("azOA and azHourDeg must be non-null when useAzA is True")
+            diff = abs(float(azA_target) - float(azA_cand)) % 360.0
+            diff = min(diff, 360.0 - diff)
+            if diff > self.toleranceDeg:
+                return False
+
+        if self.useAzB:
+            azB_target = triplet.azOB
+            azB_cand = clock.azMinDeg
+            if azB_target is None or azB_cand is None:
+                raise ValueError("azOB and azMinDeg must be non-null when useAzB is True")
+            diff = abs(float(azB_target) - float(azB_cand)) % 360.0
+            diff = min(diff, 360.0 - diff)
+            if diff > self.toleranceDeg:
+                return False
+
+        if self.useAngle180:
+            target180 = float(triplet.angleDeg) % 180.0
+            cand180 = clock.deltaDeg180
+            if cand180 is None:
+                raise ValueError("deltaDeg180 must be non-null when useAngle180 is True")
+            diff = abs(target180 - float(cand180))
+            if diff > self.toleranceDeg:
+                return False
+
+        return True
+
+
+# Petit registre (optionnel) pour brancher d?autres d?cryptages
 DECRYPTORS: Dict[str, Type[DecryptorBase]] = {
     ClockDicoDecryptor.id: ClockDicoDecryptor,
 }
