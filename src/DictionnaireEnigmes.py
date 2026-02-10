@@ -1,6 +1,9 @@
 from itertools import product
-
+import re
 import unicodedata
+
+PATTERN_MIN_TOKENS = 2
+PATTERN_MAX_TOKENS = 5
 
 def _normalizeWordLocal(w: str) -> str:
     s = w.strip()
@@ -257,6 +260,166 @@ class DictionnaireEnigmes:
             raise IndexError(f"Résultat hors plage: {ext} (plageMax={plage})")
 
         return int(ext)
+
+
+class Pattern:
+    def __init__(self, dico: DictionnaireEnigmes):
+        self._dico = dico
+        self._tokens = []
+        self._token_strings = []
+        self._syntax = ""
+        self._ready = False
+        self._allWordsSet = None
+        self._categoryWordsSets = None
+        self._categoryMapNormToRaw = self._buildCategoryMap()
+
+    def _buildCategoryMap(self) -> dict:
+        categories = self._dico.getCategories()
+        mapping = {}
+        for cat in categories:
+            mapping[_normalizeWordLocal(cat)] = cat
+        return mapping
+
+    def _collectAllWords(self) -> set:
+        words = set()
+        for _, ligne in self._dico.dictionnaire:
+            for mot in ligne:
+                words.add(mot)
+        return words
+
+    def isReady(self) -> bool:
+        return bool(self._ready)
+
+    def getTokenCount(self) -> int:
+        return len(self._tokens)
+
+    def getSyntax(self) -> str:
+        return self._syntax
+
+    def setSyntax(self, syntax: str) -> tuple[bool, str]:
+        if syntax is None:
+            return False, "Pattern vide"
+
+        raw_tokens = syntax.split()
+        n = len(raw_tokens)
+
+        if n == 0:
+            return False, "Pattern vide"
+        if n < PATTERN_MIN_TOKENS:
+            return False, f"Pattern trop court (min = {PATTERN_MIN_TOKENS})"
+        if n > PATTERN_MAX_TOKENS:
+            return False, f"Pattern trop long (max = {PATTERN_MAX_TOKENS})"
+
+        token_strings = []
+        tokens = []
+        has_discriminant = False
+        all_words = None
+
+        for token in raw_tokens:
+            if token == "*":
+                return False, "Token '*' interdit, utiliser '[*]'"
+
+            if token == "[*]":
+                token_strings.append("[*]")
+                tokens.append(("joker", None))
+                continue
+
+            if "[" in token or "]" in token:
+                if re.match(r"^\[[^\[\]\s]+\]$", token):
+                    inner = token[1:-1]
+                    if inner == "*":
+                        return False, "Token '*' interdit, utiliser '[*]'"
+                    cat_norm = _normalizeWordLocal(inner)
+                    if cat_norm not in self._categoryMapNormToRaw:
+                        return False, f"Categorie inconnue: {cat_norm}"
+                    token_strings.append(f"[{cat_norm}]")
+                    tokens.append(("cat", cat_norm))
+                    has_discriminant = True
+                    continue
+                return False, f"Token invalide: '{token}'"
+
+            mot_norm = _normalizeWordLocal(token)
+            if all_words is None:
+                all_words = self._collectAllWords()
+            if mot_norm not in all_words:
+                return False, f"Mot inconnu du dictionnaire: {mot_norm}"
+            token_strings.append(mot_norm)
+            tokens.append(("word", mot_norm))
+            has_discriminant = True
+
+        if not has_discriminant:
+            return False, "Pattern non discriminant (uniquement des jokers)"
+
+        self._tokens = tokens
+        self._token_strings = token_strings
+        self._syntax = " ".join(token_strings)
+        self._allWordsSet = None
+        self._categoryWordsSets = None
+        self._ready = False
+        return True, ""
+
+    def loadCache(self) -> None:
+        if not self._tokens:
+            raise RuntimeError("Pattern non initialise")
+
+        self._allWordsSet = self._collectAllWords()
+        self._categoryWordsSets = {}
+
+        for kind, value in self._tokens:
+            if kind != "cat":
+                continue
+            cat_norm = value
+            if cat_norm in self._categoryWordsSets:
+                continue
+
+            raw_cat = self._categoryMapNormToRaw.get(cat_norm)
+            if raw_cat is None:
+                raise ValueError(f"Categorie absente: {cat_norm}")
+
+            cat_list = self._dico.getListeCategorie(raw_cat)
+            if not cat_list:
+                raise ValueError(f"Categorie vide: {cat_norm}")
+
+            word_set = {mot for (mot, _, _) in cat_list}
+            if not word_set:
+                raise ValueError(f"Categorie vide: {cat_norm}")
+
+            self._categoryWordsSets[cat_norm] = word_set
+
+        self._ready = True
+
+    def validateSequence(self, sequenceWords: list[str], mode: str = "safe") -> str:
+        if not self.isReady():
+            raise RuntimeError("Pattern non pret")
+
+        if mode not in ("safe", "last"):
+            raise ValueError(f"mode invalide: {mode}")
+
+        k = len(sequenceWords)
+        n = len(self._tokens)
+        if k < 1 or k > n:
+            raise ValueError(f"Longueur sequence invalide: {k} (attendu 1..{n})")
+
+        if mode == "safe":
+            indices = range(k)
+        else:
+            indices = [k - 1]
+
+        for i in indices:
+            kind, value = self._tokens[i]
+            w = sequenceWords[i]
+            if kind == "joker":
+                continue
+            if kind == "cat":
+                if w not in self._categoryWordsSets.get(value, set()):
+                    return "NO"
+                continue
+            if w != value:
+                return "NO"
+
+        if k < n:
+            return "MAYBE"
+        return "YES"
 
 
 class SequenceCategorie:
