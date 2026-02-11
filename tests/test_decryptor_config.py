@@ -61,63 +61,81 @@ def test_tc4_aza_match_parfait():
     cfg = DecryptorConfig(DecryptorBase(), True, False, False, 0.0)
     triplet = StubTriplet(azOA=10)
     clock = StubClock(azHourDeg=10)
-    assert cfg.match(triplet, clock) is True
+    ok, score = cfg.match(triplet, clock)
+    assert ok is True
+    assert score == 0.0
 
 
 def test_tc5_aza_hors_tolerance():
     cfg = DecryptorConfig(DecryptorBase(), True, False, False, 2.0)
     triplet = StubTriplet(azOA=10)
     clock = StubClock(azHourDeg=15)
-    assert cfg.match(triplet, clock) is False
+    ok, score = cfg.match(triplet, clock)
+    assert ok is False
+    assert score == 5.0
 
 
 def test_tc6_azb_wrap360_dans_tolerance():
     cfg = DecryptorConfig(DecryptorBase(), False, True, False, 5.0)
     triplet = StubTriplet(azOB=358)
     clock = StubClock(azMinDeg=2)
-    assert cfg.match(triplet, clock) is True
+    ok, score = cfg.match(triplet, clock)
+    assert ok is True
+    assert score == 4.0
 
 
 def test_tc7_angle180_match_parfait():
     cfg = DecryptorConfig(DecryptorBase(), False, False, True, 0.0)
     triplet = StubTriplet(angleDeg=200)
-    clock = StubClock(deltaDeg180=20)
-    assert cfg.match(triplet, clock) is True
+    clock = StubClock(deltaDeg180=160)
+    ok, score = cfg.match(triplet, clock)
+    assert ok is True
+    assert score == 0.0
 
 
 def test_tc8_angle180_hors_tolerance():
     cfg = DecryptorConfig(DecryptorBase(), False, False, True, 1.0)
     triplet = StubTriplet(angleDeg=170)
     clock = StubClock(deltaDeg180=180)
-    assert cfg.match(triplet, clock) is False
+    ok, score = cfg.match(triplet, clock)
+    assert ok is False
+    assert score == 10.0
 
 
 def test_tc9_combinatoire_trois_mesures_actives():
     cfg = DecryptorConfig(DecryptorBase(), True, True, True, 3.0)
     triplet = StubTriplet(azOA=30, azOB=150, angleDeg=120)
     clock = StubClock(azHourDeg=29, azMinDeg=153, deltaDeg180=121)
-    assert cfg.match(triplet, clock) is True
+    ok, score = cfg.match(triplet, clock)
+    assert ok is True
+    assert score == pytest.approx(3.0)
 
 
 def test_tc10_combinatoire_un_seul_echoue():
     cfg = DecryptorConfig(DecryptorBase(), True, True, True, 3.0)
     triplet = StubTriplet(azOA=30, azOB=150, angleDeg=120)
     clock = StubClock(azHourDeg=29, azMinDeg=157, deltaDeg180=121)
-    assert cfg.match(triplet, clock) is False
+    ok, score = cfg.match(triplet, clock)
+    assert ok is False
+    assert score == 7.0
 
 
 def test_tc11_wrap360_limite_exacte():
     cfg = DecryptorConfig(DecryptorBase(), True, False, False, 0.0)
     triplet = StubTriplet(azOA=359)
     clock = StubClock(azHourDeg=359)
-    assert cfg.match(triplet, clock) is True
+    ok, score = cfg.match(triplet, clock)
+    assert ok is True
+    assert score == 0.0
 
 
 def test_tc12_wrap360_bord_extreme():
     cfg = DecryptorConfig(DecryptorBase(), True, False, False, 1.0)
     triplet = StubTriplet(azOA=0)
     clock = StubClock(azHourDeg=359)
-    assert cfg.match(triplet, clock) is True
+    ok, score = cfg.match(triplet, clock)
+    assert ok is True
+    assert score == 1.0
 
 
 def test_tc13_valeurs_manquantes():

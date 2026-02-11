@@ -216,9 +216,11 @@ class DecryptorConfig:
         if tol < 0.0:
             raise ValueError("toleranceDeg must be >= 0")
 
-    def match(self, triplet: "TopologyCheminTriplet", clock: ClockState) -> bool:
+    def match(self, triplet: "TopologyCheminTriplet", clock: ClockState) -> tuple[bool, float]:
         if triplet is None or clock is None:
             raise TypeError("triplet and clock must be provided")
+
+        scoreMax = 0.0
 
         if self.useAzA:
             azA_target = triplet.azOA
@@ -227,8 +229,9 @@ class DecryptorConfig:
                 raise ValueError("azOA and azHourDeg must be non-null when useAzA is True")
             diff = abs(float(azA_target) - float(azA_cand)) % 360.0
             diff = min(diff, 360.0 - diff)
+            scoreMax = max(scoreMax, float(diff))
             if diff > self.toleranceDeg:
-                return False
+                return (False, scoreMax)
 
         if self.useAzB:
             azB_target = triplet.azOB
@@ -237,8 +240,9 @@ class DecryptorConfig:
                 raise ValueError("azOB and azMinDeg must be non-null when useAzB is True")
             diff = abs(float(azB_target) - float(azB_cand)) % 360.0
             diff = min(diff, 360.0 - diff)
+            scoreMax = max(scoreMax, float(diff))
             if diff > self.toleranceDeg:
-                return False
+                return (False, scoreMax)
 
         if self.useAngle180:
             # angle triplet -> complément 360, puis normalisation 0..180
@@ -251,10 +255,11 @@ class DecryptorConfig:
                 raise ValueError("deltaDeg180 must be non-null when useAngle180 is True")
 
             diff = abs(target - float(cand180))
+            scoreMax = max(scoreMax, float(diff))
             if diff > self.toleranceDeg:
-                return False
+                return (False, scoreMax)
 
-        return True
+        return (True, scoreMax)
 
 
 # Petit registre (optionnel) pour brancher d?autres d?cryptages

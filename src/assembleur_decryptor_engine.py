@@ -21,11 +21,16 @@ class DecryptageCandidate:
     words: list[str]
     coordsAbs: list[tuple[int, int]]
     patternPacked: int
+    scoreMax: float
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "words", list(self.words))
         object.__setattr__(self, "coordsAbs", [(int(r), int(c)) for (r, c) in self.coordsAbs])
         object.__setattr__(self, "patternPacked", int(self.patternPacked))
+        score = float(self.scoreMax)
+        if score < 0.0:
+            score = 0.0
+        object.__setattr__(self, "scoreMax", score)
 
 
 @dataclass(frozen=True)
@@ -35,11 +40,16 @@ class SolutionDecryptage:
     patternIndex: int
     words: list[str]
     coordsAbs: list[tuple[int, int]]
+    scoreMax: float
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "patternIndex", int(self.patternIndex))
         object.__setattr__(self, "words", list(self.words))
         object.__setattr__(self, "coordsAbs", [(int(r), int(c)) for (r, c) in self.coordsAbs])
+        score = float(self.scoreMax)
+        if score < 0.0:
+            score = 0.0
+        object.__setattr__(self, "scoreMax", score)
 
 
 class DecryptorEngine:
@@ -55,8 +65,8 @@ class DecryptorEngine:
         triplet: TopologyCheminTriplet,
         scope: DicoScope,
         decryptorConfig: DecryptorConfig,
-    ) -> list[tuple[int, int, str]]:
-        hits: list[tuple[int, int, str]] = []
+    ) -> list[tuple[int, int, str, float]]:
+        hits: list[tuple[int, int, str, float]] = []
         for (rowExt, colExt) in self.dico.iterCoords(scope):
             word = self.dico.getMotExtended(rowExt, colExt)
             clock = decryptorConfig.decryptor.clockStateFromDicoCell(
@@ -65,9 +75,10 @@ class DecryptorEngine:
                 word=word,
                 mode="abs",
             )
-            if not decryptorConfig.match(triplet, clock):
+            ok, hitScore = decryptorConfig.match(triplet, clock)
+            if not ok:
                 continue
-            hits.append((rowExt, colExt, word))
+            hits.append((rowExt, colExt, word, float(hitScore)))
         return hits
 
     def runAbs(
@@ -92,9 +103,23 @@ class DecryptorEngine:
         JOKER_WORD_ABS = "*"
         JOKER_COORD_ABS = (0, 0)
 
-        def emitSolutions(words: list[str], coordsAbs: list[tuple[int, int]], yesIndexes: list[int]) -> None:
+        def emitSolutions(
+            words: list[str],
+            coordsAbs: list[tuple[int, int]],
+            scoreSum: float,
+            yesIndexes: list[int],
+        ) -> None:
+            n = len(words)
+            avg = (float(scoreSum) / float(n)) if n > 0 else 0.0
             for pi in yesIndexes:
-                results.append(SolutionDecryptage(patternIndex=pi, words=words, coordsAbs=coordsAbs))
+                results.append(
+                    SolutionDecryptage(
+                        patternIndex=pi,
+                        words=words,
+                        coordsAbs=coordsAbs,
+                        scoreMax=avg,
+                    )
+                )
 
 
 
@@ -113,12 +138,19 @@ class DecryptorEngine:
             )
             if continueExplore or yesIndexes:
                 coords0 = [JOKER_COORD_ABS]
-                frontier.append(DecryptageCandidate(words=words0, coordsAbs=coords0, patternPacked=packedOut))
-                emitSolutions(words0, coords0, yesIndexes)
+                frontier.append(
+                    DecryptageCandidate(
+                        words=words0,
+                        coordsAbs=coords0,
+                        patternPacked=packedOut,
+                        scoreMax=0.0,
+                    )
+                )
+                emitSolutions(words0, coords0, 0.0, yesIndexes)
 
         # 0b) Branches normales : uniquement patterns NON joker
         if packedNonJoker0 != 0:
-            for (rowExt, colExt, word) in hits0:
+            for (rowExt, colExt, word, hitScore) in hits0:
                 words0 = [word]
                 continueExplore, yesIndexes, packedOut = listePatterns.validateSequence(
                     words0,
@@ -129,8 +161,15 @@ class DecryptorEngine:
                     continue
 
                 coords0 = [(rowExt, colExt)]
-                frontier.append(DecryptageCandidate(words=words0, coordsAbs=coords0, patternPacked=packedOut))
-                emitSolutions(words0, coords0, yesIndexes)
+                frontier.append(
+                    DecryptageCandidate(
+                        words=words0,
+                        coordsAbs=coords0,
+                        patternPacked=packedOut,
+                        scoreMax=hitScore,
+                    )
+                )
+                emitSolutions(words0, coords0, hitScore, yesIndexes)
 
         # -------------------------
         # Passes suivantes
@@ -153,13 +192,18 @@ class DecryptorEngine:
                     if continueExplore or yesIndexes:
                         new_coords = cand.coordsAbs + [JOKER_COORD_ABS]
                         next_frontier.append(
-                            DecryptageCandidate(words=new_words, coordsAbs=new_coords, patternPacked=packedOut)
+                            DecryptageCandidate(
+                                words=new_words,
+                                coordsAbs=new_coords,
+                                patternPacked=packedOut,
+                                scoreMax=cand.scoreMax,
+                            )
                         )
-                        emitSolutions(new_words, new_coords, yesIndexes)
+                        emitSolutions(new_words, new_coords, cand.scoreMax, yesIndexes)
 
                 # 2) Branches normales : uniquement patterns NON joker
                 if packedNonJoker != 0:
-                    for (rowExt, colExt, word) in hits:
+                    for (rowExt, colExt, word, hitScore) in hits:
                         new_words = cand.words + [word]
                         continueExplore, yesIndexes, packedOut = listePatterns.validateSequence(
                             new_words,
@@ -170,10 +214,16 @@ class DecryptorEngine:
                             continue
 
                         new_coords = cand.coordsAbs + [(rowExt, colExt)]
+                        newScoreSum = cand.scoreMax + hitScore
                         next_frontier.append(
-                            DecryptageCandidate(words=new_words, coordsAbs=new_coords, patternPacked=packedOut)
+                            DecryptageCandidate(
+                                words=new_words,
+                                coordsAbs=new_coords,
+                                patternPacked=packedOut,
+                                scoreMax=newScoreSum,
+                            )
                         )
-                        emitSolutions(new_words, new_coords, yesIndexes)
+                        emitSolutions(new_words, new_coords, newScoreSum, yesIndexes)
 
             frontier = next_frontier
             if not frontier:

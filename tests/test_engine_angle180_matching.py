@@ -45,17 +45,21 @@ def test_angle180_matching_positive(dico, decryptorConfigAngle180, triplets_smok
 
     for (row_ext, col_ext) in [(9, 19), (7, 63), (9, -47), (3, -10)]:
         clock = _clock_from_cell(dico, decryptorConfigAngle180, row_ext, col_ext)
-        assert decryptorConfigAngle180.match(triplet1, clock) is True
+        ok, _score = decryptorConfigAngle180.match(triplet1, clock)
+        assert ok is True
 
     for (row_ext, col_ext) in [(1, 21), (1, -40)]:
         clock = _clock_from_cell(dico, decryptorConfigAngle180, row_ext, col_ext)
-        assert decryptorConfigAngle180.match(triplet2, clock) is True
+        ok, _score = decryptorConfigAngle180.match(triplet2, clock)
+        assert ok is True
 
     clock = _clock_from_cell(dico, decryptorConfigAngle180, 9, 37)
-    assert decryptorConfigAngle180.match(triplet3, clock) is True
+    ok, _score = decryptorConfigAngle180.match(triplet3, clock)
+    assert ok is True
 
 
 def test_angle180_matching_negative(dico, decryptorConfigAngle180, triplets_smoke):
     _, triplet2, _, _ = triplets_smoke
     clock = _clock_from_cell(dico, decryptorConfigAngle180, 9, 19)
-    assert decryptorConfigAngle180.match(triplet2, clock) is False
+    ok, _score = decryptorConfigAngle180.match(triplet2, clock)
+    assert ok is False
