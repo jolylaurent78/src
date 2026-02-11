@@ -241,11 +241,16 @@ class DecryptorConfig:
                 return False
 
         if self.useAngle180:
-            target180 = float(triplet.angleDeg) % 180.0
+            # angle triplet -> complément 360, puis normalisation 0..180
+            target = (360.0 - float(triplet.angleDeg)) % 360.0
+            if target > 180.0:
+                target = 360.0 - target  # ramène à 0..180
+
             cand180 = clock.deltaDeg180
             if cand180 is None:
                 raise ValueError("deltaDeg180 must be non-null when useAngle180 is True")
-            diff = abs(target180 - float(cand180))
+
+            diff = abs(target - float(cand180))
             if diff > self.toleranceDeg:
                 return False
 

@@ -25,6 +25,7 @@ def _normalize_scope(scope) -> DicoScope:
                 return s
     raise ValueError(f"scope invalide: {scope}")
 
+
 def _normalizeWordLocal(w: str) -> str:
     s = w.strip()
     # Décomposition Unicode
@@ -34,6 +35,7 @@ def _normalizeWordLocal(w: str) -> str:
     # Majuscules
     s = s.upper()
     return s
+
 
 class LigneCirculaire:
     def __init__(self, ligne, masque=None):
@@ -298,9 +300,9 @@ class DictionnaireEnigmes:
         rowT = self.normalizeRow(rowO + deltaRow)
         colT = colO + deltaCol
 
-        if colT == 0: 
+        if colT == 0:
             raise ValueError("colT=0 interdit en ABS")
-        
+
         return (int(rowT), int(colT))
 
     def recalageAbs(self, rowExt: int, colExt: int) -> tuple[int, int]:
@@ -432,6 +434,13 @@ class Pattern:
 
     def getSyntax(self) -> str:
         return self._syntax
+
+    # Dans le pattern, trouve t on un joker à la position index? Utilisé dans l'algo ABS pour skipper la recherche
+    def isJokerAt(self, index: int) -> bool:
+        if index < 0 or index >= len(self._tokens):
+            return False
+        kind, _ = self._tokens[index]
+        return kind == "joker"
 
     def setSyntax(self, syntax: str, *, allow_short: bool = False) -> tuple[bool, str]:
         if syntax is None:
@@ -667,7 +676,42 @@ class ListePatterns:
             ps.setState(i, "MAYBE")
         return ps.getPacked()
 
-    def validateSequence(self, sequenceWords: list[str], mode: str) -> tuple[bool, list[int], int]:
+    def hasJokerAt(self, depth: int, packedState: int) -> bool:
+        ps = PatternStateSet(len(self._patterns), packedState)
+        for i, p in enumerate(self._patterns):
+            if ps.getState(i) == "NO":
+                continue
+            if p.isJokerAt(depth):
+                return True
+        return False
+
+    def splitPackedByJokerAt(self, depth: int, packedState: int) -> tuple[int, int]:
+        ps_in = PatternStateSet(len(self._patterns), packedState)
+        ps_j = PatternStateSet(len(self._patterns))
+        ps_n = PatternStateSet(len(self._patterns))
+
+        for i, p in enumerate(self._patterns):
+            st = ps_in.getState(i)
+            if st == "NO":
+                ps_j.setState(i, "NO")
+                ps_n.setState(i, "NO")
+                continue
+
+            if p.isJokerAt(depth):
+                ps_j.setState(i, st)
+                ps_n.setState(i, "NO")
+            else:
+                ps_j.setState(i, "NO")
+                ps_n.setState(i, st)
+
+        return ps_j.getPacked(), ps_n.getPacked()
+
+    def validateSequence(
+        self,
+        sequenceWords: list[str],
+        mode: str,
+        packedState: int | None = None,
+    ) -> tuple[bool, list[int], int]:
         if len(sequenceWords) < 1:
             raise ValueError("sequenceWords vide")
         if mode not in ("safe", "last"):
@@ -677,9 +721,15 @@ class ListePatterns:
             if not p.isReady():
                 raise RuntimeError("Pattern non pret")
 
-        ps = PatternStateSet(len(self._patterns))
+        if packedState is None:
+            ps = PatternStateSet(len(self._patterns))
+        else:
+            ps = PatternStateSet(len(self._patterns), packedState)
 
         for i, p in enumerate(self._patterns):
+            if packedState is not None and ps.getState(i) == "NO":
+                continue
+
             if len(sequenceWords) > p.getTokenCount():
                 ri = "NO"
             else:
