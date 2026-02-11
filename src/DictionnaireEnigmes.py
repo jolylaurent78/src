@@ -258,25 +258,18 @@ class DictionnaireEnigmes:
     def computeDeltaAbs(self, originAbs: tuple[int, int], targetAbs: tuple[int, int]) -> tuple[int, int]:
         rowO, colO = originAbs
         rowT, colT = targetAbs
-        rowO = int(rowO)
-        rowT = int(rowT)
-        colO = int(colO)
-        colT = int(colT)
 
+        # On doit linéariser les colonnes pour retirer le "trou" au 0
+        def _colExtToLin(colExt: int) -> int:
+            return colExt - 1 if colExt > 0 else colExt
+
+        deltaCol = _colExtToLin(colT) - _colExtToLin(colO)
+
+        # On reste standard pour les colonnes
         n = int(self.getNbLignes())
-        if n <= 0:
-            raise ValueError("nbLignes=0")
-
-        if not (1 <= rowO <= n):
-            raise IndexError(f"rowO hors limites: {rowO}")
-        if not (1 <= rowT <= n):
-            raise IndexError(f"rowT hors limites: {rowT}")
-        if colO == 0 or colT == 0:
-            raise ValueError("col=0 interdit en ABS")
-
         deltaRow = (rowT - rowO) % n
-        deltaCol = colT - colO
-        return (int(deltaRow), int(deltaCol))
+
+        return (deltaRow, deltaCol)
 
     def applyDeltaAbs(self, originAbs: tuple[int, int], deltaRel: tuple[int, int]) -> tuple[int, int]:
         rowO, colO = originAbs
@@ -305,14 +298,13 @@ class DictionnaireEnigmes:
 
         return (int(rowT), int(colT))
 
-    def recalageAbs(self, rowExt: int, colExt: int) -> tuple[int, int]:
-        rowExt = int(rowExt)
-        colExt = int(colExt)
+    def recalageAbs(self, coordAbs: tuple[int, int]) -> tuple[int, int]:
+        rowExt, colExt = coordAbs
         if colExt == 0:
             raise ValueError("colExt=0 interdit en ABS")
 
         rowReal = self.normalizeRow(rowExt)
-        nrow = int(self.getRowSize(rowReal))
+        nrow = self.getRowSize(rowReal)
         if nrow <= 0:
             raise ValueError("Ligne vide")
 
@@ -320,7 +312,7 @@ class DictionnaireEnigmes:
         motIndex0 = (colExt - 1) if colExt > 0 else colExt
         motIndex0Real = motIndex0 % nrow
         colReal = motIndex0Real + 1
-        return (int(rowReal), int(colReal))
+        return (rowReal, colReal)
 
     def getExtendedColumns(self, plageMax=None) -> list[int]:
         p = self.getPlageMax() if plageMax is None else int(plageMax)
@@ -670,6 +662,9 @@ class ListePatterns:
     def getPatternCount(self) -> int:
         return len(self._patterns)
 
+    def maxLen(self) -> int:
+        return max((p.getTokenCount() for p in self._patterns), default=0)
+    
     def getPackedInitialState(self) -> int:
         ps = PatternStateSet(len(self._patterns))
         for i in range(len(self._patterns)):

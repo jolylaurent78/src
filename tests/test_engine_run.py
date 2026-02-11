@@ -119,3 +119,29 @@ def test_engine_abs_extended_total_joker_solutions(engine, listePatterns_engine_
 
     assert counts[0] == 3
     assert counts[1] == 6
+
+
+def test_engine_rel_extended_total_count_smoke(engine, listePatterns_engine, decryptorConfigAngle180):
+    results = engine.runRel(
+        scope=DicoScope.EXTENDED,
+        listePatterns=listePatterns_engine,
+        decryptorConfig=decryptorConfigAngle180,
+        patternMode="last",
+    )
+
+    # 1) smoke: ça doit retourner une liste
+    assert isinstance(results, list)
+
+    # 2) on mesure d'abord
+    assert len(results) == 6
+
+    counts = {0: 0, 1: 0}
+    for sol in results:
+        counts[sol.patternIndex] = counts.get(sol.patternIndex, 0) + 1
+        if sol.patternIndex == 0:
+            assert sol.words[-1] == "SENTINELLES"
+        if sol.patternIndex == 1:
+            assert sol.words[0] == "MON"
+
+    assert counts[0] == 1
+    assert counts[1] == 5

@@ -33,6 +33,48 @@ class DecryptageCandidateAbs:
         object.__setattr__(self, "scoreMax", score)
 
 
+class DecryptageCandidateRel:
+    """Sequence partielle validee (REL, mutable)."""
+
+    def __init__(
+        self,
+        words: list[str],
+        coordsAbs: list[tuple[int, int]],
+        coordRefAbs: tuple[int, int],
+        patternPacked: int,
+        scoreSum: float,
+    ) -> None:
+        self.words = list(words)
+        self.coordsAbs = [(int(r), int(c)) for (r, c) in coordsAbs]
+        self.coordRefAbs = (int(coordRefAbs[0]), int(coordRefAbs[1]))
+        self.patternPacked = int(patternPacked)
+        self.scoreSum = float(scoreSum)
+        self._stack: list[tuple[tuple[int, int], int, float]] = []
+
+    def pushStep(
+        self,
+        word: str,
+        coordAbs: tuple[int, int],
+        coordRefNextAbs: tuple[int, int],
+        hitScore: float,
+        patternPackedNext: int,
+    ) -> None:
+        self._stack.append((self.coordRefAbs, self.patternPacked, self.scoreSum))
+        self.words.append(word)
+        self.coordsAbs.append(coordAbs)
+        self.coordRefAbs = coordRefNextAbs
+        self.patternPacked = patternPackedNext
+        self.scoreSum += float(hitScore)
+
+    def popStep(self) -> None:
+        self.words.pop()
+        self.coordsAbs.pop()
+        coordRefAbs, patternPacked, scoreSum = self._stack.pop()
+        self.coordRefAbs = coordRefAbs
+        self.patternPacked = patternPacked
+        self.scoreSum = scoreSum
+
+
 @dataclass(frozen=True)
 class SolutionDecryptage:
     """Solution autonome et figee."""
@@ -79,6 +121,28 @@ class DecryptorEngine:
             if not ok:
                 continue
             hits.append((rowExt, colExt, word, float(hitScore)))
+        return hits
+
+    def _build_hits_rel(
+        self,
+        triplet: TopologyCheminTriplet,
+        scope: DicoScope,
+        decryptorConfig: DecryptorConfig,
+        coordRefAbs: tuple[int, int],
+    ) -> list[tuple[tuple[int, int], str, float]]:
+        hits: list[tuple[tuple[int, int], str, float]] = []
+        for (rowExt, colExt) in self.dico.iterCoords(scope):
+            deltaRow, deltaCol = self.dico.computeDeltaAbs(coordRefAbs, (rowExt, colExt))
+            clock = decryptorConfig.decryptor.clockStateFromDicoCell(
+                row=deltaRow,
+                col=deltaCol,
+                mode="delta",
+            )
+            ok, hitScore = decryptorConfig.match(triplet, clock)
+            if not ok:
+                continue
+            word = self.dico.getMotExtended(rowExt, colExt)
+            hits.append(((rowExt, colExt), word, float(hitScore)))
         return hits
 
     def _emitSolutions(
@@ -231,5 +295,61 @@ class DecryptorEngine:
 
         return results
 
-    def runRel(self, *args, **kwargs):
-        raise NotImplementedError
+    def runRel(
+        self,
+        scope: DicoScope,
+        listePatterns: ListePatterns,
+        decryptorConfig: DecryptorConfig,
+        patternMode: str = "last",
+    ) -> list[SolutionDecryptage]:
+        assert listePatterns.maxLen() <= len(self.triplets)
+
+        if len(self.triplets) < 1:
+            raise ValueError("triplets vides")
+        if patternMode not in ("safe", "last"):
+            raise ValueError(f"patternMode invalide: {patternMode}")
+
+        pattern_count = int(listePatterns.getPatternCount())
+        if pattern_count < 1 or pattern_count > 8:
+            raise ValueError(f"patternCount invalide: {pattern_count}")
+
+        packed0 = listePatterns.getPackedInitialState()
+        cand = DecryptageCandidateRel(
+            words=[],
+            coordsAbs=[],
+            coordRefAbs=(0, 0),
+            patternPacked=packed0,
+            scoreSum=0.0,
+        )
+
+        results: list[SolutionDecryptage] = []
+
+        def dfs(depth: int) -> None:
+            if depth >= len(self.triplets):
+                return
+
+            triplet = self.triplets[depth]
+            hits = self._build_hits_rel(triplet, scope, decryptorConfig, cand.coordRefAbs)
+
+            for (coordAbs, word, hitScore) in hits:
+                words_tmp = cand.words + [word]
+                continueExplore, yesIndexes, packedOut = listePatterns.validateSequence(
+                    words_tmp,
+                    mode=patternMode,
+                    packedState=cand.patternPacked,
+                )
+
+                if yesIndexes:
+                    wordsOut = words_tmp
+                    coordsOut = cand.coordsAbs + [coordAbs]
+                    scoreSumOut = cand.scoreSum + hitScore
+                    self._emitSolutions(results, wordsOut, coordsOut, scoreSumOut, yesIndexes)
+
+                if continueExplore:
+                    coordRefNextAbs = self.dico.recalageAbs(coordAbs)
+                    cand.pushStep(word, coordAbs, coordRefNextAbs, hitScore, packedOut)
+                    dfs(depth + 1)
+                    cand.popStep()
+
+        dfs(0)
+        return results
