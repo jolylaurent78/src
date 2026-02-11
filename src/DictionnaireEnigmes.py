@@ -664,7 +664,7 @@ class ListePatterns:
 
     def maxLen(self) -> int:
         return max((p.getTokenCount() for p in self._patterns), default=0)
-    
+
     def getPackedInitialState(self) -> int:
         ps = PatternStateSet(len(self._patterns))
         for i in range(len(self._patterns)):

@@ -37,6 +37,7 @@ from src.assembleur_decryptor import (
     ClockDicoDecryptor,
     DECRYPTORS,
 )
+from src.DictionnaireEnigmes import Pattern
 
 import src.assembleur_io as _assembleur_io
 
@@ -339,7 +340,7 @@ class TriangleViewerManual(
         # Référence d'échelle "x1" : largeur monde du fond au moment où la calibration est chargée.
         # Sert uniquement à afficher un facteur (x1, x1/3.15, x2.49) pendant le redimensionnement.
         self._bg_scale_base_w = None
- 
+
         # Valeur mémorisée (persistable) de l'échelle carte, pour l'affichage quand la calibration n'est pas disponible.
         self._bg_scale_factor_override: float | None = None
 
@@ -347,7 +348,7 @@ class TriangleViewerManual(
         self._bg_affine_lambert_to_world = None  # [a, b, c, d, e, f]
 
         # mode "déconnexion" activé par CTRL
-        self._ctrl_down = False        
+        self._ctrl_down = False
 
         # --- DEBUG: permettre de SKIP le test de chevauchement durant le highlight (F9) ---
         self.debug_skip_overlap_highlight = False
@@ -362,7 +363,7 @@ class TriangleViewerManual(
         # Liste de scénarios (1 scénario manuel actif + futurs scénarios auto).
         self.scenarios: List[ScenarioAssemblage] = []
         self.active_scenario_index: int = 0
- 
+
         # Carte partagée pour les scénarios automatiques (snapshot au lancement de la simu)
         self.auto_map_state: dict | None = None
         self.auto_view_state: dict | None = None
@@ -427,7 +428,6 @@ class TriangleViewerManual(
         self.df = None
         self._last_drawn = []   # liste d'items: (labels, P_world)
 
-
         # Crée le scénario manuel "par défaut" qui pointe sur l'état runtime.
         # last_drawn et groups sont partagés par référence : toute modification
         # manuelle met automatiquement à jour ce scénario.
@@ -454,7 +454,7 @@ class TriangleViewerManual(
         # Position & état de drag de l'horloge (coords CANVAS)
         self._clock_cx = None
         self._clock_cy = None
-        self._clock_R  = 69    # rayon px (mis à jour dans le draw)
+        self._clock_R = 69    # rayon px (mis à jour dans le draw)
         # Rayon "souhaité" du compas (modifiable via boutons < > dans les layers)
         self._clock_radius = 69
         # Azimut de référence (0° = Nord, sens horaire). Sert de base pour l'axe 0 du compas.
@@ -485,7 +485,7 @@ class TriangleViewerManual(
         # {"az1": float, "az2": float, "angle": float}
         self._clock_arc_last = None
         self._clock_arc_last_angle_deg = None
- 
+
         # --- Dictionnaire : filtrage visuel par angle ---
         self._dico_filter_active: bool = False
         self._dico_filter_ref_angle_deg: Optional[float] = None
@@ -509,10 +509,10 @@ class TriangleViewerManual(
         self._init_dictionary()
         self._build_dico_grid()
 
-
     # ======================================================================
     #  Topologie (bridge minimal Tk -> Core)
     # ======================================================================
+
     def getTidForTopoElementId(self, topoElementId: str) -> int | None:
         e = str(topoElementId)
         for tid, tri in enumerate(self._last_drawn or []):
@@ -530,7 +530,7 @@ class TriangleViewerManual(
         """
         if scen is None:
             scen = self._get_active_scenario()
-        world = scen.topoWorld 
+        world = scen.topoWorld
 
         grp = self.groups.get(ui_gid)
         if not grp:
@@ -599,7 +599,6 @@ class TriangleViewerManual(
             T = Y.mean(axis=0) - (R @ X.mean(axis=0))
 
             world.setElementPose(str(element_id), R=R, T=T, mirrored=mirrored)
-
 
     def _autoSyncAllTopoPoses(self) -> None:
         """Auto: repère global unique => synchroniser *tous* les topoWorld auto depuis la géométrie monde."""
@@ -1079,7 +1078,6 @@ class TriangleViewerManual(
             hdr_h = int(header.winfo_reqheight() or 26)
             return int(hdr_h + lb_h + 18)
 
-
         def _toggleTrianglesPanel():
             collapsed = bool(self._ui_triangles_collapsed.get())
             self._ui_triangles_collapsed.set(not collapsed)
@@ -1161,7 +1159,6 @@ class TriangleViewerManual(
                 h0 = max(int(tri_minsize_expanded), int(h0))
                 pw.paneconfigure(tri_frame, height=h0)
 
-
         # --- Panneau intermédiaire : layers ---
         # Même approche que "Triangles" : header pliable (sans encadrement) + resize réel de la pane.
         layer_minsize_expanded = 80
@@ -1188,7 +1185,6 @@ class TriangleViewerManual(
             # + séparateur (≈4) + padding/marges (≈18)
             content_h = int(self._ui_layers_content.winfo_reqheight() or 0)
             return int(hdr_h + content_h + 22)
-
 
         def _toggleLayersPanel():
             collapsed = bool(self._ui_layers_collapsed.get())
@@ -1295,7 +1291,6 @@ class TriangleViewerManual(
         else:
             # resynchroniser au cas où la valeur a changé depuis une autre action
             self._ui_triangleContourMode.set(1 if bool(self.show_only_group_contours.get()) else 0)
-
 
         def _onTriangleContourModeChange():
             only = bool(self._ui_triangleContourMode.get() == 1)
@@ -2300,7 +2295,539 @@ class TriangleViewerManual(
         self.refreshCheminTreeView()
 
     def onDecryptageEngine(self) -> None:
-        messagebox.showinfo("Décryptage", "Non implémentée", parent=self)
+        win = getattr(self, "_decryptage_engine_win", None)
+        if win is not None:
+            try:
+                if win.winfo_exists():
+                    win.deiconify()
+                    win.lift()
+                    win.focus_force()
+                    return
+            except tk.TclError:
+                pass
+
+        win = tk.Toplevel(self)
+        self._decryptage_engine_win = win
+        win.title("Décrypteur de chemins")
+        win.transient(self)
+        win.minsize(820, 520)
+
+        def _on_close():
+            try:
+                win.destroy()
+            finally:
+                if getattr(self, "_decryptage_engine_win", None) is win:
+                    self._decryptage_engine_win = None
+
+        win.protocol("WM_DELETE_WINDOW", _on_close)
+
+        root = ttk.Frame(win, padding=10)
+        root.grid(row=0, column=0, sticky="nsew")
+        win.grid_rowconfigure(0, weight=1)
+        win.grid_columnconfigure(0, weight=1)
+        root.grid_rowconfigure(0, weight=0)
+
+        # --- Zone supérieure : 3 blocs ---
+        top_zone = ttk.Frame(root)
+        top_zone.grid(row=0, column=0, sticky="nsew")
+
+        top_zone.grid_columnconfigure(0, weight=0)
+        top_zone.grid_columnconfigure(1, weight=0)
+        top_zone.grid_columnconfigure(2, weight=1)
+        top_zone.grid_rowconfigure(0, weight=0)
+
+        decrypt_frame = ttk.LabelFrame(top_zone, text="Décrypteur")
+        decrypt_frame.grid(row=0, column=0, sticky="nsw", padx=(0, 8), pady=(0, 8))
+
+        mid_col = ttk.Frame(top_zone)
+        mid_col.grid(row=0, column=1, sticky="nsw", padx=(0, 8), pady=(0, 8))
+
+        patterns_frame = ttk.LabelFrame(top_zone, text="Patterns de mots à trouver")
+        patterns_frame.grid(row=0, column=2, sticky="nsew", pady=(0, 8))
+
+        # --- Bloc Décrypteur ---
+        decrypt_items = [f"{d.id} — {d.label}" for d in DECRYPTORS.values()]
+        default_decrypt = decrypt_items[0] if decrypt_items else ""
+        if getattr(self.decryptor, "id", None):
+            for item in decrypt_items:
+                if item.startswith(f"{self.decryptor.id} "):
+                    default_decrypt = item
+                    break
+            else:
+                for item in decrypt_items:
+                    if item.startswith(f"{self.decryptor.id}—") or item.startswith(f"{self.decryptor.id} —"):
+                        default_decrypt = item
+                        break
+
+        win.var_decryptor = tk.StringVar(value=default_decrypt)
+        win.var_angle180 = tk.BooleanVar(value=True)
+        win.var_az_a = tk.BooleanVar(value=False)
+        win.var_az_b = tk.BooleanVar(value=False)
+        win.var_tolerance = tk.IntVar(value=4)
+
+        decrypt_combo = ttk.Combobox(
+            decrypt_frame,
+            values=decrypt_items,
+            state="readonly",
+            textvariable=win.var_decryptor,
+            width=32,
+        )
+        decrypt_combo.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+        ttk.Checkbutton(
+            decrypt_frame,
+            text="Angle 180°",
+            variable=win.var_angle180,
+        ).grid(row=1, column=0, sticky="w")
+        ttk.Checkbutton(
+            decrypt_frame,
+            text="Azimut A",
+            variable=win.var_az_a,
+        ).grid(row=2, column=0, sticky="w")
+        ttk.Checkbutton(
+            decrypt_frame,
+            text="Azimut B",
+            variable=win.var_az_b,
+        ).grid(row=3, column=0, sticky="w")
+
+        tol_row = ttk.Frame(decrypt_frame)
+        tol_row.grid(row=4, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(tol_row, text="Tolérance :").pack(side=tk.LEFT)
+        ttk.Spinbox(
+            tol_row,
+            from_=0,
+            to=6,
+            increment=1,
+            textvariable=win.var_tolerance,
+            width=4,
+        ).pack(side=tk.LEFT, padx=(6, 2))
+        ttk.Label(tol_row, text="°").pack(side=tk.LEFT)
+
+        # --- Colonne 1 : Mode / Scope / Solution ---
+        mid_col.grid_rowconfigure(0, weight=0)
+        mid_col.grid_rowconfigure(1, weight=0)
+        mid_col.grid_rowconfigure(2, weight=0)
+        mid_col.grid_columnconfigure(0, weight=0)
+
+        mode_frame = ttk.LabelFrame(mid_col, text="Mode de recherche")
+        mode_frame.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+
+        win.var_mode = tk.StringVar(value="Absolu")
+        ttk.Radiobutton(
+            mode_frame,
+            text="Absolu",
+            value="Absolu",
+            variable=win.var_mode,
+        ).pack(anchor="w")
+        ttk.Radiobutton(
+            mode_frame,
+            text="Relatif",
+            value="Relatif",
+            variable=win.var_mode,
+        ).pack(anchor="w")
+
+        scope_frame = ttk.LabelFrame(mid_col, text="Scope Dictionnaire")
+        scope_frame.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+
+        win.var_scope = tk.StringVar(value="Strict")
+        ttk.Combobox(
+            scope_frame,
+            values=["Strict", "Mirroring", "Extended"],
+            state="readonly",
+            textvariable=win.var_scope,
+            width=16,
+        ).pack(fill="x")
+
+        solution_frame = ttk.LabelFrame(mid_col, text="Solution")
+        solution_frame.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+
+        win.var_max_solutions = tk.IntVar(value=50)
+        sol_row = ttk.Frame(solution_frame)
+        sol_row.pack(fill="x")
+        ttk.Label(sol_row, text="Stopper si plus de :").pack(side=tk.LEFT)
+        ttk.Spinbox(
+            sol_row,
+            from_=1,
+            to=9999,
+            increment=1,
+            textvariable=win.var_max_solutions,
+            width=6,
+        ).pack(side=tk.LEFT, padx=(6, 0))
+
+        # --- Bloc Patterns ---
+        patterns_toolbar = ttk.Frame(patterns_frame)
+        patterns_toolbar.pack(anchor="w", pady=(0, 4))
+
+        def _make_pattern_btn(icon, text, cmd):
+            if icon is not None:
+                return tk.Button(patterns_toolbar, image=icon, command=cmd, relief=tk.FLAT)
+            return tk.Button(patterns_toolbar, text=text, command=cmd, width=2, relief=tk.FLAT)
+
+        patterns_list_frame = tk.Frame(patterns_frame, relief=tk.SUNKEN, borderwidth=1)
+        patterns_list_frame.pack(fill=tk.BOTH, expand=True)
+
+        win._patterns = []
+        win._pattern_vars = []  # list[tk.BooleanVar]
+        win._pattern_row_frames = []  # list[ttk.Frame]
+        win._pattern_selected_index = None  # int | None
+
+        # Canvas + frame intérieur = vraie liste de Checkbutton scrollable
+        patterns_canvas = tk.Canvas(
+            patterns_list_frame,
+            bg="white",
+            height=105,                 # moitié de 240
+            highlightthickness=1,
+        )
+        patterns_scroll = ttk.Scrollbar(patterns_list_frame, orient="vertical", command=patterns_canvas.yview)
+        patterns_canvas.configure(yscrollcommand=patterns_scroll.set)
+
+        patterns_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        patterns_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        patterns_inner = ttk.Frame(patterns_canvas)
+        patterns_inner_id = patterns_canvas.create_window((0, 0), window=patterns_inner, anchor="nw")
+
+        def _on_patterns_inner_configure(_evt=None):
+            patterns_canvas.configure(scrollregion=patterns_canvas.bbox("all"))
+
+        def _on_patterns_canvas_configure(evt):
+            # force largeur du frame intérieur = largeur visible du canvas
+            patterns_canvas.itemconfigure(patterns_inner_id, width=evt.width)
+
+        patterns_inner.bind("<Configure>", _on_patterns_inner_configure)
+        patterns_canvas.bind("<Configure>", _on_patterns_canvas_configure)
+
+        def _set_selected_pattern_index(idx: int | None) -> None:
+            win._pattern_selected_index = idx
+
+            # surlignage simple (tk.Frame): on joue sur bg
+            for i, row in enumerate(win._pattern_row_frames):
+                is_sel = (idx is not None and i == idx)
+                bg = "#eaeaea" if is_sel else "white"   # ajuste si tu veux
+
+                row.configure(bg=bg)
+                # applique aussi aux enfants (checkbox + label)
+                for child in row.winfo_children():
+                    child.configure(bg=bg)
+
+            _update_pattern_buttons()
+
+        def _update_pattern_buttons(_evt=None):
+            has_sel = win._pattern_selected_index is not None
+            btn_pat_edit.configure(state=(tk.NORMAL if has_sel else tk.DISABLED))
+            btn_pat_delete.configure(state=(tk.NORMAL if has_sel else tk.DISABLED))
+
+        def _get_selected_pattern_index() -> int | None:
+            return win._pattern_selected_index
+
+        def _on_toggle_pattern(idx: int) -> None:
+            if not (0 <= idx < len(win._patterns)):
+                return
+            val = bool(win._pattern_vars[idx].get())
+            win._patterns[idx]["active"] = val
+
+        def _on_row_click(idx: int) -> None:
+            _set_selected_pattern_index(idx)
+
+        def _on_row_double_click(idx: int) -> None:
+            _set_selected_pattern_index(idx)
+            _open_pattern_editor(idx)
+
+        def _refresh_patterns_list():
+            # clear rows
+            for row in win._pattern_row_frames:
+                row.destroy()
+            win._pattern_vars = []
+            win._pattern_row_frames = []
+
+            for idx, item in enumerate(win._patterns):
+                row = tk.Frame(patterns_inner, bg="white")
+                row.pack(fill="x", pady=1)
+                win._pattern_row_frames.append(row)
+
+                var = tk.BooleanVar(value=bool(item.get("active")))
+                win._pattern_vars.append(var)
+
+                chk = tk.Checkbutton(
+                    row,
+                    variable=var,
+                    command=lambda i=idx: (_set_selected_pattern_index(i), _on_toggle_pattern(i)),
+                    bg="white",
+                )
+                chk.pack(side=tk.LEFT, padx=(2, 6))
+
+                lbl = tk.Label(row, text=str(item.get("text", "") or ""), anchor="w", bg="white")
+                lbl.pack(side=tk.LEFT, fill="x", expand=True)
+
+                # clic / double-clic sur la ligne (label ou frame)
+                row.bind("<Button-1>", lambda e, i=idx: _on_row_click(i))
+                lbl.bind("<Button-1>", lambda e, i=idx: _on_row_click(i))
+                row.bind("<Double-1>", lambda e, i=idx: _on_row_double_click(i))
+                lbl.bind("<Double-1>", lambda e, i=idx: _on_row_double_click(i))
+                chk.bind("<Button-1>", lambda e, i=idx: _on_row_click(i))
+                chk.bind("<Double-1>", lambda e, i=idx: _on_row_double_click(i))
+
+            patterns_inner.update_idletasks()
+            patterns_canvas.configure(scrollregion=patterns_canvas.bbox("all"))
+
+            # si sélection invalide, reset
+            if win._pattern_selected_index is not None:
+                if not (0 <= win._pattern_selected_index < len(win._patterns)):
+                    win._pattern_selected_index = None
+            _set_selected_pattern_index(win._pattern_selected_index)
+
+        def _insert_token_at_cursor(entry: tk.Entry, token: str) -> None:
+            pos = entry.index(tk.INSERT)
+            text = entry.get()
+            before = text[:pos]
+            after = text[pos:]
+            ins = token
+            if before and not before.endswith(" "):
+                ins = " " + ins
+            if after and not after.startswith(" "):
+                ins = ins + " "
+            entry.insert(pos, ins)
+            entry.focus_set()
+
+        def _open_pattern_editor(edit_index: int | None = None) -> None:
+            dico = getattr(self, "dico", None)
+            if dico is None:
+                messagebox.showerror("Pattern", "Dictionnaire indisponible.", parent=win)
+                return
+
+            is_edit = edit_index is not None
+            dlg = tk.Toplevel(win)
+            dlg.title("Éditer un pattern" if is_edit else "Ajouter un pattern")
+            dlg.transient(win)
+            dlg.resizable(False, False)
+
+            # position près du clic
+            x = int(win.winfo_pointerx()) + 10
+            y = int(win.winfo_pointery()) + 10
+
+            # taille FIXE (et on la ré-appliquera après layout)
+            W, H = 500, 120
+            dlg.geometry(f"{W}x{H}+{x}+{y}")
+            dlg.minsize(W, H)
+            dlg.maxsize(W, H)
+            dlg.grab_set()
+
+            # IMPORTANT : permettre au contenu de remplir la toplevel
+            dlg.grid_rowconfigure(0, weight=1)
+            dlg.grid_columnconfigure(0, weight=1)
+
+            dlg.icon_chevrons_down = self._load_icon("chevrons-down16.png")
+            dlg.icon_check_gray = self._load_icon("check16_gray.png")
+            dlg.icon_check_green = self._load_icon("check16_green.png")
+            dlg.icon_check_red = self._load_icon("check16_red.png")
+
+            frm = ttk.Frame(dlg, padding=10)
+            frm.grid(row=0, column=0, sticky="nsew")
+            frm.grid_columnconfigure(1, weight=1)
+
+            categories = list(dico.getCategories() or [])
+            values = categories + ["Joker"]
+            cat_var = tk.StringVar(value=(values[0] if values else "Joker"))
+
+            ttk.Label(frm, text="Catégorie :").grid(row=0, column=0, sticky="w", padx=(0, 6))
+            cat_combo = ttk.Combobox(
+                frm,
+                values=values,
+                state="readonly",
+                textvariable=cat_var,
+                width=18,
+            )
+            cat_combo.grid(row=0, column=1, sticky="ew")
+
+            def _on_insert_cat():
+                cat = str(cat_var.get() or "").strip()
+                token = "[*]" if cat == "Joker" else f"[{cat}]"
+                _insert_token_at_cursor(pattern_entry, token)
+                _schedule_autocheck()
+
+            btn_insert = tk.Button(
+                frm,
+                image=dlg.icon_chevrons_down,
+                text="v" if dlg.icon_chevrons_down is None else "",
+                command=_on_insert_cat,
+                relief=tk.FLAT,
+                padx=0,
+                pady=0,
+            )
+            btn_insert.grid(row=0, column=2, sticky="w", padx=(4, 0), pady=0)
+
+            ttk.Label(frm, text="Pattern :").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=(8, 0))
+            pattern_var = tk.StringVar()
+            pattern_entry = ttk.Entry(frm, textvariable=pattern_var)
+            pattern_entry.grid(row=1, column=1, sticky="ew", pady=(8, 0))
+
+            if is_edit:
+                pattern_var.set(str(win._patterns[edit_index].get("text", "") or ""))
+
+            def _set_check_state(state: str) -> None:
+                icon = None
+                label = ""
+                if state == "gray":
+                    icon = dlg.icon_check_gray
+                    label = "OK"
+                elif state == "green":
+                    icon = dlg.icon_check_green
+                    label = "OK"
+                elif state == "red":
+                    icon = dlg.icon_check_red
+                    label = "ERR"
+                if icon is not None:
+                    btn_check.configure(image=icon, text="")
+                else:
+                    btn_check.configure(text=label)
+
+            def _check_pattern(show_error: bool) -> tuple[bool, str]:
+                syntax_raw = str(pattern_var.get() or "").strip()
+                if not syntax_raw:
+                    _set_check_state("gray")
+                    if show_error:
+                        messagebox.showerror("Pattern", "Pattern vide", parent=dlg)
+                    return False, ""
+                p = Pattern(dico)
+                ok, msg = p.setSyntax(syntax_raw, allow_short=False)
+                if not ok:
+                    _set_check_state("red")
+                    if show_error:
+                        messagebox.showerror("Pattern", msg, parent=dlg)
+                    return False, ""
+                syntax_norm = p.getSyntax()
+                _set_check_state("green")
+                return True, syntax_norm
+
+            _autocheck_after_id = None
+
+            def _run_autocheck():
+                nonlocal _autocheck_after_id
+                _autocheck_after_id = None
+                _check_pattern(show_error=False)
+
+            def _schedule_autocheck(*_args):
+                nonlocal _autocheck_after_id
+                if _autocheck_after_id is not None:
+                    try:
+                        dlg.after_cancel(_autocheck_after_id)
+                    except Exception:
+                        pass
+                _autocheck_after_id = dlg.after(250, _run_autocheck)
+
+            btn_check = tk.Button(
+                frm,
+                image=dlg.icon_check_gray,
+                text="OK" if dlg.icon_check_gray is None else "",
+                command=lambda: _check_pattern(show_error=False),
+                relief=tk.FLAT,
+                padx=0,
+                pady=0,
+            )
+            btn_check.grid(row=1, column=2, sticky="w", padx=(4, 0), pady=(8, 0))
+            _set_check_state("gray")
+            pattern_var.trace_add("write", _schedule_autocheck)
+            _schedule_autocheck()
+
+            actions = ttk.Frame(frm)
+            actions.grid(row=2, column=0, columnspan=3, sticky="e", pady=(12, 0))
+
+            def _on_close_pattern():
+                dlg.destroy()
+
+            def _on_validate_pattern():
+                ok, syntax_norm = _check_pattern(show_error=True)
+                if not ok:
+                    return
+                if is_edit:
+                    if 0 <= edit_index < len(win._patterns):
+                        win._patterns[edit_index]["text"] = syntax_norm
+                else:
+                    win._patterns.append({"text": syntax_norm, "active": True})
+                _refresh_patterns_list()
+                if win._patterns:
+                    sel_idx = edit_index if is_edit else (len(win._patterns) - 1)
+                    if sel_idx is not None and 0 <= sel_idx < len(win._patterns):
+                        _set_selected_pattern_index(sel_idx)
+                _update_pattern_buttons()
+                dlg.destroy()
+
+            ttk.Button(actions, text="Fermer", command=_on_close_pattern).pack(side=tk.RIGHT)
+            ttk.Button(actions, text="Valider", command=_on_validate_pattern).pack(side=tk.RIGHT, padx=(0, 6))
+
+            dlg.wait_visibility()
+            pattern_entry.focus_set()
+
+        def _delete_selected_pattern():
+            idx = _get_selected_pattern_index()
+            if idx is None:
+                return
+            if idx < 0 or idx >= len(win._patterns):
+                return
+            del win._patterns[idx]
+            # selection: reste sur l'index courant (ou précédent si fin)
+            if win._patterns:
+                win._pattern_selected_index = min(idx, len(win._patterns) - 1)
+            else:
+                win._pattern_selected_index = None
+            _refresh_patterns_list()
+
+        btn_pat_add = _make_pattern_btn(self.icon_scen_new, "+", lambda: _open_pattern_editor(None))
+        btn_pat_add.pack(side=tk.LEFT, padx=1)
+        btn_pat_edit = _make_pattern_btn(self.icon_scen_props, "E", lambda: _open_pattern_editor(_get_selected_pattern_index()))
+        btn_pat_edit.pack(side=tk.LEFT, padx=1)
+        btn_pat_delete = _make_pattern_btn(self.icon_scen_del, "X", _delete_selected_pattern)
+        btn_pat_delete.pack(side=tk.LEFT, padx=1)
+
+        _refresh_patterns_list()
+        _update_pattern_buttons()
+
+        # --- Zone inférieure : Solutions ---
+        solutions_frame = ttk.LabelFrame(root, text="Solutions")
+        solutions_frame.grid(row=1, column=0, sticky="nsew")
+
+        root.grid_rowconfigure(1, weight=1)
+        root.grid_columnconfigure(0, weight=1)
+
+        solutions_list_frame = ttk.Frame(solutions_frame)
+        solutions_list_frame.pack(fill=tk.BOTH, expand=True)
+
+        solutions_list = tk.Listbox(solutions_list_frame, height=10, selectmode="browse")
+        solutions_scroll = ttk.Scrollbar(
+            solutions_list_frame, orient="vertical", command=solutions_list.yview
+        )
+        solutions_list.configure(yscrollcommand=solutions_scroll.set)
+        solutions_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        solutions_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        win._solutions = []
+
+        def _format_solution_item(sol):
+            words_raw = getattr(sol, "words", "")
+            if isinstance(words_raw, (list, tuple)):
+                words = " ".join([str(w) for w in words_raw])
+            else:
+                words = str(words_raw)
+            score = getattr(sol, "scoreMax", "")
+            score_txt = str(score)
+            return f"[ ] {words} — {score_txt}"
+
+        def _refresh_solutions_list():
+            solutions_list.delete(0, tk.END)
+            for sol in win._solutions:
+                solutions_list.insert(tk.END, _format_solution_item(sol))
+
+        _refresh_solutions_list()
+
+        # --- Actions ---
+        actions = ttk.Frame(root)
+        actions.grid(row=2, column=0, sticky="e", pady=(8, 0))
+
+        def _start_not_impl():
+            messagebox.showinfo("Décryptage", "Non implémentée", parent=win)
+
+        ttk.Button(actions, text="Start", command=_start_not_impl).pack(side=tk.RIGHT, padx=(6, 0))
+        ttk.Button(actions, text="Fermer", command=_on_close).pack(side=tk.RIGHT)
 
     def _chemins_edit_selected(self):
         """Compat: redirige vers l'éditeur V6."""
@@ -2339,14 +2866,14 @@ class TriangleViewerManual(
         if not hasattr(self, "scenario_tree"):
             return
         tree = self.scenario_tree
- 
+
         # Toggle sens de tri
         if self._scenario_tree_sort_col == col_id:
             self._scenario_tree_sort_reverse = not bool(self._scenario_tree_sort_reverse)
         else:
             self._scenario_tree_sort_col = col_id
             self._scenario_tree_sort_reverse = False
- 
+
         # Helpers de parsing
         def _parseDisplayIdFromText(txt: str):
             s = str(txt or "").strip()
@@ -2354,7 +2881,7 @@ class TriangleViewerManual(
                 s = s.lstrip("★ ").strip()
             m = re.match(r"^#(\d+)", s)
             return int(m.group(1)) if m else None
- 
+
         def _coerceKey(val: str):
             s = str(val or "").strip()
             if s == "":
@@ -2364,7 +2891,7 @@ class TriangleViewerManual(
                 return (0, float(s.replace(",", ".")), "")
             except Exception:
                 return (0, 0.0, s.lower())
- 
+
         def _itemKey(iid: str):
             if col_id == "#0":
                 txt = tree.item(iid, "text")
@@ -2378,7 +2905,7 @@ class TriangleViewerManual(
                 return (0, float(did), "")
             else:
                 return _coerceKey(tree.set(iid, col_id))
- 
+
         # Trier dans chaque groupe sans casser la structure
         for parent in ("grp_manual", "grp_auto"):
             if not (hasattr(tree, "exists") and tree.exists(parent)):
@@ -2393,7 +2920,7 @@ class TriangleViewerManual(
             )
             for pos, iid in enumerate(kids_sorted):
                 tree.move(iid, parent, pos)
- 
+
         # Optionnel: petit indicateur ▲/▼ sur l'en-tête trié
         base_id_title = "ID"
         tree.heading("#0", text=base_id_title, command=lambda c="#0": self._scenarioTreeSortBy(c))
@@ -2417,7 +2944,7 @@ class TriangleViewerManual(
             if title is None:
                 title = str(self._scenario_tree_sort_col)
             tree.heading(self._scenario_tree_sort_col, text=title + arrow,
-                            command=lambda c=self._scenario_tree_sort_col: self._scenarioTreeSortBy(c))
+                         command=lambda c=self._scenario_tree_sort_col: self._scenarioTreeSortBy(c))
 
     def _scenarioGetFirstLastTriangles(self, scen):
         """Retourne (t_first, t_last) en se basant sur scen.tri_ids (ordre d'assemblage).
@@ -2638,7 +3165,7 @@ class TriangleViewerManual(
         self._refresh_scenario_listbox()
         self.status.config(text=f"Référence auto : {scen.name}")
         self._redraw_from(self._last_drawn)
- 
+
     def _get_reference_scenario(self) -> Optional[ScenarioAssemblage]:
         token = self.ref_scenario_token
         if token is None:
@@ -2873,7 +3400,7 @@ class TriangleViewerManual(
             "offset_x": float(self.offset[0]) if hasattr(self, "offset") else 0.0,
             "offset_y": float(self.offset[1]) if hasattr(self, "offset") else 0.0,
         }
- 
+
     def _apply_view_state(self, vs: dict | None):
         if not vs:
             return
@@ -2881,7 +3408,7 @@ class TriangleViewerManual(
         ox = float(vs.get("offset_x", self.offset[0] if hasattr(self, "offset") else 0.0))
         oy = float(vs.get("offset_y", self.offset[1] if hasattr(self, "offset") else 0.0))
         self.offset = np.array([ox, oy], dtype=float)
- 
+
     def _capture_map_state(self) -> dict:
         bg = self._bg
         state = {
@@ -2899,7 +3426,7 @@ class TriangleViewerManual(
         if state["scale"] is None:
             state["scale"] = self._bg_scale_factor_override
         return state
- 
+
     def _apply_map_state(self, ms: dict | None, persist: bool = False):
         if ms is None:
             return
@@ -2936,8 +3463,8 @@ class TriangleViewerManual(
         sameRect = (
             abs(float(bg.get("x0") or 0.0) - float(rect.get("x0") or 0.0)) < eps and
             abs(float(bg.get("y0") or 0.0) - float(rect.get("y0") or 0.0)) < eps and
-            abs(float(bg.get("w")  or 0.0) - float(rect.get("w")  or 0.0)) < eps and
-            abs(float(bg.get("h")  or 0.0) - float(rect.get("h")  or 0.0)) < eps
+            abs(float(bg.get("w") or 0.0) - float(rect.get("w") or 0.0)) < eps and
+            abs(float(bg.get("h") or 0.0) - float(rect.get("h") or 0.0)) < eps
         )
         sameScale = (self._bg_scale_factor_override == ms.get("scale"))
 
@@ -2948,14 +3475,6 @@ class TriangleViewerManual(
         self._bg_set_map(path, rect_override=rect, persist=persist)
 
     # ---------- AUTO (scénarios automatiques): transform géométrique global ----------
-
-    def _get_active_scenario(self):
-        if not self.scenarios:
-            return None
-        idx = int(self.active_scenario_index or 0)
-        if idx < 0 or idx >= len(self.scenarios):
-            return None
-        return self.scenarios[idx]
 
     def _is_active_auto_scenario(self) -> bool:
         scen = self._get_active_scenario()
@@ -2984,11 +3503,13 @@ class TriangleViewerManual(
                     t_ref = t
                     break
 
+        """
         if t_ref is None:
             # fallback legacy: premier/dernier de last_drawn
             idx = 0 if str(order) == "forward" else (len(scen.last_drawn) - 1)
             idx = max(0, min(int(idx), len(scen.last_drawn) - 1))
             t_ref = scen.last_drawn[idx]
+        """
 
         P = (t_ref or {}).get("pts", {})
         if "L" not in P:
@@ -3020,7 +3541,6 @@ class TriangleViewerManual(
         # init auto_geom_state si nécessaire (origine = ancre monde, theta=0)
         if self.auto_geom_state is None:
             self.auto_geom_state = {"ox": float(anchor[0]), "oy": float(anchor[1]), "thetaDeg": 0.0}
-
 
     def _autoRebuildWorldGeometryScenario(self, scen: ScenarioAssemblage = None) -> None:
         if self.auto_geom_state is None:
@@ -3891,20 +4411,22 @@ class TriangleViewerManual(
         sh = int(self.winfo_screenheight())
         x = max(0, min(x, sw - tw))
         y = max(0, min(y, sh - th))
- 
+
         self._ui_tooltip.wm_geometry(f"+{x}+{y}")
- 
+
     def _ui_hide_tooltip(self):
         if hasattr(self, "_ui_tooltip") and self._ui_tooltip is not None and self._ui_tooltip.winfo_exists():
             self._ui_tooltip.destroy()
         if hasattr(self, "_ui_tooltip"):
             self._ui_tooltip = None
             self._ui_tooltip_label = None
- 
+
     def _show_tooltip_at_center(self, text: str, cx_canvas: float, cy_canvas: float):
         """Affiche/MAJ le tooltip en le **centrant** sur (cx_canvas, cy_canvas) (coords CANVAS)."""
         if not text:
-            self._hide_tooltip(); return
+            self._hide_tooltip()
+            return
+        
         if self._tooltip is None or not self._tooltip.winfo_exists():
             self._tooltip = tk.Toplevel(self)
             self._tooltip.wm_overrideredirect(True)
@@ -4056,8 +4578,8 @@ class TriangleViewerManual(
         for i in range(min(12, len(df0))):
             row_norm = [TriangleViewerManual._norm(x) for x in df0.iloc[i].tolist()]
             if any("ouverture" in x for x in row_norm) and \
-               any("base"      in x for x in row_norm) and \
-               any("lumiere"   in x for x in row_norm):
+               any("base" in x for x in row_norm) and \
+               any("lumiere" in x for x in row_norm):
                 return i
         raise KeyError("Impossible de détecter l'entête ('Ouverture', 'Base', 'Lumière').")
 
@@ -4070,10 +4592,10 @@ class TriangleViewerManual(
         col_OB = cmap.get("ouverturebase")
         col_OL = cmap.get("ouverturelumiere")
         col_BL = cmap.get("lumierebase")
-        col_OR = cmap.get("orientation")  # colonne Orientation (CCW/CW/COL)  
-        missing = [n for n,c in {
-            "Base":col_B, "Lumière":col_L, "Ouverture-Base":col_OB,
-            "Ouverture-Lumière":col_OL, "Lumière-Base":col_BL
+        col_OR = cmap.get("orientation")  # colonne Orientation (CCW/CW/COL)
+        missing = [n for n, c in {
+            "Base": col_B, "Lumière": col_L, "Ouverture-Base": col_OB,
+            "Ouverture-Lumière": col_OL, "Lumière-Base": col_BL
         }.items() if c is None]
         if missing:
             raise KeyError("Colonnes manquantes: " + ", ".join(missing))
@@ -4089,7 +4611,7 @@ class TriangleViewerManual(
                 df[col_OR].astype(str).str.upper().str.strip()
                 if col_OR else pd.Series(["CCW"] * len(df))
             ),
-        }).dropna(subset=["len_OB","len_OL","len_BL"]).sort_values("id")
+        }).dropna(subset=["len_OB", "len_OL", "len_BL"]).sort_values("id")
         return out.reset_index(drop=True)
 
     def load_excel(self, path: str):
@@ -4116,8 +4638,8 @@ class TriangleViewerManual(
         # Aucun triangle n'est encore utilisé dans le scénario actif        self._placed_ids = set()
         self._update_triangle_listbox_colors()
 
-
     # ---------- Mise en page simple (aperçu brut) ----------
+
     def _triangle_from_index(self, idx):
         """Construit un triangle 'local' depuis l’élément sélectionné de la listbox.
         IMPORTANT: on parse l'ID affiché (NN.) au lieu d'utiliser df.iloc[idx],
@@ -4176,7 +4698,6 @@ class TriangleViewerManual(
         if self.df is not None and not self.df.empty:
             for _, r in self.df.iterrows():
                 self.listbox.insert(tk.END, f"{int(r['id']):02d}. B:{r['B']}  L:{r['L']}")
-
 
     def clear_canvas(self):
         """Efface l'affichage après confirmation, et remet à jour la liste des triangles."""
@@ -4371,7 +4892,7 @@ class TriangleViewerManual(
         delta_needles_deg = self._clock_arc_compute_angle_deg(float(ang_hour) % 360.0, float(ang_min) % 360.0)
 
         # Longueurs des aiguilles
-        L_min  = R * 0.86
+        L_min = R * 0.86
         L_hour = R * 0.58
         x2m, y2m = _end_point(ang_min,  L_min)
         x2h, y2h = _end_point(ang_hour, L_hour)
@@ -4402,7 +4923,6 @@ class TriangleViewerManual(
                                     anchor="n", tags="clock_overlay")
         # Dernière mesure d'arc (persistée) : affichage tant que le compas reste au même ancrage
         self._clock_arc_draw_last(cx, cy, R)
-
 
     # ---------- Horloge : snap sur sommet le plus proche ----------
 
@@ -4544,9 +5064,9 @@ class TriangleViewerManual(
                     tags=("group_outline",),
                 )
 
-    def _draw_triangle_screen(self, P, 
-                              outline="black", width=2, labels=None, inset=0.35, 
-                              tri_id=None, tri_mirrored=False, fill=None, diff_outline=False, 
+    def _draw_triangle_screen(self, P,
+                              outline="black", width=2, labels=None, inset=0.35,
+                              tri_id=None, tri_mirrored=False, fill=None, diff_outline=False,
                               drawEdges=True):
         """
         P : dict {'O','B','L'} en coordonnées monde (np.array 2D)
@@ -4579,7 +5099,7 @@ class TriangleViewerManual(
         # 2b) marqueurs colorés par type de bord
         # O = Ouverture (noir), B = Base (bleu), L = Lumière (jaune)
         marker_px = 6  # rayon en pixels (indépendant du zoom)
-    
+
         def _dot(x, y, fill, outline="black"):
             r = marker_px
             self.canvas.create_oval(x - r, y - r, x + r, y + r, fill=fill, outline=outline, width=1)
@@ -4918,7 +5438,7 @@ class TriangleViewerManual(
                 sx, sy = self._world_to_screen(pt)
                 coords += [sx, sy]
             if self._drag_preview_id is None:
-                self._drag_preview_id = self.canvas.create_polygon(*coords, outline="gray50", dash=(4,2), fill="", width=2)
+                self._drag_preview_id = self.canvas.create_polygon(*coords, outline="gray50", dash=(4, 2), fill="", width=2)
             else:
                 self.canvas.coords(self._drag_preview_id, *coords)
             return
@@ -4979,7 +5499,7 @@ class TriangleViewerManual(
             vkey = extra if isinstance(extra, str) else None
             # position monde du sommet visé
             P0 = self._last_drawn[idx]["pts"]
-            v_world = np.array(P0[vkey], dtype=float) if vkey in ("O","B","L") else None
+            v_world = np.array(P0[vkey], dtype=float) if vkey in ("O", "B", "L") else None
 
             scen = self._get_active_scenario()
             topoWorld = scen.topoWorld
@@ -5064,7 +5584,7 @@ class TriangleViewerManual(
             if j == exclude_idx:
                 continue
             if exclude_gid is not None and t.get("group_id", None) == exclude_gid:
-                continue            
+                continue       
             P = t["pts"]
             for k in ("O", "B", "L"):
                 w = np.array(P[k], dtype=float)
@@ -5594,7 +6114,7 @@ class TriangleViewerManual(
 
             # --- Orientation source (définition triangle) ---
             # On l'enregistre côté Tk, et on en déduit le miroir de POSE (pas le miroir visuel Tk).
-            # Convention: mirrored=False.. utilsé uniquement pour le flip 
+            # Convention: mirrored=False.. utilsé uniquement pour le flip
             self._last_drawn[new_tid]["orient"] = orient
             self._last_drawn[new_tid]["mirrored"] = False
 
@@ -5641,7 +6161,7 @@ class TriangleViewerManual(
         # 2bis) Synchroniser le group avec la topo
         self._sync_group_elements_pose_to_core(gid)
 
-        # Lier group UI -> group Core 
+        # Lier group UI -> group Core
         core_gid = self._last_drawn[new_tid].get("topoGroupId", None)
         self.groups[gid]["topoGroupId"] = core_gid
 
@@ -6332,7 +6852,9 @@ class TriangleViewerManual(
             return
         (_, _, az_abs, az_rel) = last
         self._clock_measure_cancel(silent=True)
-        self.status.config(text=f"Azimut mesuré : {az_rel:0.0f}° (ref={float(self._clock_ref_azimuth_deg)%360.0:0.0f}°, abs={az_abs:0.0f}°)")
+        self.status.config(
+            text=f"Azimut mesuré : {az_rel:0.0f}° (ref={float(self._clock_ref_azimuth_deg) % 360.0:0.0f}°, abs={az_abs:0.0f}°)"
+            )
 
     def _clock_measure_cancel(self, silent: bool = False):
         if not self._clock_measure_active:
@@ -6363,7 +6885,6 @@ class TriangleViewerManual(
         ang = math.degrees(math.atan2(vx, -vy))  # 0=N, 90=E, 180=S, 270=O
         ang = ang % 360.0
         return ang
-
 
     def _clock_angle_diff_deg(self, a: float, b: float) -> float:
         """Différence angulaire minimale |a-b| sur un cercle (en degrés), résultat dans [0..180]."""
@@ -6530,7 +7051,7 @@ class TriangleViewerManual(
 
         self._redraw_overlay_only()
 
-    def _clock_setref_cancel(self, silent: bool=False):
+    def _clock_setref_cancel(self, silent: bool = False):
         if not self._clock_setref_active:
             return
         self._clock_setref_active = False
@@ -6546,7 +7067,6 @@ class TriangleViewerManual(
         # On laisse l'overlay se redessiner via les flux habituels
         if not silent:
             self.status.config(text="Définition d'azimut annulée.")
-
 
     def _ctx_delete_group(self):
         """Supprime **tout le groupe** du triangle ciblé, réinsère les triangles dans la liste,
@@ -6587,7 +7107,7 @@ class TriangleViewerManual(
 
         # 1) Réinsertion listbox (avant de modifier _last_drawn)
         removed_tids = sorted({nd["tid"] for nd in g["nodes"] if "tid" in nd}, reverse=True)
-        removed_set  = set(removed_tids)
+        removed_set = set(removed_tids)
         for tid in removed_tids:
             if 0 <= tid < len(self._last_drawn):
                 self._reinsert_triangle_to_list(self._last_drawn[tid])
@@ -6635,7 +7155,6 @@ class TriangleViewerManual(
         self._redraw_from(self._last_drawn)
         self.status.config(text=f"Groupe supprimé (gid={gid}, {len(removed_tids)} triangle(s)).")
 
-
     def _ctx_rotate_selected(self):
         """Passe en mode rotation autour du barycentre pour le triangle ciblé."""
         idx = self._ctx_target_idx
@@ -6663,7 +7182,7 @@ class TriangleViewerManual(
             tid = node["tid"]
             if 0 <= tid < len(self._last_drawn):
                 Pt = self._last_drawn[tid]["pts"]
-                orig_group_pts[tid] = {k: np.array(Pt[k].copy()) for k in ("O","B","L")}
+                orig_group_pts[tid] = {k: np.array(Pt[k].copy()) for k in ("O", "B", "L")}
         # angle de départ = angle (pivot -> curseur au clic droit)
         if self._ctx_last_rclick:
             sx, sy = self._ctx_last_rclick
@@ -6685,7 +7204,6 @@ class TriangleViewerManual(
         self.status.config(text=f"Mode pivoter GROUPE #{gid} : bouge la souris pour tourner, clic gauche pour valider, ESC pour annuler.")
         return
 
- 
     def _ctx_orient_segment_north(self, from_key: str, to_key: str, status_label: str):
         """
         Oriente automatiquement le TRIANGLE ou le GROUPE pour que l'azimut du segment
@@ -6730,13 +7248,10 @@ class TriangleViewerManual(
             self._redraw_from(self._last_drawn)
             self.status.config(text=f"Orientation appliquée : AUTO — {status_label} au Nord (0°).")
             return
-        
+
         # --- CAS MANUEL : rotation UI puis sync core ---    
         # Déterminer le groupe (si présent)
         gid = self._get_group_of_triangle(idx)
-
-
-
 
         c, s = math.cos(dtheta), math.sin(dtheta)
         R = np.array([[c, -s], [s, c]], dtype=float)
@@ -6761,14 +7276,13 @@ class TriangleViewerManual(
             for k in ("O", "B", "L"):
                 Pt[k] = rot_point(Pt[k])
         self._recompute_group_bbox(gid)
-        
+
         # On est en manuel, on alimente la topo Core
         self._sync_group_elements_pose_to_core(gid)
-        
+
         # On raffraichit l'affichage courant
         self._redraw_from(self._last_drawn)
         self.status.config(text=f"Orientation appliquée : GROUPE — {status_label} au Nord (0°).")
-
 
     def _ctx_orient_OL_north(self):
         return self._ctx_orient_segment_north("O", "L", "O→L")
@@ -6789,7 +7303,6 @@ class TriangleViewerManual(
         if idx is None or not (0 <= idx < len(self._last_drawn)):
             return
         clicked_tid = int(self._last_drawn[idx].get("id"))
-
 
         ok = messagebox.askyesno(
             "Filtrer les scénarios",
@@ -6984,7 +7497,7 @@ class TriangleViewerManual(
             tid = node["tid"]
             if 0 <= tid < len(self._last_drawn):
                 P = self._last_drawn[tid]["pts"]
-                for k in ("O","B","L"):
+                for k in ("O", "B", "L"):
                     P[k] = np.array([P[k][0] + d[0], P[k][1] + d[1]], dtype=float)
         # Sync immédiate : Core = vérité persistée (pose monde du groupe)
         self._sync_group_elements_pose_to_core(gid)
@@ -7010,7 +7523,6 @@ class TriangleViewerManual(
         self._ensure_pick_cache()
         # mémoriser l'ancre monde de la souris pour des déplacements "delta"
         self._mouse_world_prev = self._screen_to_world(event.x, event.y)
-
 
         # Calibration fond (3 points) : intercepte le clic gauche
         if self._bg_calib_active:
@@ -7055,7 +7567,6 @@ class TriangleViewerManual(
                 if gid_sync is not None:
                     self._sync_group_elements_pose_to_core(int(gid_sync))
 
-
             self._sel = None
             self._reset_assist()
             self._redraw_from(self._last_drawn)
@@ -7088,7 +7599,7 @@ class TriangleViewerManual(
                 tid = node["tid"]
                 if 0 <= tid < len(self._last_drawn):
                     Pt = self._last_drawn[tid]["pts"]
-                    orig_group_pts[tid] = {k: np.array(Pt[k].copy()) for k in ("O","B","L")}
+                    orig_group_pts[tid] = {k: np.array(Pt[k].copy()) for k in ("O", "B", "L")}
             self._sel = {
                 "mode": "move_group",
                 "gid": gid,
@@ -7096,7 +7607,7 @@ class TriangleViewerManual(
                 "orig_group_pts": orig_group_pts,
                 "mouse_world_prev": np.array([wx, wy], dtype=float),
             }
-            self.status.config(text=f"Déplacement du groupe #{gid} (clic sur tri {self._last_drawn[idx].get('id','?')})")
+            self.status.config(text=f"Déplacement du groupe #{gid} (clic sur tri {self._last_drawn[idx].get('id', '?')})")
         elif mode == "vertex":
             # déplacement par sommet (translation comme 'center', mais calée sur le sommet choisi)
             vkey = extra or "O"
@@ -7115,7 +7626,6 @@ class TriangleViewerManual(
                 # Déterminer où couper :
                 # - si click sur vkey_in (lien vers le précédent), on coupe AVANT 'pos' -> le morceau MOBILE = suffixe [pos..]
                 # - si click sur vkey_out (lien vers le suivant), on coupe APRÈS  'pos' -> le morceau MOBILE = préfixe [..pos]
-                nodes = self._group_nodes(gid_link)
                 if link_type == "in":
                     cut_after = pos - 1
                     if cut_after < 0:  # sécurité (ne devrait pas arriver car vkey_in implies pos>0)
@@ -7143,7 +7653,7 @@ class TriangleViewerManual(
                     tid = node["tid"]
                     if 0 <= tid < len(self._last_drawn):
                         Pt = self._last_drawn[tid]["pts"]
-                        orig_group_pts[tid] = {k: np.array(Pt[k].copy()) for k in ("O","B","L")}
+                        orig_group_pts[tid] = {k: np.array(Pt[k].copy()) for k in ("O", "B", "L")}
                 anchor_world = np.array(P[vkey], dtype=float)
                 self._sel = {
                     "mode": "move_group",
@@ -7223,7 +7733,7 @@ class TriangleViewerManual(
                     tid = nd["tid"]
                     if 0 <= tid < len(self._last_drawn):
                         Pt = self._last_drawn[tid]["pts"]
-                        orig_group_pts[tid] = {k: np.array(Pt[k].copy()) for k in ("O","B","L")}
+                        orig_group_pts[tid] = {k: np.array(Pt[k].copy()) for k in ("O", "B", "L")}
 
                 anchor_world = np.array(P[vkey], dtype=float)
                 self._sel = {
@@ -7248,7 +7758,7 @@ class TriangleViewerManual(
                     self._clear_edge_highlights()
                 return
 
-            orig_pts = {k: np.array(P[k].copy()) for k in ("O","B","L")}
+            orig_pts = {k: np.array(P[k].copy()) for k in ("O", "B", "L")}
             self._sel = {
                 "mode": "vertex",
                 "idx": idx,
@@ -7335,8 +7845,10 @@ class TriangleViewerManual(
                             self._update_nearest_line(v_world, exclude_idx=anchor_tid, exclude_gid=gid)
                             self._update_edge_highlights(anchor_tid, anchor_vkey, j, tgt_key)
                         else:
-                            self._clear_nearest_line(); self._clear_edge_highlights()            
+                            self._clear_nearest_line()
+                            self._clear_edge_highlights()            
             return
+        
         elif self._sel["mode"] == "move":
             idx = self._sel["idx"]
             P = self._last_drawn[idx]["pts"]
@@ -7348,6 +7860,7 @@ class TriangleViewerManual(
             for k in ("O", "B", "L"):
                 P[k] = np.array([P[k][0] + d[0], P[k][1] + d[1]])
             self._redraw_from(self._last_drawn)
+
         elif self._sel["mode"] == "vertex":
             # translation calée sur un sommet précis
             idx = self._sel["idx"]
@@ -7560,16 +8073,19 @@ class TriangleViewerManual(
                         choice = self._edge_choice  # (... idx_t, vkey_t, ...)
                         if g_src and g_tgt and anchor and choice:
                             # 2.1 Localiser ancre (dans src) et cible (dans tgt)
-                            anchor_tid = anchor.get("tid"); anchor_vkey = anchor.get("vkey")
+                            anchor_tid = anchor.get("tid")
+                            anchor_vkey = anchor.get("vkey")
                             (_, _, idx_t, vkey_t, (m_a, m_b, t_a, t_b)) = choice
-                            nodes_src = g_src["nodes"]; nodes_tgt = g_tgt["nodes"]
-                            pos_anchor = next((i for i, nd in enumerate(nodes_src) if nd.get("tid")==anchor_tid), None)
-                            pos_target = next((i for i, nd in enumerate(nodes_tgt) if nd.get("tid")==idx_t), None)
+                            nodes_src = g_src["nodes"]
+                            nodes_tgt = g_tgt["nodes"]
+                            pos_anchor = next((i for i, nd in enumerate(nodes_src) if nd.get("tid") == anchor_tid), None)
+                            pos_target = next((i for i, nd in enumerate(nodes_tgt) if nd.get("tid") == idx_t), None)
                             if pos_anchor is None or pos_target is None:
                                 # fallback: conserver l’ancien comportement (append brut)
                                 for nd in nodes_tgt:
-                                    tid2 = nd.get("tid"); 
-                                    if tid2 is None: continue
+                                    tid2 = nd.get("tid")
+                                    if tid2 is None: 
+                                        continue
                                     self._last_drawn[tid2]["group_id"] = mob_gid
                                     nodes_src.append({"tid": tid2,
                                                       "vkey_in": nd.get("vkey_in"),
@@ -7580,36 +8096,40 @@ class TriangleViewerManual(
                                 def _vkey_from_point(P, pt, eps=EPS_WORLD):
                                     x, y = float(pt[0]), float(pt[1])
 
-                                    for kk in ("O","B","L"):
+                                    for kk in ("O", "B", "L"):
                                         if abs(float(P[kk][0]) - x) <= eps and abs(float(P[kk][1]) - y) <= eps:
                                             return kk
                                     return None
 
                                 # --- util: arête depuis 2 sommets (ex: ("L","B") -> "BL") ---
                                 def _edge_from_vkeys(a, b):
-                                    if not a or not b: 
+                                    if not a or not b:
                                         return None
                                     if a == b:
                                         return None
                                     s = {a, b}
-                                    if s == {"O","B"}: return "OB"
-                                    if s == {"B","L"}: return "BL"
-                                    if s == {"L","O"}: return "LO"
+                                    if s == {"O", "B"}:
+                                        return "OB"
+                                    if s == {"B", "L"}:
+                                        return "BL"
+                                    if s == {"L", "O"}:
+                                        return "LO"
                                     return None
 
                                 # --- util: sommet opposé à l'arête (a,b) ---
                                 def _opp_vertex(a, b):
                                     if a is None or b is None:
                                         return None
-                                    for kk in ("O","B","L"):
+                                    for kk in ("O", "B", "L"):
                                         if kk != a and kk != b:
                                             return kk
                                     return None
 
                                 # 2.2 Construire une vue pivotée de tgt pour que idx_t soit AU BORD collé
-                                def rotate(L, k): 
-                                    k = k % len(L); 
+                                def rotate(L, k):
+                                    k = k % len(L)
                                     return L[k:]+L[:k]
+                          
                                 # On privilégie "coller APRES l'ancre": ancre --(out)-> [tgt...]
                                 insert_after = True
                                 tgt_rot = rotate(list(nodes_tgt), pos_target)  # idx_t devient tgt_rot[0]
@@ -7655,7 +8175,7 @@ class TriangleViewerManual(
                             for i, nd in enumerate(nodes_src):
                                 tid2 = nd["tid"]
                                 if 0 <= tid2 < len(self._last_drawn):
-                                    self._last_drawn[tid2]["group_id"]  = mob_gid
+                                    self._last_drawn[tid2]["group_id"] = mob_gid
                                     self._last_drawn[tid2]["group_pos"] = i
                                     if new_core_gid:
                                         self._last_drawn[tid2]["topoGroupId"] = new_core_gid
@@ -7684,7 +8204,7 @@ class TriangleViewerManual(
             self._redraw_from(self._last_drawn)
             return
 
-        # Autres modes : on nettoie juste 
+        # Autres modes : on nettoie juste
         self._sel = None
         self._reset_assist()
         self._redraw_from(self._last_drawn)
@@ -7942,7 +8462,6 @@ class TriangleViewerManual(
 
         tri_file = str(self.triangle_file.get()) if hasattr(self.triangle_file, "get") else ""
 
-
         def _safe(s: str) -> str:
             s = str(s or "").strip()
             s = re.sub(r"[^A-Za-z0-9._ -]+", "_", s)
@@ -7991,8 +8510,10 @@ class TriangleViewerManual(
 
         xA, yTop = self._screen_to_world(0, 0)
         xB, yBot = self._screen_to_world(cw, ch)
-        vx0 = min(xA, xB); vx1 = max(xA, xB)
-        vy0 = min(yBot, yTop); vy1 = max(yBot, yTop)
+        vx0 = min(xA, xB)
+        vx1 = max(xA, xB)
+        vy0 = min(yBot, yTop)
+        vy1 = max(yBot, yTop)
         w0 = max(1e-9, vx1 - vx0)
         h0 = max(1e-9, vy1 - vy0)
         cx0 = 0.5 * (vx0 + vx1)
@@ -8062,17 +8583,22 @@ class TriangleViewerManual(
         op = int(float(self.map_opacity.get())) if hasattr(self, "map_opacity") else 100
         op = max(0, min(100, int(op)))
         if show_map and op > 0 and self._bg and self._bg_base_pil is not None and Image is not None:
-            bx0 = float(self._bg.get("x0", 0.0)); by0 = float(self._bg.get("y0", 0.0))
-            bw = float(self._bg.get("w", 0.0));  bh = float(self._bg.get("h", 0.0))
-            bx1 = bx0 + bw; by1 = by0 + bh
+            bx0 = float(self._bg.get("x0", 0.0))
+            by0 = float(self._bg.get("y0", 0.0))
+            bw = float(self._bg.get("w", 0.0))
+            bh = float(self._bg.get("h", 0.0))
+            bx1 = bx0 + bw
+            by1 = by0 + bh
 
-            ix0 = max(vx0e, bx0); ix1 = min(vx1e, bx1)
-            iy0 = max(vy0e, by0); iy1 = min(vy1e, by1)
+            ix0 = max(vx0e, bx0)
+            ix1 = min(vx1e, bx1)
+            iy0 = max(vy0e, by0) 
+            iy1 = min(vy1e, by1)
             if ix0 < ix1 and iy0 < iy1 and bw > 1e-9 and bh > 1e-9:
                 base = self._bg_base_pil
                 baseW, baseH = base.size
 
-                left  = int((ix0 - bx0) / bw * baseW)
+                left = int((ix0 - bx0) / bw * baseW)
                 right = int((ix1 - bx0) / bw * baseW)
                 upper = int((by1 - iy1) / bh * baseH)
                 lower = int((by1 - iy0) / bh * baseH)
@@ -8173,7 +8699,8 @@ class TriangleViewerManual(
                 if self._sel and self._sel.get("mode") == "vertex":
                     if self._edge_highlights:
                         self._redraw_edge_highlights()
-                    idx = self._sel.get("idx"); vkey = self._sel.get("vkey")
+                    idx = self._sel.get("idx")
+                    vkey = self._sel.get("vkey")
                     if idx is not None and vkey and 0 <= int(idx) < len(self._last_drawn):
                         P = self._last_drawn[int(idx)]["pts"]
                         v_world = np.array(P[vkey], dtype=float)
@@ -8193,6 +8720,8 @@ class TriangleViewerManual(
         c.save()
 
 # ---------- Entrée ----------
+
+
 if __name__ == "__main__":
     app = TriangleViewerManual()
     app.mainloop()
