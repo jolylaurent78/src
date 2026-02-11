@@ -1833,6 +1833,7 @@ class TriangleViewerManual(
         chemins_toolbar = tk.Frame(self._ui_chemins_content, bd=0, highlightthickness=0)
         chemins_toolbar.pack(anchor="w", padx=6, pady=(0, 2), fill="x")
         self.icon_chemin_recalc = self._load_icon("refresh-cw.png")
+        self.icon_chemin_engine = self._load_icon("iconCpu24.png")
 
         def _make_chemin_btn(parent, icon, text, cmd, tooltip_text: str):
             if icon is not None:
@@ -1862,6 +1863,15 @@ class TriangleViewerManual(
             "Recalculer le chemin",
         )
         self.chemins_recalc_btn.pack(side=tk.LEFT, padx=1)
+
+        self.chemins_engine_btn = _make_chemin_btn(
+            chemins_toolbar,
+            self.icon_chemin_engine,
+            "CPU",
+            self.onDecryptageEngine,
+            "Moteur de décryptage",
+        )
+        self.chemins_engine_btn.pack(side=tk.LEFT, padx=1)
 
         self.chemins_delete_btn = _make_chemin_btn(
             chemins_toolbar,
@@ -2130,6 +2140,8 @@ class TriangleViewerManual(
             self.chemins_edit_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
         if hasattr(self, "chemins_recalc_btn"):
             self.chemins_recalc_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
+        if hasattr(self, "chemins_engine_btn"):
+            self.chemins_engine_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
         if hasattr(self, "chemins_delete_btn"):
             self.chemins_delete_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
         if not isDefined:
@@ -2286,6 +2298,9 @@ class TriangleViewerManual(
         tc.recalculerChemin()
 
         self.refreshCheminTreeView()
+
+    def onDecryptageEngine(self) -> None:
+        messagebox.showinfo("Décryptage", "Non implémentée", parent=self)
 
     def _chemins_edit_selected(self):
         """Compat: redirige vers l'éditeur V6."""
