@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class DecryptageCandidate:
+class DecryptageCandidateAbs:
     """Sequence partielle validee (MAYBE ou YES pour au moins un pattern)."""
 
     words: list[str]
@@ -81,6 +81,26 @@ class DecryptorEngine:
             hits.append((rowExt, colExt, word, float(hitScore)))
         return hits
 
+    def _emitSolutions(
+        self,
+        results: list[SolutionDecryptage],
+        words: list[str],
+        coordsAbs: list[tuple[int, int]],
+        scoreSum: float,
+        yesIndexes: list[int] | tuple[int, ...],
+    ) -> None:
+        n = len(words)
+        avg = (float(scoreSum) / float(n)) if n > 0 else 0.0
+        for pi in yesIndexes:
+            results.append(
+                SolutionDecryptage(
+                    patternIndex=pi,
+                    words=words,
+                    coordsAbs=coordsAbs,
+                    scoreMax=avg,
+                )
+            )
+
     def runAbs(
         self,
         scope: DicoScope,
@@ -98,30 +118,10 @@ class DecryptorEngine:
             raise ValueError(f"patternCount invalide: {pattern_count}")
 
         results: list[SolutionDecryptage] = []
-        frontier: list[DecryptageCandidate] = []
+        frontier: list[DecryptageCandidateAbs] = []
 
         JOKER_WORD_ABS = "*"
         JOKER_COORD_ABS = (0, 0)
-
-        def emitSolutions(
-            words: list[str],
-            coordsAbs: list[tuple[int, int]],
-            scoreSum: float,
-            yesIndexes: list[int],
-        ) -> None:
-            n = len(words)
-            avg = (float(scoreSum) / float(n)) if n > 0 else 0.0
-            for pi in yesIndexes:
-                results.append(
-                    SolutionDecryptage(
-                        patternIndex=pi,
-                        words=words,
-                        coordsAbs=coordsAbs,
-                        scoreMax=avg,
-                    )
-                )
-
-
 
         # Passe 0: creation frontier
         hits0 = self._build_hits(self.triplets[0], scope, decryptorConfig)
@@ -139,14 +139,14 @@ class DecryptorEngine:
             if continueExplore or yesIndexes:
                 coords0 = [JOKER_COORD_ABS]
                 frontier.append(
-                    DecryptageCandidate(
+                    DecryptageCandidateAbs(
                         words=words0,
                         coordsAbs=coords0,
                         patternPacked=packedOut,
                         scoreMax=0.0,
                     )
                 )
-                emitSolutions(words0, coords0, 0.0, yesIndexes)
+                self._emitSolutions(results, words0, coords0, 0.0, yesIndexes)
 
         # 0b) Branches normales : uniquement patterns NON joker
         if packedNonJoker0 != 0:
@@ -162,21 +162,21 @@ class DecryptorEngine:
 
                 coords0 = [(rowExt, colExt)]
                 frontier.append(
-                    DecryptageCandidate(
+                    DecryptageCandidateAbs(
                         words=words0,
                         coordsAbs=coords0,
                         patternPacked=packedOut,
                         scoreMax=hitScore,
                     )
                 )
-                emitSolutions(words0, coords0, hitScore, yesIndexes)
+                self._emitSolutions(results, words0, coords0, hitScore, yesIndexes)
 
         # -------------------------
         # Passes suivantes
         # -------------------------
         for depth in range(1, len(self.triplets)):
             hits = self._build_hits(self.triplets[depth], scope, decryptorConfig)
-            next_frontier: list[DecryptageCandidate] = []
+            next_frontier: list[DecryptageCandidateAbs] = []
 
             for cand in frontier:
                 packedJoker, packedNonJoker = listePatterns.splitPackedByJokerAt(depth, cand.patternPacked)
@@ -192,14 +192,14 @@ class DecryptorEngine:
                     if continueExplore or yesIndexes:
                         new_coords = cand.coordsAbs + [JOKER_COORD_ABS]
                         next_frontier.append(
-                            DecryptageCandidate(
+                            DecryptageCandidateAbs(
                                 words=new_words,
                                 coordsAbs=new_coords,
                                 patternPacked=packedOut,
                                 scoreMax=cand.scoreMax,
                             )
                         )
-                        emitSolutions(new_words, new_coords, cand.scoreMax, yesIndexes)
+                        self._emitSolutions(results, new_words, new_coords, cand.scoreMax, yesIndexes)
 
                 # 2) Branches normales : uniquement patterns NON joker
                 if packedNonJoker != 0:
@@ -216,17 +216,20 @@ class DecryptorEngine:
                         new_coords = cand.coordsAbs + [(rowExt, colExt)]
                         newScoreSum = cand.scoreMax + hitScore
                         next_frontier.append(
-                            DecryptageCandidate(
+                            DecryptageCandidateAbs(
                                 words=new_words,
                                 coordsAbs=new_coords,
                                 patternPacked=packedOut,
                                 scoreMax=newScoreSum,
                             )
                         )
-                        emitSolutions(new_words, new_coords, newScoreSum, yesIndexes)
+                        self._emitSolutions(results, new_words, new_coords, newScoreSum, yesIndexes)
 
             frontier = next_frontier
             if not frontier:
                 break
 
         return results
+
+    def runRel(self, *args, **kwargs):
+        raise NotImplementedError
