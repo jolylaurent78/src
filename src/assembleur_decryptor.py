@@ -136,11 +136,11 @@ class ClockDicoDecryptor(DecryptorBase):
 
             # col: pas de 0. Convertir en minute 1..60.
             # On suppose que la 1ere colonne = 1mn ==> OUVERTURE = 1mn
-            # Pour le dictionnaire symétrique col = -1 ==> DEVIN = 60mn
+            # Pour le dictionnaire symétrique col = -1 ==> DEVIN = 59mn
             if col > 0:
                 minute = col
             else:
-                minute = mBase + col + 1
+                minute = mBase + col
             minute = minute % mBase
             if minute == 0:
                 minute = mBase

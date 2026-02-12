@@ -42,16 +42,15 @@ class DecryptageCandidateRel:
         self,
         words: list[str],
         coordsAbs: list[tuple[int, int]],
-        coordRefAbs: tuple[int, int],
         patternPacked: int,
         scoreSum: float,
     ) -> None:
         self.words = list(words)
         self.coordsAbs = [(int(r), int(c)) for (r, c) in coordsAbs]
-        self.coordRefAbs = (int(coordRefAbs[0]), int(coordRefAbs[1]))
+        self.coordRefAbs = None
         self.patternPacked = int(patternPacked)
         self.scoreSum = float(scoreSum)
-        self._stack: list[tuple[tuple[int, int], int, float]] = []
+        self._stack: list[tuple[tuple[int, int] | None, int, float]] = []
 
     def pushStep(
         self,
@@ -144,8 +143,8 @@ class DecryptorEngine:
         triplet: TopologyCheminTriplet,
         scope: DicoScope,
         decryptorConfig: DecryptorConfig,
-    ) -> list[tuple[int, int, str, float]]:
-        hits: list[tuple[int, int, str, float]] = []
+    ) -> list[tuple[tuple[int, int], str, float]]:
+        hits: list[tuple[tuple[int, int], str, float]] = []
         for (rowExt, colExt) in self.dico.iterCoords(scope):
             word = self.dico.getMotExtended(rowExt, colExt)
             clock = decryptorConfig.decryptor.clockStateFromDicoCell(
@@ -157,7 +156,7 @@ class DecryptorEngine:
             ok, hitScore = decryptorConfig.match(triplet, clock)
             if not ok:
                 continue
-            hits.append((rowExt, colExt, word, float(hitScore)))
+            hits.append(((rowExt, colExt), word, float(hitScore)))
         return hits
 
     def _build_hits_rel(
@@ -251,7 +250,8 @@ class DecryptorEngine:
 
         # 0b) Branches normales : uniquement patterns NON joker
         if packedNonJoker0 != 0:
-            for (rowExt, colExt, word, hitScore) in hits0:
+            for (coordAbs, word, hitScore) in hits0:
+                rowExt, colExt = coordAbs
                 words0 = [word]
                 continueExplore, yesIndexes, packedOut = listePatterns.validateSequence(
                     words0,
@@ -261,16 +261,15 @@ class DecryptorEngine:
                 if (not continueExplore) and (not yesIndexes):
                     continue
 
-                coords0 = [(rowExt, colExt)]
                 frontier.append(
                     DecryptageCandidateAbs(
                         words=words0,
-                        coordsAbs=coords0,
+                        coordsAbs=[coordAbs],
                         patternPacked=packedOut,
                         scoreMax=hitScore,
                     )
                 )
-                self._emitSolutions(results, words0, coords0, hitScore, yesIndexes)
+                self._emitSolutions(results, words0, [coordAbs], hitScore, yesIndexes)
 
         # -------------------------
         # Passes suivantes
@@ -304,7 +303,7 @@ class DecryptorEngine:
 
                 # 2) Branches normales : uniquement patterns NON joker
                 if packedNonJoker != 0:
-                    for (rowExt, colExt, word, hitScore) in hits:
+                    for (coordAbs, word, hitScore) in hits:
                         new_words = cand.words + [word]
                         continueExplore, yesIndexes, packedOut = listePatterns.validateSequence(
                             new_words,
@@ -314,7 +313,7 @@ class DecryptorEngine:
                         if (not continueExplore) and (not yesIndexes):
                             continue
 
-                        new_coords = cand.coordsAbs + [(rowExt, colExt)]
+                        new_coords = cand.coordsAbs + [coordAbs]
                         newScoreSum = cand.scoreMax + hitScore
                         next_frontier.append(
                             DecryptageCandidateAbs(
@@ -354,7 +353,6 @@ class DecryptorEngine:
         cand = DecryptageCandidateRel(
             words=[],
             coordsAbs=[],
-            coordRefAbs=(0, 0),
             patternPacked=packed0,
             scoreSum=0.0,
         )
@@ -372,8 +370,8 @@ class DecryptorEngine:
         self.solutionsCount = 0
 
         # On calcule le nombre de patterns à tester au niveau 0
-        hits0 = self._build_hits_rel(self.triplets[0], scope, decryptorConfig, cand.coordRefAbs)
-        self.patternTestsTotal = max(1, len(hits0))
+        hits0_abs = self._build_hits(self.triplets[0], scope, decryptorConfig)  # ABS
+        self.patternTestsTotal = max(1, len(hits0_abs))
         self.patternTestsCount = 0
 
         # def renvoie un bool: True, on continue, False pour stop global
@@ -382,7 +380,11 @@ class DecryptorEngine:
                 return True
 
             triplet = self.triplets[depth]
-            hits = self._build_hits_rel(triplet, scope, decryptorConfig, cand.coordRefAbs)
+            if depth == 0:
+                # On suppose que les mots sont
+                hits = hits0_abs
+            else:
+                hits = self._build_hits_rel(triplet, scope, decryptorConfig, cand.coordRefAbs)
 
             for (coordAbs, word, hitScore) in hits:
                 # On teste l'EngineControl pour savoir si on dot sortir

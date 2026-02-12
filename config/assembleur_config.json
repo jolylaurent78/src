@@ -34,13 +34,13 @@
   },
   "decryptPatterns": [
     {
-      "text": "[LOCALISE] [ORDRE] SENTINELLES",
+      "text": "[LOCALISE] [ORDRE]",
       "active": true
     }
   ],
   "decryptGuiDecryptorId": "clock_dico_v1",
   "decryptGuiMode": "REL",
-  "decryptGuiScopeDico": "Extended",
+  "decryptGuiScopeDico": "Mirroring",
   "decryptGuiUseAngle180": true,
   "decryptGuiUseAzimutA": false,
   "decryptGuiUseAzimutB": false,

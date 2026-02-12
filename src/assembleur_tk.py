@@ -2972,8 +2972,12 @@ class TriangleViewerManual(
             mode_ui = str(win.var_mode.get() or "Absolu").strip().lower()
             mode_abs = not mode_ui.startswith("rel")
 
+            # Si le décrypteur courant est celui utilisé, on garde l'instance avec son paamétage
             decryptor_id = _extract_decryptor_id(win.var_decryptor.get())
-            decryptor = createDecryptor(decryptor_id)
+            if self.decryptor.id != decryptor_id :
+                decryptor = createDecryptor(decryptor_id)
+            else:
+                decryptor = self.decryptor
 
             tol = float(win.var_tolerance.get())
             liste_patterns = ListePatterns(dico, patterns_actifs)

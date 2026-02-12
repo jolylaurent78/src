@@ -10,7 +10,7 @@ from helpers_triplets import CheminsStub, triplets_smoke
 from src.DictionnaireEnigmes import DicoScope, DictionnaireEnigmes, ListePatterns
 from src.assembleur_decryptor import ClockDicoDecryptor, DecryptorConfig
 from src.assembleur_decryptor_engine import DecryptorEngine
-
+from src.assembleur_engine_runtime import RunControlConfig, CheckpointPolicy, EngineControl, EventQueue
 
 @pytest.fixture(scope="module")
 def dico():
@@ -52,11 +52,22 @@ def listePatterns_engine_joker(dico):
         ],
     )
 
+            # Le controleur e la file d'attente pour communiquer avec l'engine
 
+    
 @pytest.fixture
 def engine(dico, triplets_smoke):
     chemins = CheminsStub(triplets_smoke[:3])
-    return DecryptorEngine(chemins, dico)
+    engineControl = EngineControl()
+    eventQueue = EventQueue()
+    runControlConfig = RunControlConfig(
+        maxSolutions=int(50),
+        minBatchCells=500,
+        maxBatchCells=200_000,
+        targetBatchSec=0.05,
+        progressMinIntervalSec=0.2,
+    )
+    return DecryptorEngine(chemins, dico, runControlConfig, engineControl, eventQueue)
 
 
 def test_engine_abs_strict_total_2_solutions(engine, listePatterns_engine, decryptorConfigAngle180):

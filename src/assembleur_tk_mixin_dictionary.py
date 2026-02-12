@@ -11,7 +11,7 @@ from tkinter import ttk, messagebox
 from tksheet import Sheet
 from typing import Optional, Tuple
 
-from src.DictionnaireEnigmes import DictionnaireEnigmes
+from src.DictionnaireEnigmes import DictionnaireEnigmes, DicoScope
 
 
 class TriangleViewerDictionaryMixin:
@@ -546,6 +546,10 @@ class TriangleViewerDictionaryMixin:
                 word = str(self.dicoSheet.get_cell_data(r, c)).strip()
                 if not word:
                     continue
+                # On détecte dans quelle partie du dictionnaire on se trouve pour la couleur de fond
+                rowAbs, colAbs = self._tkToExtAbs(r, c, nbm=self._dico_nb_mots_max)
+                scopeMirroring = self.dico.isInScope(DicoScope.MIRRORING, rowAbs, colAbs)
+
                 # --- Passage en référentiel LOGIQUE pour l'angle ---
                 if isDelta:
                     rowVal, colVal = self._tkToRel(r, c, r0=r0, c0=c0, refMode=refMode)
@@ -568,7 +572,14 @@ class TriangleViewerDictionaryMixin:
                 )
                 ref = float(self._dico_filter_ref_angle_deg) % 180.0
                 ok = abs(st.deltaDeg180 - ref) <= self._dico_filter_tolerance_deg
-                if ok:
+
+                if ok and not scopeMirroring:
+                    # Match: texte noir + fond légèrement marqué
+                    self.dicoSheet.highlight_cells(r, c, fg="#0B2A5B", bg="#CCD8EA")
+                elif not ok and not scopeMirroring:
+                    # Match: texte noir + fond légèrement marqué
+                    self.dicoSheet.highlight_cells(r, c, fg="#8FAAD6", bg="#EDF0F4")
+                elif ok and scopeMirroring:
                     # Match: texte noir + fond légèrement marqué
                     self.dicoSheet.highlight_cells(r, c, fg="#000000", bg="#E8E8E8")
                 else:

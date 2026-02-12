@@ -211,10 +211,18 @@ class DictionnaireEnigmes:
     def getPlageMax(self) -> int:
         return int(self.nbMotMax())
 
-    def getMotExtended(self, rowExt: int, colExt: int) -> str:
-        rowExt = int(rowExt)
-        colExt = int(colExt)
+    def isInScope(self, scope: str, rowAbs: int, colAbs: int) -> bool:
+        maxColStrict = self.getRowSize(rowAbs)
+        N = self.getPlageMax()
+        if (scope == DicoScope.STRICT) and (0 < colAbs <= maxColStrict):
+            return True
+        if (scope == DicoScope.MIRRORING) and (-maxColStrict <= colAbs <= maxColStrict):
+            return True
+        if (scope == DicoScope.EXTENDED) and (-N <= colAbs <= N):
+            return True
+        return False
 
+    def getMotExtended(self, rowExt: int, colExt: int) -> str:
         if colExt == 0:
             raise ValueError("colExt=0 interdit en référentiel Extended")
 
@@ -233,16 +241,16 @@ class DictionnaireEnigmes:
 
     def iterCoords(self, scope: DicoScope) -> Iterator[tuple[int, int]]:
         scope_norm = _normalize_scope(scope)
-        n = int(self.getNbLignes())
+        n = self.getNbLignes()
         if n <= 0:
             return
             yield  # pragma: no cover (generator empty)
 
         for rowExt in range(1, n + 1):
             if scope_norm == DicoScope.EXTENDED:
-                max_col = int(self.getPlageMax())
+                max_col = self.getPlageMax()
             else:
-                max_col = int(self.getRowSize(rowExt))
+                max_col = self.getRowSize(rowExt)
 
             if scope_norm == DicoScope.STRICT:
                 for colExt in range(1, max_col + 1):
