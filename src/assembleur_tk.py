@@ -3009,12 +3009,9 @@ class TriangleViewerManual(
             _refresh_solutions_list()
 
             if mode_abs:
-                results = engine.runAbs(scope, liste_patterns, decryptor_cfg, patternMode="last")
+                engine.runAbs(scope, liste_patterns, decryptor_cfg, patternMode="last")
             else:
-                results = engine.runRel(scope, liste_patterns, decryptor_cfg, patternMode="last")
-
-            win._solutions = list(results or [])
-            _refresh_solutions_list()
+                engine.runRel(scope, liste_patterns, decryptor_cfg, patternMode="last")
 
         # état simple du bouton Start/Stop
         win._runActive = False
@@ -3044,9 +3041,6 @@ class TriangleViewerManual(
                 win._engineStatusVar.set("stopping")
 
         def _poll_event_queue():
-            if not getattr(win, "_runActive", False):
-                return
-
             q = getattr(win, "_eventQueue", None)
             if q is not None:
                 while True:
@@ -3067,6 +3061,13 @@ class TriangleViewerManual(
                     elif etype == "DONE":
                         win._engineStatusVar.set("done")
                         _set_run_state(False)
+                    elif etype == "SOLUTION":
+                        sol = payload
+                        if sol is not None:
+                            win._solutions.append(sol)
+                            solutions_list.insert(tk.END, _format_solution_item(sol))
+                            # optionnel : auto-scroll en bas
+                            solutions_list.see(tk.END)
 
             # replanifie le poll
             win.after(100, _poll_event_queue)

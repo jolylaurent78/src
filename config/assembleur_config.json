@@ -34,7 +34,7 @@
   },
   "decryptPatterns": [
     {
-      "text": "[*] [*] [ORDRE] SENTINELLES",
+      "text": "[LOCALISE] [ORDRE] SENTINELLES",
       "active": true
     }
   ],
@@ -45,5 +45,5 @@
   "decryptGuiUseAzimutA": false,
   "decryptGuiUseAzimutB": false,
   "decryptGuiToleranceDeg": 4,
-  "decryptGuiStopIfMoreThan": 200
+  "decryptGuiStopIfMoreThan": 2000
 }

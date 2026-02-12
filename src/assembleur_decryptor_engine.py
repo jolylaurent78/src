@@ -110,9 +110,10 @@ class DecryptorEngine:
         self.engineControl = engineControl
         self.eventQueue = eventQueue
 
-    def _onPatternTested(self, policy: CheckpointPolicy) -> bool:
+    def _onPatternTested(self, policy: CheckpointPolicy, incrementProgress: bool) -> bool:
         policy.onCellTested(1)
-        self.patternTestsCount += 1
+        if incrementProgress:
+            self.patternTestsCount += 1
         if not policy.shouldCheckpoint():
             return True
 
@@ -190,14 +191,14 @@ class DecryptorEngine:
         added = 0
         avg = (float(scoreSum) / float(n)) if n > 0 else 0.0
         for pi in yesIndexes:
-            results.append(
-                SolutionDecryptage(
+            sol = SolutionDecryptage(
                     patternIndex=pi,
                     words=words,
                     coordsAbs=coordsAbs,
                     scoreMax=avg,
                 )
-            )
+            results.append(sol)
+            self.eventQueue.put("SOLUTION", sol)
             added += 1
         return added
 
@@ -385,7 +386,7 @@ class DecryptorEngine:
 
             for (coordAbs, word, hitScore) in hits:
                 # On teste l'EngineControl pour savoir si on dot sortir
-                if not self._onPatternTested(policy):
+                if not self._onPatternTested(policy, incrementProgress=(depth == 0)):
                     # sortir proprement
                     return False
 
