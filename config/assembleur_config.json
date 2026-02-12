@@ -31,5 +31,19 @@
         "thetaDeg": 0.0
       }
     }
-  }
+  },
+  "decryptPatterns": [
+    {
+      "text": "[*] [*] [ORDRE] SENTINELLES",
+      "active": true
+    }
+  ],
+  "decryptGuiDecryptorId": "clock_dico_v1",
+  "decryptGuiMode": "REL",
+  "decryptGuiScopeDico": "Extended",
+  "decryptGuiUseAngle180": true,
+  "decryptGuiUseAzimutA": false,
+  "decryptGuiUseAzimutB": false,
+  "decryptGuiToleranceDeg": 4,
+  "decryptGuiStopIfMoreThan": 200
 }

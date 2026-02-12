@@ -9,6 +9,7 @@ import os
 import tkinter as tk
 from tkinter import ttk, messagebox
 from tksheet import Sheet
+from typing import Optional, Tuple
 
 from src.DictionnaireEnigmes import DictionnaireEnigmes
 
@@ -550,7 +551,7 @@ class TriangleViewerDictionaryMixin:
                     rowVal, colVal = self._tkToRel(r, c, r0=r0, c0=c0, refMode=refMode)
                     mode = "delta"
                 else:
-                    rowVal, colVal = self._tkToExtAbs(r, c, nbm=self._dico_nb_mots_max)      
+                    rowVal, colVal = self._tkToExtAbs(r, c, nbm=self._dico_nb_mots_max)
                     mode = "abs"
 
                 # IMPORTANT:
@@ -565,8 +566,8 @@ class TriangleViewerDictionaryMixin:
                     word=word,
                     mode=mode,
                 )
-                ref = float(self._dico_filter_ref_angle_deg) % 180.0       
-                ok = abs(st.deltaDeg180 - ref) <= self._dico_filter_tolerance_deg  
+                ref = float(self._dico_filter_ref_angle_deg) % 180.0
+                ok = abs(st.deltaDeg180 - ref) <= self._dico_filter_tolerance_deg
                 if ok:
                     # Match: texte noir + fond légèrement marqué
                     self.dicoSheet.highlight_cells(r, c, fg="#000000", bg="#E8E8E8")

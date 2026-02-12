@@ -3,12 +3,14 @@ Moteur de decryptage ABS (V1) sans dependance UI.
 """
 
 from __future__ import annotations
+import time
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from src.DictionnaireEnigmes import DicoScope, DictionnaireEnigmes, ListePatterns
 from src.assembleur_decryptor import DecryptorConfig
+from src.assembleur_engine_runtime import RunControlConfig, CheckpointPolicy, EngineControl, EventQueue
 
 if TYPE_CHECKING:
     from src.assembleur_core import TopologyCheminTriplet, TopologyChemins
@@ -97,10 +99,44 @@ class SolutionDecryptage:
 class DecryptorEngine:
     """Moteur ABS V1 (mono-thread, sans UX)."""
 
-    def __init__(self, chemins: TopologyChemins, dico: DictionnaireEnigmes) -> None:
+    def __init__(self,
+                 chemins: TopologyChemins, dico: DictionnaireEnigmes,
+                 runControlConfig: RunControlConfig, engineControl: EngineControl, eventQueue: EventQueue,
+                 ) -> None:
         self.chemins = chemins
         self.dico = dico
         self.triplets = chemins.triplets
+        self.runControlConfig = runControlConfig
+        self.engineControl = engineControl
+        self.eventQueue = eventQueue
+
+    def _onPatternTested(self, policy: CheckpointPolicy) -> bool:
+        policy.onCellTested(1)
+        self.patternTestsCount += 1
+        if not policy.shouldCheckpoint():
+            return True
+
+        info = policy.onCheckpoint()
+        if info.get("emitProgress", False):
+            p = float(self.patternTestsCount) / float(self.patternTestsTotal)
+            if p > 1.0:
+                p = 1.0
+            self.eventQueue.put("PROGRESS", p)
+
+        # STOP prioritaire
+        if self.engineControl.isStopRequested():
+            return False
+
+        # PAUSE coopérative
+        if self.engineControl.isPauseRequested():
+            self.eventQueue.put("STATUS", "PAUSED")
+            while self.engineControl.isPauseRequested():
+                if self.engineControl.isStopRequested():
+                    return False
+                time.sleep(0.01)
+            self.eventQueue.put("STATUS", "RUNNING")
+
+        return True
 
     def _build_hits(
         self,
@@ -145,15 +181,13 @@ class DecryptorEngine:
             hits.append(((rowExt, colExt), word, float(hitScore)))
         return hits
 
-    def _emitSolutions(
-        self,
-        results: list[SolutionDecryptage],
-        words: list[str],
-        coordsAbs: list[tuple[int, int]],
-        scoreSum: float,
-        yesIndexes: list[int] | tuple[int, ...],
-    ) -> None:
+    def _emitSolutions(self,
+                       results: list[SolutionDecryptage], words: list[str], coordsAbs: list[tuple[int, int]],
+                       scoreSum: float,
+                       yesIndexes: list[int] | tuple[int, ...],
+                       ) -> int:
         n = len(words)
+        added = 0
         avg = (float(scoreSum) / float(n)) if n > 0 else 0.0
         for pi in yesIndexes:
             results.append(
@@ -164,6 +198,8 @@ class DecryptorEngine:
                     scoreMax=avg,
                 )
             )
+            added += 1
+        return added
 
     def runAbs(
         self,
@@ -324,14 +360,35 @@ class DecryptorEngine:
 
         results: list[SolutionDecryptage] = []
 
-        def dfs(depth: int) -> None:
+        # --- initialisation pilotage run ---
+        policy = CheckpointPolicy(self.runControlConfig, enabled=True)
+
+        # statut initial
+        self.eventQueue.put("STATUS", "RUNNING")
+
+        # Nombre Max de solution & compteur
+        maxSolutions = self.runControlConfig.maxSolutions
+        self.solutionsCount = 0
+
+        # On calcule le nombre de patterns à tester au niveau 0
+        hits0 = self._build_hits_rel(self.triplets[0], scope, decryptorConfig, cand.coordRefAbs)
+        self.patternTestsTotal = max(1, len(hits0))
+        self.patternTestsCount = 0
+
+        # def renvoie un bool: True, on continue, False pour stop global
+        def dfs(depth: int) -> bool:
             if depth >= len(self.triplets):
-                return
+                return True
 
             triplet = self.triplets[depth]
             hits = self._build_hits_rel(triplet, scope, decryptorConfig, cand.coordRefAbs)
 
             for (coordAbs, word, hitScore) in hits:
+                # On teste l'EngineControl pour savoir si on dot sortir
+                if not self._onPatternTested(policy):
+                    # sortir proprement
+                    return False
+
                 words_tmp = cand.words + [word]
                 continueExplore, yesIndexes, packedOut = listePatterns.validateSequence(
                     words_tmp,
@@ -343,13 +400,27 @@ class DecryptorEngine:
                     wordsOut = words_tmp
                     coordsOut = cand.coordsAbs + [coordAbs]
                     scoreSumOut = cand.scoreSum + hitScore
-                    self._emitSolutions(results, wordsOut, coordsOut, scoreSumOut, yesIndexes)
+                    added = self._emitSolutions(results, wordsOut, coordsOut, scoreSumOut, yesIndexes)
+                    self.solutionsCount += added
+                    if self.solutionsCount >= maxSolutions:
+                        return False   # stop global (comme pour STOP)
 
                 if continueExplore:
                     coordRefNextAbs = self.dico.recalageAbs(coordAbs)
                     cand.pushStep(word, coordAbs, coordRefNextAbs, hitScore, packedOut)
-                    dfs(depth + 1)
+                    if not dfs(depth + 1):
+                        # demande de stop utilisateur
+                        cand.popStep()
+                        return False
                     cand.popStep()
+            return True
 
-        dfs(0)
+        ok = dfs(0)
+        if not ok:
+            # arrêt utilisateur
+            self.eventQueue.put("STOPPED", None)
+        else:
+            # fin normale
+            self.eventQueue.put("DONE", None)
+
         return results
