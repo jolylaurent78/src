@@ -49,10 +49,14 @@ class EdgeChoiceEpts:
         yield self.tBEdgeVertex
 
     def __getitem__(self, i):
-        if i == 0: return self.mA
-        if i == 1: return self.mBEdgeVertex
-        if i == 2: return self.tA
-        if i == 3: return self.tBEdgeVertex
+        if i == 0:
+            return self.mA
+        if i == 1:
+            return self.mBEdgeVertex
+        if i == 2:
+            return self.tA
+        if i == 3:
+            return self.tBEdgeVertex
         raise IndexError(i)
 
     def computeRigidTransform(self, *, eps: float = 1e-12) -> tuple[np.ndarray, np.ndarray] | None:
@@ -205,17 +209,23 @@ def _edge_code_from_vkeys(a, b):
     if not a or not b or a == b:
         return None
     s = {a, b}
-    if s == {"O", "B"}: return "OB"
-    if s == {"B", "L"}: return "BL"
-    if s == {"L", "O"}: return "LO"
+    if s == {"O", "B"}:
+        return "OB"
+    if s == {"B", "L"}:
+        return "BL"
+    if s == {"L", "O"}:
+        return "LO"
     return None
 
 
 def _edge_vkeys_from_code(edge_code: str):
     e = str(edge_code or "").upper().strip()
-    if e == "OB": return ("O", "B")
-    if e == "BL": return ("B", "L")
-    if e == "LO": return ("L", "O")
+    if e == "OB":
+        return ("O", "B")
+    if e == "BL":
+        return ("B", "L")
+    if e == "LO":
+        return ("L", "O")
     return (None, None)
 
 
@@ -252,8 +262,10 @@ def _find_owner_edge_for_segment(group_tids, A, B, eps_world, last_drawn):
         if vv <= 1e-12:
             return (0.0, (Qx - P0x)**2 + (Qy - P0y)**2)
         t = (wx*vx + wy*vy) / vv
-        if t < 0.0: t = 0.0
-        elif t > 1.0: t = 1.0
+        if t < 0.0:
+            t = 0.0
+        elif t > 1.0:
+            t = 1.0
         px, py = (P0x + t*vx), (P0y + t*vy)
         dx, dy = (Qx - px), (Qy - py)
         return (t, dx*dx + dy*dy)
@@ -284,9 +296,12 @@ def _find_owner_edge_for_segment(group_tids, A, B, eps_world, last_drawn):
 
 def _edge_code_to_vkeys(edge_code: str):
     c = str(edge_code or "").upper()
-    if c == "OB": return ("O", "B")
-    if c == "BL": return ("B", "L")
-    if c == "LO": return ("L", "O")
+    if c == "OB":
+        return ("O", "B")
+    if c == "BL":
+        return ("B", "L")
+    if c == "LO":
+        return ("L", "O")
     return (None, None)
 
 
@@ -393,7 +408,7 @@ def buildEdgeChoiceEptsFromBest(
     tAId = getEquivalentNodeInElement(world, tATmpId, elementIdDst)
 
     src_anchor_vkey = world.getNodeType(mAId)
-    dst_anchor_vkey = world.getNodeType(tAId) 
+    dst_anchor_vkey = world.getNodeType(tAId)
 
     Psrc = tri_src.get("pts", None)
     Pdst = tri_dst.get("pts", None)
@@ -559,7 +574,6 @@ def buildEdgeChoiceEptsForAutoChain(
 
     t_raw = L_src / L_dst
 
-
     epts = EdgeChoiceEpts(
         mA, mBEdgeVertex,
         tA, tBEdgeVertex,
@@ -587,4 +601,3 @@ def buildEdgeChoiceEptsForAutoChain(
     }
 
     return (epts, meta) if debug else (epts, meta)
-

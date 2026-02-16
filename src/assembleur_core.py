@@ -4,14 +4,16 @@ Noyau 'pur' (sans Tk) : géométrie + structures de base.
 
 import math
 import datetime as _dt
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict
 import re
 
 import numpy as np
 from dataclasses import dataclass
 
-from shapely.geometry import Polygon as _ShPoly, LineString as _ShLine, Point as _ShPoint
+from shapely.geometry import Polygon as _ShPoly, LineString as _ShLine
 from shapely.ops import unary_union as _sh_union
+
+import xml.etree.ElementTree as _ET
 
 
 def _tri_shape(P: Dict[str, np.ndarray]):
@@ -81,12 +83,11 @@ class ScenarioAssemblage:
         # Carte: état du fond (fichier + worldRect + visibilité/opacité + scale affiché).
         # Pour les scénarios automatiques, la carte peut être partagée au niveau du viewer.
         self.view_state: Dict[str, float] = {}   # {"zoom":..., "offset_x":..., "offset_y":...}
-        self.map_state: Dict[str, object] = {}   # {"path":..., "x0":..., "y0":..., "w":..., "h":..., "visible":..., "opacity":..., "scale":...}
- 
+        self.map_state: Dict[str, object] = {}   # {"path":.., "x0":.., "y0":.., "w":.., "h":.., "visible":.., "opacity":.., "scale":..}
+
         # Statut global du scénario (utile pour les simulations auto)
         self.status: str = "complete"            # "complete", "pruned", etc.
         self.created_at: _dt.datetime = _dt.datetime.now()
-
 
 
 # =============================================================================
@@ -114,9 +115,6 @@ class ScenarioAssemblage:
 # Dégrouper/Undo (MVP) :
 # - suppression d’attaches + rebuild complet depuis la liste des attachments.
 #
-
-import re
-import xml.etree.ElementTree as _ET
 
 
 class TopologyNodeType:
@@ -304,6 +302,7 @@ class TopologyEdge:
     def labels_display(self) -> str:
         return f"{self.v_start.label}–{self.v_end.label}"
 
+
 class TopologyPose2D:
     """Pose 2D d'un élément dans le référentiel monde (rotation + translation).
 
@@ -379,6 +378,7 @@ class TopologyElementPose2D:
         if self.mirrored:
             p = self.mirror_matrix() @ p
         return (self.R @ p) + self.T
+
 
 class TopologyElement:
     """Élément topologique : polygone (triangle = cas particulier n=3).
@@ -547,6 +547,7 @@ class TopologyGroup:
         self.element_ids: list[str] = []
         self.attachment_ids: list[str] = []
 
+
 @dataclass
 class ConceptNodeInfo:
     concept_id: str
@@ -571,6 +572,7 @@ class ConceptEdgeInfo:
     a: str
     b: str
     occurrences: list[dict]
+
 
 @dataclass
 class TopologyBoundaries:
@@ -824,16 +826,17 @@ class TopologyBoundaries:
         self.cycle = cycle
         self.edges = edges
         self.index = {n: i for i, n in enumerate(cycle)}
-  
+
         signed = _signed_area(cycle)
         computed = "cw" if signed < 0.0 else "ccw"
         self.orientation = computed
 
-        # Si l'orientation finale du graph n'est finalement pas celle demandée en entrée, 
+        # Si l'orientation finale du graph n'est finalement pas celle demandée en entrée,
         # on inverse le cycle
         if computed != orient:
             self.inverse()
             self.orientation = orient   # contrainte forte
+
 
 @dataclass
 class BoundarySegment:
@@ -845,6 +848,7 @@ class BoundarySegment:
     toNodeId: str
     t0: float
     t1: float
+
 
 @dataclass
 class ConceptGroupCache:
@@ -869,6 +873,7 @@ class ConceptGroupCache:
             self.nodeOccurrencesByCid = {}
         if self.boundaries is None:
             self.boundaries = TopologyBoundaries()
+
 
 class TopologyCheminTriplet:
     """Triplet de chemin A-O-B (structure + geometrie calculee a la demande)."""
@@ -912,6 +917,20 @@ class TopologyCheminTriplet:
             angle = float((360.0 - angle) % 360.0)
         self.angleDeg = angle
         self.isGeometrieValide = True
+
+    @staticmethod
+    def getMesuresSpecs() -> list[dict]:
+        """Spécifications UI des mesures disponibles pour l'affichage des triplets.
+            Clés attendues côté UI :
+            - azOA, azOB, angle, distOA, distOB
+        """
+        return [
+             {"key": "azOA",   "label": "Az OA°",        "kind": "angle"},
+             {"key": "azOB",   "label": "Az OB°",        "kind": "angle"},
+             {"key": "angle",  "label": "(A, O, B)°",    "kind": "angle"},
+             {"key": "distOA", "label": "Dist [OA]",     "kind": "distance"},
+             {"key": "distOB", "label": "Dist [OB]",     "kind": "distance"},
+        ]
 
 
 class TopologyChemins:
@@ -1351,6 +1370,7 @@ class TopologyChemins:
             (float(xO), float(yO), float(xB), float(yB)),
         )
 
+
 class TopologyWorld:
     """Racine métier du modèle topologique (Core, sans Tk).
 
@@ -1455,7 +1475,7 @@ class TopologyWorld:
         if self._topoTxDepth > 0:
             self._topoTxTouchedGroups.add(gid)
             return
-        
+
     def recomputeConceptAndBoundary(self, group_id: str) -> None:
         gid = self.find_group(str(group_id))
         self.invalidateConceptGraph(gid)
@@ -1731,7 +1751,6 @@ class TopologyWorld:
         if info is None:
             return (0.0, 0.0)
         return info.world_xy()
-
 
     def getConceptRays(self, node_id: str, group_id: str | None = None) -> list[dict]:
         """
@@ -2153,7 +2172,6 @@ class TopologyWorld:
             # refNode n'est pas un endpoint => incohérent
             return None
 
-
         # Cas A: edge-edge (1 attachment)
         if len(atts) == 1 and str(atts[0].kind) == "edge-edge":
             att = atts[0]
@@ -2291,7 +2309,8 @@ class TopologyWorld:
         ang_m = math.atan2(float(vm[1]), float(vm[0]))
         ang_d = math.atan2(float(vd[1]), float(vd[0]))
         dtheta = ang_d - ang_m
-        c = math.cos(dtheta); s = math.sin(dtheta)
+        c = math.cos(dtheta)
+        s = math.sin(dtheta)
         R = np.array([[c, -s], [s, c]], dtype=float)
         T = np.array([float(p0d[0]), float(p0d[1])], dtype=float) - (R @ np.array([float(p0m[0]), float(p0m[1])], dtype=float))
         return (R, T)
@@ -2358,11 +2377,10 @@ class TopologyWorld:
             return False
         return True
 
-
-    def simulateOverlapTopologique(self, 
-        groupDest: TopologyGroup, groupMob: TopologyGroup,
-        attachments: list[TopologyAttachment],
-        debug: bool = False) -> bool:
+    def simulateOverlapTopologique(self,
+                                   groupDest : TopologyGroup, groupMob: TopologyGroup,
+                                   attachments : list[TopologyAttachment],
+                                   debug : bool = False) -> bool:
         """
         Overview
         --------
@@ -2405,7 +2423,7 @@ class TopologyWorld:
         7) Concatène les deux arcs pour former le ring de sortie (`ring_out`).
         8) Valide le ring final avec `_isValidPolygon` (simple + polygon valide + aire > eps).
            Ring invalide ⇒ placement rejeté (chevauchement).
-        """        
+        """
         def _dbg(msg: str) -> None:
             if debug:
                 print(str(msg))
@@ -2468,7 +2486,7 @@ class TopologyWorld:
         if RT is None:
             return True
         R, T = RT
-        _dbg(f"[TOPO-OVERLAP][RT] R={R.tolist()} T={[float(T[0]), float(T[1])]}" )
+        _dbg(f"[TOPO-OVERLAP][RT] R={R.tolist()} T={[float(T[0]), float(T[1])]}")
 
         # Apply transform to mob ring
         pts_mob = [(R @ np.array([float(p[0]), float(p[1])], dtype=float)) + T for p in pts_mob]
@@ -2484,7 +2502,6 @@ class TopologyWorld:
             J1["mobType"] = "node"
             J1["mobId"] = edge_node_id
             J1["mobPt"] = split_pt
-            _dbg(f"[TOPO-OVERLAP][SPLIT] side=mob edgeDirRot={edge_dir_rot.tolist()} splitPt={[float(split_pt[0]), float(split_pt[1])]} edgeNodeId={edge_node_id}")
 
         if J1.get("destType") == "edge":
             edge_dir_rot = np.array(J1.get("destDir"), dtype=float)
@@ -2496,15 +2513,16 @@ class TopologyWorld:
             J1["destType"] = "node"
             J1["destId"] = edge_node_id
             J1["destPt"] = split_pt
-            _dbg(f"[TOPO-OVERLAP][SPLIT] side=dest edgeDirRot={edge_dir_rot.tolist()} splitPt={[float(split_pt[0]), float(split_pt[1])]} edgeNodeId={edge_node_id}")
 
         # --- resolve cut indices ---
         if J0.get("mobId") not in index_mob or J1.get("mobId") not in index_mob:
             return True
         if J0.get("destId") not in index_dest or J1.get("destId") not in index_dest:
             return True
-        i_m0 = int(index_mob[J0.get("mobId")]); i_m1 = int(index_mob[J1.get("mobId")])
-        i_d0 = int(index_dest[J0.get("destId")]); i_d1 = int(index_dest[J1.get("destId")])
+        i_m0 = int(index_mob[J0.get("mobId")])
+        i_m1 = int(index_mob[J1.get("mobId")])
+        i_d0 = int(index_dest[J0.get("destId")])
+        i_d1 = int(index_dest[J1.get("destId")])
         if i_m0 == i_m1 or i_d0 == i_d1:
             return True
         _dbg(f"[TOPO-OVERLAP][CUT] iMob=({i_m0},{i_m1}) iDest=({i_d0},{i_d1})")
@@ -2522,9 +2540,8 @@ class TopologyWorld:
             elif j1 == (j0 - 1) % n:     # edge inversé
                 return self._arcForward(pts, j0, j1)
 
-         
-        arc_mob = arcEntreJonctionsSelonEdge(pts_mob, i_m0, i_m1)   
-        arc_dest = arcEntreJonctionsSelonEdge(pts_dest, i_d0, i_d1) 
+        arc_mob = arcEntreJonctionsSelonEdge(pts_mob, i_m0, i_m1)
+        arc_dest = arcEntreJonctionsSelonEdge(pts_dest, i_d0, i_d1)
         ring_out = self._concatArcs(arc_mob, arc_dest)
         ring_xy = [(float(p[0]), float(p[1])) for p in ring_out]
         poly = _ShPoly(ring_xy) if ring_xy else _ShPoly()
@@ -2597,7 +2614,6 @@ class TopologyWorld:
     def format_node_id(self, element_id: str, vertex_index: int) -> str:
         return f"{str(element_id)}:N{int(vertex_index)}"
 
-    
     @staticmethod
     def parse_tri_rank_from_element_id(element_id: str) -> int | None:
         s = str(element_id or "").strip()
@@ -2606,9 +2622,8 @@ class TopologyWorld:
             return None
         return int(m.group(1))
 
-
-
     # Azimut (C7) – Référence unique
+
     def azimutDegFromDxDy(self, dx: float, dy: float) -> float:
         """Calcule l'azimut standard (0°=Nord, sens horaire) à partir d'un delta.
 
@@ -2627,9 +2642,6 @@ class TopologyWorld:
         dy_north = -dy if bool(getattr(self, "worldYAxisDown", True)) else dy
         a = math.degrees(math.atan2(dx, dy_north))  # atan2(E, N)
         return float((a + 360.0) % 360.0)
-
-
-
 
     def new_group_id(self) -> str:
         self._created_counter_groups += 1
@@ -2868,7 +2880,6 @@ class TopologyWorld:
             R2 = self._closest_rotation(R2_raw)
             el.set_pose(R=R2, T=T2, mirrored=mirrored2)
 
-
     def elementLocalToWorld(self, element_id: str, p_local: np.ndarray | tuple[float, float]) -> np.ndarray:
         el = self.elements.get(str(element_id))
         if el is None:
@@ -2965,9 +2976,9 @@ class TopologyWorld:
         angW = float(np.arctan2(vW[1], vW[0]))
         dtheta = angW - angL
 
-        c = float(np.cos(dtheta)); s = float(np.sin(dtheta))
-        R_abs = np.array([[c, -s],
-                        [s,  c]], dtype=float)
+        c = float(np.cos(dtheta))
+        s = float(np.sin(dtheta))
+        R_abs = np.array([[c, -s], [s,  c]], dtype=float)
 
         # T : amener p0m sur W0
         T_abs = np.array(W0, dtype=float) - (R_abs @ np.array(p0m, dtype=float))
@@ -2982,7 +2993,6 @@ class TopologyWorld:
                 att.attachment_id = self.new_attachment_id()
             gid_last = self.apply_attachment(att)
         return str(gid_last) if gid_last is not None else ""
-
 
     def _edge_endpoints_atomic_nodes(self, edge: TopologyEdge) -> tuple[str, str]:
         return (edge.v_start.node_id, edge.v_end.node_id)
@@ -3011,8 +3021,10 @@ class TopologyWorld:
                 )
             vidx = int(f.index)
             if vidx < 0 or vidx >= len(element.vertexes):
+                attid = attachment.attachment_id
+                eid = element.element_id
                 raise ValueError(
-                    f"[P2][Attachment] unknown vertex vertexId=N{vidx} in elementId={element.element_id} feature{side} id={attachment.attachment_id}"
+                    f"[P2][Attachment] unknown vertex vertexId=N{vidx} in elementId={eid} feature{side} id={attid}"
                 )
 
         def require_edge_ref(f, side: str) -> None:
@@ -3020,15 +3032,17 @@ class TopologyWorld:
                 raise ValueError(
                     f"[P2][Attachment] expected EdgeRef for {side} got={f.feature_type} id={attachment.attachment_id}"
                 )
-            element = self.elements.get(str(f.element_id))
+            eid = f.element_id
+            attid = attachment.attachment_id
+            element = self.elements.get(str(eid))
             if element is None:
                 raise ValueError(
-                    f"[P2][Attachment] unknown element elementId={f.element_id} in feature{side} id={attachment.attachment_id}"
+                    f"[P2][Attachment] unknown element elementId={eid} in feature{side} id={attid}"
                 )
             eidx = int(f.index)
             if eidx < 0 or eidx >= len(element.edges):
                 raise ValueError(
-                    f"[P2][Attachment] unknown edge edgeId=E{eidx} in elementId={element.element_id} feature{side} id={attachment.attachment_id}"
+                    f"[P2][Attachment] unknown edge edgeId=E{eidx} in elementId={element.element_id} feature{side} id={attid}"
                 )
 
         if kind == "vertex-vertex":
@@ -3099,10 +3113,13 @@ class TopologyWorld:
             self.union_nodes(vA.node_id, vB.node_id)
 
         elif kind == "vertex-edge":
-            if attachment.feature_a.feature_type == TopologyFeatureType.VERTEX and attachment.feature_b.feature_type == TopologyFeatureType.EDGE:
-                vRef, eRef = attachment.feature_a, attachment.feature_b
-            elif attachment.feature_a.feature_type == TopologyFeatureType.EDGE and attachment.feature_b.feature_type == TopologyFeatureType.VERTEX:
-                vRef, eRef = attachment.feature_b, attachment.feature_a
+            a, b = attachment.feature_a, attachment.feature_b
+            ta, tb = a.feature_type, b.feature_type
+
+            if ta == TopologyFeatureType.VERTEX and tb == TopologyFeatureType.EDGE:
+                vRef, eRef = a, b
+            elif ta == TopologyFeatureType.EDGE and tb == TopologyFeatureType.VERTEX:
+                vRef, eRef = b, a
             else:
                 raise ValueError("vertex-edge attend un vertexRef et un edgeRef")
 
@@ -3139,9 +3156,11 @@ class TopologyWorld:
             b0, b1 = self._edge_endpoints_atomic_nodes(eB)
 
             if mapping == "direct":
-                self.union_nodes(a0, b0); self.union_nodes(a1, b1)
+                self.union_nodes(a0, b0)
+                self.union_nodes(a1, b1)
             elif mapping == "reverse":
-                self.union_nodes(a0, b1); self.union_nodes(a1, b0)
+                self.union_nodes(a0, b1)
+                self.union_nodes(a1, b0)
             else:
                 raise ValueError(f"edge-edge: mapping invalide: {mapping}")
 
@@ -3169,10 +3188,12 @@ class TopologyWorld:
             self.union_nodes(vA.node_id, vB.node_id)
 
         elif kind == "vertex-edge":
-            if attachment.feature_a.feature_type == TopologyFeatureType.VERTEX and attachment.feature_b.feature_type == TopologyFeatureType.EDGE:
-                vRef, eRef = attachment.feature_a, attachment.feature_b
-            elif attachment.feature_a.feature_type == TopologyFeatureType.EDGE and attachment.feature_b.feature_type == TopologyFeatureType.VERTEX:
-                vRef, eRef = attachment.feature_b, attachment.feature_a
+            a, b = attachment.feature_a, attachment.feature_b
+            ta, tb = a.feature_type, b.feature_type
+            if ta == TopologyFeatureType.VERTEX and tb == TopologyFeatureType.EDGE:
+                vRef, eRef = a, b
+            elif ta == TopologyFeatureType.EDGE and tb == TopologyFeatureType.VERTEX:
+                vRef, eRef = b, a
             else:
                 raise ValueError("Snapshot invalide : vertex-edge attend un vertexRef et un edgeRef")
 
@@ -3426,7 +3447,6 @@ class TopologyWorld:
         vertex_index = int(m.group(2))
         return (element_id, vertex_index)
 
-
     def getAtomicNodeLabel(self, node_id: str) -> str:
         """Retourne le label métier (ville) d'un node atomique.
         Fallback: 'N0', 'N1', ...
@@ -3447,7 +3467,6 @@ class TopologyWorld:
             return str(el.vertex_labels[vidx])
 
         return f"N{vidx}"
-
 
     def getNodeType(self, nodeId: str) -> str:
         elementId, vidx = self._parseElementAndVertexIndexFromNodeId(nodeId)
@@ -3498,8 +3517,6 @@ class TopologyWorld:
 
     def getNodeTypeAtomic(self, node_id: str) -> str:
         return str(self._node_type[str(node_id)])
-
-
 
     def resolvePhysicalNodeIdDeterministic(self, nodeId: str) -> str | None:
         """Retourne un nodeId physique 'Txx:Nn' depuis un nodeId (DSU canon ou déjà physique).
@@ -3573,8 +3590,6 @@ class TopologyWorld:
             return "T??"
         return m.group(1)
 
-
-
     def _localPointOnEdge(self, el: "TopologyElement", edge: "TopologyEdge", t: float) -> np.ndarray:
         """Point local sur une arête (interpolation linéaire) via vertex_local_xy."""
         v0 = int(edge.v_start.vertex_index)
@@ -3590,8 +3605,8 @@ class TopologyWorld:
         y = (1.0 - t) * float(p0[1]) + t * float(p1[1])
         return np.array([x, y], dtype=float)
 
- 
     # --- export ---
+
     def validate_world(self) -> list[str]:
         errors: list[str] = []
         try:
@@ -3880,8 +3895,8 @@ class TopologyWorld:
                 "ty": f"{float(T[1]):.6f}",
             })
             _ET.SubElement(ep, "R", {
-                "r00": f"{float(R[0,0]):.9f}", "r01": f"{float(R[0,1]):.9f}",
-                "r10": f"{float(R[1,0]):.9f}", "r11": f"{float(R[1,1]):.9f}",
+                "r00": f"{float(R[0, 0]):.9f}", "r01": f"{float(R[0, 1]):.9f}",
+                "r10": f"{float(R[1, 0]):.9f}", "r11": f"{float(R[1, 1]):.9f}",
             })
 
             # --- Coordonnées locales (relatives) ---
@@ -3954,7 +3969,6 @@ class TopologyWorld:
 
         _ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
         return path
-
 
     @staticmethod
     def _distPointToSegment2D(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> tuple[float, np.ndarray, float]:

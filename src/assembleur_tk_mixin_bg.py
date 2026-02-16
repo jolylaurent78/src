@@ -5,14 +5,14 @@ Ce module est généré pour découper assembleur_tk.py.
 """
 
 from __future__ import annotations
-import os, re, math, json, copy
+import os
+import re
+import json
 import io
 import datetime as _dt
 import numpy as np
-import pandas as pd
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog, simpledialog
-from tksheet import Sheet
+from tkinter import messagebox, filedialog
+
 
 # --- Dépendances optionnelles (Pillow / SVG rendering / calibration) ---
 try:
@@ -45,6 +45,7 @@ try:
     from pyproj import Transformer
 except Exception:
     Transformer = None
+
 
 class TriangleViewerBackgroundMapMixin:
     """Mixin: méthodes extraites de assembleur_tk.py."""
@@ -122,7 +123,6 @@ class TriangleViewerBackgroundMapMixin:
         )
         self.canvas.configure(cursor="crosshair")
 
-
     def _bg_calibrate_cancel(self):
         if not getattr(self, "_bg_calib_active", False):
             return
@@ -132,7 +132,6 @@ class TriangleViewerBackgroundMapMixin:
         self._bg_calib_step = 0
         self.canvas.configure(cursor="")
         self.status.config(text="Calibration annulée.")
-
 
     def _bg_calibrate_handle_click(self, event):
         """Enregistre un clic de calibration (en coordonnées monde)."""
@@ -153,7 +152,6 @@ class TriangleViewerBackgroundMapMixin:
             return "break"
 
         w = self._screen_to_world(event.x, event.y)
-
 
         self._bg_calib_clicked_world.append((float(w[0]), float(w[1])))
         self._bg_calib_step += 1
@@ -179,7 +177,6 @@ class TriangleViewerBackgroundMapMixin:
 
         self._redraw_from(self._last_drawn)
         return "break"
-
 
     def _bg_calibrate_finish(self):
         cfg = self._bg_calib_points_cfg or {}
@@ -242,7 +239,7 @@ class TriangleViewerBackgroundMapMixin:
                     "w":  float(self._bg.get("w")),
                     "h":  float(self._bg.get("h")),
                 }
-                if (self._bg is not None and all(k in self._bg for k in ("x0","y0","w","h")))
+                if (self._bg is not None and all(k in self._bg for k in ("x0", "y0", "w", "h")))
                 else None
             ),
             "points": [
@@ -269,7 +266,6 @@ class TriangleViewerBackgroundMapMixin:
     # Fond SVG en coordonnées monde
     # =========================
 
-
     def _bg_clear(self, persist: bool = True):
         self._bg = None
         self._bg_base_pil = None
@@ -281,7 +277,6 @@ class TriangleViewerBackgroundMapMixin:
         if persist:
             self._persistBackgroundConfig()
         self._redraw_from(self._last_drawn)
-
 
     def _bg_try_load_calibration(self, svg_path: str):
         """Charge data/maps/<carte>.json si présent (calibration 3 points).
@@ -333,7 +328,6 @@ class TriangleViewerBackgroundMapMixin:
             self._bg_calib_data = None
             self._bg_scale_base_w = None
 
-
     def _bg_load_svg_dialog(self):
         path = filedialog.askopenfilename(
             title="Choisir une carte (SVG/PNG/JPG)",
@@ -349,7 +343,6 @@ class TriangleViewerBackgroundMapMixin:
         if not path:
             return
         self._bg_set_map(path)
-
 
     def _bg_set_map(self, path: str, rect_override: dict | None = None, persist: bool = True):
         """Charge une carte (fond) depuis un fichier .svg ou une image raster (.png/.jpg/.jpeg).
@@ -369,7 +362,6 @@ class TriangleViewerBackgroundMapMixin:
             "Format non supporté",
             f"Carte non supportée: {path}\nFormats acceptés: .svg, .png, .jpg, .jpeg"
         )
-
 
     def _bg_set_png(self, png_path: str, rect_override: dict | None = None, persist: bool = True):
         if (Image is None or ImageTk is None):
@@ -392,7 +384,6 @@ class TriangleViewerBackgroundMapMixin:
         aspect = float(w0) / float(h0) if h0 else 1.0
         aspect = max(1e-6, aspect)
 
-
         # base normalisée : max 4096 sur le plus grand côté (comme SVG)
         max_dim = 4096
         w0, h0 = pil0.size
@@ -407,13 +398,12 @@ class TriangleViewerBackgroundMapMixin:
                 W = max(1, int(round(H * aspect)))
             pil0 = pil0.resize((W, H), Image.LANCZOS)
 
-
         # Si on a une géométrie sauvegardée (monde), on la réapplique telle quelle
         if isinstance(rect_override, dict) and all(k in rect_override for k in ("x0", "y0", "w", "h")):
             x0 = float(rect_override.get("x0", 0.0))
             y0 = float(rect_override.get("y0", 0.0))
-            w  = float(rect_override.get("w", 1.0))
-            h  = float(rect_override.get("h", 1.0))
+            w = float(rect_override.get("w", 1.0))
+            h = float(rect_override.get("h", 1.0))
             if w > 1e-9 and h > 1e-9:
                 self._bg = {"path": png_path, "x0": x0, "y0": y0, "w": w, "h": h, "aspect": aspect}
                 self._bg_base_pil = pil0
@@ -430,14 +420,14 @@ class TriangleViewerBackgroundMapMixin:
                     print(f"[Fond image] Fichier chargé: {os.path.basename(str(png_path))} ({png_path})")
                 return
 
-
         # Position/taille initiale : calée sur bbox des triangles si dispo, sinon vue écran
         if self._last_drawn:
             xs, ys = [], []
             for t in self._last_drawn:
                 P = t["pts"]
                 for k in ("O", "B", "L"):
-                    xs.append(float(P[k][0])); ys.append(float(P[k][1]))
+                    xs.append(float(P[k][0]))
+                    ys.append(float(P[k][1]))
             xmin, xmax = min(xs), max(xs)
             ymin, ymax = min(ys), max(ys)
         else:
@@ -474,7 +464,6 @@ class TriangleViewerBackgroundMapMixin:
 
         self._redraw_from(self._last_drawn)
 
-
     def _bg_set_svg(self, svg_path: str, rect_override: dict | None = None, persist: bool = True):
         if (Image is None or ImageTk is None or svg2rlg is None
                 or renderPDF is None or _rl_canvas is None or pdfium is None):
@@ -491,8 +480,8 @@ class TriangleViewerBackgroundMapMixin:
         if isinstance(rect_override, dict) and all(k in rect_override for k in ("x0", "y0", "w", "h")):
             x0 = float(rect_override.get("x0", 0.0))
             y0 = float(rect_override.get("y0", 0.0))
-            w  = float(rect_override.get("w", 1.0))
-            h  = float(rect_override.get("h", 1.0))
+            w = float(rect_override.get("w", 1.0))
+            h = float(rect_override.get("h", 1.0))
             if w > 1e-9 and h > 1e-9:
                 self._bg = {"path": svg_path, "x0": x0, "y0": y0, "w": w, "h": h, "aspect": aspect}
                 # Raster base "normalisée" (taille fixe, ratio respecté)
@@ -509,14 +498,14 @@ class TriangleViewerBackgroundMapMixin:
                 self._redraw_from(self._last_drawn)
                 return
 
-
         # Position/taille initiale : calée sur bbox des triangles si dispo, sinon vue écran
         if self._last_drawn:
             xs, ys = [], []
             for t in self._last_drawn:
                 P = t["pts"]
                 for k in ("O", "B", "L"):
-                    xs.append(float(P[k][0])); ys.append(float(P[k][1]))
+                    xs.append(float(P[k][0]))
+                    ys.append(float(P[k][1]))
             xmin, xmax = min(xs), max(xs)
             ymin, ymax = min(ys), max(ys)
         else:
@@ -558,14 +547,14 @@ class TriangleViewerBackgroundMapMixin:
 
         self._redraw_from(self._last_drawn)
 
-
     def _bg_parse_aspect(self, svg_path: str) -> float:
         s = open(svg_path, "r", encoding="utf-8", errors="ignore").read(8192)
 
         # viewBox="minx miny width height"
         m = re.search(r'viewBox\s*=\s*["\']\s*([-\d\.eE]+)\s+([-\d\.eE]+)\s+([-\d\.eE]+)\s+([-\d\.eE]+)\s*["\']', s)
         if m:
-            vw = float(m.group(3)); vh = float(m.group(4))
+            vw = float(m.group(3))
+            vh = float(m.group(4))
             if abs(vh) > 1e-12:
                 return max(1e-6, vw / vh)
 
@@ -573,12 +562,12 @@ class TriangleViewerBackgroundMapMixin:
         mw = re.search(r'width\s*=\s*["\']\s*([-\d\.eE]+)', s)
         mh = re.search(r'height\s*=\s*["\']\s*([-\d\.eE]+)', s)
         if mw and mh:
-            w = float(mw.group(1)); h = float(mh.group(1))
+            w = float(mw.group(1))
+            h = float(mh.group(1))
             if abs(h) > 1e-12:
                 return max(1e-6, w / h)
 
         return 1.0
-
 
     def _bg_render_base(self, svg_path: str, aspect: float, max_dim: int = 4096):
         # base normalisée : max_dim sur le plus grand côté
@@ -606,7 +595,6 @@ class TriangleViewerBackgroundMapMixin:
                     bw = max(0.0, xmax - xmin)
                     bh = max(0.0, ymax - ymin)
 
-
             # Dimensions de référence : d'abord le bounding-box, sinon width/height svglib
             dw = float(bw) if bw > 1e-9 else float(getattr(drawing, "width", 0) or 0)
             dh = float(bh) if bh > 1e-9 else float(getattr(drawing, "height", 0) or 0)
@@ -620,17 +608,15 @@ class TriangleViewerBackgroundMapMixin:
                 if hasattr(drawing, "translate"):
                     drawing.translate(-xmin, -ymin)
 
-
             # svglib exprime en "points" (1/72 inch). En rasterisant à 72dpi,
             # 1 point ~= 1 pixel. On scale le dessin puis on force le canvas aux dims voulues.
             sx = float(W) / dw
             sy = float(H) / dh
-            
+
             # On applique les deux échelles pour respecter EXACTEMENT W/H (le ratio vient déjà de 'aspect')
             drawing.scale(sx, sy)
             drawing.width = float(W)
             drawing.height = float(H)
-
 
             # Rasterisation sans Cairo : SVG -> PDF (reportlab) -> bitmap (pypdfium2)
             if renderPDF is None or _rl_canvas is None or pdfium is None:
@@ -656,7 +642,6 @@ class TriangleViewerBackgroundMapMixin:
             messagebox.showerror("Erreur SVG", f"Impossible de rasteriser le SVG (svglib/reportlab):\n{e}")
             return None
 
-
     def _bg_draw_world_layer(self):
         """Dessine le fond en 'monde' : on recadre la base en fonction pan/zoom et on l'affiche en plein canvas."""
         if not self._bg or self._bg_base_pil is None or Image is None or ImageTk is None:
@@ -672,9 +657,12 @@ class TriangleViewerBackgroundMapMixin:
         if cw <= 2 or ch <= 2:
             return
 
-        bx0 = float(self._bg["x0"]); by0 = float(self._bg["y0"])
-        bw = float(self._bg["w"]);  bh = float(self._bg["h"])
-        bx1 = bx0 + bw; by1 = by0 + bh
+        bx0 = float(self._bg["x0"])
+        by0 = float(self._bg["y0"])
+        bw = float(self._bg["w"])
+        bh = float(self._bg["h"])
+        bx1 = bx0 + bw
+        by1 = by0 + bh
 
         # Vue monde actuelle (canvas entier)
         xA, yTop = self._screen_to_world(0, 0)
@@ -683,15 +671,17 @@ class TriangleViewerBackgroundMapMixin:
         vy0, vy1 = (min(yBot, yTop), max(yBot, yTop))
 
         # Intersection vue <-> fond
-        ix0 = max(vx0, bx0); ix1 = min(vx1, bx1)
-        iy0 = max(vy0, by0); iy1 = min(vy1, by1)
+        ix0 = max(vx0, bx0)
+        ix1 = min(vx1, bx1)
+        iy0 = max(vy0, by0)
+        iy1 = min(vy1, by1)
         if ix0 >= ix1 or iy0 >= iy1:
             return
 
         baseW, baseH = self._bg_base_pil.size
 
         # Crop dans l'image base
-        left  = int((ix0 - bx0) / bw * baseW)
+        left = int((ix0 - bx0) / bw * baseW)
         right = int((ix1 - bx0) / bw * baseW)
         # y base : 0 en haut, donc on inverse
         upper = int((by1 - iy1) / bh * baseH)  # iy1 = top
@@ -718,7 +708,8 @@ class TriangleViewerBackgroundMapMixin:
         # IMPORTANT: fond blanc pour éviter un rendu gris quand la carte est semi-transparente
         # (Tk peut composer les pixels transparents sur un fond non-blanc selon la plateforme).
         out = Image.new("RGBA", (cw, ch), (255, 255, 255, 255))
-        px = int(round(sx0)); py = int(round(syTop))
+        px = int(round(sx0))
+        py = int(round(syTop))
 
         # clip paste
         paste_x0 = max(0, px)
@@ -752,12 +743,13 @@ class TriangleViewerBackgroundMapMixin:
         self.canvas.create_image(0, 0, anchor="nw", image=self._bg_photo, tags=("bg_world",))
         self.canvas.tag_lower("bg_world")
 
-
     def _bg_corners_world(self):
         if not self._bg:
             return None
-        x0 = float(self._bg["x0"]); y0 = float(self._bg["y0"])
-        w = float(self._bg["w"]);  h = float(self._bg["h"])
+        x0 = float(self._bg["x0"])
+        y0 = float(self._bg["y0"])
+        w = float(self._bg["w"])
+        h = float(self._bg["h"])
         return {
             "bl": (x0,     y0),
             "br": (x0 + w, y0),
@@ -765,13 +757,11 @@ class TriangleViewerBackgroundMapMixin:
             "tr": (x0 + w, y0 + h),
         }
 
-
     def _bg_corners_screen(self):
         c = self._bg_corners_world()
         if not c:
             return None
         return {k: self._world_to_screen(v) for k, v in c.items()}
-
 
     def _bg_draw_resize_handles(self):
         if not self._bg or not self.bg_resize_mode.get():
@@ -779,7 +769,8 @@ class TriangleViewerBackgroundMapMixin:
         c = self._bg_corners_screen()
         if not c:
             return
-        tl = c["tl"]; br = c["br"]
+        tl = c["tl"]
+        br = c["br"]
 
         self.canvas.create_rectangle(tl[0], tl[1], br[0], br[1], outline="gray30", dash=(3, 2), width=1, tags=("bg_ui",))
 
@@ -787,7 +778,6 @@ class TriangleViewerBackgroundMapMixin:
         for k in ("tl", "tr", "bl", "br"):
             x, y = c[k]
             self.canvas.create_rectangle(x-r, y-r, x+r, y+r, outline="gray10", fill="white", width=1, tags=("bg_ui",))
-
 
     def _bg_hit_test_handle(self, sx: float, sy: float):
         c = self._bg_corners_screen()
@@ -799,7 +789,6 @@ class TriangleViewerBackgroundMapMixin:
             if (sx - x)*(sx - x) + (sy - y)*(sy - y) <= r*r:
                 return k
         return None
-
 
     def _bg_start_resize(self, handle: str, sx: int, sy: int):
         # handle: tl,tr,bl,br ; corner opposée fixe
@@ -814,7 +803,6 @@ class TriangleViewerBackgroundMapMixin:
             "start_rect": (float(self._bg["x0"]), float(self._bg["y0"]), float(self._bg["w"]), float(self._bg["h"])),
         }
 
-
     def _bg_start_move(self, sx: int, sy: int):
         """Démarre un déplacement du fond (mode resize actif mais pas sur une poignée)."""
         if not self._bg:
@@ -824,7 +812,6 @@ class TriangleViewerBackgroundMapMixin:
             "start_mouse": (float(mx), float(my)),
             "start_xy": (float(self._bg.get("x0", 0.0)), float(self._bg.get("y0", 0.0))),
         }
-
 
     def _bg_update_move(self, sx: int, sy: int):
         if not getattr(self, "_bg_moving", None) or not self._bg:
@@ -836,7 +823,6 @@ class TriangleViewerBackgroundMapMixin:
         dy = float(my - smy)
         self._bg["x0"] = float(x0 + dx)
         self._bg["y0"] = float(y0 + dy)
-
 
     def _bg_update_resize(self, sx: int, sy: int):
         if not self._bg_resizing or not self._bg:
@@ -870,12 +856,11 @@ class TriangleViewerBackgroundMapMixin:
 
         self._bg["x0"] = float(x0)
         self._bg["y0"] = float(y0)
-        self._bg["w"]  = float(w)
-        self._bg["h"]  = float(h)
+        self._bg["w"] = float(w)
+        self._bg["h"] = float(h)
 
         # Afficher l'échelle relative (x1, x1/3.15, x2.49...) pendant le resize
         self._bg_update_scale_status()
-
 
     def _bg_compute_scale_factor(self) -> float | None:
         """Retourne le scale *carte vs triangles*.
@@ -927,7 +912,6 @@ class TriangleViewerBackgroundMapMixin:
         self._bg_scale_factor_override = s
         return s
 
-
     def _bg_format_scale(self, s: float | None) -> str:
         if s is None:
             return "x?"
@@ -939,12 +923,9 @@ class TriangleViewerBackgroundMapMixin:
         k = 1.0 / max(1e-12, s)
         return f"x1/{k:.2f}"
 
-
     def _bg_update_scale_status(self):
         # On n'affiche l'échelle que si le mode redimensionnement est actif.
         if not self.bg_resize_mode.get() or not self._bg:
             return
         s = self._bg_compute_scale_factor()
         self.status.config(text=f"Échelle carte : {self._bg_format_scale(s)}")
-
-

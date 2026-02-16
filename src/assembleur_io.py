@@ -6,11 +6,312 @@ Les fonctions prennent 'viewer' en paramètre (duck-typing) pour éviter les imp
 import os
 import json
 import datetime as _dt
-from typing import Any, Dict, Optional
 import xml.etree.ElementTree as ET
 import re
+import unicodedata
 import traceback
 import numpy as np
+import pandas as pd
+from math import hypot, acos, degrees
+
+class TriangleFileService:
+    CFG_KEYS = (
+        "lastTriangleCsvIn",
+        "lastVillesCsvIn",
+        "lastTriangleExcelOut",
+        "lastTriangleExcel",
+    )
+    DMS_RE = re.compile(r"^\s*(\d+)\s+(\d+)\s+(\d+)\s+([NSEW])\s*$")
+
+    def __init__(self, viewer):
+        self.viewer = viewer
+        self._transformer = None
+
+    def createExcelFromCsv(self, triCsvPath: str, villesCsvPath: str, excelOutPath: str) -> str:
+        tri_df = pd.read_csv(triCsvPath, sep=";")
+        self._validatedColumns(
+            tri_df,
+            expected=["Ouverture", "Base", "Lumiere"],
+            fileLabel="CSV triangles",
+        )
+        if tri_df.empty:
+            raise ValueError("CSV triangles vide.")
+
+        villes_df = pd.read_csv(villesCsvPath, sep=",")
+        self._validatedColumns(
+            villes_df,
+            expected=["Nom", "Latitude", "Longitude"],
+            fileLabel="CSV villes",
+            allowExtra=True,
+        )
+        villes_df = villes_df[["Nom", "Latitude", "Longitude"]]
+        if villes_df.empty:
+            raise ValueError("CSV villes vide.")
+
+        villesByName = {}
+        for i, row in villes_df.iterrows():
+            if pd.isna(row["Nom"]) or pd.isna(row["Latitude"]) or pd.isna(row["Longitude"]):
+                raise ValueError(f"CSV villes: ligne incomplète à la ligne {i + 2}.")
+            name = str(row["Nom"]).strip()
+            lat_dms = str(row["Latitude"]).strip()
+            lon_dms = str(row["Longitude"]).strip()
+            if not name:
+                raise ValueError(f"CSV villes: Nom vide à la ligne {i + 2}.")
+            if name in villesByName:
+                raise ValueError(f"CSV villes: Nom dupliqué '{name}'.")
+
+            (_, _, _, h_lat) = self._parseDmsParts(lat_dms)
+            (_, _, _, h_lon) = self._parseDmsParts(lon_dms)
+            if h_lat not in ("N", "S"):
+                raise ValueError(f"CSV villes: latitude invalide pour '{name}': {lat_dms!r}")
+            if h_lon not in ("E", "W"):
+                raise ValueError(f"CSV villes: longitude invalide pour '{name}': {lon_dms!r}")
+            villesByName[name] = (lat_dms, lon_dms)
+
+        transformer = self._getTransformer()
+
+        projectedByName = {}
+        for name, (lat_dms, lon_dms) in villesByName.items():
+            lat = self._parseDms(lat_dms)
+            lon = self._parseDms(lon_dms)
+            try:
+                x_m, y_m = transformer.transform(lon, lat)
+            except Exception as e:
+                raise RuntimeError(f"Projection Lambert93 impossible pour '{name}': {e}") from e
+            projectedByName[name] = (float(x_m), float(y_m))
+
+        outRows = []
+        for i, row in tri_df.iterrows():
+            if pd.isna(row["Ouverture"]) or pd.isna(row["Base"]) or pd.isna(row["Lumiere"]):
+                raise ValueError(f"CSV triangles: ligne incomplète à la ligne {i + 2}.")
+            o = str(row["Ouverture"]).strip()
+            b = str(row["Base"]).strip()
+            l = str(row["Lumiere"]).strip()
+            if not o or not b or not l:
+                raise ValueError(f"CSV triangles: ligne incomplète à la ligne {i + 2}.")
+            for city in (o, b, l):
+                if city not in projectedByName:
+                    raise ValueError(f"Ville introuvable dans CSV villes: '{city}'")
+
+            (xo, yo) = projectedByName[o]
+            (xb, yb) = projectedByName[b]
+            (xl, yl) = projectedByName[l]
+
+            d_ob = round(hypot(xb - xo, yb - yo) / 1000.0, 2)
+            d_ol = round(hypot(xl - xo, yl - yo) / 1000.0, 2)
+            d_bl = round(hypot(xl - xb, yl - yb) / 1000.0, 2)
+
+            a_o = round(self._angleDeg(xo, yo, xb, yb, xl, yl), 2)
+            a_b = round(self._angleDeg(xb, yb, xo, yo, xl, yl), 2)
+            a_l = round(self._angleDeg(xl, yl, xo, yo, xb, yb), 2)
+            if abs((a_o + a_b + a_l) - 180.0) > 0.05:
+                raise ValueError("Triangle dégénéré / données incohérentes.")
+
+            orientation = self._orientationAtL(xo, yo, xb, yb, xl, yl)
+
+            outRows.append([
+                int(i + 1),      # Rang
+                o, b, l,         # Ouverture/Base/Lumiere (noms)
+                float(a_o),      # Ouverture (angle)
+                float(a_b),      # Base (angle)
+                float(a_l),      # Lumiere (angle)
+                float(d_ob),     # Ouverture-Base (km)
+                float(d_ol),     # Ouverture-Lumiere (km)
+                float(d_bl),     # Lumiere-Base (km)
+                orientation,     # Orientation
+            ])
+
+        outColumns = [
+            "Rang",
+            "Ouverture",
+            "Base",
+            "Lumiere",
+            "Ouverture",
+            "Base",
+            "Lumiere",
+            "Ouverture-Base",
+            "Ouverture-Lumiere",
+            "Lumiere-Base",
+            "Orientation",
+        ]
+        out_df = pd.DataFrame(outRows, columns=outColumns)
+
+        out_dir = os.path.dirname(excelOutPath)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+
+        tmp_path = excelOutPath + ".tmp.xlsx"
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        try:
+            with pd.ExcelWriter(tmp_path, engine="openpyxl") as writer:
+                out_df.to_excel(writer, sheet_name="Triangles", index=False)
+            os.replace(tmp_path, excelOutPath)
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            raise
+
+        return excelOutPath
+
+    def loadExcel(self, path: str) -> tuple[pd.DataFrame, str]:
+        df0 = pd.read_excel(path, header=None)
+        header_row = self._findHeaderRow(df0)
+        df = pd.read_excel(path, header=header_row)
+        dfCanon = self._buildCanonDf(df)
+        path_norm = os.path.normpath(os.path.abspath(path))
+        return (dfCanon, path_norm)
+
+    def listTriangleExcelFiles(self) -> list[str]:
+        files = [
+            f for f in os.listdir(self.viewer.data_dir)
+            if f.lower().endswith(".xlsx") and not f.lstrip().startswith("~$")
+        ]
+        files.sort(key=str.lower)
+        return files
+
+    def getLastPaths(self) -> dict:
+        return {
+            k: str(self.viewer.getAppConfigValue(k, "") or "")
+            for k in self.CFG_KEYS
+        }
+
+    def setLastPaths(
+        self,
+        *,
+        lastTriangleCsvIn: str | None = None,
+        lastVillesCsvIn: str | None = None,
+        lastTriangleExcelOut: str | None = None,
+        lastTriangleExcel: str | None = None,
+    ) -> None:
+        updates = {
+            "lastTriangleCsvIn": lastTriangleCsvIn,
+            "lastVillesCsvIn": lastVillesCsvIn,
+            "lastTriangleExcelOut": lastTriangleExcelOut,
+            "lastTriangleExcel": lastTriangleExcel,
+        }
+        for key, value in updates.items():
+            if value is not None:
+                self.viewer.setAppConfigValue(key, value)
+        self.viewer.saveAppConfig()
+
+    def _parseDmsParts(self, dms: str):
+        if not isinstance(dms, str):
+            raise ValueError(f"DMS invalide: {dms!r}")
+        m = self.DMS_RE.match(dms)
+        if m is None:
+            raise ValueError(f"DMS invalide: {dms!r}")
+        deg = int(m.group(1))
+        minute = int(m.group(2))
+        second = int(m.group(3))
+        hemisphere = m.group(4)
+        if minute < 0 or minute >= 60:
+            raise ValueError(f"DMS invalide (minutes): {dms!r}")
+        if second < 0 or second >= 60:
+            raise ValueError(f"DMS invalide (secondes): {dms!r}")
+        return (deg, minute, second, hemisphere)
+
+    def _parseDms(self, dms: str) -> float:
+        deg, minute, second, hemisphere = self._parseDmsParts(dms)
+        decimal = float(deg) + (float(minute) / 60.0) + (float(second) / 3600.0)
+        if hemisphere in ("S", "W"):
+            decimal = -decimal
+        return decimal
+
+    def _clamp(self, x: float, lo: float, hi: float) -> float:
+        return min(hi, max(lo, x))
+
+    def _angleDeg(self, px: float, py: float, ax: float, ay: float, cx: float, cy: float) -> float:
+        v1x = ax - px
+        v1y = ay - py
+        v2x = cx - px
+        v2y = cy - py
+        n1 = hypot(v1x, v1y)
+        n2 = hypot(v2x, v2y)
+        if n1 <= 0.0 or n2 <= 0.0:
+            raise ValueError("Triangle dégénéré / données incohérentes.")
+        c = self._clamp(((v1x * v2x) + (v1y * v2y)) / (n1 * n2), -1.0, 1.0)
+        return degrees(acos(c))
+
+    def _orientationAtL(self, xo: float, yo: float, xb: float, yb: float, xl: float, yl: float) -> str:
+        vlo_x = xo - xl
+        vlo_y = yo - yl
+        vlb_x = xb - xl
+        vlb_y = yb - yl
+        cross = (vlo_x * vlb_y) - (vlo_y * vlb_x)
+        if abs(cross) <= 1e-12:
+            raise ValueError("Points alignés: orientation indéfinie.")
+        if cross > 0.0:
+            return "CCW"
+        return "CW"
+
+    def _validatedColumns(self, df: pd.DataFrame, expected: list[str], fileLabel: str, allowExtra: bool = False):
+        cols = [str(c).replace("\ufeff", "").strip() for c in df.columns.tolist()]
+        if allowExtra:
+            if cols[:len(expected)] != expected:
+                raise ValueError(
+                    f"{fileLabel}: entête invalide. Colonnes attendues (préfixe): {', '.join(expected)}"
+                )
+            return
+        if cols != expected:
+            raise ValueError(
+                f"{fileLabel}: entête invalide. Colonnes attendues: {', '.join(expected)}"
+            )
+
+    def _triNorm(self, s: str) -> str:
+        raw = str(s)
+        norm = "".join(c for c in unicodedata.normalize("NFKD", raw) if not unicodedata.combining(c)).lower()
+        return re.sub(r"[^a-z0-9]+", "", norm)
+
+    def _findHeaderRow(self, df0: pd.DataFrame) -> int:
+        for i in range(min(12, len(df0))):
+            row_norm = [self._triNorm(x) for x in df0.iloc[i].tolist()]
+            if any("ouverture" in x for x in row_norm) and any("base" in x for x in row_norm) and any("lumiere" in x for x in row_norm):
+                return i
+        raise KeyError("Impossible de détecter l'entête ('Ouverture', 'Base', 'Lumière').")
+
+    def _buildCanonDf(self, df: pd.DataFrame) -> pd.DataFrame:
+        cmap = {self._triNorm(c): c for c in df.columns}
+        col_id = cmap.get("rang") or cmap.get("id")
+        col_B = cmap.get("base")
+        col_L = cmap.get("lumiere")
+        col_OB = cmap.get("ouverturebase")
+        col_OL = cmap.get("ouverturelumiere")
+        col_BL = cmap.get("lumierebase")
+        col_OR = cmap.get("orientation")
+        missing = [n for n, c in {
+            "Base": col_B,
+            "Lumière": col_L,
+            "Ouverture-Base": col_OB,
+            "Ouverture-Lumière": col_OL,
+            "Lumière-Base": col_BL,
+        }.items() if c is None]
+        if missing:
+            raise KeyError("Colonnes manquantes: " + ", ".join(missing))
+
+        out = pd.DataFrame({
+            "id": df[col_id] if col_id else range(1, len(df) + 1),
+            "B": df[col_B],
+            "L": df[col_L],
+            "len_OB": pd.to_numeric(df[col_OB], errors="coerce"),
+            "len_OL": pd.to_numeric(df[col_OL], errors="coerce"),
+            "len_BL": pd.to_numeric(df[col_BL], errors="coerce"),
+            "orient": (df[col_OR].astype(str).str.upper().str.strip() if col_OR else pd.Series(["CCW"] * len(df))),
+        }).dropna(subset=["len_OB", "len_OL", "len_BL"]).sort_values("id")
+        return out.reset_index(drop=True)
+
+    def _getTransformer(self):
+        if self._transformer is None:
+            try:
+                from pyproj import Transformer
+            except Exception as e:
+                raise RuntimeError("Projection Lambert93 indisponible (pyproj non importable).") from e
+            try:
+                self._transformer = Transformer.from_crs("EPSG:4326", "EPSG:2154", always_xy=True)
+            except Exception as e:
+                raise RuntimeError(f"Projection Lambert93 indisponible: {e}") from e
+        return self._transformer
+
 
 def _ioWarn(viewer, where: str, exc: Exception):
     """
@@ -29,6 +330,7 @@ def _ioWarn(viewer, where: str, exc: Exception):
         # dernier filet: on ne casse jamais sur le logger
         return
 
+
 def loadAppConfig(viewer):
     """Charge la config JSON (best-effort)."""
     viewer.appConfig = {}
@@ -44,8 +346,9 @@ def loadAppConfig(viewer):
             viewer.appConfig = data
     except (OSError, json.JSONDecodeError) as e:
         # Jamais bloquant : si la config est corrompue on repart de zéro.
-        _ioWarn(viewer, f"loadAppConfig(path={getattr(viewer,'config_path','')})", e)
+        _ioWarn(viewer, f"loadAppConfig(path={getattr(viewer, 'config_path', '')})", e)
         viewer.appConfig = {}
+
 
 def saveAppConfig(viewer):
     """Sauvegarde la config JSON (best-effort)."""
@@ -62,7 +365,8 @@ def saveAppConfig(viewer):
             json.dump(getattr(viewer, "appConfig", {}) or {}, f, ensure_ascii=False, indent=2)
         os.replace(tmp, path)
     except OSError as e:
-        _ioWarn(viewer, f"saveAppConfig(path={getattr(viewer,'config_path','')})", e)
+        _ioWarn(viewer, f"saveAppConfig(path={getattr(viewer, 'config_path', '')})", e)
+
 
 def getAppConfigValue(viewer, key: str, default=None):
     return (getattr(viewer, "appConfig", {}) or {}).get(key, default)
@@ -77,6 +381,7 @@ def setAppConfigValue(viewer, key: str, value):
     except Exception as e:
         # Ici on loggue: si ça casse, tu veux le savoir en dev.
         _ioWarn(viewer, f"setAppConfigValue(key={key!r})", e)
+
 
 def saveScenarioXml(viewer, path: str):
     """
@@ -111,12 +416,6 @@ def saveScenarioXml(viewer, path: str):
     ET.SubElement(root, "source", {
         "excel": os.path.abspath(viewer.excel_path) if getattr(viewer, "excel_path", None) else ""
     })
-    # view
-    view = ET.SubElement(root, "view", {
-        "zoom": f"{float(getattr(viewer, 'zoom', 1.0)):.6g}",
-        "offset_x": f"{float(viewer.offset[0]) if hasattr(viewer,'offset') else 0.0:.6g}",
-        "offset_y": f"{float(viewer.offset[1]) if hasattr(viewer,'offset') else 0.0:.6g}",
-    })
 
     # map (fond) : fichier + worldRect + opacité/visibilité + scale
     bg = getattr(viewer, "_bg", None)
@@ -125,13 +424,13 @@ def saveScenarioXml(viewer, path: str):
     map_scale = viewer._bg_compute_scale_factor() if hasattr(viewer, "_bg_compute_scale_factor") else None
     if map_scale is None:
         map_scale = getattr(viewer, "_bg_scale_factor_override", None)
- 
+
     ET.SubElement(root, "map", {
         "path": os.path.abspath(map_path) if map_path else "",
         "x0": f"{float(bg.get('x0')) if isinstance(bg, dict) and bg.get('x0') is not None else 0.0:.6g}",
         "y0": f"{float(bg.get('y0')) if isinstance(bg, dict) and bg.get('y0') is not None else 0.0:.6g}",
-        "w":  f"{float(bg.get('w'))  if isinstance(bg, dict) and bg.get('w')  is not None else 0.0:.6g}",
-        "h":  f"{float(bg.get('h'))  if isinstance(bg, dict) and bg.get('h')  is not None else 0.0:.6g}",
+        "w":  f"{float(bg.get('w')) if isinstance(bg, dict) and bg.get('w') is not None else 0.0:.6g}",
+        "h":  f"{float(bg.get('h')) if isinstance(bg, dict) and bg.get('h') is not None else 0.0:.6g}",
         "visible": "1" if (getattr(viewer, "show_map_layer", None) and viewer.show_map_layer.get()) else "0",
         "opacity": f"{int(viewer.map_opacity.get()) if hasattr(viewer, 'map_opacity') else 100}",
         "scale": f"{float(map_scale):.6g}" if map_scale is not None else "",
@@ -143,7 +442,7 @@ def saveScenarioXml(viewer, path: str):
         "y": f"{float(viewer._clock_cy) if viewer._clock_cy is not None else 0.0:.6g}",
         "hour": f"{int(viewer._clock_state.get('hour', 0))}",
         "minute": f"{int(viewer._clock_state.get('minute', 0))}",
-        "label": str(viewer._clock_state.get("label","")),
+        "label": str(viewer._clock_state.get("label", "")),
     })
     # listbox: ids restants
     lb = ET.SubElement(root, "listbox")
@@ -187,7 +486,7 @@ def saveScenarioXml(viewer, path: str):
             "group": str(t.get("group_id", 0)),
         })
         P = t.get("pts", {})
-        for key in ("O","B","L"):
+        for key in ("O", "B", "L"):
             if key in P:
                 ET.SubElement(tri_el, key).text = viewer._pt_to_xml(P[key])
     # mots associés
@@ -195,14 +494,15 @@ def saveScenarioXml(viewer, path: str):
     for tri_id, info in (viewer._tri_words or {}).items():
         ET.SubElement(words_xml, "w", {
             "tri_id": str(tri_id),
-            "row": str(info.get("row","")),
-            "col": str(info.get("col","")),
-            "text": str(info.get("word","")),
+            "row": str(info.get("row", "")),
+            "col": str(info.get("col", "")),
+            "text": str(info.get("word", "")),
         })
     # écrire
     tree = ET.ElementTree(root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tree.write(path, encoding="utf-8", xml_declaration=True)
+
 
 def loadScenarioXml(viewer, path: str):
     """
@@ -355,7 +655,6 @@ def loadScenarioXml(viewer, path: str):
         for t_el in tris_xml.findall("triangle"):
             tid = int(t_el.get("id"))
             mirrored = (t_el.get("mirrored", "0") == "1")
-            _group_id_unused = int(t_el.get("group", "0"))
             P = {}
             for k in ("O", "B", "L"):
                 n = t_el.find(k)
@@ -446,7 +745,7 @@ def loadScenarioXml(viewer, path: str):
                 if eout is not None and eout not in allowed_edges:
                     raise ValueError(f"Scenario XML invalide: edge_out={eout!r} (gid={gid} i={nd_i})")
                 # v4 : edge_in utilisé par la simulation d'assemblage automatique
-                # on laisse None 
+                # on laisse None
                 if nd_i > 0 and not ein:
                     nd["edge_in"] = None
 

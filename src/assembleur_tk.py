@@ -25,7 +25,7 @@ from src.assembleur_core import (
     _group_shape_from_nodes,
     _build_local_triangle,
     ScenarioAssemblage,
-    TopologyWorld, TopologyElement, TopologyNodeType,
+    TopologyWorld, TopologyElement, TopologyNodeType, TopologyCheminTriplet
 )
 
 from src.assembleur_sim import (
@@ -228,6 +228,134 @@ class DialogSimulationAssembler(tk.Toplevel):
         self.destroy()
 
 
+class DialogCreateTriangleExcel(tk.Toplevel):
+    """Boîte de dialogue modale: création d'un fichier Triangle Excel."""
+
+    def __init__(self, viewer, defaults: Optional[Dict[str, str]] = None):
+        super().__init__(viewer)
+        self.viewer = viewer
+        self.result = None  # (triCsvPath, villesCsvPath, excelOutPath)
+        self.title("Créer un fichier Triangle")
+        self.resizable(False, False)
+        self.transient(viewer)
+        self.grab_set()
+
+        defaults = dict(defaults or {})
+        tri_default = str(defaults.get("triCsvPath", "") or "")
+        villes_default = str(defaults.get("villesCsvPath", "") or "")
+        out_default = str(defaults.get("excelOutPath", "") or "")
+
+        frm = ttk.Frame(self, padding=10)
+        frm.grid(row=0, column=0, sticky="nsew")
+
+        self.var_tri = tk.StringVar(value=tri_default)
+        self.var_villes = tk.StringVar(value=villes_default)
+        self.var_out = tk.StringVar(value=out_default)
+
+        ttk.Label(frm, text="CSV triangles").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 6))
+        ttk.Entry(frm, textvariable=self.var_tri, width=70).grid(row=0, column=1, sticky="ew", pady=(0, 6))
+        ttk.Button(frm, text="...", width=4, command=self._browse_tri_csv).grid(row=0, column=2, padx=(6, 0), pady=(0, 6))
+
+        ttk.Label(frm, text="CSV villes").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(0, 6))
+        ttk.Entry(frm, textvariable=self.var_villes, width=70).grid(row=1, column=1, sticky="ew", pady=(0, 6))
+        ttk.Button(frm, text="...", width=4, command=self._browse_villes_csv).grid(row=1, column=2, padx=(6, 0), pady=(0, 6))
+
+        ttk.Label(frm, text="Excel destination").grid(row=2, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(frm, textvariable=self.var_out, width=70).grid(row=2, column=1, sticky="ew")
+        ttk.Button(frm, text="...", width=4, command=self._browse_out_xlsx).grid(row=2, column=2, padx=(6, 0))
+
+        btns = ttk.Frame(frm)
+        btns.grid(row=3, column=0, columnspan=3, sticky="e", pady=(10, 0))
+        ttk.Button(btns, text="Annuler", command=self._on_cancel).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(btns, text="Créer", command=self._on_create).grid(row=0, column=1)
+
+        frm.columnconfigure(1, weight=1)
+        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+
+    def _initialdir_from_current(self, current_path: str) -> str:
+        p = str(current_path or "").strip()
+        if p:
+            d = os.path.dirname(os.path.normpath(p))
+            if d and os.path.isdir(d):
+                return d
+        return self.viewer.data_dir
+
+    def _browse_tri_csv(self):
+        selected = filedialog.askopenfilename(
+            title="Choisir le CSV triangles",
+            initialdir=self._initialdir_from_current(self.var_tri.get()),
+            filetypes=[("CSV", "*.csv"), ("Tous", "*.*")],
+            parent=self,
+        )
+        if selected:
+            self.var_tri.set(os.path.normpath(selected))
+
+    def _browse_villes_csv(self):
+        selected = filedialog.askopenfilename(
+            title="Choisir le CSV villes",
+            initialdir=self._initialdir_from_current(self.var_villes.get()),
+            filetypes=[("CSV", "*.csv"), ("Tous", "*.*")],
+            parent=self,
+        )
+        if selected:
+            self.var_villes.set(os.path.normpath(selected))
+
+    def _browse_out_xlsx(self):
+        selected = filedialog.asksaveasfilename(
+            title="Enregistrer le fichier Triangle",
+            initialdir=self._initialdir_from_current(self.var_out.get()),
+            defaultextension=".xlsx",
+            filetypes=[("Excel", "*.xlsx")],
+            parent=self,
+        )
+        if selected:
+            self.var_out.set(os.path.normpath(selected))
+
+    def _on_cancel(self):
+        self.result = None
+        self.destroy()
+
+    def _on_create(self):
+        tri_csv = os.path.normpath(str(self.var_tri.get() or "").strip())
+        villes_csv = os.path.normpath(str(self.var_villes.get() or "").strip())
+        excel_out = os.path.normpath(str(self.var_out.get() or "").strip())
+
+        if not tri_csv or not villes_csv or not excel_out:
+            messagebox.showerror("Créer un fichier Triangle", "Les 3 chemins sont obligatoires.", parent=self)
+            return
+
+        if not os.path.isfile(tri_csv):
+            messagebox.showerror("Créer un fichier Triangle", "CSV triangles introuvable.", parent=self)
+            return
+        if not os.path.isfile(villes_csv):
+            messagebox.showerror("Créer un fichier Triangle", "CSV villes introuvable.", parent=self)
+            return
+
+        if not excel_out.lower().endswith(".xlsx"):
+            messagebox.showerror("Créer un fichier Triangle", "Le fichier de sortie doit avoir l'extension .xlsx.", parent=self)
+            return
+
+        out_parent = os.path.dirname(excel_out)
+        if not out_parent:
+            messagebox.showerror("Créer un fichier Triangle", "Le dossier parent du fichier Excel est obligatoire.", parent=self)
+            return
+        if not os.path.isdir(out_parent):
+            messagebox.showerror("Créer un fichier Triangle", "Le dossier parent du fichier Excel n'existe pas.", parent=self)
+            return
+
+        if os.path.exists(excel_out):
+            overwrite = messagebox.askyesno(
+                "Écraser ?",
+                f"Le fichier existe déjà : {os.path.basename(excel_out)}\n\nÉcraser ce fichier ?",
+                parent=self,
+            )
+            if not overwrite:
+                return
+
+        self.result = (tri_csv, villes_csv, excel_out)
+        self.destroy()
+
+
 # ---------- Application (MANUEL — sans algorithmes) ----------
 class TriangleViewerManual(
     TriangleViewerDictionaryMixin,
@@ -408,6 +536,7 @@ class TriangleViewerManual(
         self.config_path = os.path.join(self.config_dir, "assembleur_config.json")
         self.appConfig: Dict = {}
         self.loadAppConfig()
+        self.triangleFiles = _assembleur_io.TriangleFileService(self)
 
         # === UI : persistance des toggles de visualisation (dico + compas) ===
         # Doit être fait AVANT _build_ui() pour que le checkbutton + le pack initial
@@ -719,11 +848,15 @@ class TriangleViewerManual(
         self.menu_carte.add_command(label="Supprimer fond", command=self._bg_clear)
 
         # Items fixes
+        self.menu_triangle.add_command(
+            label="Créer un fichier Triangle…",
+            command=self.createTriangleExcelDialog,
+        )
         self.menu_triangle.add_command(label="Ouvrir un fichier Triangle…", command=self.open_excel)
         self.menu_triangle.add_separator()
         # Espace réservé: liste de fichiers du répertoire data (reconstruite dynamiquement)
         # On pose un placeholder que l'on remplace juste après.
-        self._menu_triangle_files_start_index = self.menu_triangle.index("end") + 1 if self.menu_triangle.index("end") is not None else 2
+        self._menu_triangle_files_start_index = self.menu_triangle.index("end") + 1 if self.menu_triangle.index("end") is not None else 3
 
         # Construit la liste de fichiers disponibles
         self._rebuild_triangle_file_list_menu()
@@ -994,21 +1127,16 @@ class TriangleViewerManual(
         if last_index is None:
             return
 
-        # Nouvelle organisation: [Ouvrir][sep][FICHIERS...]
-        files_start = 2  # 0:"Ouvrir", 1:"sep", 2..:"fichiers"
+        # Nouvelle organisation: [Créer][Ouvrir][sep][FICHIERS...]
+        files_start = 3  # 0:"Créer", 1:"Ouvrir", 2:"sep", 3..:"fichiers"
         for i in range(last_index, files_start - 1, -1):
             m.delete(i)
 
-        # On prend les fichiers Excel et on eclut les fichiers temporaires
-        files = [
-            f for f in os.listdir(self.data_dir)
-            if f.lower().endswith(".xlsx") and not f.lstrip().startswith("~$")
-        ]
+        files = self.triangleFiles.listTriangleExcelFiles()
         if not files:
             m.insert_command(files_start, label="(aucun fichier trouvé dans data)", state="disabled")
             return
 
-        files.sort(key=lambda s: s.lower())
         for idx, fname in enumerate(files):
             full = os.path.join(self.data_dir, fname)
             m.insert_command(
@@ -2132,34 +2260,79 @@ class TriangleViewerManual(
         tree = self.chemins_tree
         self._cheminsTripletByIid = {}
 
+        # Vider
         for iid in tree.get_children(""):
             tree.delete(iid)
 
         scen = self._get_active_scenario()
         world = scen.topoWorld
         tc = world.topologyChemins
+
         isDefined = bool(tc.isDefined)
-        if hasattr(self, "chemins_edit_btn"):
-            self.chemins_edit_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
-        if hasattr(self, "chemins_recalc_btn"):
-            self.chemins_recalc_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
-        if hasattr(self, "chemins_engine_btn"):
-            self.chemins_engine_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
-        if hasattr(self, "chemins_delete_btn"):
-            self.chemins_delete_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
+        self.chemins_edit_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
+        self.chemins_recalc_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
+        self.chemins_engine_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
+        self.chemins_delete_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
         if not isDefined:
             return
 
+        # --- Colonnes dynamiques (UI) ---
+        mesuresSpecs = TopologyCheminTriplet.getMesuresSpecs()
+        specsByKey = {str(s.get("key")): dict(s) for s in (mesuresSpecs or []) if s.get("key")}
+
+        allowed = list(specsByKey.keys())
+        selected = self.getAppConfigValue("cheminsMeasures", ["angle"]) or ["angle"]
+        if isinstance(selected, str):
+            selected = [selected]
+        selected = [k for k in list(selected) if k in allowed]
+        if not selected:
+            selected = ["angle"]
+
+        columns = ["triplet"] + selected
+        tree.configure(columns=tuple(columns), show="headings")
+
+        # Headings
+        tree.heading("triplet", text="Triplet")
+        tree.column("triplet", anchor="w", width=280, stretch=True)
+
+        for k in selected:
+            lab = str(specsByKey.get(k, {}).get("label", k))
+            tree.heading(k, text=lab)
+            tree.column(k, anchor="center", width=90, stretch=False)
+
+        def _fmt_angle(v: float) -> str:
+            return f"{float(v):.2f}°"
+
+        def _fmt_dist(v: float) -> str:
+            return f"{float(v):.2f} km"
+
+        # Remplir
         for t in tc.getTriplets():
             if not t.isGeometrieValide:
                 raise RuntimeError("Triplet sans géométrie valide")
+
             tripletStr = (
                 f"{world.getNodeLabel(t.nodeA)} - "
                 f"{world.getNodeLabel(t.nodeO)} - "
                 f"{world.getNodeLabel(t.nodeB)}"
             )
-            angleStr = f"{float(t.angleDeg):.2f}°"
-            iid = tree.insert("", tk.END, values=(tripletStr, angleStr))
+
+            values = [tripletStr]
+            for k in selected:
+                if k == "azOA":
+                    values.append(_fmt_angle(t.azOA))
+                elif k == "azOB":
+                    values.append(_fmt_angle(t.azOB))
+                elif k == "angle":
+                    values.append(_fmt_angle(t.angleDeg))
+                elif k == "distOA":
+                    values.append(_fmt_dist(t.distOA_km))
+                elif k == "distOB":
+                    values.append(_fmt_dist(t.distOB_km))
+                else:
+                    values.append("")
+
+            iid = tree.insert("", tk.END, values=tuple(values))
             self._cheminsTripletByIid[iid] = t
 
     def onEditerChemin(self) -> None:
@@ -2193,24 +2366,115 @@ class TriangleViewerManual(
         dlg.title("Éditer le chemin")
         dlg.transient(self)
         dlg.grab_set()
-        dlg.resizable(False, False)
+        dlg.resizable(True, True)
+        dlg.minsize(320, 420)
 
         root = tk.Frame(dlg, padx=10, pady=10)
         root.pack(fill=tk.BOTH, expand=True)
 
-        tk.Label(root, text="Sens").pack(anchor="w")
+        # Ligne unique: "Sens" + 2 radios
         orientationVar = tk.StringVar(value=currentOrientation)
+
         orientRow = tk.Frame(root)
-        orientRow.pack(fill=tk.X, pady=(2, 8))
-        tk.Radiobutton(orientRow, text="Sens horaire", value="cw", variable=orientationVar).pack(side=tk.LEFT, padx=(0, 10))
-        tk.Radiobutton(orientRow, text="Sens inverse", value="ccw", variable=orientationVar).pack(side=tk.LEFT)
+        orientRow.pack(anchor="w", fill=tk.X, pady=(0, 8))
+
+        tk.Label(orientRow, text="Sens").pack(side=tk.LEFT, padx=(0, 10))
+        tk.Radiobutton(
+            orientRow, text="Sens horaire",
+            value="cw", variable=orientationVar
+        ).pack(side=tk.LEFT, padx=(0, 10))
+        tk.Radiobutton(
+            orientRow, text="Sens inverse",
+            value="ccw", variable=orientationVar
+        ).pack(side=tk.LEFT)
+
+        # --- Mesures (UI) ---
+        tk.Label(root, text="Mesures (A, O, B):").pack(anchor="w")
+        mesuresRow = tk.Frame(root)
+        mesuresRow.pack(fill=tk.X, pady=(2, 8))
+
+        mesuresSpecs = TopologyCheminTriplet.getMesuresSpecs()
+        allowedMesures = [str(s.get("key")) for s in mesuresSpecs]
+        selectedMesures = self.getAppConfigValue("cheminsMeasures", ["angle"]) or ["angle"]
+        if isinstance(selectedMesures, str):
+            selectedMesures = [selectedMesures]
+        selectedMesures = [k for k in list(selectedMesures) if k in allowedMesures]
+        if not selectedMesures:
+            selectedMesures = ["angle"]
+
+        mesureVars: dict[str, tk.BooleanVar] = {}
+
+        def _onMesuresChanged() -> None:
+            selected = [k for k, v in mesureVars.items() if bool(v.get())]
+            if not selected:
+                selected = ["angle"]  # fallback obligatoire
+            self.setAppConfigValue("cheminsMeasures", selected)
+            self.refreshCheminTreeView()
+
+        for spec in mesuresSpecs:
+            k = str(spec.get("key"))
+            lab = str(spec.get("label"))
+            var = tk.BooleanVar(value=(k in selectedMesures))
+            mesureVars[k] = var
+            tk.Checkbutton(
+                mesuresRow,
+                text=lab,
+                variable=var,
+                command=_onMesuresChanged,
+            ).pack(side=tk.LEFT, padx=(0, 10))
 
         tk.Label(root, text="Liste des nœuds").pack(anchor="w", pady=(0, 2))
+
         listFrame = tk.Frame(root, bd=1, relief=tk.GROOVE)
         listFrame.pack(fill=tk.BOTH, expand=True)
 
-        nodesFrame = tk.Frame(listFrame)
-        nodesFrame.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        # --- Scrollable frame (Canvas + Scrollbar) ---
+        scrollCanvas = tk.Canvas(listFrame, highlightthickness=0, bd=0)
+        vScroll = tk.Scrollbar(listFrame, orient="vertical", command=scrollCanvas.yview)
+        scrollCanvas.configure(yscrollcommand=vScroll.set)
+
+        vScroll.pack(side=tk.RIGHT, fill=tk.Y)
+        scrollCanvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Inner frame qui contient les checkbuttons
+        nodesFrame = tk.Frame(scrollCanvas)
+        nodesWindowId = scrollCanvas.create_window((0, 0), window=nodesFrame, anchor="nw")
+
+        def _syncScrollRegion(_evt=None):
+            scrollCanvas.configure(scrollregion=scrollCanvas.bbox("all"))
+
+        def _syncInnerWidth(_evt=None):
+            # Force la largeur de nodesFrame à suivre le canvas (évite une zone étroite)
+            scrollCanvas.itemconfigure(nodesWindowId, width=scrollCanvas.winfo_width())
+
+        nodesFrame.bind("<Configure>", _syncScrollRegion)
+        scrollCanvas.bind("<Configure>", _syncInnerWidth)
+
+        # Molette (Windows / Linux)
+        def _onMouseWheel(evt):
+            # Windows: evt.delta = +/-120 ; Linux Button-4/5 géré plus bas
+            if hasattr(evt, "delta") and evt.delta:
+                scrollCanvas.yview_scroll(int(-1 * (evt.delta / 120)), "units")
+
+        def _onMouseWheelLinuxUp(_evt):   # Button-4
+            scrollCanvas.yview_scroll(-1, "units")
+
+        def _onMouseWheelLinuxDown(_evt):  # Button-5
+            scrollCanvas.yview_scroll(1, "units")
+
+        # Bind uniquement quand la souris est au-dessus de la zone scroll
+        def _bindWheel(_evt=None):
+            dlg.bind_all("<MouseWheel>", _onMouseWheel)
+            dlg.bind_all("<Button-4>", _onMouseWheelLinuxUp)
+            dlg.bind_all("<Button-5>", _onMouseWheelLinuxDown)
+
+        def _unbindWheel(_evt=None):
+            dlg.unbind_all("<MouseWheel>")
+            dlg.unbind_all("<Button-4>")
+            dlg.unbind_all("<Button-5>")
+
+        scrollCanvas.bind("<Enter>", _bindWheel)
+        scrollCanvas.bind("<Leave>", _unbindWheel)
 
         viewVars: list[tk.BooleanVar] = []
         viewInverted = (str(orientationVar.get() or "cw").strip().lower() != boundaryOrientation)
@@ -2275,6 +2539,11 @@ class TriangleViewerManual(
             if sum(1 for v in newSelectionMaskSnapshotOrder if v) < 3:
                 messagebox.showerror("Éditer le chemin", "Au moins 3 nœuds doivent rester sélectionnés.", parent=dlg)
                 return
+
+            selected = [k for k, v in mesureVars.items() if bool(v.get())]
+            if not selected:
+                selected = ["angle"]
+            self.setAppConfigValue("cheminsMeasures", selected)
 
             world.topologyChemins.appliquerEdition(newOrientationUser, newSelectionMaskSnapshotOrder)
             dlg.destroy()
@@ -4813,7 +5082,7 @@ class TriangleViewerManual(
     def autoLoadTrianglesFileAtStartup(self):
         """Recharge au démarrage le dernier fichier triangles ouvert."""
         # 1) Dernier fichier explicitement chargé
-        last = self.getAppConfigValue("lastTriangleExcel", "")
+        last = self.triangleFiles.getLastPaths().get("lastTriangleExcel", "")
         if last and os.path.isfile(str(last)):
             self.load_excel(str(last))
             return
@@ -4824,66 +5093,46 @@ class TriangleViewerManual(
             self.load_excel(default)
 
     # ---------- Chargement Excel ----------
-    def open_excel(self):
-        path = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx")])
-        if path:
-            self.load_excel(path)
+    def createTriangleExcelDialog(self):
+        last_paths = self.triangleFiles.getLastPaths()
+        defaults = {
+            "triCsvPath": str(last_paths.get("lastTriangleCsvIn", "") or ""),
+            "villesCsvPath": str(last_paths.get("lastVillesCsvIn", "") or ""),
+            "excelOutPath": str(last_paths.get("lastTriangleExcelOut", "") or ""),
+        }
+        dlg = DialogCreateTriangleExcel(self, defaults=defaults)
+        self.wait_window(dlg)
+        if dlg.result is None:
+            return
+        (tri_csv, villes_csv, xls_out) = dlg.result
+        try:
+            self.triangleFiles.createExcelFromCsv(tri_csv, villes_csv, xls_out)
+        except Exception as e:
+            messagebox.showerror("Erreur génération triangles", str(e))
+            return
 
-    @staticmethod
-    def _norm(s: str) -> str:
-        import unicodedata
-        s = "".join(c for c in unicodedata.normalize("NFKD", str(s)) if not unicodedata.combining(c)).lower()
-        return re.sub(r"[^a-z0-9]+", "", s)
+        self.triangleFiles.setLastPaths(
+            lastTriangleCsvIn=tri_csv,
+            lastVillesCsvIn=villes_csv,
+            lastTriangleExcelOut=xls_out,
+        )
+        self._rebuild_triangle_file_list_menu()
+        messagebox.showinfo("Génération terminée", f"Fichier créé : {os.path.basename(xls_out)}")
+        if messagebox.askyesno("Génération terminée", "Charger le fichier maintenant ?"):
+            self.load_excel(xls_out)
 
-    @staticmethod
-    def _find_header_row(df0: pd.DataFrame) -> int:
-        for i in range(min(12, len(df0))):
-            row_norm = [TriangleViewerManual._norm(x) for x in df0.iloc[i].tolist()]
-            if any("ouverture" in x for x in row_norm) and \
-               any("base" in x for x in row_norm) and \
-               any("lumiere" in x for x in row_norm):
-                return i
-        raise KeyError("Impossible de détecter l'entête ('Ouverture', 'Base', 'Lumière').")
-
-    @staticmethod
-    def _build_df(df: pd.DataFrame) -> pd.DataFrame:
-        cmap = {TriangleViewerManual._norm(c): c for c in df.columns}
-        col_id = cmap.get("rang") or cmap.get("id")
-        col_B = cmap.get("base")
-        col_L = cmap.get("lumiere")
-        col_OB = cmap.get("ouverturebase")
-        col_OL = cmap.get("ouverturelumiere")
-        col_BL = cmap.get("lumierebase")
-        col_OR = cmap.get("orientation")  # colonne Orientation (CCW/CW/COL)
-        missing = [n for n, c in {
-            "Base": col_B, "Lumière": col_L, "Ouverture-Base": col_OB,
-            "Ouverture-Lumière": col_OL, "Lumière-Base": col_BL
-        }.items() if c is None]
-        if missing:
-            raise KeyError("Colonnes manquantes: " + ", ".join(missing))
-        out = pd.DataFrame({
-            "id": df[col_id] if col_id else range(1, len(df)+1),
-            "B":  df[col_B],
-            "L":  df[col_L],
-            "len_OB": pd.to_numeric(df[col_OB], errors="coerce"),
-            "len_OL": pd.to_numeric(df[col_OL], errors="coerce"),
-            "len_BL": pd.to_numeric(df[col_BL], errors="coerce"),
-            # Orientation normalisée (par défaut CCW si absent)
-            "orient": (
-                df[col_OR].astype(str).str.upper().str.strip()
-                if col_OR else pd.Series(["CCW"] * len(df))
-            ),
-        }).dropna(subset=["len_OB", "len_OL", "len_BL"]).sort_values("id")
-        return out.reset_index(drop=True)
+    def open_excel(self, path: str | None = None):
+        selected = path
+        if not selected:
+            selected = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx")])
+        if selected:
+            self.load_excel(selected)
 
     def load_excel(self, path: str):
-        df0 = pd.read_excel(path, header=None)
-        header_row = self._find_header_row(df0)
-        df = pd.read_excel(path, header=header_row)
-        self.df = self._build_df(df)
-        path_norm = os.path.normpath(os.path.abspath(path))
+        (df_canon, path_norm) = self.triangleFiles.loadExcel(path)
+        self.df = df_canon
         self.excel_path = path_norm
-        self.setAppConfigValue("lastTriangleExcel", path_norm)
+        self.triangleFiles.setLastPaths(lastTriangleExcel=path_norm)
         self.triangle_file.set(os.path.basename(path_norm))
         print(f"[Triangles] Fichier chargé: {os.path.basename(path_norm)} ({path_norm})")
         # MAJ du menu fichiers si un nouveau fichier arrive dans data

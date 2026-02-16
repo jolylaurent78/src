@@ -5,7 +5,7 @@ Moteur + algorithmes d'assemblage automatique (sans dépendance Tk).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Dict, Tuple, Type, Optional, Any
+from typing import List, Dict, Tuple, Type, Optional
 import numpy as np
 import math
 import copy
@@ -29,7 +29,8 @@ EPS_WORLD = 1e-6
 # ============================================================
 # Décryptage (générique) — sans dépendance UI
 # ============================================================
- 
+
+
 @dataclass
 class ClockState:
     """État minimal du compas/horloge pour le décryptage."""
@@ -98,7 +99,6 @@ class DecryptorBase:
         ang_hour = (h * self.degreesPerHour()) % 360.0
         return (ang_hour, ang_min)
 
-
     def clockStateFromDicoCell(self, *, row: int, col: int, word: str = "", mode: str = "delta") -> ClockState:
         """Convertit une cellule (row,col) en état d'horloge.
         Par défaut: non supporté.
@@ -116,7 +116,7 @@ class ClockDicoDecryptor(DecryptorBase):
         * mapping compas: hour=row (1..10), minute=col en base 1
           (col=-1 => 60, col=-2 => 59, etc.)
         * Row 1 (premiere) = 1 heure ; Row 10 (derniere) = 10 heures
-          
+
       - DELTA:
         * row = 0..9 (0 autorisé), col = delta signé (0 autorisé)
         * mapping compas: hour=row, minute=col mod 60  (ex: -5 => 55')
@@ -125,7 +125,6 @@ class ClockDicoDecryptor(DecryptorBase):
     """
     id = "clock_dico_v1"
     label = "Horloge ↔ Dictionnaire (v1)"
- 
 
     def clockStateFromDicoCell(self, *, row: int, col: int, word: str = "", mode: str = "delta") -> ClockState:
         m = str(mode or "delta").strip().lower()
@@ -168,14 +167,14 @@ class ClockDicoDecryptor(DecryptorBase):
             hourFloat = (float(hour) + minuteFloat / float(mBase)) % float(hBase)
         else:
             hourFloat = float(hour)
- 
+
         # Label
         w = str(word or "").strip()
         if w:
             label = f"{w} — ({hourDisp}h, {minute}')"
         else:
             label = f"({hourDisp}h, {minute}')"
- 
+
         return ClockState(
             hour=float(hourFloat),
             minute=float(minute),
@@ -184,13 +183,13 @@ class ClockDicoDecryptor(DecryptorBase):
             dicoCol=col,
             word=w,
         )
- 
- 
+
+
 # Petit registre (optionnel) pour brancher d’autres décryptages
 DECRYPTORS: Dict[str, Type[DecryptorBase]] = {
     ClockDicoDecryptor.id: ClockDicoDecryptor,
 }
- 
+
 
 class AlgorithmeAssemblage:
     """Contrat minimal pour un algo d'assemblage automatique."""
@@ -234,7 +233,6 @@ def createTopoQuadrilateral(
       - topoGroupId (après commit)
     """
 
-
     # --- helpers locaux ---
     def _edge_len(P: Dict[str, np.ndarray], a: str, b: str) -> float:
         v = np.array(P[b], float) - np.array(P[a], float)
@@ -242,9 +240,12 @@ def createTopoQuadrilateral(
 
     def _edge_code(a: str, b: str) -> str | None:
         s = {a, b}
-        if s == {"O", "B"}: return "OB"
-        if s == {"B", "L"}: return "BL"
-        if s == {"L", "O"}: return "LO"
+        if s == {"O", "B"} :
+            return "OB"
+        if s == {"B", "L"} :
+            return "BL"
+        if s == {"L", "O"} :
+            return "LO"
         return None
 
     def _ensure_element_from_local(
@@ -275,7 +276,7 @@ def createTopoQuadrilateral(
         )
         # IMPORTANT: crée un nouveau groupe topo pour cet élément
         world.add_element_as_new_group(el)
-    
+
     world.beginTopoTransaction()
     try:
         # --- 1) IDs éléments (déterministes) ---
@@ -369,6 +370,7 @@ def createTopoQuadrilateral(
 
     return (str(topoGroupId), str(elementIdOdd), str(elementIdEven), str(src_edge), str(dst_edge))
 
+
 def setElementPoseFromWorldPts(
     world: TopologyWorld,
     elementId: str,
@@ -419,6 +421,7 @@ def setElementPoseFromWorldPts(
 
     world.setElementPose(str(elementId), R=R, T=T, mirrored=bool(mirrored))
 
+
 class AlgoQuadrisParPaires(AlgorithmeAssemblage):
     id = "quadris_par_paires"
     label = "Quadrilatères par paires (bases communes) [WIP]"
@@ -433,7 +436,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             return (round(float(p[0]) / Q) * Q, round(float(p[1]) / Q) * Q)
 
         def seg_key(a, b):
-            a2 = qpt(a); b2 = qpt(b)
+            a2 = qpt(a)
+            b2 = qpt(b)
             return (a2, b2) if a2 <= b2 else (b2, a2)
 
         def edges_of(P):
@@ -491,7 +495,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 a["edge_out"] = shared_a
                 b["edge_in"] = shared_b
 
-
     def run(self, tri_ids: List[int]) -> List["ScenarioAssemblage"]:
         """Étape 1+2 :
         - Si n=2 : assemble uniquement le 1er couple (2 triangles) en un quadrilatère.
@@ -526,7 +529,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
         t2 = engine.build_local_triangle(tri2_id)
 
         # ---- 1) Orientation : OL ou BL au Nord (+Y) pour le 1er triangle
-        P1 = {k: np.array(t1["pts"][k], dtype=float) for k in ("O","B","L")}
+        P1 = {k: np.array(t1["pts"][k], dtype=float) for k in ("O", "B", "L")}
 
         edge = str(getattr(engine, "firstTriangleEdge", "OL") or "OL").upper().strip()
         src = "B" if edge == "BL" else "O"
@@ -537,21 +540,21 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             target = math.pi / 2.0  # Nord = +Y
             dtheta = target - cur
             c, s = math.cos(dtheta), math.sin(dtheta)
-            R = np.array([[c, -s],[s, c]], dtype=float)
+            R = np.array([[c, -s], [s, c]], dtype=float)
             pivot = P1[src]
-            for k in ("O","B","L"):
+            for k in ("O", "B", "L"):
                 P1[k] = (R @ (P1[k] - pivot)) + pivot
 
-
         # ---- 2) Détection de l'arête commune (OB / OL / BL)
-        def _edge_len(P: Dict[str,np.ndarray], a: str, b: str) -> float:
+
+        def _edge_len(P: Dict[str, np.ndarray], a: str, b: str) -> float:
             vv = np.array(P[b], float) - np.array(P[a], float)
             return float(np.hypot(vv[0], vv[1]))
 
-        edges = [("O","B"), ("O","L"), ("B","L")]
+        edges = [("O", "B"), ("O", "L"), ("B", "L")]
         e1 = [(a, b, _edge_len(P1, a, b)) for a, b in edges]
 
-        P2_local = {k: np.array(t2["pts"][k], dtype=float) for k in ("O","B","L")}
+        P2_local = {k: np.array(t2["pts"][k], dtype=float) for k in ("O", "B", "L")}
         e2 = [(a, b, _edge_len(P2_local, a, b)) for a, b in edges]
 
         tol_rel = 1e-3
@@ -726,7 +729,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             poses_short = list(poses[:2])
             for i, P2 in enumerate(poses_short):
                 scen = ScenarioAssemblage(
-                    name=(f"#1" if i==0 else f"#{i+1}=#1+({tri2_id})"),
+                    name=(f"#1" if i == 0 else f"#{i+1}=#1+({tri2_id})"),
                     source_type="auto",
                     algo_id=self.id,
                     tri_ids=[tri1_id, tri2_id],
@@ -758,8 +761,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                     tri2_id=tri2_id,
                     t1=t1,
                     t2=t2,
-                    P1_local={k: np.array(t1["pts"][k], dtype=float) for k in ("O","B","L")},
-                    P2_local={k: np.array(t2["pts"][k], dtype=float) for k in ("O","B","L")},
+                    P1_local={k: np.array(t1["pts"][k], dtype=float) for k in ("O", "B", "L")},
+                    P2_local={k: np.array(t2["pts"][k], dtype=float) for k in ("O", "B", "L")},
                     P1_world=P1,
                     P2_world=P2,
                     base_list=last_drawn,
@@ -768,7 +771,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
 
                 xs, ys = [], []
                 for t in last_drawn:
-                    for k in ("O","B","L"):
+                    for k in ("O", "B", "L"):
                         xs.append(float(t["pts"][k][0]))
                         ys.append(float(t["pts"][k][1]))
                 bbox = (min(xs), min(ys), max(xs), max(ys))
@@ -829,33 +832,33 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
         _assign_topo_element_id_to_last_drawn(entry=base_last[0])
         _assign_topo_element_id_to_last_drawn(entry=base_last[1])
 
-        def _orient_O_to_L_north(P: Dict[str,np.ndarray]) -> Dict[str,np.ndarray]:
-            P = {k: np.array(P[k], dtype=float) for k in ("O","B","L")}
+        def _orient_O_to_L_north(P: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+            P = {k: np.array(P[k], dtype=float) for k in ("O", "B", "L")}
             vOL = P["L"] - P["O"]
             if float(np.hypot(vOL[0], vOL[1])) > 1e-12:
                 cur = math.atan2(vOL[1], vOL[0])
                 target = math.pi / 2.0
                 dtheta = target - cur
                 c, s = math.cos(dtheta), math.sin(dtheta)
-                R = np.array([[c, -s],[s, c]], dtype=float)
+                R = np.array([[c, -s], [s, c]], dtype=float)
                 pivot = P["O"]
-                for k in ("O","B","L"):
+                for k in ("O", "B", "L"):
                     P[k] = (R @ (P[k] - pivot)) + pivot
             return P
 
-        def _edge_len(P: Dict[str,np.ndarray], a: str, b: str) -> float:
+        def _edge_len(P: Dict[str, np.ndarray], a: str, b: str) -> float:
             vv = np.array(P[b], float) - np.array(P[a], float)
             return float(np.hypot(vv[0], vv[1]))
 
-        def _build_quad_local(triA_id: int, triB_id: int) -> Tuple[Dict, Dict, Dict[str,np.ndarray], Dict[str,np.ndarray]]:
+        def _build_quad_local(triA_id: int, triB_id: int) -> Tuple[Dict, Dict, Dict[str, np.ndarray], Dict[str, np.ndarray]]:
             """Construit un quad (A,B) en repère local, en figeant B à la 1ère pose valide."""
             tA = engine.build_local_triangle(triA_id)
             tB = engine.build_local_triangle(triB_id)
 
-            PA = _orient_O_to_L_north({k: np.array(tA["pts"][k], dtype=float) for k in ("O","B","L")})
-            PB_local = {k: np.array(tB["pts"][k], dtype=float) for k in ("O","B","L")}
+            PA = _orient_O_to_L_north({k: np.array(tA["pts"][k], dtype=float) for k in ("O", "B", "L")})
+            PB_local = {k: np.array(tB["pts"][k], dtype=float) for k in ("O", "B", "L")}
 
-            edges = [("O","B"), ("O","L"), ("B","L")]
+            edges = [("O", "B"), ("O", "L"), ("B", "L")]
             eA = [(a, b, _edge_len(PA, a, b)) for a, b in edges]
             eB = [(a, b, _edge_len(PB_local, a, b)) for a, b in edges]
 
@@ -899,12 +902,13 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             tri2_id=tri2_id,
             t1=t1,
             t2=t2,
-            P1_local={k: np.array(t1["pts"][k], dtype=float) for k in ("O","B","L")},
-            P2_local={k: np.array(t2["pts"][k], dtype=float) for k in ("O","B","L")},
+            P1_local={k: np.array(t1["pts"][k], dtype=float) for k in ("O", "B", "L")},
+            P2_local={k: np.array(t2["pts"][k], dtype=float) for k in ("O", "B", "L")},
             P1_world=P1,
             P2_world=P2,
             base_list=base_last,
         )
+
         @dataclass(eq=False)
         class _BranchNode:
             parent: Optional["_BranchNode"]
@@ -928,14 +932,17 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             # On construit le quad local dans l'ordre courant (odd->even)
             tOdd, tEven, Podd, Peven = _build_quad_local(tri_odd_id, tri_even_id)
 
-            def tryAttachMobQuadToDestChain(triangleMobFrom, triangleMobTo, triangleMobFromPts, triangleMobToPts, triangleMobFromId, triangleMobToId):
+            def tryAttachMobQuadToDestChain(triangleMobFrom, triangleMobTo,
+                                            triangleMobFromPts, triangleMobToPts,
+                                            triangleMobFromId, triangleMobToId
+                                            ):
                 new_states = []
                 dbg_try = 0
                 dbg_overlap = 0
                 dbg_added = 0
 
                 for (node_prev, last_drawn_prev, poly_occ_prev, topoWorld_prev) in states:
-                    baseKey = getattr(node_prev, "debugKey", "")    # Une cle de debug pour tracer les scénarios    
+                    baseKey = getattr(node_prev, "debugKey", "")    # Une cle de debug pour tracer les scénarios
                     candidates = []
                     mob_keys = ("O", "B")
 
@@ -946,8 +953,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                         triangleMobToId=triangleMobToId,
                         triangleMobFrom=triangleMobFrom,
                         triangleMobTo=triangleMobTo,
-                        triangleMobFrom_PtsLocal={k: np.array(triangleMobFrom["pts"][k], float) for k in ("O","B","L")},
-                        triangleMobTo_PtsLocal={k: np.array(triangleMobTo["pts"][k], float) for k in ("O","B","L")},
+                        triangleMobFrom_PtsLocal={k: np.array(triangleMobFrom["pts"][k], float) for k in ("O", "B", "L")},
+                        triangleMobTo_PtsLocal={k: np.array(triangleMobTo["pts"][k], float) for k in ("O", "B", "L")},
                         triangleMobFromPts=triangleMobFromPts,
                         triangleMobToPts=triangleMobToPts,
                     )
@@ -983,13 +990,13 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                         entry=last_drawn_base[pos1],
                     )
 
-                    # On rebuild cache et contours pour éviter les surprises 
+                    # On rebuild cache et contours pour éviter les surprises
                     topoWorld_prev.rebuildGroupElementLists()
                     for gid in list(topoWorld_prev.groups.keys()):
-                        c = topoWorld_prev.ensureConceptGraph(gid)  
+                        topoWorld_prev.ensureConceptGraph(gid)
 
                     pass  # Point de debug
-                                
+
                     # On teste sur les 4 cas LB-LB, LB-LO, LO-LB, LO - Lo
                     for mob_key in mob_keys:
                         for bt_key in ("O", "B"):
@@ -999,8 +1006,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                             # Convention auto actuelle : raccord via L, arêtes LO/BL.
                             # Détermination explicite des arêtes testées
                             destEdgeAtL = "LO" if bt_key == "O" else "BL"
-                            mobEdgeAtL    = "LO" if mob_key == "O" else "BL"
-
+                            mobEdgeAtL = "LO" if mob_key == "O" else "BL"
 
                             edgeChoiceEpts, edgeChoiceMeta = buildEdgeChoiceEptsForAutoChain(
                                 world=topoWorld_prev,
@@ -1017,26 +1023,26 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
 
                             topoAttachments = edgeChoiceEpts.createTopologyAttachments(world=topoWorld_prev)
 
-                            # On teste l'overlap . 
+                            # On teste l'overlap .
                             # group ids depuis les elementIds
                             gidDest = topoWorld_prev.get_group_of_element(last_drawn_prev[-1]["topoElementId"])
-                            gidMob  = topoWorld_prev.get_group_of_element(last_drawn_base[pos0]["topoElementId"])              
+                            gidMob = topoWorld_prev.get_group_of_element(last_drawn_base[pos0]["topoElementId"])
                             # simulateOverlapTopologique attend des TopologyGroup (pas des str)
                             gDest = topoWorld_prev.groups[topoWorld_prev.find_group(gidDest)]
-                            gMob  = topoWorld_prev.groups[topoWorld_prev.find_group(gidMob)]
+                            gMob = topoWorld_prev.groups[topoWorld_prev.find_group(gidMob)]
 
-                            overlap = topoWorld_prev.simulateOverlapTopologique(gDest, gMob, topoAttachments, debug=False)  
+                            overlap = topoWorld_prev.simulateOverlapTopologique(gDest, gMob, topoAttachments, debug=False)
                             if overlap:
                                 dbg_overlap += 1
-                                continue                                
+                                continue
 
-                            # Pour les cas validés, on récupère la transformation R et T 
+                            # Pour les cas validés, on récupère la transformation R et T
                             # que l'on applique au 2 triangles graphiques
                             def applyRT(P, R, T):
-                                return {k: (R @ np.array(P[k], float) + T) for k in ("O","B","L")}
-  
+                                return {k: (R @ np.array(P[k], float) + T) for k in ("O", "B", "L")}
+
                             R, T = edgeChoiceEpts.computeRigidTransform()
-                            Podd_w  = applyRT(triangleMobFromPts,  R, T)
+                            Podd_w = applyRT(triangleMobFromPts,  R, T)
                             Peven_w = applyRT(triangleMobToPts, R, T)
 
                             poly_new = _group_shape_from_nodes(
@@ -1130,7 +1136,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                             topo_candidates = [topoWorld_prev for _ in candidates]
 
                         for (ld_new, poly_u, topo_meta), topo_new in zip(candidates, topo_candidates):
-                            topo_new.beginTopoTransaction()                            
+                            topo_new.beginTopoTransaction()
                             try:
                                 for _key in ("odd", "even"):
                                     _info = topo_meta.get(_key, {})
@@ -1159,7 +1165,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                 atts = topo_meta.get("topoAttachments")
                                 topo_new.apply_attachments(atts)
                             finally:
-                                topo_new.commitTopoTransaction()                            
+                                topo_new.commitTopoTransaction()
 
                             child = _BranchNode(parent=node_prev, children=[], branchTriId=None)
                             node_prev.children.append(child)
@@ -1212,6 +1218,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
 
         # Collecte des feuilles survivantes dans l'ordre gauche→droite (DFS)
         leaves = []
+
         def _collectLeaves(n):
             if n not in kept:
                 return
@@ -1378,12 +1385,12 @@ class MoteurSimulationAssemblage:
             "labels": ("Bourges", str(r["B"]), str(r["L"])),  # (O,B,L) labels
             "id": int(tri_id),
             "mirrored": False,
-            "orient":ori,
+            "orient": ori,
             "pts": P,
         }
 
-    def _pose_params(self, Pm: Dict[str,np.ndarray], am: str, bm: str, Vm: np.ndarray,
-                    Pt: Dict[str,np.ndarray], at: str, bt: str, Vt: np.ndarray):
+    def _pose_params(self, Pm: Dict[str, np.ndarray], am: str, bm: str, Vm: np.ndarray,
+                     Pt: Dict[str, np.ndarray], at: str, bt: str, Vt: np.ndarray):
         """Retourne (R, T, pivot) pour la pose 'am->bm' alignée sur 'at->bt' avec Vm→Vt."""
         vm_dir = np.array(Pm[bm], float) - np.array(Pm[am], float)
         vt_dir = np.array(Pt[bt], float) - np.array(Pt[at], float)
@@ -1391,17 +1398,17 @@ class MoteurSimulationAssemblage:
         ang_t = math.atan2(vt_dir[1], vt_dir[0])
         dtheta = ang_t - ang_m
         c, s = math.cos(dtheta), math.sin(dtheta)
-        R = np.array([[c, -s],[s, c]], float)
+        R = np.array([[c, -s], [s, c]], float)
         pivot = np.array(Vm, float)
         Vm_rot = (R @ (np.array(Pm[am], float) - pivot)) + pivot
         T = np.array(Vt, float) - Vm_rot
         return R, T, pivot
 
     # --- Simulation d'une pose (pour filtrer le chevauchement après collage) ---
-    def _apply_R_T_on_P(self, P: Dict[str,np.ndarray], R: np.ndarray, T: np.ndarray, pivot: np.ndarray) -> Dict[str,np.ndarray]:
+    def _apply_R_T_on_P(self, P: Dict[str, np.ndarray], R: np.ndarray, T: np.ndarray, pivot: np.ndarray) -> Dict[str, np.ndarray]:
         """Applique une rotation R autour de 'pivot' puis une translation T aux points P."""
         out = {}
-        for k in ("O","B","L"):
+        for k in ("O", "B", "L"):
             v = np.array(P[k], dtype=float)
             out[k] = (R @ (v - pivot)) + pivot + T
         return out
@@ -1415,4 +1422,3 @@ class MoteurSimulationAssemblage:
         """Pose Pm (mobile) : aligne am→bm sur at→bt, en collant le point Vm sur Vt."""
         R, T, pivot = self._pose_params(Pm, am, bm, Vm, Pt, at, bt, Vt)
         return self._apply_R_T_on_P(Pm, R, T, pivot)
-

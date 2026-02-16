@@ -1,29 +1,29 @@
 {
-  "lastTriangleExcel": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_v7.xlsx",
-  "uiShowDicoPanel": true,
+  "lastTriangleExcel": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_v8.xlsx",
+  "uiShowDicoPanel": false,
   "uiShowClockOverlay": true,
   "bgSvgPath": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\maps\\899 - Alsace.jpg",
   "bgWorldRect": {
-    "x0": -2100.39,
-    "y0": -2307.129555647236,
-    "w": 5106.524828241381,
-    "h": 6282.179555647236,
+    "x0": -1867.9854562960245,
+    "y0": -2228.91217146092,
+    "w": 4689.977843316006,
+    "h": 5769.732629277178,
     "aspect": 0.8128587830080367
   },
-  "uiMapOpacity": 43,
+  "uiMapOpacity": 55,
   "uiClockRefAzimuth": 359.86830132223395,
   "uiShowOnlyGroupContours": false,
   "simLastAlgoId": "quadris_par_paires",
-  "simLastN": 6,
+  "simLastN": 32,
   "simLastOrder": "reverse",
   "simLastFirstEdge": "BL",
   "uiAutoFitScenario": false,
   "simAutoPlacementByMap": {
     "899 - Alsace.jpg": {
       "reverse": {
-        "ox": 288.39,
-        "oy": 110.33,
-        "thetaDeg": 0.0
+        "ox": 807.2044312284698,
+        "oy": -1293.1832019386618,
+        "thetaDeg": 521.1338951570827
       },
       "forward": {
         "ox": 260.4000000000001,
@@ -45,5 +45,13 @@
   "decryptGuiUseAzimutA": false,
   "decryptGuiUseAzimutB": false,
   "decryptGuiToleranceDeg": 4,
-  "decryptGuiStopIfMoreThan": 2000
+  "decryptGuiStopIfMoreThan": 2000,
+  "cheminsMeasures": [
+    "azOA",
+    "azOB",
+    "angle"
+  ],
+  "lastTriangleCsvIn": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_3villes.csv",
+  "lastVillesCsvIn": "D:\\Dropbox\\La Chouette\\Python\\AlgoSimulator\\data\\villes_database.csv",
+  "lastTriangleExcelOut": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_v8.xlsx"
 }
