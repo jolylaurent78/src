@@ -6,6 +6,7 @@ from math import atan2, pi
 import numpy as np
 import re
 import copy
+import traceback
 import pandas as pd
 import threading
 from typing import Optional, List, Dict, Tuple
@@ -55,6 +56,7 @@ from src.assembleur_tk_mixin_frontier import TriangleViewerFrontierGraphMixin
 from src.assembleur_tk_mixin_bg import TriangleViewerBackgroundMapMixin
 from src.assembleur_tk_mixin_clockarc import TriangleViewerClockArcMixin
 from src.assembleur_edgechoice import buildEdgeChoiceEptsFromBest
+from src.assembleur_balises import BalisesManager
 
 
 EPS_WORLD = 1e-6
@@ -445,9 +447,11 @@ class TriangleViewerManual(
         # Gestion des layers (visibilité)
         self.show_map_layer = tk.BooleanVar(value=True)
         self.show_triangles_layer = tk.BooleanVar(value=True)
+        self.show_balises_layer = tk.BooleanVar(value=False)
         # Opacité du layer "carte" (0..100). 100 = opaque, 0 = invisible.
         self.map_opacity = tk.IntVar(value=70)
         self._map_opacity_redraw_job = None
+        self.balisesManager = BalisesManager()
         # Gestion du contour
         self.show_only_group_contours = tk.BooleanVar(value=False)
         self.only_group_contours = None
@@ -546,6 +550,7 @@ class TriangleViewerManual(
         self.show_only_group_contours.set(bool(self.getAppConfigValue("uiShowOnlyGroupContours", False)))
         self.auto_fit_scenario_select.set(bool(self.getAppConfigValue("uiAutoFitScenario", False)))
         self.map_opacity.set(int(self.getAppConfigValue("uiMapOpacity", 70)))
+        self.show_balises_layer.set(bool(self.getAppConfigValue("uiShowBalisesLayer", False)))
 
         # === Simulation : derniers paramètres utilisés (dialog 'Simulation > Assembler…') ===
         self._simulation_last_algo_id = str(self.getAppConfigValue("simLastAlgoId", "") or "").strip()
@@ -881,6 +886,7 @@ class TriangleViewerManual(
         # sinon fallback sur data/triangle.xlsx si présent.
         self.autoLoadTrianglesFileAtStartup()
         self.autoLoadBackgroundAtStartup()
+        self.autoLoadBalisesAtStartup()
 
     def _simulation_get_tri_ids_first_n(self, n: int) -> List[int]:
         """Retourne les IDs logiques des n premiers triangles (ordre de la listbox)."""
@@ -1502,6 +1508,34 @@ class TriangleViewerManual(
             row_clock_right, text="<", width=2,
             command=lambda: self._clock_change_radius(-5)
         ).pack(side=tk.RIGHT, padx=(4, 0))
+
+        # Ligne "Balises" : checkbox + selection du CSV
+        row_balises = tk.Frame(cb_wrap)
+        row_balises.pack(anchor="w", fill="x", pady=(2, 0))
+        row_balises.grid_columnconfigure(1, weight=1)
+
+        def _on_toggle_balises_layer():
+            self.setAppConfigValue("uiShowBalisesLayer", bool(self.show_balises_layer.get()))
+            self.saveAppConfig()
+            self._redraw_from(self._last_drawn)
+
+        tk.Checkbutton(
+            row_balises, text="Balises",
+            variable=self.show_balises_layer,
+            command=_on_toggle_balises_layer,
+        ).grid(row=0, column=0, sticky="w")
+
+        # spacer pour pousser la colonne de droite au bord droit
+        tk.Frame(row_balises).grid(row=0, column=1, sticky="ew")
+
+        row_balises_right = tk.Frame(row_balises, width=rightColWidth)
+        row_balises_right.grid(row=0, column=2, sticky="e")
+        row_balises_right.grid_propagate(False)
+
+        tk.Button(
+            row_balises_right, text="...", width=2,
+            command=self._onSelectBalisesCsv
+        ).pack(side=tk.RIGHT, padx=(0, 4), anchor="e")
 
         pw.add(layer_frame, minsize=layer_minsize_expanded)
 
@@ -3609,6 +3643,47 @@ class TriangleViewerManual(
         y_km = d * wx_cal + e * wy_cal + f
         return (float(x_km), float(y_km))
 
+    def bgLambertKmToWorld(self, xKm: float, yKm: float) -> tuple[float, float]:
+        """
+        Convertit Lambert93 (km) -> World (coord monde utilisée par la vue).
+        Nécessite une carte calibrée (bg calib). Sinon RuntimeError.
+        """
+        if self._bg is None:
+            raise RuntimeError("bgLambertKmToWorld: pas de carte chargée")
+        data = self._bg_calib_data
+        if not isinstance(data, dict):
+            raise RuntimeError("bgLambertKmToWorld: calibration absente (_bg_calib_data)")
+        aff = data.get("affineLambertKmToWorld")
+        if not (isinstance(aff, list) and len(aff) == 6):
+            raise RuntimeError("bgLambertKmToWorld: affineLambertKmToWorld absent de la calibration")
+        rect_cal = data.get("bgWorldRectAtCalibration")
+        if not isinstance(rect_cal, dict):
+            raise RuntimeError("bgLambertKmToWorld: bgWorldRectAtCalibration absent de la calibration")
+
+        rect_cur = self._bg
+        w_cal = float(rect_cal.get("w"))
+        h_cal = float(rect_cal.get("h"))
+        w_cur = float(rect_cur.get("w"))
+        h_cur = float(rect_cur.get("h"))
+        if w_cal <= 0 or h_cal <= 0 or w_cur <= 0 or h_cur <= 0:
+            raise RuntimeError("bgLambertKmToWorld: rect invalide")
+
+        sx = w_cur / w_cal
+        sy = h_cur / h_cal
+
+        x0_cal = float(rect_cal.get("x0"))
+        y0_cal = float(rect_cal.get("y0"))
+        x0_cur = float(rect_cur.get("x0"))
+        y0_cur = float(rect_cur.get("y0"))
+
+        a, b, c, d, e, f = [float(v) for v in aff]
+        wx_cal = a * float(xKm) + b * float(yKm) + c
+        wy_cal = d * float(xKm) + e * float(yKm) + f
+
+        wx_cur = x0_cur + (wx_cal - x0_cal) * sx
+        wy_cur = y0_cur + (wy_cal - y0_cal) * sy
+        return (float(wx_cur), float(wy_cur))
+
     def _update_triangle_listbox_colors(self):
         """
         Met à jour la couleur des entrées de la listbox des triangles
@@ -5092,6 +5167,47 @@ class TriangleViewerManual(
         if default and os.path.isfile(default):
             self.load_excel(default)
 
+    def autoLoadBalisesAtStartup(self):
+        """Recharge au démarrage le dernier CSV balises persisté (best-effort)."""
+        saved_path = str(self.getAppConfigValue("balisesCsvPath", "") or "").strip()
+        if not saved_path:
+            return
+        csv_path = os.path.normpath(saved_path)
+        try:
+            self.balisesManager.loadFromCsv(csv_path)
+        except Exception:
+            self.balisesManager.clear()
+            print(f"[Balises][AUTOLOAD] Echec du chargement: {csv_path}")
+            traceback.print_exc()
+
+    def _initialdir_from_current(self, current_path: str) -> str:
+        p = str(current_path or "").strip()
+        if p:
+            d = os.path.dirname(os.path.normpath(p))
+            if d and os.path.isdir(d):
+                return d
+        return self.data_dir
+
+    def _onSelectBalisesCsv(self):
+        saved_path = str(self.getAppConfigValue("balisesCsvPath", "") or "").strip()
+        selected = filedialog.askopenfilename(
+            title="Choisir le CSV balises",
+            initialdir=self._initialdir_from_current(saved_path),
+            filetypes=[("CSV", "*.csv"), ("Tous", "*.*")],
+        )
+        if not selected:
+            return
+
+        csv_path = os.path.normpath(selected)
+        try:
+            self.balisesManager.loadFromCsv(csv_path)
+        except Exception as e:
+            messagebox.showerror("Balises", f"Impossible de charger le CSV balises:\n\n{e}")
+            return
+
+        self.setAppConfigValue("balisesCsvPath", csv_path)
+        self._redraw_from(self._last_drawn)
+
     # ---------- Chargement Excel ----------
     def createTriangleExcelDialog(self):
         last_paths = self.triangleFiles.getLastPaths()
@@ -5545,12 +5661,54 @@ class TriangleViewerManual(
                 self._edge_highlights = None
                 self._edge_choice = None
 
+        self.canvas.delete("balises_layer")
+        if self.show_balises_layer is None or self.show_balises_layer.get():
+            self._draw_balises_layer()
+
         # Poignées de redimensionnement fond (overlay UI)
         self._bg_draw_resize_handles()
         # Redessiner l'horloge (overlay indépendant)
         self._draw_clock_overlay()
         # Après tout redraw, le cache de pick n'est plus valide
         self._invalidate_pick_cache()
+
+    def _draw_balises_layer(self):
+        """Dessine les balises en points fixes (pixels) + libellé."""
+        if not hasattr(self, "balisesManager") or self.balisesManager is None:
+            return
+
+        try:
+            noms = self.balisesManager.listNoms()
+        except Exception:
+            return
+        if not noms:
+            return
+
+        for nom in noms:
+            try:
+                wx, wy = self.balisesManager.getWorld(self, nom)
+            except RuntimeError:
+                return
+            except KeyError:
+                continue
+
+            sx, sy = self._world_to_screen((wx, wy))
+            r = self._marker_px
+            self.canvas.create_oval(
+                sx - r, sy - r, sx + r, sy + r,
+                fill="#000000",
+                outline="#000000",
+                tags=("balises_layer",),
+            )
+            self.canvas.create_text(
+                sx,
+                sy + r + 2,
+                text=nom,
+                anchor="n",
+                font=("Arial", 8),
+                fill="#000000",
+                tags=("balises_layer",),
+            )
 
     def _draw_group_outlines(self):
         """Dessine uniquement le contour de chaque groupe (enveloppe extérieure)."""
@@ -9186,6 +9344,9 @@ class TriangleViewerManual(
                         P = self._last_drawn[int(idx)]["pts"]
                         v_world = np.array(P[vkey], dtype=float)
                         self._update_nearest_line(v_world, exclude_idx=int(idx))
+
+            if self.show_balises_layer is None or self.show_balises_layer.get():
+                self._draw_balises_layer()
 
             self._draw_clock_overlay()
 
