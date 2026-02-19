@@ -1175,6 +1175,132 @@ class TopologyChemins:
         for t in self.triplets:
             t.calculerGeometrie(self._world, gid, str(self.orientationUser))
 
+    def exportXlsx(self, filePath: str, columns: list[dict], scenarioName: str) -> None:
+        """
+        Exporte les triplets du chemin courant en .xlsx.
+
+        - filePath: chemin cible du fichier .xlsx
+        - columns: liste ordonnee des colonnes visibles cote UI.
+          Chaque entree contient au minimum:
+            - key: cle de mesure (ex: "azOA", "azOB", "angle", "distOA", "distOB", ou "triplet")
+            - label: libelle UI (pour l'en-tete Excel)
+            - kind: "angle" | "distance" | "text"
+        - scenarioName: utilise uniquement pour le titre si necessaire (optionnel V1).
+        """
+        self._requireDefined()
+
+        target_path = str(filePath).strip()
+        if not target_path:
+            raise ValueError("[CheminsExportXlsx] filePath vide")
+        if not target_path.lower().endswith(".xlsx"):
+            raise ValueError(f"[CheminsExportXlsx] extension invalide: {target_path}")
+
+        raw_columns = list(columns or [])
+        if not raw_columns:
+            raise ValueError("[CheminsExportXlsx] columns vide")
+
+        # Import local: l'export XLSX est optionnel dans le reste du Core.
+        from openpyxl import Workbook
+        from openpyxl.styles import Font
+        from openpyxl.utils import get_column_letter
+
+        value_specs_by_key = {
+            "azOA": {"kind": "angle", "attr": "azOA"},
+            "azOB": {"kind": "angle", "attr": "azOB"},
+            "angle": {"kind": "angle", "attr": "angleDeg"},
+            "distOA": {"kind": "distance", "attr": "distOA_km"},
+            "distOB": {"kind": "distance", "attr": "distOB_km"},
+        }
+
+        resolved_columns: list[dict] = []
+        for i, col in enumerate(raw_columns):
+            if not isinstance(col, dict):
+                raise TypeError(f"[CheminsExportXlsx] colonne invalide (dict attendu): index={i}")
+            key = str(col.get("key", "") or "").strip()
+            label = str(col.get("label", "") or "").strip()
+            kind = str(col.get("kind", "") or "").strip().lower()
+
+            if not key:
+                raise ValueError(f"[CheminsExportXlsx] colonne sans key: index={i}")
+            if not label:
+                raise ValueError(f"[CheminsExportXlsx] colonne sans label: key={key}")
+
+            if key == "triplet":
+                if kind != "text":
+                    raise ValueError(f"[CheminsExportXlsx] kind invalide pour triplet: {kind}")
+                resolved_columns.append({
+                    "key": key,
+                    "label": label,
+                    "kind": kind,
+                    "attr": None,
+                })
+                continue
+
+            if key not in value_specs_by_key:
+                raise ValueError(f"[CheminsExportXlsx] key inconnue: {key}")
+
+            expected = value_specs_by_key[key]
+            expected_kind = str(expected["kind"])
+            if kind != expected_kind:
+                raise ValueError(
+                    f"[CheminsExportXlsx] kind incoherent pour {key}: attendu={expected_kind}, recu={kind}"
+                )
+
+            resolved_columns.append({
+                "key": key,
+                "label": label,
+                "kind": kind,
+                "attr": str(expected["attr"]),
+            })
+
+        _ = str(scenarioName or "")
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Chemins"
+        bold_font = Font(bold=True)
+
+        for col_idx, col in enumerate(resolved_columns, start=1):
+            header_cell = ws.cell(row=1, column=col_idx, value=str(col["label"]))
+            header_cell.font = bold_font
+
+        for row_idx, t in enumerate(self.triplets, start=2):
+            if not bool(t.isGeometrieValide):
+                raise RuntimeError(
+                    f"[CheminsExportXlsx] triplet sans geometrie valide: ({t.nodeA},{t.nodeO},{t.nodeB})"
+                )
+
+            for col_idx, col in enumerate(resolved_columns, start=1):
+                key = str(col["key"])
+                if key == "triplet":
+                    triplet_str = (
+                        f"{self._world.getNodeLabel(t.nodeA)} - "
+                        f"{self._world.getNodeLabel(t.nodeO)} - "
+                        f"{self._world.getNodeLabel(t.nodeB)}"
+                    )
+                    ws.cell(row=row_idx, column=col_idx, value=triplet_str)
+                    continue
+
+                attr_name = str(col["attr"])
+                raw_value = getattr(t, attr_name)
+                value = float(raw_value)
+                if not math.isfinite(value):
+                    raise RuntimeError(
+                        f"[CheminsExportXlsx] valeur non finie: key={key}, value={raw_value}"
+                    )
+                cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                cell.number_format = "0.00"
+
+        for col_idx in range(1, len(resolved_columns) + 1):
+            max_width = 0
+            for row_idx in range(1, ws.max_row + 1):
+                cell_value = ws.cell(row=row_idx, column=col_idx).value
+                cell_text = "" if cell_value is None else str(cell_value)
+                max_width = max(max_width, len(cell_text))
+            ws.column_dimensions[get_column_letter(col_idx)].width = float(max_width + 2)
+
+        wb.save(target_path)
+
     def _saveToXml(self, parent: _ET.Element) -> None:
         chemins_el = _ET.SubElement(parent, "chemins", {
             "isDefined": "1" if bool(self.isDefined) else "0",

@@ -1994,7 +1994,7 @@ class TriangleViewerManual(
         chemins_title.bind("<Button-1>", lambda _e: _toggleCheminsPanel())
         chemins_header.bind("<Button-1>", lambda _e: _toggleCheminsPanel())
 
-        # Barre d'actions (éditer, recalculer, supprimer)
+        # Barre d'actions (editer, exporter, recalculer, moteur, supprimer)
         chemins_toolbar = tk.Frame(self._ui_chemins_content, bd=0, highlightthickness=0)
         chemins_toolbar.pack(anchor="w", padx=6, pady=(0, 2), fill="x")
         self.icon_chemin_recalc = self._load_icon("refresh-cw.png")
@@ -2019,6 +2019,15 @@ class TriangleViewerManual(
             "Éditer le chemin",
         )
         self.chemins_edit_btn.pack(side=tk.LEFT, padx=1)
+
+        self.chemins_export_btn = _make_chemin_btn(
+            chemins_toolbar,
+            self.icon_scen_save,
+            "S",
+            self.onExporterCheminsExcel,
+            "Exporter en Excel",
+        )
+        self.chemins_export_btn.pack(side=tk.LEFT, padx=1)
 
         self.chemins_recalc_btn = _make_chemin_btn(
             chemins_toolbar,
@@ -2304,6 +2313,7 @@ class TriangleViewerManual(
 
         isDefined = bool(tc.isDefined)
         self.chemins_edit_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
+        self.chemins_export_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
         self.chemins_recalc_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
         self.chemins_engine_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
         self.chemins_delete_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
@@ -2368,6 +2378,119 @@ class TriangleViewerManual(
 
             iid = tree.insert("", tk.END, values=tuple(values))
             self._cheminsTripletByIid[iid] = t
+
+    def _getCheminsVisibleColumnsForExport(self) -> list[dict]:
+        """Retourne les colonnes visibles de la TreeView Chemins, dans l'ordre affiche."""
+        if not hasattr(self, "chemins_tree"):
+            raise RuntimeError("Export Chemins impossible: TreeView introuvable.")
+
+        tree = self.chemins_tree
+        mesuresSpecs = TopologyCheminTriplet.getMesuresSpecs()
+        specsByKey = {str(s.get("key")): dict(s) for s in (mesuresSpecs or []) if s.get("key")}
+
+        raw_columns = tree.cget("columns")
+        if isinstance(raw_columns, str):
+            all_columns = [str(c) for c in tree.tk.splitlist(raw_columns)]
+        else:
+            all_columns = [str(c) for c in list(raw_columns)]
+
+        raw_display = tree.cget("displaycolumns")
+        if isinstance(raw_display, str):
+            if str(raw_display).strip() == "#all":
+                display_columns = list(all_columns)
+            else:
+                display_columns = [str(c) for c in tree.tk.splitlist(raw_display)]
+        else:
+            display_columns = [str(c) for c in list(raw_display)]
+
+        if not display_columns:
+            display_columns = list(all_columns)
+
+        ordered_keys: list[str] = []
+        seen: set[str] = set()
+        for raw_key in display_columns:
+            key = str(raw_key)
+            if key == "#all":
+                for c in all_columns:
+                    if c in seen:
+                        continue
+                    seen.add(c)
+                    ordered_keys.append(c)
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered_keys.append(key)
+
+        columns: list[dict] = []
+        for key in ordered_keys:
+            if key not in all_columns:
+                raise RuntimeError(f"Export Chemins impossible: colonne inconnue '{key}'.")
+
+            heading_cfg = tree.heading(key)
+            label = str((heading_cfg or {}).get("text", "") or "").strip()
+            if not label:
+                label = key
+
+            if key == "triplet":
+                columns.append({"key": "triplet", "label": label, "kind": "text"})
+                continue
+
+            spec = specsByKey.get(key)
+            if spec is None:
+                raise RuntimeError(f"Export Chemins impossible: spec de colonne manquante '{key}'.")
+            kind = str(spec.get("kind", "") or "").strip().lower()
+            if kind not in ("angle", "distance"):
+                raise RuntimeError(f"Export Chemins impossible: kind invalide pour '{key}' ({kind}).")
+            columns.append({"key": key, "label": label, "kind": kind})
+
+        if not columns:
+            raise RuntimeError("Export Chemins impossible: aucune colonne visible.")
+        return columns
+
+    def onExporterCheminsExcel(self) -> None:
+        scen = self._get_active_scenario()
+        if scen is None:
+            return
+        world = scen.topoWorld
+        if world is None:
+            return
+        tc = world.topologyChemins
+        if not tc.isDefined:
+            return
+
+        if not os.path.isdir(self.exports_dir):
+            raise FileNotFoundError(f"Répertoire d'export introuvable: {self.exports_dir}")
+
+        scenarioName = str(getattr(scen, "name", "") or "").strip()
+        if not scenarioName:
+            scenarioName = "Scenario"
+        initial_name = f"Chemin {scenarioName}.xlsx"
+
+        path = filedialog.asksaveasfilename(
+            title="Exporter en Excel",
+            defaultextension=".xlsx",
+            filetypes=[("Excel", "*.xlsx")],
+            initialdir=self.exports_dir,
+            initialfile=initial_name,
+            parent=self,
+        )
+        if not path:
+            return
+        path = os.path.normpath(path)
+
+        if os.path.exists(path):
+            overwrite = messagebox.askyesno(
+                "Écraser ?",
+                f"Le fichier existe déjà : {os.path.basename(path)}\n\nÉcraser ce fichier ?",
+                parent=self,
+            )
+            if not overwrite:
+                return
+
+        columns = self._getCheminsVisibleColumnsForExport()
+        world.topologyChemins.exportXlsx(path, columns, scenarioName)
+        self.status.config(text=f"Chemins exportés : {path}")
 
     def onEditerChemin(self) -> None:
         """Édition V6 du chemin: orientationUser + selectionMask (ordre snapshot)."""

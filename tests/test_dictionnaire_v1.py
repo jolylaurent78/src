@@ -132,7 +132,7 @@ def test_tc_d4_getMotExtended_examples(dico):
 
 
 def test_tc_e1_recalage_exemple(dico):
-    assert dico.recalageAbs(5, 77) == (5, 14)
+    assert dico.recalageAbs((5, 77)) == (5, 14)
 
 
 def test_tc_e2_recalage_col_dans_bornes(dico):
@@ -141,13 +141,13 @@ def test_tc_e2_recalage_col_dans_bornes(dico):
         row_real = dico.normalizeRow(row_ext)
         nrow = dico.getRowSize(row_real)
         for col_ext in sample_cols:
-            r, c = dico.recalageAbs(row_ext, col_ext)
+            r, c = dico.recalageAbs((row_ext, col_ext))
             assert r == row_real
             assert 1 <= c <= nrow
 
 
 def test_tc_e3_recalage_normalise_row(dico):
-    assert dico.recalageAbs(15, 77) == (5, 14)
+    assert dico.recalageAbs((15, 77)) == (5, 14)
 
 
 # -------------------------
