@@ -895,27 +895,70 @@ class TopologyCheminTriplet:
         self.isGeometrieValide = False
 
     def calculerGeometrie(self, world: "TopologyWorld", groupId: str, orientationUser: str) -> None:
-        """Calcule azimuts, distances et angle oriente a partir du world courant."""
+        """Calcule azimuts, distances et angle orienté à partir du world courant.
+
+        azOA/azOB sont exprimés RELATIVEMENT à l'axe de référence défini par:
+            axe 0° = (O -> BALISE_REF_NAME)
+        """
+        # Balise de référence utilisée par le Core pour définir l'axe 0°
+        BALISE_REF_NAME = "Grand Ballon"
+
         gid = str(groupId)
         orient = TopologyChemins._normalizeOrientation(orientationUser)
 
+        # --- Points du triplet (World XY) ---
         xA, yA = world.getConceptNodeWorldXY(self.nodeA, gid)
         xO, yO = world.getConceptNodeWorldXY(self.nodeO, gid)
         xB, yB = world.getConceptNodeWorldXY(self.nodeB, gid)
 
+        # --- Balise de référence (World XY) ---
+        if not world.hasBalise(BALISE_REF_NAME):
+            print(f"[Chemins][Triplet] Balise de référence introuvable: '{BALISE_REF_NAME}'. Géométrie non calculée.")
+            self.isGeometrieValide = False
+            return
+
+        xR, yR = world.getBaliseWorldXY(BALISE_REF_NAME)
+
+        # Axe de référence = O -> R
+        dxOR = float(xR - xO)
+        dyOR = float(yR - yO)
+        azAxis = world.azimutDegFromDxDy(dxOR, dyOR)
+
+        # NOTE (debug / cohérence avec ton point 4) :
+        # azRef = azimut(Balise -> O) = world.azimutDegFromDxDy(xO-xR, yO-yR)
+        # (on ne l'utilise pas pour la définition de l'axe 0°, juste pour référence si besoin)
+
+        # --- Vecteurs OA / OB ---
         dxOA = float(xA - xO)
         dyOA = float(yA - yO)
         dxOB = float(xB - xO)
         dyOB = float(yB - yO)
 
-        self.azOA = world.azimutDegFromDxDy(dxOA, dyOA)
-        self.azOB = world.azimutDegFromDxDy(dxOB, dyOB)
+        azOA_north = world.azimutDegFromDxDy(dxOA, dyOA)
+        azOB_north = world.azimutDegFromDxDy(dxOB, dyOB)
+
+        # Azimuts RELATIFS à l'axe O->R (pliés dans [0°, 180°])
+        azOA_rel = float((azOA_north - azAxis + 360.0) % 360.0)
+        azOB_rel = float((azOB_north - azAxis + 360.0) % 360.0)
+
+        # Distances inchangées (World = km dans ton modèle actuel)
         self.distOA_km = float(math.hypot(dxOA, dyOA))
         self.distOB_km = float(math.hypot(dxOB, dyOB))
-        angle = float((self.azOB - self.azOA + 360.0) % 360.0)
+
+        angle = (azOB_rel - azOA_rel + 360.0) % 360.0
         if orient == "ccw":
             angle = float((360.0 - angle) % 360.0)
         self.angleDeg = angle
+
+        # On repasse à 180° pour la persistance des azimuts (apres le calcul du delta)
+        if azOA_rel > 180.0:
+            azOA_rel = 360.0 - azOA_rel
+        if azOB_rel > 180.0:
+            azOB_rel = 360.0 - azOB_rel
+
+        self.azOA = azOA_rel
+        self.azOB = azOB_rel
+
         self.isGeometrieValide = True
 
     @staticmethod
@@ -1424,6 +1467,8 @@ class TopologyWorld:
         self._topoTxOrientation = "cw"
         self._isImportingSnapshot = False
         self.topologyChemins = TopologyChemins(self)
+
+        self.balisesWorld: dict[str, tuple[float, float]] = {}
 
     # ------------------------------------------------------------------
     # Topologie conceptuelle (MVP)
@@ -4083,3 +4128,18 @@ class TopologyWorld:
                 bestHit = (d, hit)
 
         return None if bestHit is None else bestHit[1]
+
+    def setBaliseWorldXY(self, name: str, x: float, y: float) -> None:
+        self.balisesWorld[str(name)] = (float(x), float(y))
+
+    def clearBalises(self) -> None:
+        self.balisesWorld.clear()
+
+    def hasBalise(self, name: str) -> bool:
+        return str(name) in self.balisesWorld
+
+    def getBaliseWorldXY(self, name: str) -> tuple[float, float]:
+        key = str(name)
+        if key not in self.balisesWorld:
+            raise KeyError(f"[Balises] balise absente: {name}")
+        return self.balisesWorld[key]

@@ -13,25 +13,47 @@ from typing import Optional, Tuple
 
 from src.DictionnaireEnigmes import DictionnaireEnigmes, DicoScope
 
+DICO_TAG_EXCLURE = "exclure"
+CFG_KEY_DICO_EXCLURE_MOTS_CODES = "dicoExclureMotsCodes"
+
 
 class TriangleViewerDictionaryMixin:
     """Mixin: méthodes extraites de assembleur_tk.py."""
     pass
 
-    def _init_dictionary(self):
-        """Construit le dictionnaire en lisant ../data/livre.txt (si présent)."""
-        try:
-            if DictionnaireEnigmes is None:
-                raise ImportError("Module DictionnaireEnigmes introuvable")
-            livre_path = os.path.join(self.data_dir, "livre.txt")
-            if not os.path.isfile(livre_path):
-                self.status.config(text="Dico: fichier 'livre.txt' non trouvé dans ../data")
-                return
-            self.dico = DictionnaireEnigmes(livre_path)  # charge tout le livre
-            nb_lignes = len(self.dico)
-            self.status.config(text=f"Dico chargé: {nb_lignes} lignes depuis {livre_path}")
-        except Exception as e:
-            self.status.config(text=f"Dico: échec de chargement — {e}")
+    def _initDicoExcludeMotsCodesFromConfig(self) -> None:
+        exclude = self.getAppConfigValue(CFG_KEY_DICO_EXCLURE_MOTS_CODES, False)
+        if not isinstance(exclude, bool):
+            raise ValueError(
+                f"Invalid config type for {CFG_KEY_DICO_EXCLURE_MOTS_CODES}: {type(exclude).__name__}"
+            )
+        self._dicoExcludeMotsCodesValue = exclude
+        self._dicoExcludeMotsCodesVar = tk.BooleanVar(value=exclude)
+
+    def _getDicoTagExclure(self) -> str | None:
+        self._dicoExcludeMotsCodesValue = bool(self._dicoExcludeMotsCodesVar.get())
+        return DICO_TAG_EXCLURE if self._dicoExcludeMotsCodesValue else None
+
+    def _onToggleDicoExcludeMotsCodes(self) -> None:
+        value = bool(self._dicoExcludeMotsCodesVar.get())
+        self._dicoExcludeMotsCodesValue = value
+        self.setAppConfigValue(CFG_KEY_DICO_EXCLURE_MOTS_CODES, value)
+        self.saveAppConfig()
+
+        tagExclure = self._getDicoTagExclure()
+        self._init_dictionary(tagExclure=tagExclure)
+        self._build_dico_grid()
+
+    def _init_dictionary(self, *, tagExclure: str | None) -> None:
+        """Construit le dictionnaire en lisant ../data/livre.txt."""
+        if DictionnaireEnigmes is None:
+            raise ImportError("Module DictionnaireEnigmes introuvable")
+        livre_path = os.path.join(self.data_dir, "livre.txt")
+        if not os.path.isfile(livre_path):
+            raise FileNotFoundError(livre_path)
+        self.dico = DictionnaireEnigmes(livre_path, tagExclure=tagExclure)
+        nb_lignes = len(self.dico)
+        self.status.config(text=f"Dico chargé: {nb_lignes} lignes depuis {livre_path}")
 
     # ---------- Dictionnaire : affichage dans le panneau bas ----------
     def _build_dico_grid(self):
@@ -85,11 +107,18 @@ class TriangleViewerDictionaryMixin:
         right.pack(side="left", fill="both", expand=True)
 
         # ===== Barre "catégories" =====
-        tk.Label(left, text="Catégorie :", anchor="w", bg="#f3f3f3").pack(anchor="w", padx=8, pady=(8, 2))
+        tk.Checkbutton(
+            left,
+            text="Exclure mots codés",
+            variable=self._dicoExcludeMotsCodesVar,
+            command=self._onToggleDicoExcludeMotsCodes,
+            bg="#f3f3f3",
+        ).pack(anchor="w", padx=8, pady=(8, 2))
+        tk.Label(left, text="Catégorie :", anchor="w", bg="#f3f3f3").pack(anchor="w", padx=8, pady=(2, 2))
         cats = list(self.dico.getCategories())
 
         # Préserver la catégorie sélectionnée lors d'un rebuild
-        cat_default = getattr(self, "_dico_cat_selected", None)
+        cat_default = self._dico_cat_selected if hasattr(self, "_dico_cat_selected") else None
         if cat_default not in (cats or []):
             cat_default = (cats[0] if cats else "")
         self._dico_cat_var = tk.StringVar(value=cat_default)

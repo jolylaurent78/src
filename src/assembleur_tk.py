@@ -7,7 +7,6 @@ import numpy as np
 import re
 import copy
 import traceback
-import pandas as pd
 import threading
 from typing import Optional, List, Dict, Tuple
 
@@ -41,7 +40,7 @@ from src.assembleur_decryptor import (
     DECRYPTORS,
 )
 from src.assembleur_decryptor_engine import DecryptorEngine
-from src.DictionnaireEnigmes import Pattern, ListePatterns, DicoScope
+from src.DictionnaireEnigmes import DictionnaireEnigmes, Pattern, ListePatterns, DicoScope
 from src.assembleur_engine_runtime import (
     EngineControl,
     EventQueue,
@@ -647,8 +646,9 @@ class TriangleViewerManual(
         self.bind("<Escape>", self._on_escape_key)
 
         # === Dictionnaire : chargement automatique de ../data/livre.txt ===
-        self.dico = None
-        self._init_dictionary()
+        self.dico: DictionnaireEnigmes | None = None
+        self._initDicoExcludeMotsCodesFromConfig()
+        self._init_dictionary(tagExclure=self._getDicoTagExclure())
         self._build_dico_grid()
 
     # ======================================================================
@@ -2601,6 +2601,8 @@ class TriangleViewerManual(
         if not tc.isDefined:
             return
 
+        # On raffraichit les balises et on recalcule
+        self._syncBalisesToWorld(scen.topoWorld)
         tc.recalculerChemin()
 
         self.refreshCheminTreeView()
@@ -3241,6 +3243,9 @@ class TriangleViewerManual(
             world = scen.topoWorld
             tc = world.topologyChemins
             dico = self.dico
+
+            # On raffraichit les balises et on recalcule
+            self._syncBalisesToWorld(world)
 
             patterns_actifs = []
             for p in list(win._patterns or []):
@@ -5179,6 +5184,12 @@ class TriangleViewerManual(
             self.balisesManager.clear()
             print(f"[Balises][AUTOLOAD] Echec du chargement: {csv_path}")
             traceback.print_exc()
+
+    def _syncBalisesToWorld(self, world: TopologyWorld) -> None:
+        world.clearBalises()
+        for name in self.balisesManager.listNoms():
+            xW, yW = self.balisesManager.getWorld(self, name)
+            world.setBaliseWorldXY(name, float(xW), float(yW))
 
     def _initialdir_from_current(self, current_path: str) -> str:
         p = str(current_path or "").strip()
@@ -7335,6 +7346,8 @@ class TriangleViewerManual(
         if bool(world.topologyChemins.isDefined):
             if not messagebox.askokcancel("Créer un chemin", "Un chemin existe déjà. Remplacer ?"):
                 return
+        # On synchronise les balises avant la création du chemin
+        self._syncBalisesToWorld(world)
 
         world.topologyChemins.creerDepuisGroupe(gid, startNodeId, orientationUser)
         self.refreshCheminTreeView()

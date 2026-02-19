@@ -49,13 +49,12 @@
   "cheminsMeasures": [
     "azOA",
     "azOB",
-    "angle",
-    "distOA",
-    "distOB"
+    "angle"
   ],
   "lastTriangleCsvIn": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_3villes_v9.csv",
   "lastVillesCsvIn": "D:\\Dropbox\\La Chouette\\Python\\AlgoSimulator\\data\\villes_database.csv",
   "lastTriangleExcelOut": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_v9.xlsx",
   "balisesCsvPath": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\balises.csv",
-  "uiShowBalisesLayer": true
+  "uiShowBalisesLayer": true,
+  "dicoExclureMotsCodes": true
 }

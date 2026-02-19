@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 from math import hypot, acos, degrees
 
+
 class TriangleFileService:
     CFG_KEYS = (
         "lastTriangleCsvIn",
