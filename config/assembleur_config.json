@@ -56,5 +56,6 @@
   "lastTriangleExcelOut": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_v9.xlsx",
   "balisesCsvPath": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\balises.csv",
   "uiShowBalisesLayer": true,
-  "dicoExclureMotsCodes": true
+  "dicoExclureMotsCodes": false,
+  "cheminsBaliseRefName": "Grand Ballon"
 }

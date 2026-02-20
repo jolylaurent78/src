@@ -894,17 +894,26 @@ class TopologyCheminTriplet:
         self.angleDeg = 0.0
         self.isGeometrieValide = False
 
-    def calculerGeometrie(self, world: "TopologyWorld", groupId: str, orientationUser: str) -> None:
+    def calculerGeometrie(
+        self,
+        world: "TopologyWorld",
+        groupId: str,
+        orientationUser: str,
+        baliseRefName: str,
+    ) -> None:
         """Calcule azimuts, distances et angle orienté à partir du world courant.
 
         azOA/azOB sont exprimés RELATIVEMENT à l'axe de référence défini par:
-            axe 0° = (O -> BALISE_REF_NAME)
+            axe 0° = (O -> baliseRefName)
         """
         # Balise de référence utilisée par le Core pour définir l'axe 0°
-        BALISE_REF_NAME = "Grand Ballon"
-
         gid = str(groupId)
         orient = TopologyChemins._normalizeOrientation(orientationUser)
+        balise_name = str(baliseRefName or "").strip()
+        if not balise_name:
+            raise ValueError("[Chemins][Triplet] baliseRefName invalide (vide)")
+        if not world.hasBalise(balise_name):
+            raise ValueError(f"[Chemins][Triplet] balise de reference introuvable: '{balise_name}'")
 
         # --- Points du triplet (World XY) ---
         xA, yA = world.getConceptNodeWorldXY(self.nodeA, gid)
@@ -912,12 +921,7 @@ class TopologyCheminTriplet:
         xB, yB = world.getConceptNodeWorldXY(self.nodeB, gid)
 
         # --- Balise de référence (World XY) ---
-        if not world.hasBalise(BALISE_REF_NAME):
-            print(f"[Chemins][Triplet] Balise de référence introuvable: '{BALISE_REF_NAME}'. Géométrie non calculée.")
-            self.isGeometrieValide = False
-            return
-
-        xR, yR = world.getBaliseWorldXY(BALISE_REF_NAME)
+        xR, yR = world.getBaliseWorldXY(balise_name)
 
         # Axe de référence = O -> R
         dxOR = float(xR - xO)
@@ -1096,7 +1100,7 @@ class TopologyChemins:
         if not self.isDefined:
             raise ValueError("[Chemins] chemin non defini")
 
-    def creerDepuisGroupe(self, groupId: str, startNodeId: str, orientationUser: str) -> None:
+    def creerDepuisGroupe(self, groupId: str, startNodeId: str, orientationUser: str, baliseRefName: str) -> None:
         """Cree un chemin depuis un groupe + start node + orientation utilisateur."""
         orient = self._normalizeOrientation(orientationUser)
         gid = self._world.find_group(str(groupId))
@@ -1116,7 +1120,7 @@ class TopologyChemins:
             raise ValueError("[Chemins] pathNodesOrdered invalide: moins de 3 nodes")
         tripletsLocal = self._buildTriplets(pathLocal)
         for t in tripletsLocal:
-            t.calculerGeometrie(self._world, gid, orient)
+            t.calculerGeometrie(self._world, gid, orient, baliseRefName)
 
         self.isDefined = True
         self.groupId = gid
@@ -1128,7 +1132,7 @@ class TopologyChemins:
         self.triplets = tripletsLocal
         self._assertDefinedInvariants()
 
-    def appliquerEdition(self, orientationUser: str, selectionMask: list[bool]) -> None:
+    def appliquerEdition(self, orientationUser: str, selectionMask: list[bool], baliseRefName: str) -> None:
         """Applique orientation + mask sur le snapshot puis recalcule path/triplets/geometrie."""
         self._requireDefined()
         orient = self._normalizeOrientation(orientationUser)
@@ -1144,7 +1148,7 @@ class TopologyChemins:
             raise ValueError("[Chemins] edition invalide: moins de 3 nodes selectionnes")
         tripletsLocal = self._buildTriplets(pathLocal)
         for t in tripletsLocal:
-            t.calculerGeometrie(self._world, str(self.groupId), orient)
+            t.calculerGeometrie(self._world, str(self.groupId), orient, baliseRefName)
 
         self.orientationUser = orient
         self.selectionMask = mask
@@ -1168,12 +1172,12 @@ class TopologyChemins:
         self._requireDefined()
         self.triplets = self._buildTriplets(self.pathNodesOrdered)
 
-    def calculerGeometrieTriplets(self) -> None:
+    def calculerGeometrieTriplets(self, baliseRefName: str) -> None:
         """Met a jour la geometrie de tous les triplets sans changer la combinatoire."""
         self._requireDefined()
         gid = str(self.groupId)
         for t in self.triplets:
-            t.calculerGeometrie(self._world, gid, str(self.orientationUser))
+            t.calculerGeometrie(self._world, gid, str(self.orientationUser), baliseRefName)
 
     def exportXlsx(self, filePath: str, columns: list[dict], scenarioName: str) -> None:
         """
@@ -1444,7 +1448,7 @@ class TopologyChemins:
         self.triplets = newTriplets
         self._assertDefinedInvariants()
 
-    def recalculerChemin(self) -> None:
+    def recalculerChemin(self, baliseRefName: str) -> None:
         """Reconstruit snapshot/mask/path/triplets depuis le contour courant en conservant start/sens."""
         self._requireDefined()
 
@@ -1489,7 +1493,7 @@ class TopologyChemins:
 
         newTriplets = self._buildTriplets(newPath)
         for t in newTriplets:
-            t.calculerGeometrie(self._world, gid, oldOrient)
+            t.calculerGeometrie(self._world, gid, oldOrient, baliseRefName)
 
         oldPath = list(self.pathNodesOrdered)
         oldTriplets = list(self.triplets)

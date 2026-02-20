@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 from math import hypot, acos, degrees
 
+CFG_KEY_CHEMINS_BALISE_REF = "cheminsBaliseRefName"
+
 
 class TriangleFileService:
     CFG_KEYS = (

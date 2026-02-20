@@ -11,7 +11,7 @@ from tkinter import ttk, messagebox
 from tksheet import Sheet
 from typing import Optional, Tuple
 
-from src.DictionnaireEnigmes import DictionnaireEnigmes, DicoScope
+from src.DictionnaireEnigmes import DictionnaireEnigmes, DicoScope, _normalizeWordLocal
 
 DICO_TAG_EXCLURE = "exclure"
 CFG_KEY_DICO_EXCLURE_MOTS_CODES = "dicoExclureMotsCodes"
@@ -95,10 +95,10 @@ class TriangleViewerDictionaryMixin:
             default_origin = (0, self._dico_nb_mots_max)
             self._dico_ref_mode = "origin" if tuple(self._dico_origin_cell) != tuple(default_origin) else None
 
-        # --- Layout du panneau bas : [sidebar catégories] | [grille] ---
+        # --- Layout du panneau bas : [sidebar recherche] | [grille] ---
         container = tk.Frame(self.dicoPanel, bg="#f3f3f3")
         container.pack(fill="both", expand=True)
-        # colonne gauche (catégories + liste)
+        # colonne gauche (recherche + occurrences)
         left = tk.Frame(container, width=180, bg="#f3f3f3", bd=1, relief=tk.GROOVE)
         left.pack(side="left", fill="y")
         left.pack_propagate(False)
@@ -106,7 +106,7 @@ class TriangleViewerDictionaryMixin:
         right = tk.Frame(container, bg="#f3f3f3")
         right.pack(side="left", fill="both", expand=True)
 
-        # ===== Barre "catégories" =====
+        # ===== Barre "recherche" =====
         tk.Checkbutton(
             left,
             text="Exclure mots codés",
@@ -114,95 +114,52 @@ class TriangleViewerDictionaryMixin:
             command=self._onToggleDicoExcludeMotsCodes,
             bg="#f3f3f3",
         ).pack(anchor="w", padx=8, pady=(8, 2))
-        tk.Label(left, text="Catégorie :", anchor="w", bg="#f3f3f3").pack(anchor="w", padx=8, pady=(2, 2))
-        cats = list(self.dico.getCategories())
+        search_row = tk.Frame(left, bg="#f3f3f3")
+        search_row.pack(fill="x", padx=8, pady=(2, 6))
 
-        # Préserver la catégorie sélectionnée lors d'un rebuild
-        cat_default = self._dico_cat_selected if hasattr(self, "_dico_cat_selected") else None
-        if cat_default not in (cats or []):
-            cat_default = (cats[0] if cats else "")
-        self._dico_cat_var = tk.StringVar(value=cat_default)
-        self._dico_cat_combo = ttk.Combobox(left, state="readonly", values=cats, textvariable=self._dico_cat_var)
-        self._dico_cat_combo.pack(fill="x", padx=8, pady=(0, 6))
+        self._dico_search_var = tk.StringVar(value="")
+        self._dico_search_entry = tk.Entry(search_row, textvariable=self._dico_search_var)
+        self._dico_search_entry.pack(side="left", fill="x", expand=True)
 
-        # Liste des mots de la catégorie sélectionnée
-        lb_frame = tk.Frame(left, bg="#f3f3f3")
-        lb_frame.pack(fill="both", expand=True, padx=6, pady=(0, 8))
-        self._dico_cat_list = tk.Listbox(lb_frame, exportselection=False)
-        self._dico_cat_list.pack(side="left", fill="both", expand=True)
-        sb = tk.Scrollbar(lb_frame, orient="vertical", command=self._dico_cat_list.yview)
+        self._dico_icon_check_green = self._load_icon("check16_green.png")
+        self._dico_icon_check_red = self._load_icon("check16_red.png")
+        if self._dico_icon_check_green is None:
+            raise FileNotFoundError("Icone introuvable: check16_green.png")
+        if self._dico_icon_check_red is None:
+            raise FileNotFoundError("Icone introuvable: check16_red.png")
+
+        self._dico_search_status_icon = tk.Label(search_row, image=self._dico_icon_check_red, bg="#f3f3f3")
+        self._dico_search_status_icon.image = self._dico_icon_check_red
+        self._dico_search_status_icon.pack(side="left", padx=(4, 2))
+
+        tree_frame = tk.Frame(left, bg="#f3f3f3")
+        tree_frame.pack(fill="both", expand=True, padx=6, pady=(0, 8))
+        self._dico_search_tree = ttk.Treeview(
+            tree_frame,
+            columns=("Col", "Ligne"),
+            show="headings",
+            selectmode="browse",
+        )
+        self._dico_search_tree.heading("Col", text="Col")
+        self._dico_search_tree.heading("Ligne", text="Ligne")
+        self._dico_search_tree.column("Col", width=70, anchor="center")
+        self._dico_search_tree.column("Ligne", width=70, anchor="center")
+        self._dico_search_tree.pack(side="left", fill="both", expand=True)
+        sb = tk.Scrollbar(tree_frame, orient="vertical", command=self._dico_search_tree.yview)
         sb.pack(side="right", fill="y")
-        self._dico_cat_list.configure(yscrollcommand=sb.set)
+        self._dico_search_tree.configure(yscrollcommand=sb.set)
 
-        # Remplissage initial + binding de la combo
-        self._dico_cat_items = []
+        self._dico_search_items = []
+        self._dico_search_debounce_after_id = None
+
+        self._dico_search_entry.bind("<Return>", self._dico_search_refresh)
+        self._dico_search_entry.bind("<KeyRelease>", self._dico_search_schedule_debounce)
+        self._dico_search_entry.bind("<Tab>", self._dico_search_autocomplete_tab)
+        self._dico_search_tree.bind("<<TreeviewSelect>>", self._dico_search_goto_selected)
+        self._dico_search_tree.bind("<Double-Button-1>", self._dico_search_goto_selected)
 
         # cellule visée par le clic-droit (row,col) en coordonnées TkSheet
         self._dico_ctx_cell = None
-
-        def _refresh_cat_list(*_):
-            cat = self._dico_cat_var.get()
-            self._dico_cat_selected = cat
-            self._dico_cat_list.delete(0, tk.END)
-            if not cat:
-                return
-
-            # getListeCategorie -> [(mot, enigme, indexMot), ...]
-            items = self.dico.getListeCategorie(cat)
-
-            # mémoriser pour la synchro avec la grille
-            self._dico_cat_items = list(items)
-            # Afficher: "mot — (eDisp, mDisp)" (index d’affichage)
-            # - Mode ABS (origine par défaut) : colonnes sans 0 (1=1er mot), lignes 1..10
-            # - Mode DELTA (origine cliquée) : colonnes/énigmes en delta avec 0 (pas d’énigmes négatives -> modulo 10)
-            default_origin = (0, self._dico_nb_mots_max)
-            r0, c0 = (self._dico_origin_cell or default_origin)
-            refMode = getattr(self, "_dico_ref_mode", None)
-            isDelta = (tuple((r0, c0)) != tuple(default_origin)) and (refMode in ("origin", "target"))
-            isTarget = (refMode == "target")
-
-            origin_indexMot = int(c0) - self._dico_nb_mots_max
-            for mot, e, m in items:
-                # Lignes : pas d’énigmes négatives
-                eLogRaw = int(e) - int(r0)
-                eLog = (-int(eLogRaw) % 10) if isTarget else (int(eLogRaw) % 10)
-                eDisp = int(eLog) if isDelta else (int(eLog) + 1)
-
-                # Colonnes : indexMot (absolu) ou delta
-                mLog = int(m) - int(origin_indexMot)
-                if isDelta:
-                    mDisp = int(mLog)  # delta, 0 autorisé
-                else:
-                    # ABS : pas de colonne 0 ; 1 = 1er mot
-                    mDisp = int(mLog) if int(mLog) < 0 else (int(mLog) + 1)
-
-                self._dico_cat_list.insert(tk.END, f"{mot} — ({eDisp}, {mDisp})")
-
-        self._dico_cat_combo.bind("<<ComboboxSelected>>", _refresh_cat_list)
-        _refresh_cat_list()
-
-        # Synchronisation: clic/double-clic dans la liste -> centrer/sélectionner le mot dans la grille
-        def _goto_selected_word(event=None):
-            if not getattr(self, "dicoSheet", None):
-                return
-            sel = self._dico_cat_list.curselection()
-            if not sel:
-                return
-            i = int(sel[0])
-            mot, enigme, indexMot = self._dico_cat_items[i]
-
-            # convertir indexMot [-N..N) -> colonne [0..2N)
-            col = int(indexMot) + self._dico_nb_mots_max
-            row = int(enigme)
-            # sélectionner et faire voir la cellule ; see() centre autant que possible
-            self.dicoSheet.select_cell(row, col, redraw=False)
-            self.dicoSheet.see(row=row, column=col)
-            # MAJ horloge (sélection indirecte via la liste)
-            self._update_clock_from_cell(row, col)
-
-        # Clic et double-clic compatibles
-        self._dico_cat_list.bind("<<ListboxSelect>>", _goto_selected_word)
-        self._dico_cat_list.bind("<Double-Button-1>", _goto_selected_word)
 
         # ===== Grille (tksheet) =====
         # Construire la matrice
@@ -247,6 +204,10 @@ class TriangleViewerDictionaryMixin:
         else:
             labels = self.dico.getRowLabelsAbs()
         rowIndexDisplay = [f'{lab} - "{t}"' for lab, t in zip(labels, row_titles_raw)]
+
+        self._dico_all_words = set()
+        for rowExt, colExt in self.dico.iterCoords(DicoScope.EXTENDED):
+            self._dico_all_words.add(self.dico.getMotExtended(rowExt, colExt))
 
         # Créer la grille
         self.dicoSheet = Sheet(
@@ -407,7 +368,97 @@ class TriangleViewerDictionaryMixin:
         if getattr(self, "_dico_filter_active", False):
             self._dico_apply_filter_styles()
 
+        self._dico_search_refresh()
         self.status.config(text="Dico affiché dans le panneau bas")
+
+    def _dico_search_schedule_debounce(self, event=None) -> None:
+        if self._dico_search_debounce_after_id is not None:
+            self.after_cancel(self._dico_search_debounce_after_id)
+        self._dico_search_debounce_after_id = self.after(250, self._dico_search_refresh)
+
+    def _dico_search_refresh(self, event=None) -> None:
+        self._dico_search_debounce_after_id = None
+
+        raw = self._dico_search_var.get()
+        mot = _normalizeWordLocal(raw)
+
+        for iid in self._dico_search_tree.get_children():
+            self._dico_search_tree.delete(iid)
+        self._dico_search_items = []
+
+        if mot == "":
+            self._dico_search_status_icon.configure(image=self._dico_icon_check_red)
+            self._dico_search_status_icon.image = self._dico_icon_check_red
+            return
+
+        nbm = int(self._dico_nb_mots_max)
+        default_origin = (0, nbm)
+        r0, c0 = self._dico_origin_cell or default_origin
+        refMode = self._dico_ref_mode
+        isDelta = (tuple((int(r0), int(c0))) != tuple(default_origin)) and (refMode in ("origin", "target"))
+
+        n = int(self.dico.getNbLignes())
+        rowOAbs = (int(r0) % n) + 1
+        j0 = int(c0) - nbm
+        colOAbs = int(j0) if int(j0) < 0 else (int(j0) + 1)
+        originAbs = (rowOAbs, colOAbs)
+
+        colsExt = self.dico.getExtendedColumns()
+        occurrences = []
+
+        for rowExt, colExt in self.dico.iterCoords(DicoScope.EXTENDED):
+            w = self.dico.getMotExtended(rowExt, colExt)
+            if w != mot:
+                continue
+
+            if isDelta:
+                dr, dc = self.dico.computeDeltaAbs(originAbs, (rowExt, colExt))
+                if refMode == "target":
+                    dr = (-int(dr)) % n
+                    dc = -int(dc)
+                rowDisp = int(dr)
+                colDisp = int(dc)
+            else:
+                rowDisp = int(rowExt)
+                colDisp = int(colExt)
+
+            rowTk = int(rowExt) - 1
+            colTk = colsExt.index(int(colExt))
+            occurrences.append((colDisp, rowDisp, rowTk, colTk))
+
+        occurrences.sort(key=lambda it: (it[0], it[1]))
+
+        for i, (colDisp, rowDisp, rowTk, colTk) in enumerate(occurrences):
+            self._dico_search_tree.insert("", "end", iid=str(i), values=(int(colDisp), int(rowDisp)))
+            self._dico_search_items.append((rowTk, colTk))
+
+        if len(occurrences) > 0:
+            self._dico_search_status_icon.configure(image=self._dico_icon_check_green)
+            self._dico_search_status_icon.image = self._dico_icon_check_green
+        else:
+            self._dico_search_status_icon.configure(image=self._dico_icon_check_red)
+            self._dico_search_status_icon.image = self._dico_icon_check_red
+
+    def _dico_search_autocomplete_tab(self, event=None):
+        prefix = _normalizeWordLocal(self._dico_search_var.get())
+        candidates = sorted([w for w in self._dico_all_words if w.startswith(prefix)])
+        if len(candidates) == 1:
+            self._dico_search_var.set(candidates[0])
+            self._dico_search_entry.icursor(tk.END)
+            self._dico_search_entry.selection_clear()
+            self._dico_search_refresh()
+            return "break"
+        return None
+
+    def _dico_search_goto_selected(self, event=None) -> None:
+        sel = self._dico_search_tree.selection()
+        if not sel:
+            return
+        i = int(sel[0])
+        rowTk, colTk = self._dico_search_items[i]
+        self.dicoSheet.select_cell(rowTk, colTk, redraw=False)
+        self.dicoSheet.see(row=rowTk, column=colTk)
+        self._update_clock_from_cell(rowTk, colTk)
 
     # ---------- DICO : origine logique via menu contextuel ----------
 

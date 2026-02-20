@@ -2056,6 +2056,17 @@ class TriangleViewerManual(
         )
         self.chemins_delete_btn.pack(side=tk.LEFT, padx=1)
 
+        self.chemins_balise_ref_var = tk.StringVar(value="")
+        self.chemins_balise_ref_combo = ttk.Combobox(
+            chemins_toolbar,
+            textvariable=self.chemins_balise_ref_var,
+            state="disabled",
+            width=24,
+            values=[],
+        )
+        self.chemins_balise_ref_combo.pack(side=tk.RIGHT, padx=(6, 0))
+        self.chemins_balise_ref_combo.bind("<<ComboboxSelected>>", self._onCheminsBaliseRefSelected)
+
         chemins_lb_frame = tk.Frame(self._ui_chemins_content, bd=0, highlightthickness=0)
         chemins_lb_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
 
@@ -2296,10 +2307,57 @@ class TriangleViewerManual(
         # simple alias si tu veux déclencher seulement au double-clic
         self._onCheminsTreeSelect(evt)
 
+    def _refreshCheminsBaliseRefCombo(self) -> None:
+        if not hasattr(self, "chemins_balise_ref_combo"):
+            return
+
+        names = [str(name) for name in self.balisesManager.listNoms()]
+        self.chemins_balise_ref_combo.configure(values=names)
+        if not names:
+            self.chemins_balise_ref_var.set("")
+            self.chemins_balise_ref_combo.configure(state="disabled")
+            return
+
+        saved = str(self.getAppConfigValue(_assembleur_io.CFG_KEY_CHEMINS_BALISE_REF, "") or "").strip()
+        if not saved:
+            selected = names[0]
+        elif saved not in names:
+            raise ValueError(f"[CheminsUI] balise de reference invalide dans la config: '{saved}'")
+        else:
+            selected = saved
+
+        self.chemins_balise_ref_var.set(selected)
+        self.chemins_balise_ref_combo.configure(state="readonly")
+
+    def _getCheminsBaliseRefName(self) -> str:
+        if not hasattr(self, "chemins_balise_ref_var"):
+            return ""
+        return str(self.chemins_balise_ref_var.get() or "").strip()
+
+    def _recalculerCheminFromSelection(self, baliseRefName: str) -> None:
+        scen = self._get_active_scenario()
+        tc = scen.topoWorld.topologyChemins
+        if not tc.isDefined:
+            return
+
+        # On raffraichit les balises et on recalcule
+        self._syncBalisesToWorld(scen.topoWorld)
+        tc.recalculerChemin(str(baliseRefName or ""))
+        self.refreshCheminTreeView()
+
+    def _onCheminsBaliseRefSelected(self, _evt=None) -> None:
+        selectedName = self._getCheminsBaliseRefName()
+        if not selectedName:
+            return
+        self.setAppConfigValue(_assembleur_io.CFG_KEY_CHEMINS_BALISE_REF, selectedName)
+        self.saveAppConfig()
+        self._recalculerCheminFromSelection(selectedName)
+
     def refreshCheminTreeView(self) -> None:
         """Rafraîchit la TreeView Chemins depuis world.topologyChemins (lecture seule)."""
         if not hasattr(self, "chemins_tree"):
             return
+        self._refreshCheminsBaliseRefCombo()
         tree = self.chemins_tree
         self._cheminsTripletByIid = {}
 
@@ -2702,7 +2760,11 @@ class TriangleViewerManual(
                 selected = ["angle"]
             self.setAppConfigValue("cheminsMeasures", selected)
 
-            world.topologyChemins.appliquerEdition(newOrientationUser, newSelectionMaskSnapshotOrder)
+            world.topologyChemins.appliquerEdition(
+                newOrientationUser,
+                newSelectionMaskSnapshotOrder,
+                self._getCheminsBaliseRefName(),
+            )
             dlg.destroy()
             self.refreshCheminTreeView()
 
@@ -2719,16 +2781,8 @@ class TriangleViewerManual(
 
     def onRecalculerChemin(self) -> None:
         """Demande au Core de recalculer le chemin courant puis rafraîchit l'UI."""
-        scen = self._get_active_scenario()
-        tc = scen.topoWorld.topologyChemins
-        if not tc.isDefined:
-            return
-
-        # On raffraichit les balises et on recalcule
-        self._syncBalisesToWorld(scen.topoWorld)
-        tc.recalculerChemin()
-
-        self.refreshCheminTreeView()
+        baliseRefName = self._getCheminsBaliseRefName()
+        self._recalculerCheminFromSelection(baliseRefName)
 
     def onDecryptageEngine(self) -> None:
         win = getattr(self, "_decryptage_engine_win", None)
@@ -5299,6 +5353,7 @@ class TriangleViewerManual(
         """Recharge au démarrage le dernier CSV balises persisté (best-effort)."""
         saved_path = str(self.getAppConfigValue("balisesCsvPath", "") or "").strip()
         if not saved_path:
+            self._refreshCheminsBaliseRefCombo()
             return
         csv_path = os.path.normpath(saved_path)
         try:
@@ -5307,6 +5362,7 @@ class TriangleViewerManual(
             self.balisesManager.clear()
             print(f"[Balises][AUTOLOAD] Echec du chargement: {csv_path}")
             traceback.print_exc()
+        self._refreshCheminsBaliseRefCombo()
 
     def _syncBalisesToWorld(self, world: TopologyWorld) -> None:
         world.clearBalises()
@@ -5340,6 +5396,7 @@ class TriangleViewerManual(
             return
 
         self.setAppConfigValue("balisesCsvPath", csv_path)
+        self._refreshCheminsBaliseRefCombo()
         self._redraw_from(self._last_drawn)
 
     # ---------- Chargement Excel ----------
@@ -7472,7 +7529,12 @@ class TriangleViewerManual(
         # On synchronise les balises avant la création du chemin
         self._syncBalisesToWorld(world)
 
-        world.topologyChemins.creerDepuisGroupe(gid, startNodeId, orientationUser)
+        world.topologyChemins.creerDepuisGroupe(
+            gid,
+            startNodeId,
+            orientationUser,
+            self._getCheminsBaliseRefName(),
+        )
         self.refreshCheminTreeView()
 
     def _is_point_in_clock(self, sx: float, sy: float) -> bool:
