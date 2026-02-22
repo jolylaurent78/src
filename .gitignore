@@ -1,0 +1,19 @@
+# Fichiers Python compilés
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Données générées automatiquement
+/exports/
+/exports/TopoXML
+/logs/
+*.log
+*.tmp
+
+# Fichiers système inutiles
+.DS_Store
+Thumbs.db
+
+# Fichiers ephemeride
+*.bsp
