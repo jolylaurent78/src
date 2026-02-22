@@ -3446,6 +3446,111 @@ class TopologyWorld:
         for att in sorted(attachments, key=lambda a: a.attachment_id):
             self.apply_attachment(att)
 
+    def removeElementsAndRebuild(self, elementIds: list[str]) -> None:
+        """Supprime des éléments du monde (core) et reconstruit la topologie à partir des attachments restants.
+
+        Utilisation typique : suppression UI d'un groupe (plusieurs triangles) côté Tk.
+        Contrat:
+        - supprime les éléments + leurs noeuds atomiques
+        - purge tous les attachments qui référencent un des éléments supprimés
+        - reconstruit les DSU nodes/groups + coverages via rebuild_from_attachments()
+        - invalide la géométrie conceptuelle des groupes touchés
+
+        Note:
+        - on ne renumérote pas les elementId.
+        - on évite de changer les groupId existants des éléments restants.
+        """
+        if not elementIds:
+            return
+        if int(getattr(self, "_topoTxDepth", 0)) > 0:
+            raise ValueError("TopologyWorld.removeElementsAndRebuild: transaction ouverte")
+
+        removed: set[str] = {str(e).strip() for e in (elementIds or []) if str(e).strip()}
+        if not removed:
+            return
+
+        # Snapshot des groupes concernés (pour invalider / nettoyer des sous-systèmes, ex: chemins)
+        removedGroups: set[str] = set()
+        for eid in list(removed):
+            gid0 = self.element_to_group.get(str(eid))
+            if gid0 is not None:
+                removedGroups.add(str(self.find_group(str(gid0))))
+
+        # 1) Filtrer les attachments conservés (avant de modifier self.attachments)
+        keptAttachments: list[TopologyAttachment] = []
+        for att in list(getattr(self, "attachments", {}).values()):
+            try:
+                a_eid = str(att.feature_a.element_id)
+                b_eid = str(att.feature_b.element_id)
+            except Exception as e:
+                raise ValueError("TopologyWorld.removeElementsAndRebuild: attachment corrompu (feature)") from e
+            if a_eid in removed or b_eid in removed:
+                continue
+            keptAttachments.append(att)
+
+        # 2) Supprimer les éléments + noeuds atomiques
+        for eid in list(removed):
+            el = self.elements.get(str(eid))
+            if el is None:
+                # Suppression idempotente : si l'élément n'existe déjà plus, on continue.
+                continue
+
+            # Noeuds atomiques de l'élément
+            for v in list(getattr(el, "vertexes", []) or []):
+                nid = str(getattr(v, "node_id", ""))
+                if not nid:
+                    continue
+                # DSU nodes / metadata
+                if nid in self._node_parent:
+                    self._node_parent.pop(nid, None)
+                if nid in self._node_members:
+                    self._node_members.pop(nid, None)
+                if nid in self._node_type:
+                    self._node_type.pop(nid, None)
+                if nid in self._node_created_order:
+                    self._node_created_order.pop(nid, None)
+
+            # Retirer l'élément du mapping element->group
+            gid0 = self.element_to_group.pop(str(eid), None)
+            if gid0 is not None:
+                gidc = str(self.find_group(str(gid0)))
+                g = self.groups.get(gidc)
+                if g is not None and str(eid) in list(getattr(g, "element_ids", []) or []):
+                    g.element_ids = [x for x in list(g.element_ids) if str(x) != str(eid)]
+
+            # Retirer l'élément
+            self.elements.pop(str(eid), None)
+
+        # 3) Purger les groupes vides / orphelins
+        usedRaw = {str(g) for g in (self.element_to_group.values() or [])}
+        usedCanon = {str(self.find_group(g)) for g in list(usedRaw)} if usedRaw else set()
+
+        for gid in list(self.groups.keys()):
+            if str(self.find_group(str(gid))) not in usedCanon:
+                self.groups.pop(gid, None)
+
+        for gid in list(self._group_parent.keys()):
+            if str(self.find_group(str(gid))) not in usedCanon:
+                self._group_parent.pop(gid, None)
+                self._group_members.pop(gid, None)
+                self._group_created_order.pop(gid, None)
+
+        # 4) Reconstruire la topologie depuis les attachments conservés
+        self.rebuild_from_attachments(keptAttachments)
+        self.rebuildGroupElementLists()
+
+        # 5) Chemins : si le chemin courant porte sur un groupe supprimé, on le supprime.
+        tc = getattr(self, "topologyChemins", None)
+        if tc is not None and bool(getattr(tc, "isDefined", False)):
+            gidChemin = str(getattr(tc, "groupId", "") or "")
+            if gidChemin and str(self.find_group(gidChemin)) in removedGroups:
+                tc.supprimerChemin()
+
+        # 6) Invalidation conceptuelle des groupes touchés
+        for gid in (usedCanon | removedGroups):
+            if gid:
+                self.invalidateConceptGraph(str(gid))
+
     # ------------------------------------------------------------------
     # Clone physique deterministe (sans derives)
     # ------------------------------------------------------------------
