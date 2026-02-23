@@ -2881,6 +2881,10 @@ class TopologyWorld:
         self.groups[gid] = TopologyGroup(gid)
         return gid
 
+    # API camelCase (spec UI/Core)
+    def createAtomicGroup(self) -> str:
+        return self.create_group_atomic()
+
     def rebuildGroupElementLists(self) -> None:
         for g in self.groups.values():
             g.element_ids = []
@@ -3550,6 +3554,251 @@ class TopologyWorld:
         for gid in (usedCanon | removedGroups):
             if gid:
                 self.invalidateConceptGraph(str(gid))
+
+    # ------------------------------------------------------------------
+    # Dégrouper par nœud (suppression d'attachments + rebuild complet)
+    # ------------------------------------------------------------------
+
+    def _degrouperAttachmentElementPair(self, att: TopologyAttachment) -> tuple[str, str]:
+        eA = str(getattr(att.feature_a, "element_id", "") or "")
+        eB = str(getattr(att.feature_b, "element_id", "") or "")
+        if not eA or not eB:
+            raise ValueError(f"[degrouper] attachment sans elementId (aid={att.attachment_id})")
+        return (eA, eB)
+
+    def _degrouperIterGroupScopedAttachments(self, elementIds: set[str]) -> list[TopologyAttachment]:
+        out: list[TopologyAttachment] = []
+        for aid in sorted(self.attachments.keys()):
+            att = self.attachments[aid]
+            eA, eB = self._degrouperAttachmentElementPair(att)
+            if eA in elementIds and eB in elementIds:
+                out.append(att)
+        return out
+
+    def _degrouperIsVertexFeatureOnNode(self, f: TopologyFeatureRef, nodeId: str) -> bool:
+        if str(f.feature_type) != TopologyFeatureType.VERTEX:
+            raise ValueError(f"[degrouper] feature attendue vertex, reçu={f.feature_type}")
+        v = self.get_vertex(str(f.element_id), int(f.index))
+        return str(self.find_node(str(v.node_id))) == str(nodeId)
+
+    def _degrouperIsEdgeFeatureOnNode(self, f: TopologyFeatureRef, nodeId: str) -> bool:
+        if str(f.feature_type) != TopologyFeatureType.EDGE:
+            raise ValueError(f"[degrouper] feature attendue edge, reçu={f.feature_type}")
+        e = self.get_edge(str(f.element_id), int(f.index))
+        a = str(self.find_node(str(e.v_start.node_id)))
+        b = str(self.find_node(str(e.v_end.node_id)))
+        return (a == str(nodeId)) or (b == str(nodeId))
+
+    def _degrouperIsVertexVertexIncident(self, att: TopologyAttachment, nodeId: str) -> bool:
+        if str(att.kind) != "vertex-vertex":
+            return False
+        return (
+            self._degrouperIsVertexFeatureOnNode(att.feature_a, nodeId)
+            or self._degrouperIsVertexFeatureOnNode(att.feature_b, nodeId)
+        )
+
+    def _degrouperIsEdgeEdgeIncident(self, att: TopologyAttachment, nodeId: str) -> bool:
+        if str(att.kind) != "edge-edge":
+            return False
+        return (
+            self._degrouperIsEdgeFeatureOnNode(att.feature_a, nodeId)
+            or self._degrouperIsEdgeFeatureOnNode(att.feature_b, nodeId)
+        )
+
+    def _degrouperVertexEdgeTrianglePair(self, att: TopologyAttachment) -> tuple[str, str]:
+        if str(att.kind) != "vertex-edge":
+            raise ValueError(f"[degrouper] kind inattendu pour vertex-edge pair: {att.kind}")
+
+        a = att.feature_a
+        b = att.feature_b
+        ta = str(a.feature_type)
+        tb = str(b.feature_type)
+
+        if ta == TopologyFeatureType.VERTEX and tb == TopologyFeatureType.EDGE:
+            return (str(a.element_id), str(b.element_id))
+        if ta == TopologyFeatureType.EDGE and tb == TopologyFeatureType.VERTEX:
+            return (str(b.element_id), str(a.element_id))
+
+        raise ValueError(f"[degrouper] vertex-edge invalide (aid={att.attachment_id})")
+
+    def canDegrouperAtNode(self, groupId: str, nodeId: str) -> bool:
+        gid = self.find_group(str(groupId))
+        nid = self.find_node(str(nodeId))
+        self.rebuildGroupElementLists()
+        g = self.groups.get(gid)
+        if g is None:
+            return False
+
+        elementIds = {str(eid) for eid in list(getattr(g, "element_ids", []) or [])}
+        if not elementIds:
+            return False
+
+        for att in self._degrouperIterGroupScopedAttachments(elementIds):
+            if self._degrouperIsVertexVertexIncident(att, nid):
+                return True
+            if self._degrouperIsEdgeEdgeIncident(att, nid):
+                return True
+        return False
+
+    def pruneOrphanGroups(self) -> None:
+        # groupes réellement utilisés par au moins un elementId
+        used = {self.find_group(gid) for gid in self.element_to_group.values()}
+
+        # 1) self.groups + cache conceptuel
+        for gid in list(self.groups.keys()):
+            gidc = self.find_group(gid)
+            if gidc not in used:
+                self.groups.pop(gid, None)
+                self._concept_by_gid.pop(gid, None)
+
+        # 2) DSU group structures
+        keep = set(self.groups.keys()) | used
+        for gid in list(self._group_parent.keys()):
+            if gid not in keep:
+                self._group_parent.pop(gid, None)
+                self._group_members.pop(gid, None)
+                self._group_created_order.pop(gid, None)
+                self._concept_by_gid.pop(gid, None)
+
+    def degrouperAtNode(self, groupId: str, nodeId: str) -> dict:
+        if int(getattr(self, "_topoTxDepth", 0)) > 0:
+            raise ValueError("TopologyWorld.degrouperAtNode: transaction ouverte")
+
+        gid = self.find_group(str(groupId))
+        nid = self.find_node(str(nodeId))
+        assert gid in self.groups, f"[degrouper] groupe introuvable: {groupId}"
+
+        # A) Entrées du groupe source
+        self.rebuildGroupElementLists()
+        g = self.groups.get(gid)
+        assert g is not None, f"[degrouper] groupe canonique introuvable: {gid}"
+        sourceElementIds = sorted({str(eid) for eid in list(getattr(g, "element_ids", []) or [])})
+        sourceSet = set(sourceElementIds)
+        assert sourceSet, f"[degrouper] groupe vide: {gid}"
+
+        # B) Collecte des attachments à supprimer
+        groupAttachments = self._degrouperIterGroupScopedAttachments(sourceSet)
+        vvIncident: list[TopologyAttachment] = []
+        eeIncident: list[TopologyAttachment] = []
+        for att in groupAttachments:
+            if self._degrouperIsVertexVertexIncident(att, nid):
+                vvIncident.append(att)
+            if self._degrouperIsEdgeEdgeIncident(att, nid):
+                eeIncident.append(att)
+
+        if not vvIncident and not eeIncident:
+            assert False, "[degrouper] aucun attachment incident eligible au noeud cible"
+
+        toRemove: set[str] = set()
+        for att in (vvIncident + eeIncident):
+            aid = str(getattr(att, "attachment_id", "") or "")
+            assert aid, "[degrouper] attachment sans id"
+            toRemove.add(aid)
+
+        vvTrianglePairsOriented: set[tuple[str, str]] = set()
+        for att in vvIncident:
+            ti, tj = self._degrouperAttachmentElementPair(att)
+            vvTrianglePairsOriented.add((ti, tj))
+            vvTrianglePairsOriented.add((tj, ti))
+
+        if vvTrianglePairsOriented:
+            for att in groupAttachments:
+                if str(att.kind) != "vertex-edge":
+                    continue
+                tv, te = self._degrouperVertexEdgeTrianglePair(att)
+                if (tv, te) in vvTrianglePairsOriented:
+                    aid = str(getattr(att, "attachment_id", "") or "")
+                    assert aid, "[degrouper] attachment sans id"
+                    toRemove.add(aid)
+
+        allAttachmentsSorted = [self.attachments[aid] for aid in sorted(self.attachments.keys())]
+        keptAttachments = [att for att in allAttachmentsSorted if str(att.attachment_id) not in toRemove]
+
+        # C) Rebuild conceptuel intermédiaire
+        self.rebuild_from_attachments(keptAttachments)
+        self.rebuildGroupElementLists()
+
+        # D) Composantes connexes triangle<->triangle sur les éléments du groupe source
+        adjacency: dict[str, set[str]] = {eid: set() for eid in sourceElementIds}
+        for att in keptAttachments:
+            eA, eB = self._degrouperAttachmentElementPair(att)
+            if eA in sourceSet and eB in sourceSet:
+                adjacency[eA].add(eB)
+                adjacency[eB].add(eA)
+
+        components: list[list[str]] = []
+        visited: set[str] = set()
+        for seed in sourceElementIds:
+            if seed in visited:
+                continue
+            stack: list[str] = [seed]
+            visited.add(seed)
+            comp: list[str] = []
+            while stack:
+                cur = stack.pop()
+                comp.append(cur)
+                for nxt in sorted(adjacency.get(cur, set()), reverse=True):
+                    if nxt in visited:
+                        continue
+                    visited.add(nxt)
+                    stack.append(nxt)
+            components.append(sorted(comp))
+
+        components = sorted(components, key=lambda c: (-len(c), c))
+        assert len(components) >= 2, "[degrouper] K<2 apres suppression d'attachments"
+
+        # E) Réassignation des groupes : la plus grande composante garde gid
+        mainGroupId = gid
+        mainComponent = components[0]
+        for eid in mainComponent:
+            self.element_to_group[str(eid)] = mainGroupId
+
+        newGroupIds: list[str] = []
+        movedElementIdsByGroup: dict[str, list[str]] = {}
+        for comp in components[1:]:
+            newGid = self.createAtomicGroup()
+            newGroupIds.append(newGid)
+            moved = sorted({str(eid) for eid in comp})
+            movedElementIdsByGroup[newGid] = moved
+            for eid in moved:
+                self.element_to_group[str(eid)] = newGid
+
+        self.rebuild_from_attachments(keptAttachments)
+        self.rebuildGroupElementLists()
+        self.pruneOrphanGroups()
+        
+        allResultGroupIds = [mainGroupId] + list(newGroupIds)
+
+        # Invariant: aucune attache ne relie 2 groupes différents.
+        for att in self.attachments.values():
+            gA = self.get_group_of_element(str(att.feature_a.element_id))
+            gB = self.get_group_of_element(str(att.feature_b.element_id))
+            assert gA == gB, (
+                f"[degrouper] attachment inter-groupes interdit: aid={att.attachment_id} gA={gA} gB={gB}"
+            )
+
+        # F) Recompute concept + contour
+        for rid in allResultGroupIds:
+            ridc = self.find_group(str(rid))
+            assert ridc == str(rid), f"[degrouper] groupId canonique inattendu: req={rid} got={ridc}"
+            self.recomputeConceptAndBoundary(rid)
+            boundary = self.getBoundarySegments(rid)
+            assert len(boundary) >= 3, f"[degrouper] contour invalide pour {rid}"
+
+        # G) Chemins: casser si le groupe touché portait le chemin
+        tc = getattr(self, "topologyChemins", None)
+        if tc is not None and bool(getattr(tc, "isDefined", False)):
+            tcGroupId = str(getattr(tc, "groupId", "") or "")
+            if tcGroupId and self.find_group(tcGroupId) == mainGroupId:
+                tc.supprimerChemin()
+
+        # H) Retour normatif
+        return {
+            "mainGroupId": str(mainGroupId),
+            "newGroupIds": [str(x) for x in newGroupIds],
+            "movedElementIdsByGroup": {str(k): [str(eid) for eid in v] for k, v in movedElementIdsByGroup.items()},
+            "allResultGroupIds": [str(x) for x in allResultGroupIds],
+        }
 
     # ------------------------------------------------------------------
     # Clone physique deterministe (sans derives)

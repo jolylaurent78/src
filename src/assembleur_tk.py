@@ -4756,6 +4756,7 @@ class TriangleViewerManual(
 
         # Menu contextuel
         self._ctx_menu = tk.Menu(self, tearoff=0)
+        self._ctx_degrouper_label = "Dégrouper"
         self._ctx_menu.add_command(label="Supprimer",
                                    command=self._ctx_delete_group)
         self._ctx_menu.add_command(label="Pivoter",
@@ -4772,9 +4773,9 @@ class TriangleViewerManual(
         self._ctx_menu.add_command(label="Créer un chemin…",
                                    command=self._ctx_CreerChemin)
 
-        # Mémoriser l'index des entrées "OL=0°" / "BL=0°" pour pouvoir les (dés)activer au vol
-        self._ctx_idx_ol0 = 4
-        self._ctx_idx_bl0 = 5
+        # Les index sont dynamiques (l'entrée "Dégrouper" peut apparaître/disparaître).
+        self._ctx_idx_ol0 = None
+        self._ctx_idx_bl0 = None
 
         # Séparateur et zone dynamique pour les actions "mot"
         self._ctx_menu.add_separator()
@@ -4782,6 +4783,7 @@ class TriangleViewerManual(
         # entrées placeholders (seront remplacées dynamiquement)
         self._ctx_menu.add_command(label="Ajouter …", state="disabled")
         self._ctx_menu.add_command(label="Effacer …", state="disabled")
+        self._ctx_refresh_menu_runtime_indexes()
 
         # DEBUG: F9 pour activer/désactiver le filtrage de chevauchement au highlight
         # (bind_all pour capter même si le focus clavier n'est pas explicitement sur le canvas)
@@ -7382,6 +7384,72 @@ class TriangleViewerManual(
         # Mettre à jour la couleur des entrées (ce triangle redevient disponible)
         self._update_triangle_listbox_colors()
 
+    def _ctx_find_menu_index_by_label(self, label: str) -> Optional[int]:
+        menu = getattr(self, "_ctx_menu", None)
+        if menu is None:
+            return None
+        end = menu.index("end")
+        if end is None:
+            return None
+        for i in range(int(end) + 1):
+            try:
+                if menu.type(i) != "command":
+                    continue
+                if str(menu.entrycget(i, "label")) == str(label):
+                    return int(i)
+            except tk.TclError:
+                continue
+        return None
+
+    def _ctx_refresh_menu_runtime_indexes(self) -> None:
+        menu = getattr(self, "_ctx_menu", None)
+        if menu is None:
+            self._ctx_idx_ol0 = None
+            self._ctx_idx_bl0 = None
+            self._ctx_idx_words_start = 0
+            return
+
+        self._ctx_idx_ol0 = self._ctx_find_menu_index_by_label("OL=0°")
+        self._ctx_idx_bl0 = self._ctx_find_menu_index_by_label("BL=0°")
+
+        end = menu.index("end")
+        if end is None:
+            self._ctx_idx_words_start = 0
+            return
+
+        sep_idx = None
+        for i in range(int(end), -1, -1):
+            if menu.type(i) == "separator":
+                sep_idx = int(i)
+                break
+        self._ctx_idx_words_start = int(sep_idx) if sep_idx is not None else max(0, int(end) - 2)
+
+    def _ctx_update_degrouper_menu_entry(self) -> None:
+        menu = getattr(self, "_ctx_menu", None)
+        if menu is None:
+            return
+
+        label = str(getattr(self, "_ctx_degrouper_label", "Dégrouper"))
+        idx = self._ctx_find_menu_index_by_label(label)
+
+        show_degrouper = False
+        scen = self._get_active_scenario()
+        world = scen.topoWorld if scen is not None else None
+        gid = str(getattr(self, "ctxGroupId", "") or "")
+        nid = str(getattr(self, "ctxStartNodeId", "") or "")
+        if world is not None and gid and nid:
+            try:
+                show_degrouper = bool(world.canDegrouperAtNode(gid, nid))
+            except (ValueError, AssertionError):
+                show_degrouper = False
+
+        if show_degrouper and idx is None:
+            menu.insert_command(1, label=label, command=self._ctx_degrouper)
+        elif (not show_degrouper) and idx is not None:
+            menu.delete(idx)
+
+        self._ctx_refresh_menu_runtime_indexes()
+
     # ---------- Clic droit / menu contextuel ----------
     def _on_canvas_right_click(self, event):
         """Affiche le menu contextuel si un triangle est cliqué (intérieur ou sommet)."""
@@ -7411,6 +7479,9 @@ class TriangleViewerManual(
                 self._ctx_capture_chemin_context(idx, event.x, event.y)
             except (ValueError, RuntimeError):
                 self._ctx_clear_chemin_context()
+
+            # "Dégrouper" est conditionnel selon les attachments incident au node cliqué.
+            self._ctx_update_degrouper_menu_entry()
 
             # "OL=0°" et "BL=0°" sont valables aussi sur un groupe :
             # on oriente tout le groupe en prenant le triangle cliqué comme référence.
@@ -7536,6 +7607,233 @@ class TriangleViewerManual(
             self._getCheminsBaliseRefName(),
         )
         self.refreshCheminTreeView()
+
+    def _ctx_degrouper(self) -> None:
+        gid = self.ctxGroupId
+        nodeId = self.ctxStartNodeId
+        if not gid or not nodeId:
+            messagebox.showerror("Dégrouper", "Dégrouper impossible : contexte invalide.")
+            return
+
+        scen = self._get_active_scenario()
+        if scen is None or scen.topoWorld is None:
+            raise RuntimeError("scenario topologique introuvable")
+        world = scen.topoWorld
+
+        res = world.degrouperAtNode(str(gid), str(nodeId))
+        self._applyDegrouperResultToTk(res)
+
+    def _degrouperGroupScreenBBox(self, ui_gid: int) -> Optional[Tuple[float, float, float, float]]:
+        g = self.groups.get(ui_gid)
+        if not g or not g.get("nodes"):
+            return None
+
+        xs: list[float] = []
+        ys: list[float] = []
+        for nd in list(g.get("nodes", []) or []):
+            tid = nd.get("tid", None)
+            if tid is None:
+                continue
+            tid_i = int(tid)
+            if not (0 <= tid_i < len(self._last_drawn)):
+                continue
+            P = self._last_drawn[tid_i]["pts"]
+            for k in ("O", "B", "L"):
+                sx, sy = self._world_to_screen(P[k])
+                xs.append(float(sx))
+                ys.append(float(sy))
+        if not xs or not ys:
+            return None
+        return (min(xs), min(ys), max(xs), max(ys))
+
+    def _degrouperTranslateGroupByScreen(self, ui_gid: int, dx_screen: float, dy_screen: float) -> None:
+        dxs = float(dx_screen)
+        dys = float(dy_screen)
+        if abs(dxs) <= 1e-12 and abs(dys) <= 1e-12:
+            return
+
+        wx0, wy0 = self._screen_to_world(0.0, 0.0)
+        wx1, wy1 = self._screen_to_world(dxs, dys)
+        dxy = np.array([float(wx1 - wx0), float(wy1 - wy0)], dtype=float)
+
+        g = self.groups.get(ui_gid)
+        if not g or not g.get("nodes"):
+            return
+        for nd in list(g.get("nodes", []) or []):
+            tid = nd.get("tid", None)
+            if tid is None:
+                continue
+            tid_i = int(tid)
+            if not (0 <= tid_i < len(self._last_drawn)):
+                continue
+            Pt = self._last_drawn[tid_i]["pts"]
+            for k in ("O", "B", "L"):
+                Pt[k] = np.array(Pt[k], dtype=float) + dxy
+        self._recompute_group_bbox(ui_gid)
+
+    def _applyDegrouperResultToTk(self, res: dict) -> None:
+        if not isinstance(res, dict):
+            raise ValueError("Dégrouper: résultat Core invalide (dict attendu)")
+
+        scen = self._get_active_scenario()
+        if scen is None or scen.topoWorld is None:
+            raise RuntimeError("scenario topologique introuvable")
+        world = scen.topoWorld
+
+        mainCoreGid = str(res.get("mainGroupId", "") or "")
+        newCoreGids = [str(x) for x in list(res.get("newGroupIds", []) or [])]
+        movedByCore = dict(res.get("movedElementIdsByGroup", {}) or {})
+        if not mainCoreGid:
+            raise ValueError("Dégrouper: mainGroupId absent")
+
+        mainUiGid = None
+        idx = self._ctx_target_idx
+        if idx is not None and 0 <= int(idx) < len(self._last_drawn):
+            mainUiGid = self._get_group_of_triangle(int(idx))
+        if mainUiGid is None:
+            for ui_gid, g in (self.groups or {}).items():
+                core_gid = g.get("topoGroupId", None)
+                if core_gid and str(world.find_group(str(core_gid))) == mainCoreGid:
+                    mainUiGid = int(ui_gid)
+                    break
+        if mainUiGid is None or mainUiGid not in self.groups:
+            raise ValueError("Dégrouper: groupe UI source introuvable")
+
+        oldNodes = list(self.groups.get(mainUiGid, {}).get("nodes", []) or [])
+        oldTidOrder: dict[int, int] = {}
+        oldElementIds: set[str] = set()
+        for pos, nd in enumerate(oldNodes):
+            tid = nd.get("tid", None)
+            if tid is None:
+                continue
+            tid_i = int(tid)
+            oldTidOrder[tid_i] = int(pos)
+            if 0 <= tid_i < len(self._last_drawn):
+                eid = self._last_drawn[tid_i].get("topoElementId", None)
+                if eid:
+                    oldElementIds.add(str(eid))
+
+        movedElementIdsUnion: set[str] = set()
+        for core_gid in newCoreGids:
+            movedElementIdsUnion.update({str(x) for x in list(movedByCore.get(core_gid, []) or [])})
+
+        mainElementIds = sorted(list(oldElementIds - movedElementIdsUnion))
+        if not mainElementIds:
+            gMain = world.groups.get(mainCoreGid)
+            if gMain is None:
+                raise ValueError(f"Dégrouper: groupe Core principal introuvable ({mainCoreGid})")
+            mainElementIds = [str(x) for x in list(gMain.element_ids or [])]
+
+        def _elementIdsToTids(element_ids: list[str]) -> list[int]:
+            tids: list[int] = []
+            for eid in list(element_ids or []):
+                tid = self.getTidForTopoElementId(str(eid))
+                if tid is None:
+                    raise ValueError(f"Dégrouper: triangle UI introuvable pour elementId={eid}")
+                tids.append(int(tid))
+            return sorted(set(tids), key=lambda t: (oldTidOrder.get(int(t), 10**9), int(t)))
+
+        mainTids = _elementIdsToTids(mainElementIds)
+        newTidsByCore: dict[str, list[int]] = {}
+        for core_gid in newCoreGids:
+            moved = [str(x) for x in list(movedByCore.get(core_gid, []) or [])]
+            newTidsByCore[core_gid] = _elementIdsToTids(moved)
+
+        allTouchedTids = set(mainTids)
+        for tids in newTidsByCore.values():
+            allTouchedTids.update(set(tids))
+
+        # Retirer les triangles touchés de tous les groupes UI existants (reconstruction propre).
+        emptyGroups: list[int] = []
+        for ui_gid, g in list(self.groups.items()):
+            nodes = list(g.get("nodes", []) or [])
+            new_nodes = []
+            for nd in nodes:
+                tid = nd.get("tid", None)
+                if tid is None or int(tid) not in allTouchedTids:
+                    new_nodes.append(nd)
+            if len(new_nodes) == len(nodes):
+                continue
+            g["nodes"] = new_nodes
+            if not new_nodes:
+                emptyGroups.append(int(ui_gid))
+                continue
+            for pos, nd in enumerate(new_nodes):
+                tid_i = int(nd["tid"])
+                if 0 <= tid_i < len(self._last_drawn):
+                    self._last_drawn[tid_i]["group_id"] = int(ui_gid)
+                    self._last_drawn[tid_i]["group_pos"] = int(pos)
+            self._recompute_group_bbox(int(ui_gid))
+        for gid_empty in emptyGroups:
+            self.groups.pop(gid_empty, None)
+
+        # Groupe principal: on réutilise l'id UI d'origine.
+        self.groups[mainUiGid] = {
+            "id": int(mainUiGid),
+            "nodes": [{"tid": int(tid), "edge_in": None, "edge_out": None} for tid in mainTids],
+            "bbox": None,
+            "topoGroupId": str(mainCoreGid),
+        }
+        self._apply_group_meta_after_split_(int(mainUiGid))
+        for tid in mainTids:
+            if 0 <= tid < len(self._last_drawn):
+                self._last_drawn[tid]["topoGroupId"] = str(mainCoreGid)
+
+        # Groupes secondaires: un nouveau groupe UI par nouveau groupe Core.
+        newUiGids: list[int] = []
+        for core_gid in newCoreGids:
+            tids = list(newTidsByCore.get(core_gid, []) or [])
+            if not tids:
+                continue
+            new_ui_gid = self._new_group_id()
+            self.groups[new_ui_gid] = {
+                "id": int(new_ui_gid),
+                "nodes": [{"tid": int(tid), "edge_in": None, "edge_out": None} for tid in tids],
+                "bbox": None,
+                "topoGroupId": str(core_gid),
+            }
+            self._apply_group_meta_after_split_(int(new_ui_gid))
+            for tid in tids:
+                if 0 <= tid < len(self._last_drawn):
+                    self._last_drawn[tid]["topoGroupId"] = str(core_gid)
+            newUiGids.append(int(new_ui_gid))
+
+        # Décalage visuel: déplacer les nouveaux groupes de 30px (écran), ordre petit -> grand.
+        bboxMain = self._degrouperGroupScreenBBox(int(mainUiGid))
+        if bboxMain is not None:
+            min_x_m, min_y_m, max_x_m, max_y_m = bboxMain
+            orderedNewUi = sorted(newUiGids, key=lambda ug: (len(self._group_nodes(int(ug))), int(ug)))
+            for ui_gid in orderedNewUi:
+                bboxG = self._degrouperGroupScreenBBox(int(ui_gid))
+                if bboxG is None:
+                    continue
+                min_x_g, min_y_g, max_x_g, max_y_g = bboxG
+                dxs = 0.0
+                dys = 0.0
+                if max_x_g <= min_x_m:
+                    dxs = 30.0
+                elif max_y_g <= min_y_m:
+                    dys = 30.0
+                elif min_x_g >= max_x_m:
+                    dxs = -30.0
+                else:
+                    dys = +30.0
+                self._degrouperTranslateGroupByScreen(int(ui_gid), dxs, dys)
+
+        # Sync Core (poses monde) pour les groupes touchés.
+        for ui_gid in [int(mainUiGid)] + [int(x) for x in newUiGids]:
+            self._sync_group_elements_pose_to_core(int(ui_gid), scen=scen)
+
+        self._sel = None
+        self._reset_assist()
+        self._redraw_from(self._last_drawn)
+        self.refreshCheminTreeView()
+        self.status.config(
+            text=(
+                f"Dégrouper: groupe #{mainUiGid} -> "
+                f"{1 + len(newUiGids)} groupe(s) ({len(newUiGids)} nouveau(x))."
+            )
+        )
 
     def _is_point_in_clock(self, sx: float, sy: float) -> bool:
         """True si (sx,sy) est dans le disque du compas (coords canvas)."""
