@@ -3766,7 +3766,7 @@ class TopologyWorld:
         self.rebuild_from_attachments(keptAttachments)
         self.rebuildGroupElementLists()
         self.pruneOrphanGroups()
-        
+
         allResultGroupIds = [mainGroupId] + list(newGroupIds)
 
         # Invariant: aucune attache ne relie 2 groupes différents.
