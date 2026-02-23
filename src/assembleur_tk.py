@@ -10,7 +10,7 @@ import traceback
 import threading
 from typing import Optional, List, Dict, Tuple
 
-from tkinter import filedialog, messagebox, simpledialog
+from tkinter import filedialog, messagebox, simpledialog, colorchooser
 import tkinter as tk
 from tkinter import ttk
 import tkinter.font as tkfont
@@ -406,6 +406,7 @@ class TriangleViewerManual(
         self._ctx_target_idx = None    # index du triangle visé par clic droit (menu contextuel)
         self._ctx_last_rclick = None   # dernière position écran du clic droit (pour pivoter)
         self._ctx_nearest_vertex_key = None  # 'O'|'B'|'L' sommet le plus proche du clic droit
+        self._ctx_compass_idx_clear_traits: int | None = None
         self.ctxGroupId = None         # contexte chemin: groupId Core canonique (clic droit)
         self.ctxStartNodeId = None     # contexte chemin: startNodeId DSU canonique (clic droit)
         self._placed_ids = set()       # ids déjà posés dans le scénario actif
@@ -447,9 +448,13 @@ class TriangleViewerManual(
         self.show_map_layer = tk.BooleanVar(value=True)
         self.show_triangles_layer = tk.BooleanVar(value=True)
         self.show_balises_layer = tk.BooleanVar(value=False)
+        self._layerGuidesVisible: bool = True
+        self._layerGuidesVisibleVar = tk.BooleanVar(value=True)
         # Opacité du layer "carte" (0..100). 100 = opaque, 0 = invisible.
         self.map_opacity = tk.IntVar(value=70)
         self._map_opacity_redraw_job = None
+        self._guidesCurrentColorHex: str = "#0b3d91"
+        self._guides_color_btn: tk.Button | None = None
         self.balisesManager = BalisesManager()
         # Gestion du contour
         self.show_only_group_contours = tk.BooleanVar(value=False)
@@ -550,6 +555,8 @@ class TriangleViewerManual(
         self.auto_fit_scenario_select.set(bool(self.getAppConfigValue("uiAutoFitScenario", False)))
         self.map_opacity.set(int(self.getAppConfigValue("uiMapOpacity", 70)))
         self.show_balises_layer.set(bool(self.getAppConfigValue("uiShowBalisesLayer", False)))
+        self._layerGuidesVisible = bool(self.getAppConfigValue("uiShowGuidesLayer", True))
+        self._layerGuidesVisibleVar.set(bool(self._layerGuidesVisible))
 
         # === Simulation : derniers paramètres utilisés (dialog 'Simulation > Assembler…') ===
         self._simulation_last_algo_id = str(self.getAppConfigValue("simLastAlgoId", "") or "").strip()
@@ -611,6 +618,16 @@ class TriangleViewerManual(
         self._clock_measure_line_id = None
         self._clock_measure_text_id = None
         self._clock_measure_last = None  # tuple(sx, sy, az_abs, az_rel)
+
+        # Mode interactif : tracer un azimut (persistant via edgeRef + deltaAz)
+        self._clock_trace_active: bool = False
+        self._clock_trace_preview_az_abs: float | None = None
+        self._clock_trace_preview_nodeId: str | None = None
+        self._clock_trace_preview_topoGroupId: str | None = None
+        self._clock_trace_preview_edgeRefId: str | None = None
+        self._clock_trace_preview_deltaAz: float | None = None
+        self._clock_trace_line_id: int | None = None
+        self._clock_trace_text_id: int | None = None
 
         # Mode interactif : mesure d'un arc d'angle (entre 2 points sur le compas)
         self._clock_arc_active = False
@@ -1508,6 +1525,33 @@ class TriangleViewerManual(
             row_clock_right, text="<", width=2,
             command=lambda: self._clock_change_radius(-5)
         ).pack(side=tk.RIGHT, padx=(4, 0))
+
+        # Ligne "Guides" : checkbox + swatch couleur
+        row_guides = tk.Frame(cb_wrap)
+        row_guides.pack(anchor="w", fill="x", pady=(2, 0))
+        row_guides.grid_columnconfigure(1, weight=1)
+
+        tk.Checkbutton(
+            row_guides, text="Guides",
+            variable=self._layerGuidesVisibleVar,
+            command=self._on_toggle_guides_layer,
+        ).grid(row=0, column=0, sticky="w")
+
+        tk.Frame(row_guides).grid(row=0, column=1, sticky="ew")
+
+        row_guides_right = tk.Frame(row_guides, width=rightColWidth)
+        row_guides_right.grid(row=0, column=2, sticky="e")
+        row_guides_right.grid_propagate(False)
+
+        self._guides_color_btn = tk.Button(
+            row_guides_right,
+            text="  ",
+            width=2,
+            command=self._on_pick_guides_color,
+            relief=tk.SUNKEN,
+        )
+        self._guides_color_btn.pack(side=tk.RIGHT, padx=(0, 4), anchor="e")
+        self._update_guides_color_swatch()
 
         # Ligne "Balises" : checkbox + selection du CSV
         row_balises = tk.Frame(cb_wrap)
@@ -4428,6 +4472,10 @@ class TriangleViewerManual(
         new_scen.last_drawn = clone_last_drawn_world(getattr(scen, "last_drawn", None))
         new_scen.groups = clone_groups(getattr(scen, "groups", None))
         new_scen.topoWorld = scen.topoWorld.clonePhysicalState()
+        new_scen.clockRefEdgeId = scen.clockRefEdgeId
+        new_scen.clockRefNodeId = scen.clockRefNodeId
+        new_scen.clockRefTopoGroupId = scen.clockRefTopoGroupId
+        new_scen.clockAzimuthTraits = copy.deepcopy(scen.clockAzimuthTraits)
 
         # copier quelques métadonnées utiles
         for attr in ("algo_id", "tri_ids", "status"):
@@ -4576,6 +4624,7 @@ class TriangleViewerManual(
                 tree.see(active_iid)
 
         self.refreshCheminTreeView()
+        self._update_compass_ctx_menu_and_dico_state()
 
         self.status.config(text=f"Scénario actif : {scen.name}")
 
@@ -4664,6 +4713,10 @@ class TriangleViewerManual(
         dup.groups = copy.deepcopy(src.groups)
         dup.status = src.status
         dup.topoWorld = src.topoWorld.clonePhysicalState()
+        dup.clockRefEdgeId = src.clockRefEdgeId
+        dup.clockRefNodeId = src.clockRefNodeId
+        dup.clockRefTopoGroupId = src.clockRefTopoGroupId
+        dup.clockAzimuthTraits = copy.deepcopy(src.clockAzimuthTraits)
 
         self.scenarios.append(dup)
         self._refresh_scenario_listbox()
@@ -4739,19 +4792,20 @@ class TriangleViewerManual(
         self._ctx_menu_compass = tk.Menu(self, tearoff=0)
         self._ctx_menu_compass.add_command(label="Définir l'azimut de ref…",
                                            command=self._ctx_define_clock_ref_azimuth)
-        self._ctx_menu_compass.add_command(label="Mesurer un azimut…",
-                                           command=self._ctx_measure_clock_azimuth)
+        self._ctx_menu_compass.add_command(label="Tracer un azimut…",
+                                           command=self._ctx_trace_clock_azimuth)
         self._ctx_menu_compass.add_command(label="Mesurer un arc d'angle…",
                                            command=self._ctx_measure_clock_arc_angle)
         self._ctx_menu_compass.add_separator()
         self._ctx_menu_compass.add_command(label="Filtrer le dictionnaire…",
                                            command=self._ctx_filter_dictionary_by_clock_arc,
                                            state=tk.DISABLED)
-        self._ctx_compass_idx_filter_dico = self._ctx_menu_compass.index("end")
+        self._ctx_compass_idx_filter_dico = self._ctx_compass_find_entry_index("Filtrer le dictionnaire…")
         self._ctx_menu_compass.add_command(label="Annuler le filtrage",
                                            command=self._simulation_cancel_dictionary_filter,
                                            state=tk.DISABLED)
-        self._ctx_compass_idx_cancel_dico_filter = self._ctx_menu_compass.index("end")
+        self._ctx_compass_idx_cancel_dico_filter = self._ctx_compass_find_entry_index("Annuler le filtrage")
+        self._ctx_compass_idx_clear_traits = None
         self._update_compass_ctx_menu_and_dico_state()
 
         # Menu contextuel
@@ -4904,6 +4958,26 @@ class TriangleViewerManual(
     def _toggle_layers(self):
         """Redessine le canvas suite à un changement de visibilité d'un layer."""
         self._redraw_from(self._last_drawn)
+
+    def _on_toggle_guides_layer(self):
+        self._layerGuidesVisible = bool(self._layerGuidesVisibleVar.get())
+        self.setAppConfigValue("uiShowGuidesLayer", bool(self._layerGuidesVisible))
+        self._redraw_from(self._last_drawn)
+
+    def _update_guides_color_swatch(self):
+        if self._guides_color_btn is None:
+            return
+        self._guides_color_btn.configure(
+            bg=self._guidesCurrentColorHex,
+            activebackground=self._guidesCurrentColorHex,
+        )
+
+    def _on_pick_guides_color(self):
+        _rgb, hex_color = colorchooser.askcolor(color=self._guidesCurrentColorHex, parent=self)
+        if not hex_color:
+            return
+        self._guidesCurrentColorHex = str(hex_color)
+        self._update_guides_color_swatch()
 
     def _on_map_opacity_change(self, value=None):
         """Callback du slider d'opacité de la carte (debounced)."""
@@ -5854,6 +5928,8 @@ class TriangleViewerManual(
                 self._edge_highlights = None
                 self._edge_choice = None
 
+        self._draw_clock_azimuth_traits_layer()
+
         self.canvas.delete("balises_layer")
         if self.show_balises_layer is None or self.show_balises_layer.get():
             self._draw_balises_layer()
@@ -5925,6 +6001,90 @@ class TriangleViewerManual(
                     width=3,
                     tags=("group_outline",),
                 )
+
+    def _clock_clip_ray_to_viewport(self, sx0: float, sy0: float, azDeg: float) -> tuple[float, float] | None:
+        """Clippe la demi-droite écran P(t)=P0+t*d, t>=0, au viewport courant."""
+        cw = int(self.canvas.winfo_width() or 0)
+        ch = int(self.canvas.winfo_height() or 0)
+        if cw <= 0 or ch <= 0:
+            return None
+
+        rad = math.radians(float(azDeg) % 360.0)
+        dx = math.sin(rad)
+        dy = -math.cos(rad)
+        eps = 1e-12
+        hits: list[tuple[float, float, float]] = []
+
+        if abs(dx) > eps:
+            t = (0.0 - float(sx0)) / dx
+            y = float(sy0) + t * dy
+            if t >= 0.0 and 0.0 <= y <= float(ch):
+                hits.append((float(t), 0.0, float(y)))
+
+            t = (float(cw) - float(sx0)) / dx
+            y = float(sy0) + t * dy
+            if t >= 0.0 and 0.0 <= y <= float(ch):
+                hits.append((float(t), float(cw), float(y)))
+
+        if abs(dy) > eps:
+            t = (0.0 - float(sy0)) / dy
+            x = float(sx0) + t * dx
+            if t >= 0.0 and 0.0 <= x <= float(cw):
+                hits.append((float(t), float(x), 0.0))
+
+            t = (float(ch) - float(sy0)) / dy
+            x = float(sx0) + t * dx
+            if t >= 0.0 and 0.0 <= x <= float(cw):
+                hits.append((float(t), float(x), float(ch)))
+
+        if not hits:
+            return None
+        _t, sx1, sy1 = max(hits, key=lambda it: it[0])
+        return (float(sx1), float(sy1))
+
+    def _draw_clock_azimuth_traits_layer(self):
+        self.canvas.delete("clock_azimuth_traits")
+        if not self._layerGuidesVisible:
+            return
+        scen = self._get_active_scenario()
+        if scen is None:
+            return
+        traits = scen.clockAzimuthTraits
+        if not traits:
+            return
+
+        world = scen.topoWorld
+        for trait in traits:
+            nodeId = str(trait["nodeId"])
+            topoGroupId = str(trait["topoGroupId"])
+            edgeRefId = str(trait["edgeRefId"])
+            deltaAz = float(trait["deltaAzDeg"]) % 360.0
+            if "colorHex" in trait:
+                colorHex = str(trait["colorHex"])
+            else:
+                colorHex = "#0b3d91"
+
+            incident_edge_ids = world.getIncidentEdgeIds(topoGroupId, nodeId)
+            if edgeRefId not in incident_edge_ids:
+                continue
+
+            nodeWorld = np.array(world.getConceptNodeWorldXY(nodeId, topoGroupId), dtype=float)
+            otherNodeId = world.getEdgeOtherNodeId(topoGroupId, edgeRefId, nodeId)
+            otherWorld = np.array(world.getConceptNodeWorldXY(otherNodeId, topoGroupId), dtype=float)
+            azEdgeAbsCurrent = self._azimuth_world_deg(nodeWorld, otherWorld)
+            azTraitAbs = (azEdgeAbsCurrent + deltaAz) % 360.0
+
+            sx0, sy0 = self._world_to_screen(nodeWorld)
+            end = self._clock_clip_ray_to_viewport(float(sx0), float(sy0), float(azTraitAbs))
+            if end is None:
+                continue
+            sx1, sy1 = end
+            self.canvas.create_line(
+                float(sx0), float(sy0), float(sx1), float(sy1),
+                width=2,
+                fill=colorHex,
+                tags=("clock_azimuth_traits",),
+            )
 
     def _draw_triangle_screen(self, P,
                               outline="black", width=2, labels=None, inset=0.35,
@@ -6265,6 +6425,10 @@ class TriangleViewerManual(
         return s
 
     def _on_canvas_motion_update_drag(self, event):
+        if self._clock_trace_active:
+            self._clock_trace_update_preview(int(event.x), int(event.y))
+            return "break"
+
         # Mode compas : mesure d'un azimut (relatif à la référence)
         if self._clock_measure_active:
             self._clock_measure_update_preview(int(event.x), int(event.y))
@@ -6324,6 +6488,7 @@ class TriangleViewerManual(
                 theta0 = float(sel.get("auto_theta0", float(self.auto_geom_state.get("thetaDeg", 0.0))))
                 self.auto_geom_state["thetaDeg"] = float(theta0 + math.degrees(dtheta))
                 self._autoRebuildWorldGeometryScenario(None)
+                self._autoSyncAllTopoPoses()
                 self._redraw_from(self._last_drawn)
                 self._sel["last_angle"] = cur_angle
                 return
@@ -6344,6 +6509,7 @@ class TriangleViewerManual(
                         v = np.array(Orig[k], dtype=float) - pivot
                         Pt[k] = (R @ v) + pivot
             self._recompute_group_bbox(gid)
+            self._sync_group_elements_pose_to_core(gid)
 
             self._redraw_from(self._last_drawn)
             self._sel["last_angle"] = cur_angle
@@ -7207,6 +7373,10 @@ class TriangleViewerManual(
     def _on_escape_key(self, event):
         """Annuler un drag&drop (liste) ou un déplacement/selection de triangle (avec rollback)."""
         # Annule les modes compas (arc / mesure azimut / définition azimut ref)
+        if self._clock_trace_active:
+            self._clock_trace_cancel()
+            return
+
         if self._clock_arc_active:
             self._clock_arc_cancel()
             return
@@ -7853,6 +8023,7 @@ class TriangleViewerManual(
     def _ctx_define_clock_ref_azimuth(self):
         """Entrée de menu : active le mode 'définir azimut de référence' du compas."""
         # Repartir d'un état propre
+        self._clock_trace_cancel(silent=True)
         self._clock_setref_cancel(silent=True)
 
         if not self.canvas:
@@ -7869,10 +8040,189 @@ class TriangleViewerManual(
 
         self.status.config(text="Définir azimut de référence : clic gauche pour valider, ESC pour annuler.")
 
+    def _ctx_trace_clock_azimuth(self):
+        """Entrée de menu : active le mode 'tracer un azimut' (persistant)."""
+        self._clock_arc_cancel(silent=True)
+        self._clock_setref_cancel(silent=True)
+        self._clock_measure_cancel(silent=True)
+
+        if not self.canvas:
+            return
+        if not self.show_clock_overlay or not self.show_clock_overlay.get():
+            self.status.config(text="Compas masqué : affiche-le pour tracer un azimut.")
+            return
+        scen = self._get_active_scenario()
+        has_ref = (
+            scen is not None
+            and scen.clockRefEdgeId is not None
+            and scen.clockRefNodeId is not None
+            and scen.clockRefTopoGroupId is not None
+        )
+        if not has_ref:
+            self.status.config(text="Définis d'abord l'azimut de ref…")
+            return
+
+        self._clock_trace_active = True
+        self._clock_trace_preview_az_abs = None
+        self._clock_trace_preview_nodeId = None
+        self._clock_trace_preview_topoGroupId = None
+        self._clock_trace_preview_edgeRefId = None
+        self._clock_trace_preview_deltaAz = None
+        self._clock_trace_line_id = None
+        self._clock_trace_text_id = None
+        self.canvas.delete("clock_trace_preview")
+        self.canvas.focus_set()
+
+        self.status.config(
+            text="Tracer un azimut : déplacer la souris, clic gauche pour valider, ESC pour annuler. (Snap noeuds, CTRL = désactiver snap)"
+        )
+
+        sx, sy = self._clock_get_initial_cursor_xy()
+        self._clock_trace_update_preview(int(sx), int(sy))
+
+    def _ctx_clear_clock_azimuth_traits(self):
+        scen = self._get_active_scenario()
+        if scen is None:
+            return
+        scen.clockAzimuthTraits.clear()
+        self._redraw_from(self._last_drawn)
+        self._update_compass_ctx_menu_and_dico_state()
+        self.status.config(text="Traits effacés (scénario actif).")
+
+    def _clock_trace_update_preview(self, sx: int, sy: int):
+        if not self._clock_trace_active:
+            return
+        if not self.show_clock_overlay or not self.show_clock_overlay.get():
+            self._clock_trace_cancel(silent=True)
+            self.status.config(text="Compas masqué : affiche-le pour tracer un azimut.")
+            return
+
+        scen = self._get_active_scenario()
+        if scen is None:
+            self._clock_trace_cancel(silent=True)
+            return
+        if scen.clockRefEdgeId is None or scen.clockRefNodeId is None or scen.clockRefTopoGroupId is None:
+            self.status.config(text="Définis d'abord l'azimut de ref…")
+            self._clock_trace_cancel(silent=True)
+            return
+        if self._clock_anchor_world is None:
+            self.status.config(text="Définis d'abord l'azimut de ref…")
+            self._clock_trace_cancel(silent=True)
+            return
+
+        world = scen.topoWorld
+        anchor_world = np.array(self._clock_anchor_world, dtype=float)
+        hit = world.findNearestBoundaryNode(None, anchor_world)
+        if hit is None:
+            self.status.config(text="Définis d'abord l'azimut de ref…")
+            self._clock_trace_cancel(silent=True)
+            return
+
+        nodeId = str(scen.clockRefNodeId)
+        topoGroupId = str(scen.clockRefTopoGroupId)
+        if str(hit["nodeId"]) != nodeId or str(hit["groupId"]) != topoGroupId:
+            self.status.config(text="Définis d'abord l'azimut de ref…")
+            self._clock_trace_cancel(silent=True)
+            return
+
+        edgeRefId = str(scen.clockRefEdgeId)
+        incident_edge_ids = world.getIncidentEdgeIds(topoGroupId, nodeId)
+        if edgeRefId not in incident_edge_ids:
+            self.status.config(text="Définis d'abord l'azimut de ref…")
+            self._clock_trace_cancel(silent=True)
+            return
+        nodeWorld = np.array(world.getConceptNodeWorldXY(nodeId, topoGroupId), dtype=float)
+        otherNodeId = world.getEdgeOtherNodeId(topoGroupId, edgeRefId, nodeId)
+        otherWorld = np.array(world.getConceptNodeWorldXY(otherNodeId, topoGroupId), dtype=float)
+
+        azTraitAbsPreview = float(self._clock_compute_azimuth_deg(int(sx), int(sy)))
+        azEdgeRefAbsCurrent = self._azimuth_world_deg(nodeWorld, otherWorld)
+        deltaAz = (azTraitAbsPreview - azEdgeRefAbsCurrent) % 360.0
+
+        self._clock_trace_preview_az_abs = float(azTraitAbsPreview)
+        self._clock_trace_preview_nodeId = nodeId
+        self._clock_trace_preview_topoGroupId = topoGroupId
+        self._clock_trace_preview_edgeRefId = edgeRefId
+        self._clock_trace_preview_deltaAz = float(deltaAz)
+
+        self.canvas.delete("clock_trace_preview")
+        self._clock_trace_line_id = None
+        self._clock_trace_text_id = None
+        sx0, sy0 = self._world_to_screen(nodeWorld)
+        clipped = self._clock_clip_ray_to_viewport(float(sx0), float(sy0), float(azTraitAbsPreview))
+        if clipped is not None:
+            sx1, sy1 = clipped
+            self._clock_trace_line_id = self.canvas.create_line(
+                float(sx0), float(sy0), float(sx1), float(sy1),
+                dash=(4, 3),
+                fill="#202020",
+                width=2,
+                tags=("clock_trace_preview",),
+            )
+
+        label = f"{float(deltaAz):0.0f}°"
+        _line_id_unused, self._clock_trace_text_id, _out = self._clock_update_azimuth_preview(
+            int(sx), int(sy),
+            line_id=None,
+            text_id=None,
+            preview_tag="clock_trace_preview",
+            relative_to_ref=False,
+            enable_snap=False,
+            draw_line=False,
+            label_text=label,
+            text_fill="#202020",
+        )
+
+    def _clock_trace_confirm(self):
+        if not self._clock_trace_active:
+            return
+        nodeId = self._clock_trace_preview_nodeId
+        topoGroupId = self._clock_trace_preview_topoGroupId
+        edgeRefId = self._clock_trace_preview_edgeRefId
+        deltaAz = self._clock_trace_preview_deltaAz
+        if nodeId is None or topoGroupId is None or edgeRefId is None or deltaAz is None:
+            self._clock_trace_cancel(silent=True)
+            return
+
+        scen = self._get_active_scenario()
+        if scen is None:
+            self._clock_trace_cancel(silent=True)
+            return
+
+        delta = float(deltaAz) % 360.0
+        scen.clockAzimuthTraits.append(
+            {
+                "nodeId": str(nodeId),
+                "topoGroupId": str(topoGroupId),
+                "edgeRefId": str(edgeRefId),
+                "deltaAzDeg": float(delta),
+                "colorHex": str(self._guidesCurrentColorHex),
+            }
+        )
+        self._clock_trace_cancel(silent=True)
+        self._update_compass_ctx_menu_and_dico_state()
+        self._redraw_from(self._last_drawn)
+        self.status.config(text=f"Trait azimut ajouté (Δ={delta:0.0f}°).")
+
+    def _clock_trace_cancel(self, silent: bool = False):
+        self._clock_trace_active = False
+        if self.canvas is not None:
+            self.canvas.delete("clock_trace_preview")
+        self._clock_trace_line_id = None
+        self._clock_trace_text_id = None
+        self._clock_trace_preview_az_abs = None
+        self._clock_trace_preview_nodeId = None
+        self._clock_trace_preview_topoGroupId = None
+        self._clock_trace_preview_edgeRefId = None
+        self._clock_trace_preview_deltaAz = None
+        if not silent:
+            self.status.config(text="Traçage d'azimut annulé.")
+
     # ---- Compas : mesure interactive d'un azimut (relatif à l'azimut de référence) ---------
     def _ctx_measure_clock_azimuth(self):
         """Entrée de menu : active le mode 'mesurer un azimut' (relatif à l'azimut de référence)."""
         # Repartir d'un état propre
+        self._clock_trace_cancel(silent=True)
         self._clock_measure_cancel(silent=True)
         self._clock_setref_cancel(silent=True)
 
@@ -7895,6 +8245,7 @@ class TriangleViewerManual(
     def _ctx_measure_clock_arc_angle(self):
         """Entrée de menu : active le mode 'mesurer un arc d'angle' (entre 2 points)."""
         # Repartir d'un état propre
+        self._clock_trace_cancel(silent=True)
         self._clock_arc_cancel(silent=True)
         self._clock_measure_cancel(silent=True)
         self._clock_setref_cancel(silent=True)
@@ -7929,6 +8280,57 @@ class TriangleViewerManual(
         self._update_compass_ctx_menu_and_dico_state()
         self.status.config(text=f"Dico filtré (angle ref={float(ref):0.0f}°, tol=±{float(self._dico_filter_tolerance_deg):0.0f}°)")
 
+    def _ctx_compass_find_entry_index(self, label: str) -> int | None:
+        menu = self._ctx_menu_compass
+        if menu is None:
+            return None
+        end = menu.index("end")
+        if end is None:
+            return None
+        for i in range(int(end) + 1):
+            if menu.type(i) != "command":
+                continue
+            if str(menu.entrycget(i, "label")) == str(label):
+                return int(i)
+        return None
+
+    def _update_compass_ctx_menu_traits_state(self):
+        scen = self._get_active_scenario()
+        if scen is None:
+            return
+        menu = self._ctx_menu_compass
+        if menu is None:
+            return
+
+        hasTraits = len(scen.clockAzimuthTraits) > 0
+        clear_label = "Effacer les traits"
+        clear_idx = self._ctx_compass_find_entry_index(clear_label)
+
+        if hasTraits:
+            if clear_idx is None:
+                trace_idx = self._ctx_compass_find_entry_index("Tracer un azimut…")
+                arc_idx = self._ctx_compass_find_entry_index("Mesurer un arc d'angle…")
+                if trace_idx is not None:
+                    insert_idx = int(trace_idx) + 1
+                elif arc_idx is not None:
+                    insert_idx = int(arc_idx)
+                else:
+                    insert_idx = 1
+                menu.insert_command(
+                    insert_idx,
+                    label=clear_label,
+                    command=self._ctx_clear_clock_azimuth_traits,
+                    state=tk.NORMAL,
+                )
+            else:
+                menu.entryconfig(int(clear_idx), state=tk.NORMAL)
+        elif clear_idx is not None:
+            menu.delete(int(clear_idx))
+
+        self._ctx_compass_idx_clear_traits = self._ctx_compass_find_entry_index(clear_label)
+        self._ctx_compass_idx_filter_dico = self._ctx_compass_find_entry_index("Filtrer le dictionnaire…")
+        self._ctx_compass_idx_cancel_dico_filter = self._ctx_compass_find_entry_index("Annuler le filtrage")
+
     def _update_compass_ctx_menu_and_dico_state(self):
         """Synchronise le menu compas et l'état de filtrage du dico selon la dispo de l'arc.
 
@@ -7936,15 +8338,26 @@ class TriangleViewerManual(
         - Le dico doit rester sélectionnable même s'il n'y a pas d'arc mesuré.
         - Seule l'action "Filtrer le dictionnaire…" dépend de l'existence d'un arc.
         """
+        scen = self._get_active_scenario()
+        has_trace_ref = (
+            scen is not None
+            and scen.clockRefEdgeId is not None
+            and scen.clockRefNodeId is not None
+            and scen.clockRefTopoGroupId is not None
+        )
+        menu = self._ctx_menu_compass
+        trace_idx = self._ctx_compass_find_entry_index("Tracer un azimut…")
+        if menu is not None and trace_idx is not None:
+            menu.entryconfig(trace_idx, state=(tk.NORMAL if has_trace_ref else tk.DISABLED))
+
         arc_ok = bool(self._clock_arc_is_available())
 
-        menu = self._ctx_menu_compass
-        idx = self._ctx_compass_idx_filter_dico
+        idx = self._ctx_compass_find_entry_index("Filtrer le dictionnaire…")
         if menu is not None and idx is not None:
             menu.entryconfig(idx, state=(tk.NORMAL if arc_ok else tk.DISABLED))
 
         # Activer/désactiver "Annuler le filtrage" selon l'état courant
-        idx_cancel = self._ctx_compass_idx_cancel_dico_filter
+        idx_cancel = self._ctx_compass_find_entry_index("Annuler le filtrage")
         if menu is not None and idx_cancel is not None:
             menu.entryconfig(idx_cancel, state=(tk.NORMAL if bool(self._dico_filter_active) else tk.DISABLED))
 
@@ -7957,6 +8370,8 @@ class TriangleViewerManual(
         if (not arc_ok) and (bool(self._dico_filter_active) or (self._dico_filter_ref_angle_deg is not None)):
             if hasattr(self, "_simulation_cancel_dictionary_filter"):
                 self._simulation_cancel_dictionary_filter()
+
+        self._update_compass_ctx_menu_traits_state()
 
     def _azimuth_world_deg(self, a, b) -> float:
         """Azimut absolu en degrés (0°=Nord, 90°=Est) entre 2 points monde."""
@@ -8100,6 +8515,25 @@ class TriangleViewerManual(
         sy = int(self.canvas.winfo_pointery() - self.canvas.winfo_rooty())
         return sx, sy
 
+    def _clock_clamp_preview_text_xy(self, sx: int, sy: int) -> tuple[int, int]:
+        """Calcule une position de texte clampée dans le viewport canvas."""
+        cw = int(self.canvas.winfo_width() or 0)
+        ch = int(self.canvas.winfo_height() or 0)
+        tx = int(sx) + 14
+        ty = int(sy) + 10
+        pad = 6
+        est_w = 60
+        est_h = 20
+        if cw > 0:
+            if tx + est_w > cw - pad:
+                tx = int(sx) - est_w - 14
+            tx = max(pad, min(tx, cw - est_w - pad))
+        if ch > 0:
+            if ty + est_h > ch - pad:
+                ty = int(sy) - est_h - 10
+            ty = max(pad, min(ty, ch - est_h - pad))
+        return (int(tx), int(ty))
+
     def _clock_update_azimuth_preview(
         self,
         sx: int,
@@ -8110,6 +8544,11 @@ class TriangleViewerManual(
         preview_tag: str,
         relative_to_ref: bool,
         enable_snap: bool,
+        draw_line: bool = True,
+        label_text: str | None = None,
+        line_fill: str = "#202020",
+        line_dash: tuple[int, int] | None = (4, 3),
+        text_fill: str = "#202020",
     ) -> Tuple[Optional[int], Optional[int], Optional[Tuple[int, int, float, float]]]:
         """Rendu commun (ligne centre->point + texte azimut clampé).
 
@@ -8142,14 +8581,29 @@ class TriangleViewerManual(
                     sx2, sy2 = int(sxx), int(syy)
 
         # Ligne centre -> point
-
-        if line_id is None:
-            line_id = self.canvas.create_line(
-                cx, cy, sx2, sy2, width=2, dash=(4, 3),
-                fill="#202020", tags=("clock_overlay", preview_tag)
-            )
-        else:
-            self.canvas.coords(line_id, cx, cy, sx2, sy2)
+        if draw_line:
+            if line_id is None:
+                if line_dash is None:
+                    line_id = self.canvas.create_line(
+                        cx, cy, sx2, sy2, width=2,
+                        fill=line_fill, tags=("clock_overlay", preview_tag)
+                    )
+                else:
+                    line_id = self.canvas.create_line(
+                        cx, cy, sx2, sy2, width=2, dash=line_dash,
+                        fill=line_fill, tags=("clock_overlay", preview_tag)
+                    )
+            else:
+                self.canvas.coords(line_id, cx, cy, sx2, sy2)
+                self.canvas.itemconfig(
+                    line_id,
+                    fill=line_fill,
+                    width=2,
+                    dash=(() if line_dash is None else line_dash),
+                )
+        elif line_id is not None:
+            self.canvas.delete(line_id)
+            line_id = None
 
         # Calcul azimut
         az_abs = float(self._clock_compute_azimuth_deg(sx2, sy2))
@@ -8158,33 +8612,17 @@ class TriangleViewerManual(
             az_val = (az_abs - ref_az) % 360.0
         else:
             az_val = az_abs
-        label = f"{az_val:0.0f}°"
-
-        # Clamp du texte pour rester visible
-        cw = int(self.canvas.winfo_width() or 0)
-        ch = int(self.canvas.winfo_height() or 0)
-        tx = int(sx2 + 14)
-        ty = int(sy2 + 10)
-        pad = 6
-        est_w = 60
-        est_h = 20
-        if cw > 0:
-            if tx + est_w > cw - pad:
-                tx = int(sx2 - est_w - 14)
-            tx = max(pad, min(tx, cw - est_w - pad))
-        if ch > 0:
-            if ty + est_h > ch - pad:
-                ty = int(sy2 - est_h - 10)
-            ty = max(pad, min(ty, ch - est_h - pad))
+        label = str(label_text) if label_text is not None else f"{az_val:0.0f}°"
+        tx, ty = self._clock_clamp_preview_text_xy(sx2, sy2)
 
         if text_id is None:
             text_id = self.canvas.create_text(
                 tx, ty, text=label, anchor="nw",
-                fill="#202020", font=("Arial", 12, "bold"),
+                fill=text_fill, font=("Arial", 12, "bold"),
                 tags=("clock_overlay", preview_tag)
             )
         else:
-            self.canvas.itemconfig(text_id, text=label)
+            self.canvas.itemconfig(text_id, text=label, fill=text_fill)
             self.canvas.coords(text_id, tx, ty)
 
         return (line_id, text_id, (sx2, sy2, az_abs, float(az_val)))
@@ -8211,9 +8649,44 @@ class TriangleViewerManual(
         self._clock_ref_azimuth_deg = float(az)
         self.setAppConfigValue("uiClockRefAzimuth", float(self._clock_ref_azimuth_deg))
 
-        self._clock_setref_cancel(silent=True)
-        self.status.config(text=f"Azimut de référence défini : {az:0.0f}°")
+        scen = self._get_active_scenario()
+        if scen is not None and self._clock_anchor_world is not None:
+            world = scen.topoWorld
+            anchor_world = np.array(self._clock_anchor_world, dtype=float)
+            hit = world.findNearestBoundaryNode(None, anchor_world)
+            if hit is not None:
+                nodeId = str(hit["nodeId"])
+                topoGroupId = str(hit["groupId"])
+                nodeWorld = np.array(world.getConceptNodeWorldXY(nodeId, topoGroupId), dtype=float)
+                bestEdgeId = None
+                bestDiff = None
+                for edgeId in world.getIncidentEdgeIds(topoGroupId, nodeId):
+                    otherNodeId = world.getEdgeOtherNodeId(topoGroupId, edgeId, nodeId)
+                    otherWorld = np.array(world.getConceptNodeWorldXY(otherNodeId, topoGroupId), dtype=float)
+                    azEdgeAbs = self._azimuth_world_deg(nodeWorld, otherWorld)
+                    diff = self._clock_angle_diff_deg(azEdgeAbs, self._clock_ref_azimuth_deg)
+                    if bestDiff is None or diff < bestDiff:
+                        bestDiff = float(diff)
+                        bestEdgeId = str(edgeId)
+                scen.clockRefEdgeId = bestEdgeId
+                scen.clockRefNodeId = nodeId
+                scen.clockRefTopoGroupId = topoGroupId
+            else:
+                scen.clockRefEdgeId = None
+                scen.clockRefNodeId = None
+                scen.clockRefTopoGroupId = None
+        elif scen is not None:
+            scen.clockRefEdgeId = None
+            scen.clockRefNodeId = None
+            scen.clockRefTopoGroupId = None
 
+        self._clock_setref_cancel(silent=True)
+        if scen is not None and scen.clockRefEdgeId is None:
+            self.status.config(text=f"Azimut de référence défini : {az:0.0f}° (aucune arête de référence trouvée).")
+        else:
+            self.status.config(text=f"Azimut de référence défini : {az:0.0f}°")
+
+        self._update_compass_ctx_menu_and_dico_state()
         self._redraw_overlay_only()
 
     def _clock_setref_cancel(self, silent: bool = False):
@@ -8672,6 +9145,10 @@ class TriangleViewerManual(
         # Mode compas : arc d'angle (clic pour P1/P2)
         if self._clock_arc_active:
             self._clock_arc_handle_click(int(event.x), int(event.y))
+            return "break"
+
+        if self._clock_trace_active:
+            self._clock_trace_confirm()
             return "break"
 
         # Mode compas : clic pour valider une mesure d'azimut

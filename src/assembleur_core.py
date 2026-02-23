@@ -89,6 +89,12 @@ class ScenarioAssemblage:
         self.status: str = "complete"            # "complete", "pruned", etc.
         self.created_at: _dt.datetime = _dt.datetime.now()
 
+        # --- Compas : référence d'azimut + traits persistants (runtime par scénario) ---
+        self.clockRefEdgeId: str | None = None
+        self.clockRefNodeId: str | None = None
+        self.clockRefTopoGroupId: str | None = None
+        self.clockAzimuthTraits: list[dict] = []
+
 
 # =============================================================================
 # TopologyModel v4.3 (Core) – Modèle objet V1 (sans Tk) – IDs lisibles (Phase 2)
@@ -2749,6 +2755,57 @@ class TopologyWorld:
                 "occurrences": list(ce.occurrences),
             })
         return out
+
+    @staticmethod
+    def _format_concept_edge_id(node_a: str, node_b: str) -> str:
+        a = str(node_a)
+        b = str(node_b)
+        if a <= b:
+            return f"{a}|{b}"
+        return f"{b}|{a}"
+
+    @staticmethod
+    def _parse_concept_edge_id(edge_id: str) -> tuple[str, str]:
+        parts = str(edge_id).split("|")
+        if len(parts) != 2:
+            raise ValueError(f"invalid concept edge id: {edge_id!r}")
+        a = str(parts[0])
+        b = str(parts[1])
+        if not a or not b:
+            raise ValueError(f"invalid concept edge id: {edge_id!r}")
+        if a <= b:
+            return (a, b)
+        return (b, a)
+
+    def getIncidentEdgeIds(self, groupId: str, nodeId: str) -> list[str]:
+        """Retourne les IDs des arêtes conceptuelles incidentes à nodeId dans groupId."""
+        gid = self.find_group(str(groupId))
+        cn = self.find_node(str(nodeId))
+        c = self.ensureConceptGraph(gid)
+        out: list[str] = []
+        for (a, b), _ce in c.edges.items():
+            if cn == a or cn == b:
+                out.append(self._format_concept_edge_id(a, b))
+        return out
+
+    def getEdgeOtherNodeId(self, groupId: str, edgeId: str, nodeId: str) -> str:
+        """Retourne l'autre extrémité d'une arête conceptuelle.
+
+        Précondition: nodeId est une extrémité de edgeId.
+        """
+        gid = self.find_group(str(groupId))
+        a, b = self._parse_concept_edge_id(str(edgeId))
+        c = self.ensureConceptGraph(gid)
+        key = (a, b) if a <= b else (b, a)
+        if key not in c.edges:
+            raise ValueError(f"edge not found in group {gid}: {edgeId!r}")
+
+        cn = self.find_node(str(nodeId))
+        if cn == a:
+            return str(b)
+        if cn == b:
+            return str(a)
+        raise ValueError(f"node {nodeId!r} is not an endpoint of edge {edgeId!r}")
 
     def getConceptNeighborNodes(self, node_id: str, group_id: str | None = None) -> list[str]:
         """Retourne les voisins conceptuels directs d'un node.
