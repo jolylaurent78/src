@@ -447,6 +447,33 @@ def saveScenarioXml(viewer, path: str):
         "minute": f"{int(viewer._clock_state.get('minute', 0))}",
         "label": str(viewer._clock_state.get("label", "")),
     })
+
+    # clockRef (persist only when complete)
+    if (
+        scen.clockRefTopoGroupId is not None
+        and scen.clockRefNodeId is not None
+        and scen.clockRefEdgeId is not None
+    ):
+        ET.SubElement(root, "clockRef", {
+            "topoGroupId": str(scen.clockRefTopoGroupId),
+            "nodeId": str(scen.clockRefNodeId),
+            "edgeId": str(scen.clockRefEdgeId),
+        })
+
+    # guides (persist per scenario)
+    traits = scen.clockAzimuthTraits
+    if len(traits) > 0:
+        guides_xml = ET.SubElement(root, "guides")
+        for g in traits:
+            color_hex = str(g["colorHex"]) if ("colorHex" in g) else "#0b3d91"
+            ET.SubElement(guides_xml, "guide", {
+                "topoGroupId": str(g["topoGroupId"]),
+                "nodeId": str(g["nodeId"]),
+                "edgeRefId": str(g["edgeRefId"]),
+                "deltaAzDeg": f"{float(g['deltaAzDeg']):.6g}",
+                "colorHex": color_hex,
+            })
+
     # listbox: ids restants
     lb = ET.SubElement(root, "listbox")
     try:
@@ -546,6 +573,54 @@ def loadScenarioXml(viewer, path: str):
     scen = viewer._get_active_scenario()
     if scen is None:
         raise ValueError("loadScenarioXml: active scenario is required for v4 load.")
+
+    # clockRef (v4 compatibility: defaults when missing/incomplete)
+    clock_ref_el = root.find("clockRef")
+    if clock_ref_el is None:
+        scen.clockRefTopoGroupId = None
+        scen.clockRefNodeId = None
+        scen.clockRefEdgeId = None
+    else:
+        topo_group_id = str(clock_ref_el.get("topoGroupId", "") or "").strip()
+        node_id = str(clock_ref_el.get("nodeId", "") or "").strip()
+        edge_id = str(clock_ref_el.get("edgeId", "") or "").strip()
+        if (not topo_group_id) or (not node_id) or (not edge_id):
+            scen.clockRefTopoGroupId = None
+            scen.clockRefNodeId = None
+            scen.clockRefEdgeId = None
+        else:
+            scen.clockRefTopoGroupId = topo_group_id
+            scen.clockRefNodeId = node_id
+            scen.clockRefEdgeId = edge_id
+
+    # guides (v4 compatibility: defaults to empty list when missing)
+    scen.clockAzimuthTraits = []
+    guides_el = root.find("guides")
+    if guides_el is not None:
+        for guide_el in guides_el.findall("guide"):
+            topo_group_id = str(guide_el.get("topoGroupId", "") or "").strip()
+            node_id = str(guide_el.get("nodeId", "") or "").strip()
+            edge_ref_id = str(guide_el.get("edgeRefId", "") or "").strip()
+            delta_az_raw = str(guide_el.get("deltaAzDeg", "") or "").strip()
+            color_hex = str(guide_el.get("colorHex", "") or "").strip()
+
+            if (not topo_group_id) or (not node_id) or (not edge_ref_id):
+                continue
+            if not re.fullmatch(r"#[0-9A-Fa-f]{6}", color_hex):
+                continue
+
+            try:
+                delta_az = float(delta_az_raw)
+            except ValueError:
+                continue
+
+            scen.clockAzimuthTraits.append({
+                "topoGroupId": topo_group_id,
+                "nodeId": node_id,
+                "edgeRefId": edge_ref_id,
+                "deltaAzDeg": float(delta_az) % 360.0,
+                "colorHex": color_hex,
+            })
 
     # 1) Excel source (degraded mode allowed)
     src = root.find("source")

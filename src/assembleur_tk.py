@@ -6085,6 +6085,15 @@ class TriangleViewerManual(
                 fill=colorHex,
                 tags=("clock_azimuth_traits",),
             )
+            sxMid = (float(sx0) + float(sx1)) / 2.0
+            syMid = (float(sy0) + float(sy1)) / 2.0
+            self.canvas.create_text(
+                float(sxMid), float(syMid),
+                text=self._clock_delta_display_text(deltaAz),
+                font=("Arial", 12, "bold"),
+                fill=colorHex,
+                tags=("clock_azimuth_traits",),
+            )
 
     def _draw_triangle_screen(self, P,
                               outline="black", width=2, labels=None, inset=0.35,
@@ -8084,10 +8093,27 @@ class TriangleViewerManual(
         scen = self._get_active_scenario()
         if scen is None:
             return
-        scen.clockAzimuthTraits.clear()
+        if self._clock_anchor_world is None:
+            return
+
+        anchor_world = np.array(self._clock_anchor_world, dtype=float)
+        hit = scen.topoWorld.findNearestBoundaryNode(None, anchor_world)
+        if hit is None:
+            return
+
+        nodeId = str(hit["nodeId"])
+        topoGroupId = str(hit["groupId"])
+        before = len(scen.clockAzimuthTraits)
+        scen.clockAzimuthTraits = [
+            g for g in scen.clockAzimuthTraits
+            if not (g["nodeId"] == nodeId and g["topoGroupId"] == topoGroupId)
+        ]
+        after = len(scen.clockAzimuthTraits)
+        if before == after:
+            return
         self._redraw_from(self._last_drawn)
         self._update_compass_ctx_menu_and_dico_state()
-        self.status.config(text="Traits effacés (scénario actif).")
+        self.status.config(text="Guides effacés pour ce nœud.")
 
     def _clock_trace_update_preview(self, sx: int, sy: int):
         if not self._clock_trace_active:
@@ -8160,7 +8186,7 @@ class TriangleViewerManual(
                 tags=("clock_trace_preview",),
             )
 
-        label = f"{float(deltaAz):0.0f}°"
+        label = self._clock_delta_display_text(float(deltaAz))
         _line_id_unused, self._clock_trace_text_id, _out = self._clock_update_azimuth_preview(
             int(sx), int(sy),
             line_id=None,
@@ -8295,37 +8321,44 @@ class TriangleViewerManual(
         return None
 
     def _update_compass_ctx_menu_traits_state(self):
-        scen = self._get_active_scenario()
-        if scen is None:
-            return
         menu = self._ctx_menu_compass
         if menu is None:
             return
 
-        hasTraits = len(scen.clockAzimuthTraits) > 0
         clear_label = "Effacer les traits"
         clear_idx = self._ctx_compass_find_entry_index(clear_label)
-
-        if hasTraits:
-            if clear_idx is None:
-                trace_idx = self._ctx_compass_find_entry_index("Tracer un azimut…")
-                arc_idx = self._ctx_compass_find_entry_index("Mesurer un arc d'angle…")
-                if trace_idx is not None:
-                    insert_idx = int(trace_idx) + 1
-                elif arc_idx is not None:
-                    insert_idx = int(arc_idx)
-                else:
-                    insert_idx = 1
-                menu.insert_command(
-                    insert_idx,
-                    label=clear_label,
-                    command=self._ctx_clear_clock_azimuth_traits,
-                    state=tk.NORMAL,
-                )
+        if clear_idx is None:
+            trace_idx = self._ctx_compass_find_entry_index("Tracer un azimut…")
+            arc_idx = self._ctx_compass_find_entry_index("Mesurer un arc d'angle…")
+            if trace_idx is not None:
+                insert_idx = int(trace_idx) + 1
+            elif arc_idx is not None:
+                insert_idx = int(arc_idx)
             else:
-                menu.entryconfig(int(clear_idx), state=tk.NORMAL)
-        elif clear_idx is not None:
-            menu.delete(int(clear_idx))
+                insert_idx = 1
+            menu.insert_command(
+                insert_idx,
+                label=clear_label,
+                command=self._ctx_clear_clock_azimuth_traits,
+                state=tk.DISABLED,
+            )
+            clear_idx = self._ctx_compass_find_entry_index(clear_label)
+
+        enabled = False
+        scen = self._get_active_scenario()
+        if scen is not None and self._clock_anchor_world is not None:
+            anchor_world = np.array(self._clock_anchor_world, dtype=float)
+            hit = scen.topoWorld.findNearestBoundaryNode(None, anchor_world)
+            if hit is not None:
+                nodeId = str(hit["nodeId"])
+                topoGroupId = str(hit["groupId"])
+                for guide in scen.clockAzimuthTraits:
+                    if guide["nodeId"] == nodeId and guide["topoGroupId"] == topoGroupId:
+                        enabled = True
+                        break
+
+        if clear_idx is not None:
+            menu.entryconfig(int(clear_idx), state=(tk.NORMAL if enabled else tk.DISABLED))
 
         self._ctx_compass_idx_clear_traits = self._ctx_compass_find_entry_index(clear_label)
         self._ctx_compass_idx_filter_dico = self._ctx_compass_find_entry_index("Filtrer le dictionnaire…")
@@ -8382,6 +8415,15 @@ class TriangleViewerManual(
         # dx vers Est, dy vers Nord (monde Lambert-like). Convertir en azimut.
         ang = math.degrees(math.atan2(dx, dy)) % 360.0
         return float(ang)
+
+    def _clock_delta_display_deg(self, deltaAzDeg: float) -> float:
+        d = float(deltaAzDeg) % 360.0
+        if d <= 180.0:
+            return float(d)
+        return float(360.0 - d)
+
+    def _clock_delta_display_text(self, deltaAzDeg: float) -> str:
+        return f"{self._clock_delta_display_deg(deltaAzDeg):0.1f}°".replace(".", ",")
 
     def _clock_point_on_circle(self, az_deg: float, radius: float):
         """Point écran (sx,sy) à un azimut donné autour du centre du compas."""
@@ -9538,6 +9580,7 @@ class TriangleViewerManual(
             if not measured:
                 self._clock_arc_clear_last()
             self._redraw_overlay_only()
+            self._update_compass_ctx_menu_and_dico_state()
             return "break"
 
         if self._bg_resizing:

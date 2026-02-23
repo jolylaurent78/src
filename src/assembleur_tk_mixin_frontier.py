@@ -5,14 +5,10 @@ Ce module est généré pour découper assembleur_tk.py.
 """
 
 from __future__ import annotations
-import os, re, math, json, copy
-import numpy as np
-import pandas as pd
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog, simpledialog
-from tksheet import Sheet
+import math
 
 EPS_WORLD = 1e-6
+
 
 class TriangleViewerFrontierGraphMixin:
     """Mixin: méthodes extraites de assembleur_tk.py."""
@@ -21,13 +17,11 @@ class TriangleViewerFrontierGraphMixin:
     def _edge_dir(self, a, b):
         return (float(b[0]) - float(a[0]), float(b[1]) - float(a[1]))
 
-
     def _ang_wrap(self, x):
         import math
         # wrap sur [-pi, pi]
         x = (x + math.pi) % (2*math.pi) - math.pi
         return x
-
 
     def _pt_key_eps(self, p, eps=EPS_WORLD):
         # IMPORTANT:
@@ -41,7 +35,6 @@ class TriangleViewerFrontierGraphMixin:
             round(float(p[1]) / eps) * eps,
         )
 
-
     def _build_boundary_graph(self, outline):
         """
         Construire un graphe de frontière léger (half-edges) à partir de 'outline'
@@ -53,14 +46,15 @@ class TriangleViewerFrontierGraphMixin:
         """
         adj = {}
         pts = {}
-        for a,b in (outline or []):
-            a = (float(a[0]), float(a[1])); b = (float(b[0]), float(b[1]))
+        for a, b in (outline or []):
+            a = (float(a[0]), float(a[1]))
+            b = (float(b[0]), float(b[1]))
             ka, kb = self._pt_key_eps(a), self._pt_key_eps(b)
-            pts.setdefault(ka, a); pts.setdefault(kb, b)
+            pts.setdefault(ka, a)
+            pts.setdefault(kb, b)
             adj.setdefault(ka, []).append(b)
             adj.setdefault(kb, []).append(a)
         return {"adj": adj, "pts": pts}
-
 
     # ---------- CHEMIN : lissage du boundary graph (post-traitement) ----------
 
@@ -86,20 +80,19 @@ class TriangleViewerFrontierGraphMixin:
 
         # garder au maximum 2 ; si plus, prendre 2 extrêmes en angle autour de a
         if len(out) > 2:
-            import math
+
             def ang(e):
                 (p, q) = e
                 vx, vy = self._edge_dir(p, q)
                 return math.atan2(vy, vx)
 
             out = sorted(out, key=ang)
-            a0 = out[0]; ang0 = ang(a0)
+            a0 = out[0]
+            ang0 = ang(a0)
             a1 = max(out[1:], key=lambda e: self._ang_diff(ang(e), ang0))
             out = [a0, a1]
 
         return out
-
-
 
     def _incident_half_edges_at_point(self, graph, v, outline, eps=EPS_WORLD):
         """Retourne 2 demi-arêtes incidentes au point `v` sur la frontière.
@@ -146,11 +139,12 @@ class TriangleViewerFrontierGraphMixin:
             if len(uniq) >= 2:
                 out2 = [((u[0][0], u[0][1]), (u[1][0], u[1][1])) for u in uniq]
                 if len(out2) > 2:
-                    import math
+
                     def ang(e):
                         (a, b) = e
                         vx, vy = self._edge_dir(a, b)
                         return math.atan2(vy, vx)
+
                     out2 = sorted(out2, key=ang)
                     a0 = out2[0]
                     ang0 = ang(a0)
@@ -164,7 +158,7 @@ class TriangleViewerFrontierGraphMixin:
             wx, wy = px - ax, py - ay
             vv = vx * vx + vy * vy
             if vv <= 1e-18:
-               # segment dégénéré
+                # segment dégénéré
                 dx, dy = px - ax, py - ay
                 return (dx * dx + dy * dy, 0.0)
             t = (wx * vx + wy * vy) / vv
@@ -194,55 +188,57 @@ class TriangleViewerFrontierGraphMixin:
         (a, b) = best[1]
         return [((px, py), (float(a[0]), float(a[1]))), ((px, py), (float(b[0]), float(b[1])))]
 
-
     def _normalize_to_outline_granularity(self, outline, edges, eps=EPS_WORLD):
         """
         Décompose chaque segment incident en chaîne de micro-segments collés à l'outline (granularité identique),
         en s'appuyant sur l'adjacence du graphe de frontière. Retourne une liste de segments.
         """
         g = self._build_boundary_graph(outline)
-        def almost(p,q):
-            return abs(p[0]-q[0])<=eps and abs(p[1]-q[1])<=eps
-        def dir_forward(u,v,w):
-            uvx,uvy = v[0]-u[0], v[1]-u[1]
-            uwx,uwy = w[0]-u[0], w[1]-u[1]
+
+        def almost(p, q):
+            return abs(p[0]-q[0]) <= eps and abs(p[1]-q[1]) <= eps
+
+        def dir_forward(u, v, w):
+            uvx, uvy = v[0]-u[0], v[1]-u[1]
+            uwx, uwy = w[0]-u[0], w[1]-u[1]
             cross = abs(uvx*uwy - uvy*uwx)
-            dot   = (uvx*uwx + uvy*uwy)
+            dot = (uvx*uwx + uvy*uwy)
             return cross <= 1e-9 and dot > 0.0
-        out=[]
-        for (a,b) in (edges or []):
-            a=(float(a[0]),float(a[1])); b=(float(b[0]),float(b[1]))
-            cur=a; guard=0; chain=[]
-            while not almost(cur,b) and guard<2048:
+
+        out = []
+        for (a, b) in (edges or []):
+            a = (float(a[0]), float(a[1]))
+            b = (float(b[0]), float(b[1]))
+            cur = a
+            guard = 0
+            chain = []
+            while not almost(cur, b) and guard < 2048:
                 neigh = g["adj"].get(self._pt_key_eps(cur), [])
-                nxt=None
+                nxt = None
                 for w in neigh:
-                    if dir_forward(cur,b,w):
-                        nxt=w; break
-                if nxt is None: break
-                chain.append((cur,nxt))
-                cur=nxt; guard+=1
-            if chain and almost(cur,b):
+                    if dir_forward(cur, b, w):
+                        nxt = w
+                        break
+                if nxt is None:
+                    break
+                chain.append((cur, nxt))
+                cur = nxt
+                guard += 1
+            if chain and almost(cur, b):
                 out.extend(chain)
             else:
                 # fallback: garder le segment brut si pas décomposable finement
-                out.append((a,b))
+                out.append((a, b))
         return out
-
-
 
     # ------------------------------
     # Géométrie / utils divers
     # ------------------------------
 
     def _ang_of_vec(self, vx, vy):
-        import math
+
         return math.atan2(vy, vx)
- 
 
     def _ang_diff(self, a, b):
         # plus petit écart absolu d’angle
         return abs(self._ang_wrap(a - b))
-         
-
-
