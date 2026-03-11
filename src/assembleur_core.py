@@ -3023,6 +3023,19 @@ class TopologyWorld:
             raise ValueError(f"Element sans groupe: {element_id}")
         return self.find_group(gid0)
 
+    def getGroupIdFromConceptNode(self, nodeId: str) -> str:
+        if not nodeId:
+            raise ValueError("nodeId vide")
+        if ":" not in nodeId:
+            raise ValueError(f"nodeId invalide: {nodeId}")
+        triangleId = nodeId.split(":", 1)[0]
+        if not triangleId:
+            raise ValueError(f"triangleId introuvable dans nodeId: {nodeId}")
+        groupId = self.get_group_of_element(triangleId)
+        if not groupId:
+            raise ValueError(f"Aucun groupe trouvé pour triangle {triangleId} depuis nodeId {nodeId}")
+        return str(groupId)
+
     # --- API pose par élément (session) ---
     def getElementPose(self, element_id: str) -> tuple[np.ndarray, np.ndarray, bool]:
         """Retourne (R, T, mirrored) pour un élément."""

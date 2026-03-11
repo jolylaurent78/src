@@ -2313,19 +2313,19 @@ class TriangleViewerManual(
 
         # On récupère le topology chemin et le GroupID de la bordure
         world = self._get_active_scenario().topoWorld
-        tc = world.topologyChemins
-        groupId = tc.groupId
 
         iid = sel[0]
         t = self._cheminsTripletByIid[iid]
 
-        # 3 noeuds DSU (IDs)
+        # 3 noeuds DSU (IDs) et le groupe ID associé
         nodePrevId = t.nodeA
         nodeCenterId = t.nodeO
         nodeNextId = t.nodeB
+        groupId = world.getGroupIdFromConceptNode(nodeCenterId)
 
         # Construire un snap_target minimal centré sur nodeO
         snapTarget = {
+            "nodeId": nodeCenterId,
             "nodeDsu": nodeCenterId,
             "topoGroupId": str(groupId),
         }
@@ -5157,9 +5157,26 @@ class TriangleViewerManual(
         self._set_active_scenario(new_index)
         self.load_scenario_xml(path)
 
+        # On se ajoute un fit to screen
+        self._fit_to_view(self._last_drawn)
+
+        # On repositionne le compas au cntre de la figure
+        canvasW = self.canvas.winfo_width()
+        canvasH = self.canvas.winfo_height()
+        cxScreen = canvasW / 2.0
+        cyScreen = canvasH / 2.0
+        cxWorld, cyWorld = self._screen_to_world(cxScreen, cyScreen)
+        self._clock_anchor_world = np.array([cxWorld, cyWorld], dtype=float)
+        self._clock_cx = float(cxScreen)
+        self._clock_cy = float(cyScreen)
+
+        self._draw_clock_overlay()
+        self._redraw_overlay_only()
+
         # Succès : rafraîchir la liste et le statut
         self._refresh_scenario_listbox()
         self.status.config(text=f"Scénario importé : {scen.name}")
+
 
     def _scenario_load_dialog(self):
         """Boîte de dialogue pour charger un scénario XML."""
@@ -5525,12 +5542,22 @@ class TriangleViewerManual(
         for _, r in self.df.iterrows():
             self.listbox.insert(tk.END, f"{int(r['id']):02d}. B:{r['B']}  L:{r['L']}")
         self.status.config(text=f"{len(self.df)} triangles chargés depuis {path_norm}")
-        # Réinitialiser les triangles posés du scénario actif
-        # IMPORTANT : on vide la liste en place pour préserver le lien
-        # avec scen.last_drawn du scénario manuel.
-        self._last_drawn.clear()
-        # Aucun triangle n'est encore utilisé dans le scénario actif        self._placed_ids = set()
+
+        # IMPORTANT :
+        # on NE TOUCHE PAS à l'assemblage courant
+        # - pas de self._last_drawn.clear()
+        # - pas de reset des groups
+        # - pas de reset du topoWorld
+        #
+        # On recalcule seulement la liste des triangles déjà utilisés
+        self._placed_ids = {
+            int(t["id"])
+            for t in self._last_drawn
+            if t.get("id") is not None
+        }
+
         self._update_triangle_listbox_colors()
+        self._redraw_from(self._last_drawn)
 
     # ---------- Mise en page simple (aperçu brut) ----------
 

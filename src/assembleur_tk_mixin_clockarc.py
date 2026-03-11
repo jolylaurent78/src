@@ -9,6 +9,7 @@ import numpy as np
 
 EPS_WORLD = 1e-6
 
+
 class TriangleViewerClockArcMixin:
     """Mixin: méthodes extraites de assembleur_tk.py."""
     pass
@@ -20,7 +21,7 @@ class TriangleViewerClockArcMixin:
         w = self._screen_to_world(sx, sy)
         v_world = np.array([float(w[0]), float(w[1])], dtype=float)
 
-        # On trouve le Node DSU       
+        # On trouve le Node DSU
         hit = world.findNearestBoundaryNode(None, v_world)
         if hit is None:
             self._clock_clear_snap_target()
@@ -50,9 +51,10 @@ class TriangleViewerClockArcMixin:
                 self._clock_arc_clear_last()
 
         self._clock_snap_target = {
-            "idx": int(idx), 
-            "vkey": str(vkey), 
+            "idx": int(idx),
+            "vkey": str(vkey),
             "world": np.array(wbest, dtype=float),
+            "nodeId": nodeDsu,
             "nodeDsu": nodeDsu,
             "topoGroupId": topoGroupId,
             }
@@ -61,10 +63,10 @@ class TriangleViewerClockArcMixin:
         # on calcule automatiquement l'angle entre les 2 segments EXTÉRIEURS
         # incidents à ce noeud (sur le contour du groupe).
         prev_key = (prev.get("topoGroupId"), prev.get("nodeDsu")) if isinstance(prev, dict) else None
-        new_key  = (topoGroupId, nodeDsu)
+        new_key = (topoGroupId, nodeDsu)
 
         if new_key is not None and new_key != prev_key:
-            self._clock_arc_auto_from_snap_target(self._clock_snap_target , drag = True)
+            self._clock_arc_auto_from_snap_target(self._clock_snap_target , drag=True)
 
         # Marqueur visuel : un anneau rouge autour du sommet
         self.canvas.delete("clock_snap_target")
@@ -75,11 +77,9 @@ class TriangleViewerClockArcMixin:
                                 fill="", tags="clock_snap_target")
         self.canvas.tag_raise("clock_snap_target")
 
-
-
-    def _clock_arc_auto_from_snap_target(self, snap_tgt: dict, drag: bool, 
-        prevNodeDsu: str | None = None, nextNodeDsu: str | None = None
-    ) -> bool:
+    def _clock_arc_auto_from_snap_target(self, snap_tgt: dict, drag: bool,
+                                         prevNodeDsu: str | None = None, nextNodeDsu: str | None = None
+                                         ) -> bool:
         """Auto-mesure d'arc (EXT) UNIQUEMENT via topologie, azimuts en MONDE.
 
         - drag=True  : pendant le drag -> update overlay (sans persister l'arc).
@@ -99,7 +99,8 @@ class TriangleViewerClockArcMixin:
         scen = self._get_active_scenario()
         world = scen.topoWorld
 
-        gid = str(snap_tgt["topoGroupId"])
+        nodeId = str(snap_tgt["nodeId"])
+        gid = world.getGroupIdFromConceptNode(nodeId)
         node = str(snap_tgt["nodeDsu"])
 
         if (prevNodeDsu is None) ^ (nextNodeDsu is None):
@@ -146,16 +147,13 @@ class TriangleViewerClockArcMixin:
 
         return True
 
-
     # ==========================
     # Calibration fond (3 points)
     # ==========================
 
-
     def _clock_arc_is_available(self) -> bool:
         """True si une mesure d'arc persistee est disponible (et affichee tant que le compas reste sur le meme noeud)."""
         return (getattr(self, '_clock_arc_last_angle_deg', None) is not None) and isinstance(getattr(self, '_clock_arc_last', None), dict)
-
 
     def _clock_arc_handle_click(self, sx: int, sy: int):
         """Gestion des clics gauche dans le mode 'arc d'angle'."""
@@ -191,7 +189,6 @@ class TriangleViewerClockArcMixin:
         self._redraw_overlay_only()
         self.status.config(text=f"Arc mesuré : {angle_deg:0.0f}°")
 
-
     def _clock_arc_update_preview(self, sx: int, sy: int):
         """Met à jour le preview (2 rayons + arc + label) pendant la sélection de P2."""
         if not getattr(self, "_clock_arc_active", False):
@@ -205,7 +202,7 @@ class TriangleViewerClockArcMixin:
 
         cx = float(getattr(self, "_clock_cx", 0.0))
         cy = float(getattr(self, "_clock_cy", 0.0))
-        R  = float(getattr(self, "_clock_R", getattr(self, "_clock_radius", 69)))
+        R = float(getattr(self, "_clock_R", getattr(self, "_clock_radius", 69)))
 
         # Snap P2 si activé
         sx2, sy2 = self._clock_apply_optional_snap(int(sx), int(sy), enable_snap=True)
@@ -261,8 +258,7 @@ class TriangleViewerClockArcMixin:
             self.canvas.itemconfig(self._clock_arc_text_id, text=label)
             self.canvas.coords(self._clock_arc_text_id, tx, ty)
 
-
-    def _clock_arc_cancel(self, silent: bool=False):
+    def _clock_arc_cancel(self, silent: bool = False):
         if not getattr(self, "_clock_arc_active", False):
             return
         self._clock_arc_active = False
@@ -281,7 +277,6 @@ class TriangleViewerClockArcMixin:
         if not silent:
             self.status.config(text="Mesure d'arc annulée.")
 
-
     def _clock_arc_clear_last(self):
         """Efface la dernière mesure persistée (appelé notamment quand le compas bouge)."""
         # Si le dico était filtré sur la base de cet arc, on doit annuler le filtrage
@@ -299,10 +294,6 @@ class TriangleViewerClockArcMixin:
         self._clock_arc_last = None
         self._clock_arc_last_angle_deg = None
         self._update_compass_ctx_menu_and_dico_state()
-
-
-
-
 
     def _clock_arc_draw_last(self, cx: float, cy: float, R: float):
         """Dessine la dernière mesure persistée (si présente) dans l'overlay."""
@@ -351,14 +342,12 @@ class TriangleViewerClockArcMixin:
             tags=("clock_overlay", "clock_arc_persist"),
         )
 
-
     def _clock_arc_compute_angle_deg(self, az1: float, az2: float) -> float:
         """Retourne le plus petit angle (0..180) entre deux azimuts."""
         d = (float(az2) - float(az1)) % 360.0
         if d > 180.0:
             d = 360.0 - d
         return float(d)
-
 
     def _clock_arc_compute_tk_arc(self, az1: float, az2: float):
         """Prépare les paramètres Tk (start/extent) pour dessiner le plus petit arc entre az1 et az2.
@@ -391,5 +380,3 @@ class TriangleViewerClockArcMixin:
             extent_tk = angle
 
         return (float(start_tk), float(extent_tk), float(angle), float(mid_az))
-
-
