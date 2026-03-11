@@ -1,9 +1,9 @@
 {
-  "lastTriangleExcel": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_v9.xlsx",
-  "uiShowDicoPanel": true,
+  "lastTriangleExcel": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_v10.xlsx",
+  "uiShowDicoPanel": false,
   "uiShowClockOverlay": true,
   "uiMapOpacity": 55,
-  "uiClockRefAzimuth": 166.7380154522402,
+  "uiClockRefAzimuth": 139.23172802445634,
   "uiShowOnlyGroupContours": false,
   "simLastAlgoId": "quadris_par_paires",
   "simLastN": 32,
