@@ -5301,25 +5301,36 @@ class TriangleViewerManual(
             self._ui_tooltip = None
             self._ui_tooltip_label = None
 
+    def _ensure_canvas_tooltip(self, text: str) -> None:
+        if self._tooltip is None or not self._tooltip.winfo_exists():
+            self._tooltip = tk.Toplevel(self)
+            self._tooltip.withdraw()
+            self._tooltip.wm_overrideredirect(True)
+            self._tooltip.attributes("-topmost", True)
+
+            self._tooltip_label = tk.Label(
+                self._tooltip,
+                text=text,
+                bg="#ffffe0",
+                relief="solid",
+                borderwidth=1,
+                font=("Arial", 9),
+                justify="left",
+                anchor="w",
+            )
+            self._tooltip_label.pack(ipadx=4, ipady=2)
+
+        self._tooltip_label.config(text=text, justify="left", anchor="w")
+        self._tooltip.update_idletasks()
+
     def _show_tooltip_at_center(self, text: str, cx_canvas: float, cy_canvas: float):
         """Affiche/MAJ le tooltip en le **centrant** sur (cx_canvas, cy_canvas) (coords CANVAS)."""
         if not text:
             self._hide_tooltip()
             return
 
-        if self._tooltip is None or not self._tooltip.winfo_exists():
-            self._tooltip = tk.Toplevel(self)
-            self._tooltip.wm_overrideredirect(True)
-            self._tooltip.attributes("-topmost", True)
-
-            self._tooltip_label = tk.Label(self._tooltip, text=text, bg="#ffffe0",
-                                           relief="solid", borderwidth=1, font=("Arial", 9),
-                                           justify="left", anchor="w")
-            self._tooltip_label.pack(ipadx=4, ipady=2)
-        else:
-            self._tooltip_label.config(text=text, justify="left", anchor="w")
+        self._ensure_canvas_tooltip(text)
         # Mesurer la taille réelle du tooltip
-        self._tooltip.update_idletasks()
         tw = max(1, int(self._tooltip.winfo_width()))
         th = max(1, int(self._tooltip.winfo_height()))
         # Convertir coords CANVAS -> écran et centrer
@@ -5340,6 +5351,73 @@ class TriangleViewerManual(
         x = max(min_x, min(x, max_x))
         y = max(min_y, min(y, max_y))
         self._tooltip.wm_geometry(f"+{x}+{y}")
+        self._tooltip.deiconify()
+
+    def _isTooltipRectValidForNode(
+        self,
+        x: int,
+        y: int,
+        tipW: int,
+        tipH: int,
+        nodeCx: float,
+        nodeCy: float,
+        rExcl: int,
+    ) -> bool:
+        cw = int(self.canvas.winfo_width())
+        ch = int(self.canvas.winfo_height())
+
+        if x < 0 or y < 0:
+            return False
+        if x + tipW > cw or y + tipH > ch:
+            return False
+
+        exLeft = float(nodeCx) - float(rExcl)
+        exTop = float(nodeCy) - float(rExcl)
+        exRight = float(nodeCx) + float(rExcl)
+        exBottom = float(nodeCy) + float(rExcl)
+
+        tipLeft = float(x)
+        tipTop = float(y)
+        tipRight = float(x + tipW)
+        tipBottom = float(y + tipH)
+
+        intersects = not (
+            tipRight <= exLeft
+            or tipLeft >= exRight
+            or tipBottom <= exTop
+            or tipTop >= exBottom
+        )
+        return not intersects
+
+    def _computeNodeTooltipCanvasPosition(
+        self,
+        nodeCx: float,
+        nodeCy: float,
+        tipW: int,
+        tipH: int,
+    ) -> tuple[int, int] | None:
+        cw = int(self.canvas.winfo_width())
+        ch = int(self.canvas.winfo_height())
+        rExcl = int(self._marker_px)
+        anchorGap = int(self._marker_px + self._tooltip_cushion_px)
+
+        if tipW > cw or tipH > ch:
+            return None
+
+        candidates = [
+            (int(nodeCx - anchorGap - tipW), int(nodeCy - tipH // 2)),
+            (int(nodeCx - tipW // 2), int(nodeCy - anchorGap - tipH)),
+            (int(nodeCx + anchorGap), int(nodeCy - anchorGap - tipH)),
+            (int(nodeCx - anchorGap - tipW), int(nodeCy + anchorGap)),
+            (int(nodeCx - tipW // 2), int(nodeCy + anchorGap)),
+            (int(nodeCx + anchorGap), int(nodeCy + anchorGap)),
+        ]
+
+        for x, y in candidates:
+            if self._isTooltipRectValidForNode(x, y, tipW, tipH, nodeCx, nodeCy, rExcl):
+                return x, y
+
+        return None
 
     def _hide_tooltip(self):
         if self._tooltip is not None and self._tooltip.winfo_exists():
@@ -6598,48 +6676,20 @@ class TriangleViewerManual(
                     lines.append(f"- {topoWorld.getConceptNodeName(other)} @ {float(az):0.2f}°")
                 tooltip_txt = "\n".join(lines)
             if tooltip_txt:
-                # === Placement robuste par CENTRE du tooltip ===
-                # 1) Coordonnées CANVAS du sommet et du barycentre
                 sx_v, sy_v = self._world_to_screen(v_world)
-                Cx = (P0["O"][0] + P0["B"][0] + P0["L"][0]) / 3.0
-                Cy = (P0["O"][1] + P0["B"][1] + P0["L"][1]) / 3.0
-
-                sx_c, sy_c = self._world_to_screen((Cx, Cy))
-                # 2) Direction (centroïde -> sommet) en PIXELS CANVAS
-                vx = float(sx_v) - float(sx_c)
-                vy = float(sy_v) - float(sy_c)
-                n = (vx*vx + vy*vy) ** 0.5
-                if n <= 1e-6:
-                    # secours : pousser vers le haut écran
-                    ux, uy = 0.0, -1.0
-                else:
-                    ux, uy = (vx / n), (vy / n)
-
-                # 3) Mesurer le tooltip pour connaître sa diagonale
-                #    (on l'affiche/MAJ en mémoire, sans se soucier de la position pour l'instant)
-                if self._tooltip is None or not self._tooltip.winfo_exists():
-                    # créer/mesurer via helper centre, posé provisoirement au sommet
-                    self._show_tooltip_at_center(tooltip_txt, sx_v, sy_v)
-                else:
-                    self._tooltip_label.config(text=tooltip_txt)
-                    self._tooltip.update_idletasks()
+                self._ensure_canvas_tooltip(tooltip_txt)
                 tw = max(1, int(self._tooltip.winfo_width()))
                 th = max(1, int(self._tooltip.winfo_height()))
 
-                # 4) Distance à partir du SOMMET jusqu'au CENTRE du tooltip
-                #    Utiliser le support d'un rectangle axis-aligné : r(θ)=|rx·cosθ|+|ry·sinθ|
-                #    pour projeter la demi-taille du tooltip le long de (centroïde→sommet).
-                rx = 0.5 * tw
-                ry = 0.5 * th
-                ang = math.atan2(uy, ux)
-                r_eff = abs(rx * math.cos(ang)) + abs(ry * math.sin(ang))
-                cushion_px = float(self._tooltip_cushion_px)
-                dist = r_eff + cushion_px
-                cx_tip = sx_v + ux * dist
-                cy_tip = sy_v + uy * dist
-
-                # 5) Placement centré (convertit canvas->écran en interne)
-                self._show_tooltip_at_center(tooltip_txt, cx_tip, cy_tip)
+                pos = self._computeNodeTooltipCanvasPosition(sx_v, sy_v, tw, th)
+                if pos is None:
+                    self._hide_tooltip()
+                else:
+                    x_tip, y_tip = pos
+                    base_x = self.canvas.winfo_rootx()
+                    base_y = self.canvas.winfo_rooty()
+                    self._tooltip.wm_geometry(f"+{int(base_x + x_tip)}+{int(base_y + y_tip)}")
+                    self._tooltip.deiconify()
             else:
                 self._hide_tooltip()
         else:
@@ -7671,6 +7721,7 @@ class TriangleViewerManual(
     # ---------- Clic droit / menu contextuel ----------
     def _on_canvas_right_click(self, event):
         """Affiche le menu contextuel si un triangle est cliqué (intérieur ou sommet)."""
+        self._hide_tooltip()
         # Pas de menu si on est en train de drag depuis la liste
         if self._drag:
             return
