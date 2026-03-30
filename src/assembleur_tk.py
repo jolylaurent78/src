@@ -647,7 +647,7 @@ class TriangleViewerManual(
         # --- Dictionnaire : filtrage visuel par angle ---
         self._dico_filter_active: bool = False
         self._dico_filter_ref_angle_deg: Optional[float] = None
-        self._dico_filter_tolerance_deg: float = 4.0
+        self._dico_filter_tolerance_deg: float = 2.5
 
         self._clock_dragging = False
         self._clock_drag_dx = 0
@@ -5177,7 +5177,6 @@ class TriangleViewerManual(
         self._refresh_scenario_listbox()
         self.status.config(text=f"Scénario importé : {scen.name}")
 
-
     def _scenario_load_dialog(self):
         """Boîte de dialogue pour charger un scénario XML."""
         path = filedialog.askopenfilename(
@@ -5712,6 +5711,10 @@ class TriangleViewerManual(
         mBase = int(getattr(self.decryptor, "getMinutesBase", lambda: getattr(self.decryptor, "minutesBase", 60))())
         hBase = max(1, int(hBase))
         mBase = max(1, int(mBase))
+        show_hour_hand = bool(getattr(self.decryptor, "shouldShowHourHand", lambda: True)())
+        show_minute_hand = bool(getattr(self.decryptor, "shouldShowMinuteHand", lambda: True)())
+        show_hour_labels = bool(getattr(self.decryptor, "shouldShowHourLabels", lambda: True)())
+        show_hour_ticks = bool(getattr(self.decryptor, "shouldShowHourTicks", lambda: True)())
 
         hFloat = float(self._clock_state.get("hour", 5.0)) % float(hBase)
         m = int(self._clock_state.get("minute", 9)) % int(mBase)
@@ -5745,23 +5748,24 @@ class TriangleViewerManual(
             self.canvas.create_line(x1, y1, x2, y2, width=w, fill=col_ticks, tags="clock_overlay")
 
         # Graduations heures (hBase traits)
-        deg_per_hour = 360.0 / float(hBase)
-        for hmark in range(int(hBase)):
-            ang = math.radians(ref_az + hmark * deg_per_hour)  # 360/hBase + ref az
-            # longueur du trait
-            # Repères plus longs : quarts si possible
-            if (hBase % 4 == 0 and hmark % int(hBase // 4) == 0) or (hBase == 12 and hmark % 3 == 0):
-                inner = R - 14
-                w = 2
-            else:
-                inner = R - 8
-                w = 1
-            outer = R
-            x1 = cx + inner * math.sin(ang)
-            y1 = cy - inner * math.cos(ang)
-            x2 = cx + outer * math.sin(ang)
-            y2 = cy - outer * math.cos(ang)
-            self.canvas.create_line(x1, y1, x2, y2, width=w, fill=col_ticks, tags="clock_overlay")
+        if show_hour_ticks:
+            deg_per_hour = 360.0 / float(hBase)
+            for hmark in range(int(hBase)):
+                ang = math.radians(ref_az + hmark * deg_per_hour)  # 360/hBase + ref az
+                # longueur du trait
+                # Repères plus longs : quarts si possible
+                if (hBase % 4 == 0 and hmark % int(hBase // 4) == 0) or (hBase == 12 and hmark % 3 == 0):
+                    inner = R - 14
+                    w = 2
+                else:
+                    inner = R - 8
+                    w = 1
+                outer = R
+                x1 = cx + inner * math.sin(ang)
+                y1 = cy - inner * math.cos(ang)
+                x2 = cx + outer * math.sin(ang)
+                y2 = cy - outer * math.cos(ang)
+                self.canvas.create_line(x1, y1, x2, y2, width=w, fill=col_ticks, tags="clock_overlay")
 
         # Repères (alignés sur l'axe de référence)
         font_marks = ("Arial", 11, "bold")
@@ -5783,16 +5787,17 @@ class TriangleViewerManual(
             # 1 décimale max
             return f"{fv:.1f}".rstrip("0").rstrip(".")
 
-        # Haut = hBase (12 ou 10)
-        self.canvas.create_text(x12, y12, text=_fmt_mark(hBase), font=font_marks,
-                                fill=col_ticks, tags="clock_overlay")
-        # Droite / bas / gauche : quarts (peuvent être décimaux si hBase=10)
-        self.canvas.create_text(x3,  y3,  text=_fmt_mark(hBase / 4.0),  font=font_marks,
-                                fill=col_ticks, tags="clock_overlay")
-        self.canvas.create_text(x6,  y6,  text=_fmt_mark(hBase / 2.0),  font=font_marks,
-                                fill=col_ticks, tags="clock_overlay")
-        self.canvas.create_text(x9,  y9,  text=_fmt_mark(3.0 * hBase / 4.0),  font=font_marks,
-                                fill=col_ticks, tags="clock_overlay")
+        if show_hour_labels:
+            # Haut = hBase (12 ou 10)
+            self.canvas.create_text(x12, y12, text=_fmt_mark(hBase), font=font_marks,
+                                    fill=col_ticks, tags="clock_overlay")
+            # Droite / bas / gauche : quarts (peuvent être décimaux si hBase=10)
+            self.canvas.create_text(x3,  y3,  text=_fmt_mark(hBase / 4.0),  font=font_marks,
+                                    fill=col_ticks, tags="clock_overlay")
+            self.canvas.create_text(x6,  y6,  text=_fmt_mark(hBase / 2.0),  font=font_marks,
+                                    fill=col_ticks, tags="clock_overlay")
+            self.canvas.create_text(x9,  y9,  text=_fmt_mark(3.0 * hBase / 4.0),  font=font_marks,
+                                    fill=col_ticks, tags="clock_overlay")
 
         # Aiguilles
         # Convention : angle 0° = 12h, sens horaire ; conversion vers coords canvas:
@@ -5801,27 +5806,34 @@ class TriangleViewerManual(
             import math
             a = math.radians(angle_deg)
             return (cx + length * math.sin(a), cy - length * math.cos(a))
-        # Angles via decryptor (cohérence complète avec les bases minutes/heures)
-        ang_hour_0, ang_min_0 = self.decryptor.anglesFromClock(hour=float(hFloat), minute=int(m))
-        ang_min = ref_az + float(ang_min_0)
-        # IMPORTANT: l'avance avec les minutes (ou non) est déjà encodée dans hFloat par le decryptor.
-        ang_hour = ref_az + float(ang_hour_0)
-
-        # Écart entre aiguilles (0..180) — même définition que l'angle d'arc (plus petit angle)
-        # On repasse en [0..360) avant calcul.
+        ang_hour_0 = None
+        ang_min_0 = None
+        ang_hour = None
+        ang_min = None
         delta_needles_deg = None
-        delta_needles_deg = self._clock_arc_compute_angle_deg(float(ang_hour) % 360.0, float(ang_min) % 360.0)
+        if show_hour_hand or show_minute_hand:
+            # Angles via decryptor (cohérence complète avec les bases minutes/heures)
+            ang_hour_0, ang_min_0 = self.decryptor.anglesFromClock(hour=float(hFloat), minute=int(m))
+            ang_min = ref_az + float(ang_min_0)
+            # IMPORTANT: l'avance avec les minutes (ou non) est déjà encodée dans hFloat par le decryptor.
+            ang_hour = ref_az + float(ang_hour_0)
 
-        # Longueurs des aiguilles
-        L_min = R * 0.86
-        L_hour = R * 0.58
-        x2m, y2m = _end_point(ang_min,  L_min)
-        x2h, y2h = _end_point(ang_hour, L_hour)
-        # traits
-        self.canvas.create_line(cx, cy, x2h, y2h, width=3, fill=col_hour, tags="clock_overlay")
-        self.canvas.create_line(cx, cy, x2m, y2m, width=2, fill=col_min,  tags="clock_overlay")
-        # axe central
-        self.canvas.create_oval(cx-3, cy-3, cx+3, cy+3, fill=col_min, outline=col_min, tags="clock_overlay")
+            if show_hour_hand and show_minute_hand:
+                # Écart entre aiguilles (0..180) — même définition que l'angle d'arc (plus petit angle)
+                # On repasse en [0..360) avant calcul.
+                delta_needles_deg = self._clock_arc_compute_angle_deg(float(ang_hour) % 360.0, float(ang_min) % 360.0)
+
+            # Longueurs des aiguilles
+            L_min = R * 0.86
+            L_hour = R * 0.58
+            if show_hour_hand:
+                x2h, y2h = _end_point(ang_hour, L_hour)
+                self.canvas.create_line(cx, cy, x2h, y2h, width=3, fill=col_hour, tags="clock_overlay")
+            if show_minute_hand:
+                x2m, y2m = _end_point(ang_min, L_min)
+                self.canvas.create_line(cx, cy, x2m, y2m, width=2, fill=col_min, tags="clock_overlay")
+            # axe central
+            self.canvas.create_oval(cx-3, cy-3, cx+3, cy+3, fill=col_min, outline=col_min, tags="clock_overlay")
         # Libellé sous l'horloge
         if label:
             label_disp = str(label)
@@ -5829,7 +5841,7 @@ class TriangleViewerManual(
                 label_disp = f"{label_disp} — Δ={float(delta_needles_deg):0.0f}°"
             # Si le filtrage dico est actif, afficher aussi l'azimut théorique du 12h (référence)
             # pour aligner les aiguilles sur les 2 droites mesurées (az1/az2).
-            if self._dico_filter_active:
+            if self._dico_filter_active and (delta_needles_deg is not None):
                 last = self._clock_arc_last
                 if isinstance(last, dict) and ("az1" in last) and ("az2" in last):
                     ref_theo = self._clock_compute_theoretical_ref_azimuth_deg(
@@ -9681,13 +9693,15 @@ class TriangleViewerManual(
             self._dbgSnap(
                 f"[snap] release(move_group) suppress_assist={self._sel.get('suppress_assist')} choice={'OK' if choice else 'None'}"
             )
-            if (not suppress
-                and (not self._ctrl_down)
+            if (
+                not suppress
+                and not self._ctrl_down
                 and anchor
                 and anchor.get("type") == "vertex"
                 and choice
                 and choice[0] == anchor.get("tid")
-                and choice[1] == anchor.get("vkey")):
+                and choice[1] == anchor.get("vkey")
+               ):
 
                 # Déballage du choix d'arête: (mob_idx,vkey_m,tgt_idx,vkey_t,epts)
                 # epts est un objet séquence (mA,mBEdgeVertex,tA,tBEdgeVertex) enrichi pendant l'assist

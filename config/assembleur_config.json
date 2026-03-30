@@ -1,9 +1,9 @@
 {
-  "lastTriangleExcel": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_v10.xlsx",
-  "uiShowDicoPanel": false,
+  "lastTriangleExcel": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_v11.xlsx",
+  "uiShowDicoPanel": true,
   "uiShowClockOverlay": true,
   "uiMapOpacity": 55,
-  "uiClockRefAzimuth": 139.23172802445634,
+  "uiClockRefAzimuth": 141.2154931886298,
   "uiShowOnlyGroupContours": false,
   "simLastAlgoId": "quadris_par_paires",
   "simLastN": 32,
@@ -45,9 +45,9 @@
     "distOA",
     "distOB"
   ],
-  "lastTriangleCsvIn": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_3villes_v10.csv",
+  "lastTriangleCsvIn": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_3villes.csv",
   "lastVillesCsvIn": "D:\\Dropbox\\La Chouette\\Python\\AlgoSimulator\\data\\villes_database.csv",
-  "lastTriangleExcelOut": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_v10.xlsx",
+  "lastTriangleExcelOut": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_v11.xlsx",
   "balisesCsvPath": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\balises.csv",
   "uiShowBalisesLayer": true,
   "dicoExclureMotsCodes": false,
@@ -55,8 +55,8 @@
   "uiShowGuidesLayer": false,
   "bgSvgPath": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\maps\\899 - Alsace.jpg",
   "bgWorldRect": {
-    "x0": -2963.38,
-    "y0": 1637.5492486281019,
+    "x0": -2530.750191680502,
+    "y0": -3344.2485441418767,
     "w": 4298.072711792542,
     "h": 5287.600751371898,
     "aspect": 0.8128587830080367

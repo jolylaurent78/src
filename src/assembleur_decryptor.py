@@ -63,6 +63,18 @@ class DecryptorBase:
             raise ValueError(f"hoursBase invalide: {base}")
         self.hoursBase = b
 
+    def shouldShowHourHand(self) -> bool:
+        return True
+
+    def shouldShowMinuteHand(self) -> bool:
+        return True
+
+    def shouldShowHourLabels(self) -> bool:
+        return True
+
+    def shouldShowHourTicks(self) -> bool:
+        return True
+
     def degreesPerMinute(self) -> float:
         base = max(1, int(self.getMinutesBase()))
         return 360.0 / float(base)
@@ -185,6 +197,51 @@ class ClockDicoDecryptor(DecryptorBase):
         )
 
 
+class Frontiere1870Decryptor(DecryptorBase):
+    id = "base100_frontiere_1870_v1"
+    label = "Base100 et Frontière 1870"
+
+    def __init__(self):
+        super().__init__()
+        self.minutesBase = 100
+
+    def getMinutesBase(self) -> int:
+        return 100
+
+    def shouldShowHourHand(self) -> bool:
+        return False
+
+    def shouldShowMinuteHand(self) -> bool:
+        return False
+
+    def shouldShowHourLabels(self) -> bool:
+        return False
+
+    def shouldShowHourTicks(self) -> bool:
+        return False
+
+    def clockStateFromDicoCell(self, *, row: int, col: int, word: str = "", mode: str = "abs") -> ClockState:
+        _ = mode
+        row_int = int(row)
+        col_int = int(col)
+        w = str(word or "").strip()
+        deltaDeg180 = abs(col_int) * 3.6
+        deltaDeg180Display = round(deltaDeg180)
+        suffix = f"(Ligne {row_int}, Col {col_int}) - Δ={deltaDeg180Display}°"
+        label = f"{w} - {suffix}" if w else suffix
+        return ClockState(
+            hour=float(row_int),
+            minute=col_int,
+            label=label,
+            dicoRow=row_int,
+            dicoCol=col_int,
+            word=w,
+            azHourDeg=None,
+            azMinDeg=None,
+            deltaDeg180=deltaDeg180,
+        )
+
+
 @dataclass(frozen=True)
 class DecryptorConfig:
     """Immutable configuration for matching geometry measures."""
@@ -265,4 +322,5 @@ class DecryptorConfig:
 # Petit registre (optionnel) pour brancher d?autres d?cryptages
 DECRYPTORS: Dict[str, Type[DecryptorBase]] = {
     ClockDicoDecryptor.id: ClockDicoDecryptor,
+    Frontiere1870Decryptor.id: Frontiere1870Decryptor,
 }
