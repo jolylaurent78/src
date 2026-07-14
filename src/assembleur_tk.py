@@ -441,6 +441,7 @@ class TriangleViewerManual(
         # État d'affichage du compas horaire (overlay horloge)
         self.show_clock_overlay = tk.BooleanVar(value=True)
         self._clock_anchor_world = None
+        self._clock_anchor_binding = None
         # Mode "contours uniquement" : n'afficher que le contour de chaque groupe (pas les arêtes internes)
         self.show_only_group_contours = tk.BooleanVar(value=False)
 
@@ -557,6 +558,8 @@ class TriangleViewerManual(
         self.show_balises_layer.set(bool(self.getAppConfigValue("uiShowBalisesLayer", False)))
         self._layerGuidesVisible = bool(self.getAppConfigValue("uiShowGuidesLayer", True))
         self._layerGuidesVisibleVar.set(bool(self._layerGuidesVisible))
+        self._clock_auto_ref_sync_enabled = bool(self.getAppConfigValue("uiClockAutoRefSyncEnabled", False))
+        self._clock_auto_ref_sync_var = tk.BooleanVar(value=bool(self._clock_auto_ref_sync_enabled))
 
         # === Simulation : derniers paramètres utilisés (dialog 'Simulation > Assembler…') ===
         self._simulation_last_algo_id = str(self.getAppConfigValue("simLastAlgoId", "") or "").strip()
@@ -607,11 +610,13 @@ class TriangleViewerManual(
         self._clock_radius = 69
         # Azimut de référence (0° = Nord, sens horaire). Sert de base pour l'axe 0 du compas.
         self._clock_ref_azimuth_deg = float(self.getAppConfigValue("uiClockRefAzimuth", 0.0) or 0.0)
+        self._clock_auto_ref_sync_in_progress = False
 
         # Mode interactif : définition de l'azimut de référence
         self._clock_setref_active = False
         self._clock_setref_line_id = None
         self._clock_setref_text_id = None
+        self._clock_setref_last = None
 
         # Mode interactif : mesure d'un azimut (relatif à l'azimut de référence)
         self._clock_measure_active = False
@@ -619,12 +624,11 @@ class TriangleViewerManual(
         self._clock_measure_text_id = None
         self._clock_measure_last = None  # tuple(sx, sy, az_abs, az_rel)
 
-        # Mode interactif : tracer un azimut (persistant via edgeRef + deltaAz)
+        # Mode interactif : tracer un azimut (persistant via ref absolue + deltaAz)
         self._clock_trace_active: bool = False
         self._clock_trace_preview_az_abs: float | None = None
         self._clock_trace_preview_nodeId: str | None = None
         self._clock_trace_preview_topoGroupId: str | None = None
-        self._clock_trace_preview_edgeRefId: str | None = None
         self._clock_trace_preview_deltaAz: float | None = None
         self._clock_trace_line_id: int | None = None
         self._clock_trace_text_id: int | None = None
@@ -2338,6 +2342,11 @@ class TriangleViewerManual(
         # on positionne la clock sur le noeud
         self._clock_anchor_world = np.array(wO, dtype=float)
         self._clock_cx, self._clock_cy = float(sx), float(sy)
+        self._clock_bind_anchor_to_node(
+            node_id=str(nodeCenterId),
+            topo_group_id=str(groupId),
+            world_pos=wO,
+        )
 
         # On met à jour les informations d'azimut
         self._clock_arc_auto_from_snap_target(
@@ -2346,6 +2355,7 @@ class TriangleViewerManual(
             nextNodeDsu=nodeNextId,
             drag=False,
         )
+        self._clock_apply_auto_ref_sync()
 
     def _onCheminsTreeActivate(self, evt=None) -> None:
         # simple alias si tu veux déclencher seulement au double-clic
@@ -2396,6 +2406,7 @@ class TriangleViewerManual(
         self.setAppConfigValue(_assembleur_io.CFG_KEY_CHEMINS_BALISE_REF, selectedName)
         self.saveAppConfig()
         self._recalculerCheminFromSelection(selectedName)
+        self._clock_apply_auto_ref_sync()
 
     def refreshCheminTreeView(self) -> None:
         """Rafraîchit la TreeView Chemins depuis world.topologyChemins (lecture seule)."""
@@ -4792,6 +4803,11 @@ class TriangleViewerManual(
         self._ctx_menu_compass = tk.Menu(self, tearoff=0)
         self._ctx_menu_compass.add_command(label="Définir l'azimut de ref…",
                                            command=self._ctx_define_clock_ref_azimuth)
+        self._ctx_menu_compass.add_checkbutton(
+            label="Synchroniser auto l'azimut de ref",
+            variable=self._clock_auto_ref_sync_var,
+            command=self._ctx_toggle_clock_auto_ref_sync,
+        )
         self._ctx_menu_compass.add_command(label="Tracer un azimut…",
                                            command=self._ctx_trace_clock_azimuth)
         self._ctx_menu_compass.add_command(label="Mesurer un arc d'angle…",
@@ -5008,6 +5024,12 @@ class TriangleViewerManual(
         # Persistance : mémoriser l'état (affiché/caché)
         self.setAppConfigValue("uiShowClockOverlay", bool(self.show_clock_overlay.get()))
 
+    def _ctx_toggle_clock_auto_ref_sync(self):
+        self._clock_auto_ref_sync_enabled = bool(self._clock_auto_ref_sync_var.get())
+        self.setAppConfigValue("uiClockAutoRefSyncEnabled", bool(self._clock_auto_ref_sync_enabled))
+        if self._clock_auto_ref_sync_enabled:
+            self._clock_apply_auto_ref_sync()
+
     # -- pick cache helpers ---------------------------------------------------
     def _invalidate_pick_cache(self):
         """À appeler dès que zoom/offset ou _last_drawn peuvent changer."""
@@ -5166,6 +5188,7 @@ class TriangleViewerManual(
         cxScreen = canvasW / 2.0
         cyScreen = canvasH / 2.0
         cxWorld, cyWorld = self._screen_to_world(cxScreen, cyScreen)
+        self._clock_clear_anchor_binding()
         self._clock_anchor_world = np.array([cxWorld, cyWorld], dtype=float)
         self._clock_cx = float(cxScreen)
         self._clock_cy = float(cyScreen)
@@ -5754,6 +5777,7 @@ class TriangleViewerManual(
         margin = 12              # marge par rapport aux bords du canvas (px)
         # rayon (px) — modifiable via UI (min=50)
         R = max(50, int(self._clock_radius))
+        self._clock_refresh_anchor_world_from_binding()
         # Si un ancrage monde existe (et qu'on ne drag pas), le centre du compas suit pan/zoom
         if self._clock_anchor_world is not None and not self._clock_dragging:
             sx, sy = self._world_to_screen(self._clock_anchor_world)
@@ -6174,22 +6198,17 @@ class TriangleViewerManual(
         for trait in traits:
             nodeId = str(trait["nodeId"])
             topoGroupId = str(trait["topoGroupId"])
-            edgeRefId = str(trait["edgeRefId"])
             deltaAz = float(trait["deltaAzDeg"]) % 360.0
             if "colorHex" in trait:
                 colorHex = str(trait["colorHex"])
             else:
                 colorHex = "#0b3d91"
 
-            incident_edge_ids = world.getIncidentEdgeIds(topoGroupId, nodeId)
-            if edgeRefId not in incident_edge_ids:
+            try:
+                nodeWorld = np.array(world.getConceptNodeWorldXY(nodeId, topoGroupId), dtype=float)
+            except Exception:
                 continue
-
-            nodeWorld = np.array(world.getConceptNodeWorldXY(nodeId, topoGroupId), dtype=float)
-            otherNodeId = world.getEdgeOtherNodeId(topoGroupId, edgeRefId, nodeId)
-            otherWorld = np.array(world.getConceptNodeWorldXY(otherNodeId, topoGroupId), dtype=float)
-            azEdgeAbsCurrent = self._azimuth_world_deg(nodeWorld, otherWorld)
-            azTraitAbs = (azEdgeAbsCurrent + deltaAz) % 360.0
+            azTraitAbs = (float(self._clock_ref_azimuth_deg) + deltaAz) % 360.0
 
             sx0, sy0 = self._world_to_screen(nodeWorld)
             end = self._clock_clip_ray_to_viewport(float(sx0), float(sy0), float(azTraitAbs))
@@ -6323,11 +6342,37 @@ class TriangleViewerManual(
 
     # --- helpers: mode déconnexion (CTRL) + curseur ---
 
+    def _clock_get_pointer_canvas_xy(self) -> Tuple[int, int]:
+        if self.canvas is None:
+            return (0, 0)
+        sx = int(self.canvas.winfo_pointerx() - self.canvas.winfo_rootx())
+        sy = int(self.canvas.winfo_pointery() - self.canvas.winfo_rooty())
+        return (sx, sy)
+
+    def _clock_refresh_active_preview_under_pointer(self):
+        if self.canvas is None:
+            return
+        sx, sy = self._clock_get_pointer_canvas_xy()
+        if self._clock_trace_active:
+            self._clock_trace_update_preview(int(sx), int(sy))
+        elif self._clock_measure_active:
+            self._clock_measure_update_preview(int(sx), int(sy))
+        elif self._clock_arc_active:
+            self._clock_arc_update_preview(int(sx), int(sy))
+        elif self._clock_setref_active:
+            self._clock_setref_update_preview(int(sx), int(sy))
+
     def _on_ctrl_down(self, event=None):
-        # Pendant une mesure d'azimut du compas, CTRL sert uniquement à désactiver le snap.
+        # Pendant les modes interactifs du compas, CTRL sert uniquement à désactiver le snap.
         # On évite donc d'activer le mode "déconnexion" des triangles (curseur + aides).
-        if self._clock_measure_active:
+        if (
+            self._clock_measure_active
+            or self._clock_arc_active
+            or self._clock_setref_active
+            or self._clock_trace_active
+        ):
             self._ctrl_down = True
+            self._clock_refresh_active_preview_under_pointer()
             return
 
         if not self._ctrl_down:
@@ -6425,7 +6470,16 @@ class TriangleViewerManual(
     def _on_ctrl_up(self, event=None):
         if self._ctrl_down:
             self._ctrl_down = False
-            self.canvas.configure(cursor="")
+            if (
+                self._clock_measure_active
+                or self._clock_arc_active
+                or self._clock_setref_active
+                or self._clock_trace_active
+            ):
+                self._clock_refresh_active_preview_under_pointer()
+                return
+            if self.canvas is not None:
+                self.canvas.configure(cursor="")
 
     # ---------- Mouse navigation ----------
     # Drag depuis la liste
@@ -8133,11 +8187,15 @@ class TriangleViewerManual(
 
         # Initialiser le mode
         self._clock_setref_active = True
+        self._clock_setref_last = None
+        self._clock_clear_setref_snap_target()
         self.canvas.focus_set()
         sx, sy = self._clock_get_initial_cursor_xy()
         self._clock_setref_update_preview(sx, sy)
 
-        self.status.config(text="Définir azimut de référence : clic gauche pour valider, ESC pour annuler.")
+        self.status.config(
+            text="Définir azimut de référence : déplacer la souris, clic gauche pour valider, CTRL = azimut libre, ESC pour annuler."
+        )
 
     def _ctx_trace_clock_azimuth(self):
         """Entrée de menu : active le mode 'tracer un azimut' (persistant)."""
@@ -8150,22 +8208,14 @@ class TriangleViewerManual(
         if not self.show_clock_overlay or not self.show_clock_overlay.get():
             self.status.config(text="Compas masqué : affiche-le pour tracer un azimut.")
             return
-        scen = self._get_active_scenario()
-        has_ref = (
-            scen is not None
-            and scen.clockRefEdgeId is not None
-            and scen.clockRefNodeId is not None
-            and scen.clockRefTopoGroupId is not None
-        )
-        if not has_ref:
-            self.status.config(text="Définis d'abord l'azimut de ref…")
+        if self._clock_get_anchor_node_hit() is None:
+            self.status.config(text="Accroche le compas à un nœud pour tracer un azimut.")
             return
 
         self._clock_trace_active = True
         self._clock_trace_preview_az_abs = None
         self._clock_trace_preview_nodeId = None
         self._clock_trace_preview_topoGroupId = None
-        self._clock_trace_preview_edgeRefId = None
         self._clock_trace_preview_deltaAz = None
         self._clock_trace_line_id = None
         self._clock_trace_text_id = None
@@ -8173,7 +8223,7 @@ class TriangleViewerManual(
         self.canvas.focus_set()
 
         self.status.config(
-            text="Tracer un azimut : déplacer la souris, clic gauche pour valider, ESC pour annuler. (Snap noeuds, CTRL = désactiver snap)"
+            text="Tracer un azimut : déplacer la souris, clic gauche pour valider, ESC pour annuler."
         )
 
         sx, sy = self._clock_get_initial_cursor_xy()
@@ -8183,11 +8233,7 @@ class TriangleViewerManual(
         scen = self._get_active_scenario()
         if scen is None:
             return
-        if self._clock_anchor_world is None:
-            return
-
-        anchor_world = np.array(self._clock_anchor_world, dtype=float)
-        hit = scen.topoWorld.findNearestBoundaryNode(None, anchor_world)
+        hit = self._clock_get_anchor_node_hit()
         if hit is None:
             return
 
@@ -8217,48 +8263,23 @@ class TriangleViewerManual(
         if scen is None:
             self._clock_trace_cancel(silent=True)
             return
-        if scen.clockRefEdgeId is None or scen.clockRefNodeId is None or scen.clockRefTopoGroupId is None:
-            self.status.config(text="Définis d'abord l'azimut de ref…")
-            self._clock_trace_cancel(silent=True)
-            return
-        if self._clock_anchor_world is None:
-            self.status.config(text="Définis d'abord l'azimut de ref…")
-            self._clock_trace_cancel(silent=True)
-            return
-
         world = scen.topoWorld
-        anchor_world = np.array(self._clock_anchor_world, dtype=float)
-        hit = world.findNearestBoundaryNode(None, anchor_world)
+        hit = self._clock_get_anchor_node_hit()
         if hit is None:
-            self.status.config(text="Définis d'abord l'azimut de ref…")
+            self.status.config(text="Accroche le compas à un nœud pour tracer un azimut.")
             self._clock_trace_cancel(silent=True)
             return
 
-        nodeId = str(scen.clockRefNodeId)
-        topoGroupId = str(scen.clockRefTopoGroupId)
-        if str(hit["nodeId"]) != nodeId or str(hit["groupId"]) != topoGroupId:
-            self.status.config(text="Définis d'abord l'azimut de ref…")
-            self._clock_trace_cancel(silent=True)
-            return
-
-        edgeRefId = str(scen.clockRefEdgeId)
-        incident_edge_ids = world.getIncidentEdgeIds(topoGroupId, nodeId)
-        if edgeRefId not in incident_edge_ids:
-            self.status.config(text="Définis d'abord l'azimut de ref…")
-            self._clock_trace_cancel(silent=True)
-            return
+        nodeId = str(hit["nodeId"])
+        topoGroupId = str(hit["groupId"])
         nodeWorld = np.array(world.getConceptNodeWorldXY(nodeId, topoGroupId), dtype=float)
-        otherNodeId = world.getEdgeOtherNodeId(topoGroupId, edgeRefId, nodeId)
-        otherWorld = np.array(world.getConceptNodeWorldXY(otherNodeId, topoGroupId), dtype=float)
 
         azTraitAbsPreview = float(self._clock_compute_azimuth_deg(int(sx), int(sy)))
-        azEdgeRefAbsCurrent = self._azimuth_world_deg(nodeWorld, otherWorld)
-        deltaAz = (azTraitAbsPreview - azEdgeRefAbsCurrent) % 360.0
+        deltaAz = (azTraitAbsPreview - float(self._clock_ref_azimuth_deg) + 360.0) % 360.0
 
         self._clock_trace_preview_az_abs = float(azTraitAbsPreview)
         self._clock_trace_preview_nodeId = nodeId
         self._clock_trace_preview_topoGroupId = topoGroupId
-        self._clock_trace_preview_edgeRefId = edgeRefId
         self._clock_trace_preview_deltaAz = float(deltaAz)
 
         self.canvas.delete("clock_trace_preview")
@@ -8294,9 +8315,8 @@ class TriangleViewerManual(
             return
         nodeId = self._clock_trace_preview_nodeId
         topoGroupId = self._clock_trace_preview_topoGroupId
-        edgeRefId = self._clock_trace_preview_edgeRefId
         deltaAz = self._clock_trace_preview_deltaAz
-        if nodeId is None or topoGroupId is None or edgeRefId is None or deltaAz is None:
+        if nodeId is None or topoGroupId is None or deltaAz is None:
             self._clock_trace_cancel(silent=True)
             return
 
@@ -8310,7 +8330,6 @@ class TriangleViewerManual(
             {
                 "nodeId": str(nodeId),
                 "topoGroupId": str(topoGroupId),
-                "edgeRefId": str(edgeRefId),
                 "deltaAzDeg": float(delta),
                 "colorHex": str(self._guidesCurrentColorHex),
             }
@@ -8329,7 +8348,6 @@ class TriangleViewerManual(
         self._clock_trace_preview_az_abs = None
         self._clock_trace_preview_nodeId = None
         self._clock_trace_preview_topoGroupId = None
-        self._clock_trace_preview_edgeRefId = None
         self._clock_trace_preview_deltaAz = None
         if not silent:
             self.status.config(text="Traçage d'azimut annulé.")
@@ -8436,16 +8454,14 @@ class TriangleViewerManual(
 
         enabled = False
         scen = self._get_active_scenario()
-        if scen is not None and self._clock_anchor_world is not None:
-            anchor_world = np.array(self._clock_anchor_world, dtype=float)
-            hit = scen.topoWorld.findNearestBoundaryNode(None, anchor_world)
-            if hit is not None:
-                nodeId = str(hit["nodeId"])
-                topoGroupId = str(hit["groupId"])
-                for guide in scen.clockAzimuthTraits:
-                    if guide["nodeId"] == nodeId and guide["topoGroupId"] == topoGroupId:
-                        enabled = True
-                        break
+        hit = self._clock_get_anchor_node_hit()
+        if scen is not None and hit is not None:
+            nodeId = str(hit["nodeId"])
+            topoGroupId = str(hit["groupId"])
+            for guide in scen.clockAzimuthTraits:
+                if guide["nodeId"] == nodeId and guide["topoGroupId"] == topoGroupId:
+                    enabled = True
+                    break
 
         if clear_idx is not None:
             menu.entryconfig(int(clear_idx), state=(tk.NORMAL if enabled else tk.DISABLED))
@@ -8462,12 +8478,8 @@ class TriangleViewerManual(
         - Seule l'action "Filtrer le dictionnaire…" dépend de l'existence d'un arc.
         """
         scen = self._get_active_scenario()
-        has_trace_ref = (
-            scen is not None
-            and scen.clockRefEdgeId is not None
-            and scen.clockRefNodeId is not None
-            and scen.clockRefTopoGroupId is not None
-        )
+        self._clock_auto_ref_sync_var.set(bool(self._clock_auto_ref_sync_enabled))
+        has_trace_ref = bool(self._clock_get_anchor_node_hit() is not None)
         menu = self._ctx_menu_compass
         trace_idx = self._ctx_compass_find_entry_index("Tracer un azimut…")
         if menu is not None and trace_idx is not None:
@@ -8604,6 +8616,293 @@ class TriangleViewerManual(
         if da > 180.0:
             da = 360.0 - da
         return abs(da)
+
+    def _clock_clear_anchor_binding(self):
+        self._clock_anchor_binding = None
+
+    def _clock_bind_anchor_to_node(
+        self,
+        *,
+        node_id: str,
+        topo_group_id: str,
+        idx: int | None = None,
+        vkey: str | None = None,
+        world_pos=None,
+    ):
+        binding = {
+            "nodeId": str(node_id),
+            "topoGroupId": str(topo_group_id),
+            "idx": (None if idx is None else int(idx)),
+            "vkey": (None if vkey is None else str(vkey)),
+        }
+        scen = self._get_active_scenario()
+        if scen is not None and (binding["idx"] is None or binding["vkey"] is None):
+            try:
+                ref = scen.topoWorld.getElementVertexFromAnyNodeId(str(node_id), groupId=str(topo_group_id))
+            except Exception:
+                ref = None
+            if isinstance(ref, dict):
+                if binding["idx"] is None:
+                    resolved_idx = self.getTidForTopoElementId(ref.get("elementId"))
+                    if resolved_idx is not None:
+                        binding["idx"] = int(resolved_idx)
+                if binding["vkey"] is None and ref.get("vkey") is not None:
+                    binding["vkey"] = str(ref.get("vkey"))
+                if world_pos is None and ref.get("wbest") is not None:
+                    world_pos = ref.get("wbest")
+        self._clock_anchor_binding = binding
+        if world_pos is not None:
+            self._clock_anchor_world = np.array(world_pos, dtype=float)
+
+    def _clock_bind_anchor_from_snap_target(self, snap_target: dict | None):
+        if not isinstance(snap_target, dict):
+            self._clock_clear_anchor_binding()
+            return
+        node_id = snap_target.get("nodeId")
+        topo_group_id = snap_target.get("topoGroupId")
+        if not node_id or not topo_group_id:
+            self._clock_clear_anchor_binding()
+            return
+        self._clock_bind_anchor_to_node(
+            node_id=str(node_id),
+            topo_group_id=str(topo_group_id),
+            idx=snap_target.get("idx"),
+            vkey=snap_target.get("vkey"),
+            world_pos=snap_target.get("world"),
+        )
+
+    def _clock_refresh_anchor_world_from_binding(self):
+        binding = self._clock_anchor_binding
+        if not isinstance(binding, dict):
+            return
+        idx = binding.get("idx")
+        vkey = binding.get("vkey")
+        if isinstance(idx, int) and vkey in ("O", "B", "L") and 0 <= idx < len(self._last_drawn):
+            pts = self._last_drawn[idx].get("pts") or {}
+            if vkey in pts:
+                self._clock_anchor_world = np.array(pts[vkey], dtype=float)
+                return
+        scen = self._get_active_scenario()
+        if scen is None:
+            return
+        node_id = binding.get("nodeId")
+        topo_group_id = binding.get("topoGroupId")
+        if not node_id or not topo_group_id:
+            return
+        try:
+            self._clock_anchor_world = np.array(
+                scen.topoWorld.getConceptNodeWorldXY(str(node_id), str(topo_group_id)),
+                dtype=float,
+            )
+        except Exception:
+            return
+
+    def _clock_get_selected_balise_world(self) -> tuple[float, float] | None:
+        balise_name = self._getCheminsBaliseRefName()
+        if not balise_name:
+            return None
+        if not hasattr(self, "balisesManager") or self.balisesManager is None:
+            return None
+        if not self.balisesManager.hasBalise(balise_name):
+            return None
+        try:
+            wx, wy = self.balisesManager.getWorld(self, balise_name)
+        except Exception:
+            return None
+        return (float(wx), float(wy))
+
+    def _clock_compute_ref_azimuth_from_balise(self) -> float | None:
+        center_world = self._clock_get_center_world()
+        if center_world is None:
+            return None
+        balise_world = self._clock_get_selected_balise_world()
+        if balise_world is None:
+            return None
+        return float(self._azimuth_world_deg(tuple(center_world), balise_world))
+
+    def _clock_apply_auto_ref_sync(self):
+        if getattr(self, "_clock_auto_ref_sync_in_progress", False):
+            return
+        if not bool(getattr(self, "_clock_auto_ref_sync_enabled", False)):
+            return
+        if not self.canvas:
+            return
+        if not self.show_clock_overlay or not self.show_clock_overlay.get():
+            return
+
+        az = self._clock_compute_ref_azimuth_from_balise()
+        if az is None:
+            return
+
+        self._clock_auto_ref_sync_in_progress = True
+        try:
+            self._clock_ref_azimuth_deg = float(az) % 360.0
+            self._redraw_overlay_only()
+            self._clock_refresh_active_preview_under_pointer()
+        finally:
+            self._clock_auto_ref_sync_in_progress = False
+
+    def _clock_get_center_world(self) -> Optional[np.ndarray]:
+        if self._clock_dragging and self._clock_cx is not None and self._clock_cy is not None:
+            wx, wy = self._screen_to_world(self._clock_cx, self._clock_cy)
+            return np.array([wx, wy], dtype=float)
+        self._clock_refresh_anchor_world_from_binding()
+        if self._clock_anchor_world is not None:
+            return np.array(self._clock_anchor_world, dtype=float)
+        if self._clock_cx is None or self._clock_cy is None:
+            return None
+        wx, wy = self._screen_to_world(self._clock_cx, self._clock_cy)
+        return np.array([wx, wy], dtype=float)
+
+    def _clock_get_anchor_node_hit(self) -> dict | None:
+        scen = self._get_active_scenario()
+        if scen is None:
+            return None
+        binding = self._clock_anchor_binding
+        if isinstance(binding, dict) and binding.get("nodeId") and binding.get("topoGroupId"):
+            return {
+                "nodeId": str(binding["nodeId"]),
+                "groupId": str(binding["topoGroupId"]),
+            }
+        center_world = self._clock_get_center_world()
+        if center_world is None:
+            return None
+        hit = scen.topoWorld.findNearestBoundaryNode(None, center_world)
+        if hit is None:
+            return None
+        node_world = np.array(
+            scen.topoWorld.getConceptNodeWorldXY(str(hit["nodeId"]), str(hit["groupId"])),
+            dtype=float,
+        )
+        if float(np.linalg.norm(node_world - center_world)) > EPS_WORLD:
+            return None
+        return hit
+
+    def _clock_collect_setref_candidates(self) -> list[dict]:
+        scen = self._get_active_scenario()
+        center_world = self._clock_get_center_world()
+        if scen is None or center_world is None:
+            return []
+
+        world = scen.topoWorld
+        out: list[dict] = []
+        seen: set[tuple[str, str, str]] = set()
+        anchor_hit = self._clock_get_anchor_node_hit()
+
+        if anchor_hit is not None:
+            anchor_node_id = str(anchor_hit["nodeId"])
+            anchor_group_id = str(anchor_hit["groupId"])
+            for neighbor_id in world.getConceptNeighborNodes(anchor_node_id, anchor_group_id):
+                neighbor_world = np.array(
+                    world.getConceptNodeWorldXY(str(neighbor_id), anchor_group_id),
+                    dtype=float,
+                )
+                if float(np.linalg.norm(neighbor_world - center_world)) <= EPS_WORLD:
+                    continue
+                key = ("node", anchor_group_id, str(neighbor_id))
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(
+                    {
+                        "type": "node",
+                        "id": str(neighbor_id),
+                        "nodeId": str(neighbor_id),
+                        "topoGroupId": anchor_group_id,
+                        "world": neighbor_world,
+                        "azAbsDeg": float(self._azimuth_world_deg(center_world, neighbor_world)),
+                        "label": str(world.getNodeLabel(str(neighbor_id))),
+                    }
+                )
+
+        if hasattr(self, "balisesManager") and self.balisesManager is not None:
+            for balise_name in self.balisesManager.listNoms():
+                try:
+                    balise_world = np.array(self.balisesManager.getWorld(self, balise_name), dtype=float)
+                except Exception:
+                    continue
+                if float(np.linalg.norm(balise_world - center_world)) <= EPS_WORLD:
+                    continue
+                key = ("balise", "", str(balise_name))
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(
+                    {
+                        "type": "balise",
+                        "id": str(balise_name),
+                        "baliseName": str(balise_name),
+                        "world": balise_world,
+                        "azAbsDeg": float(self._azimuth_world_deg(center_world, balise_world)),
+                        "label": str(balise_name),
+                    }
+                )
+
+        return out
+
+    def _clock_pick_setref_snap_candidate(self, azMouseAbs: float, candidates: list[dict]) -> dict | None:
+        best_candidate = None
+        best_diff = None
+        for candidate in candidates:
+            if "azAbsDeg" not in candidate:
+                continue
+            diff = self._clock_angle_diff_deg(float(candidate["azAbsDeg"]), float(azMouseAbs))
+            if best_diff is None or diff < best_diff:
+                best_diff = float(diff)
+                best_candidate = candidate
+        return best_candidate
+
+    def _clock_clear_setref_snap_target(self):
+        if self.canvas is not None:
+            self.canvas.delete("clock_setref_snap_target")
+
+    def _clock_draw_setref_snap_target(self, snap_target: dict | None):
+        self._clock_clear_setref_snap_target()
+        if self.canvas is None or not isinstance(snap_target, dict):
+            return
+        world_pos = snap_target.get("world")
+        if world_pos is None:
+            return
+        px, py = self._world_to_screen(world_pos)
+        radius = 10 if snap_target.get("type") == "node" else 8
+        self.canvas.create_oval(
+            px - radius,
+            py - radius,
+            px + radius,
+            py + radius,
+            outline="#FF0000",
+            width=3,
+            fill="",
+            tags=("clock_overlay", "clock_setref_snap_target"),
+        )
+        self.canvas.tag_raise("clock_setref_snap_target")
+
+    def _clock_build_setref_preview(self, sx: int, sy: int) -> dict | None:
+        if self._clock_cx is None or self._clock_cy is None:
+            return None
+
+        mouse_az_abs = float(self._clock_compute_azimuth_deg(int(sx), int(sy)))
+        preview_az_abs = float(mouse_az_abs)
+        preview_sx = int(sx)
+        preview_sy = int(sy)
+        snap_target = None
+
+        if not self._ctrl_down:
+            candidates = self._clock_collect_setref_candidates()
+            snap_target = self._clock_pick_setref_snap_candidate(mouse_az_abs, candidates)
+            if isinstance(snap_target, dict) and snap_target.get("world") is not None:
+                preview_az_abs = float(snap_target["azAbsDeg"]) % 360.0
+                sxx, syy = self._world_to_screen(snap_target["world"])
+                preview_sx = int(sxx)
+                preview_sy = int(syy)
+
+        return {
+            "mouseAzAbs": float(mouse_az_abs) % 360.0,
+            "previewAzAbs": float(preview_az_abs) % 360.0,
+            "previewSx": int(preview_sx),
+            "previewSy": int(preview_sy),
+            "snapTarget": snap_target,
+        }
 
     def _clock_compute_theoretical_ref_azimuth_deg(
         self,
@@ -8762,61 +9061,42 @@ class TriangleViewerManual(
     def _clock_setref_update_preview(self, sx: int, sy: int):
         if not self._clock_setref_active:
             return
+        preview = self._clock_build_setref_preview(int(sx), int(sy))
+        if preview is None:
+            return
+        self._clock_draw_setref_snap_target(preview.get("snapTarget"))
         self._clock_setref_line_id, self._clock_setref_text_id, out = self._clock_update_azimuth_preview(
-            int(sx), int(sy),
+            int(preview["previewSx"]), int(preview["previewSy"]),
             line_id=self._clock_setref_line_id,
             text_id=self._clock_setref_text_id,
             preview_tag="clock_ref_preview",
             relative_to_ref=False,
             enable_snap=False,
+            label_text=f"{float(preview['previewAzAbs']):0.0f}°",
         )
         if out:
-            sx2, sy2, az_abs, az_val = out
-            self._clock_setref_last = (int(sx2), int(sy2), float(az_abs), float(az_val))
+            self._clock_setref_last = dict(preview)
 
     def _clock_setref_confirm(self, sx: int, sy: int):
         if not self._clock_setref_active:
             return
-        az = self._clock_compute_azimuth_deg(sx, sy)
+        preview = self._clock_build_setref_preview(int(sx), int(sy))
+        if preview is None:
+            self._clock_setref_cancel(silent=True)
+            return
+
+        az = float(preview["mouseAzAbs"] if self._ctrl_down else preview["previewAzAbs"]) % 360.0
         self._clock_ref_azimuth_deg = float(az)
         self.setAppConfigValue("uiClockRefAzimuth", float(self._clock_ref_azimuth_deg))
 
         scen = self._get_active_scenario()
-        if scen is not None and self._clock_anchor_world is not None:
-            world = scen.topoWorld
-            anchor_world = np.array(self._clock_anchor_world, dtype=float)
-            hit = world.findNearestBoundaryNode(None, anchor_world)
-            if hit is not None:
-                nodeId = str(hit["nodeId"])
-                topoGroupId = str(hit["groupId"])
-                nodeWorld = np.array(world.getConceptNodeWorldXY(nodeId, topoGroupId), dtype=float)
-                bestEdgeId = None
-                bestDiff = None
-                for edgeId in world.getIncidentEdgeIds(topoGroupId, nodeId):
-                    otherNodeId = world.getEdgeOtherNodeId(topoGroupId, edgeId, nodeId)
-                    otherWorld = np.array(world.getConceptNodeWorldXY(otherNodeId, topoGroupId), dtype=float)
-                    azEdgeAbs = self._azimuth_world_deg(nodeWorld, otherWorld)
-                    diff = self._clock_angle_diff_deg(azEdgeAbs, self._clock_ref_azimuth_deg)
-                    if bestDiff is None or diff < bestDiff:
-                        bestDiff = float(diff)
-                        bestEdgeId = str(edgeId)
-                scen.clockRefEdgeId = bestEdgeId
-                scen.clockRefNodeId = nodeId
-                scen.clockRefTopoGroupId = topoGroupId
-            else:
-                scen.clockRefEdgeId = None
-                scen.clockRefNodeId = None
-                scen.clockRefTopoGroupId = None
-        elif scen is not None:
+        if scen is not None:
             scen.clockRefEdgeId = None
             scen.clockRefNodeId = None
             scen.clockRefTopoGroupId = None
 
         self._clock_setref_cancel(silent=True)
-        if scen is not None and scen.clockRefEdgeId is None:
-            self.status.config(text=f"Azimut de référence défini : {az:0.0f}° (aucune arête de référence trouvée).")
-        else:
-            self.status.config(text=f"Azimut de référence défini : {az:0.0f}°")
+        self.status.config(text=f"Azimut de référence défini : {az:0.0f}°")
 
         self._update_compass_ctx_menu_and_dico_state()
         self._redraw_overlay_only()
@@ -8834,6 +9114,8 @@ class TriangleViewerManual(
 
         self._clock_setref_line_id = None
         self._clock_setref_text_id = None
+        self._clock_setref_last = None
+        self._clock_clear_setref_snap_target()
         # On laisse l'overlay se redessiner via les flux habituels
         if not silent:
             self.status.config(text="Définition d'azimut annulée.")
@@ -9595,6 +9877,7 @@ class TriangleViewerManual(
                         else:
                             self._clear_nearest_line()
                             self._clear_edge_highlights()
+            self._clock_apply_auto_ref_sync()
             return
 
         elif self._sel["mode"] == "move":
@@ -9608,6 +9891,7 @@ class TriangleViewerManual(
             for k in ("O", "B", "L"):
                 P[k] = np.array([P[k][0] + d[0], P[k][1] + d[1]])
             self._redraw_from(self._last_drawn)
+            self._clock_apply_auto_ref_sync()
 
         elif self._sel["mode"] == "vertex":
             # translation calée sur un sommet précis
@@ -9634,6 +9918,7 @@ class TriangleViewerManual(
             else:
                 self._clear_nearest_line()
                 self._clear_edge_highlights()
+            self._clock_apply_auto_ref_sync()
 
     def _on_canvas_left_up(self, event):
         # Horloge : fin de drag
@@ -9645,18 +9930,21 @@ class TriangleViewerManual(
             # Si CTRL au relâché : on sort du mode sans "snap" (le compas reste où il est)
             if self._ctrl_down:
                 wx, wy = self._screen_to_world(self._clock_cx, self._clock_cy)
+                self._clock_clear_anchor_binding()
                 self._clock_anchor_world = np.array([wx, wy], dtype=float)
 
             else:
                 # cible snap calculée pendant le drag (capturée au début via snap_tgt)
                 tgt = snap_tgt
                 if isinstance(tgt, dict) and tgt.get("world") is not None:
+                    self._clock_bind_anchor_from_snap_target(tgt)
                     self._clock_anchor_world = np.array(tgt["world"], dtype=float)
                     sx, sy = self._world_to_screen(tgt["world"])
                     self._clock_cx, self._clock_cy = float(sx), float(sy)
                 else:
                     # pas de target : ancrer la position courante en monde
                     wx, wy = self._screen_to_world(self._clock_cx, self._clock_cy)
+                    self._clock_clear_anchor_binding()
                     self._clock_anchor_world = np.array([wx, wy], dtype=float)
 
             self._clock_dragging = False

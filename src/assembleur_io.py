@@ -466,13 +466,16 @@ def saveScenarioXml(viewer, path: str):
         guides_xml = ET.SubElement(root, "guides")
         for g in traits:
             color_hex = str(g["colorHex"]) if ("colorHex" in g) else "#0b3d91"
-            ET.SubElement(guides_xml, "guide", {
+            guide_attrs = {
                 "topoGroupId": str(g["topoGroupId"]),
                 "nodeId": str(g["nodeId"]),
-                "edgeRefId": str(g["edgeRefId"]),
                 "deltaAzDeg": f"{float(g['deltaAzDeg']):.6g}",
                 "colorHex": color_hex,
-            })
+            }
+            edge_ref_id = str(g.get("edgeRefId", "") or "").strip()
+            if edge_ref_id:
+                guide_attrs["edgeRefId"] = edge_ref_id
+            ET.SubElement(guides_xml, "guide", guide_attrs)
 
     # listbox: ids restants
     lb = ET.SubElement(root, "listbox")
@@ -593,8 +596,8 @@ def loadScenarioXml(viewer, path: str):
             scen.clockRefNodeId = node_id
             scen.clockRefEdgeId = edge_id
 
-    # guides (v4 compatibility: defaults to empty list when missing)
-    scen.clockAzimuthTraits = []
+    # guides (v4 compatibility: conversion vers le modèle runtime actuel après restauration du world)
+    raw_guides_specs = []
     guides_el = root.find("guides")
     if guides_el is not None:
         for guide_el in guides_el.findall("guide"):
@@ -604,7 +607,7 @@ def loadScenarioXml(viewer, path: str):
             delta_az_raw = str(guide_el.get("deltaAzDeg", "") or "").strip()
             color_hex = str(guide_el.get("colorHex", "") or "").strip()
 
-            if (not topo_group_id) or (not node_id) or (not edge_ref_id):
+            if (not topo_group_id) or (not node_id):
                 continue
             if not re.fullmatch(r"#[0-9A-Fa-f]{6}", color_hex):
                 continue
@@ -614,7 +617,7 @@ def loadScenarioXml(viewer, path: str):
             except ValueError:
                 continue
 
-            scen.clockAzimuthTraits.append({
+            raw_guides_specs.append({
                 "topoGroupId": topo_group_id,
                 "nodeId": node_id,
                 "edgeRefId": edge_ref_id,
@@ -856,6 +859,33 @@ def loadScenarioXml(viewer, path: str):
     world._topoTxOrientation = topo_tx_orientation
     world._importPhysicalSnapshot(snapshot)
     world.topologyChemins._loadFromXml(root.find("chemins"))
+
+    scen.clockAzimuthTraits = []
+    ref_az = float(getattr(viewer, "_clock_ref_azimuth_deg", 0.0)) % 360.0
+    for guide_spec in raw_guides_specs:
+        topo_group_id = str(guide_spec["topoGroupId"])
+        node_id = str(guide_spec["nodeId"])
+        delta_az = float(guide_spec["deltaAzDeg"]) % 360.0
+        color_hex = str(guide_spec["colorHex"])
+        edge_ref_id = str(guide_spec.get("edgeRefId", "") or "").strip()
+
+        if edge_ref_id:
+            try:
+                node_world = np.array(world.getConceptNodeWorldXY(node_id, topo_group_id), dtype=float)
+                other_node_id = world.getEdgeOtherNodeId(topo_group_id, edge_ref_id, node_id)
+                other_world = np.array(world.getConceptNodeWorldXY(other_node_id, topo_group_id), dtype=float)
+                az_edge_abs = float(viewer._azimuth_world_deg(node_world, other_world))
+                az_trait_abs = (az_edge_abs + delta_az) % 360.0
+                delta_az = (az_trait_abs - ref_az + 360.0) % 360.0
+            except Exception:
+                continue
+
+        scen.clockAzimuthTraits.append({
+            "topoGroupId": topo_group_id,
+            "nodeId": node_id,
+            "deltaAzDeg": float(delta_az) % 360.0,
+            "colorHex": color_hex,
+        })
 
     # On construit une table elem_id_by_rank qui contient la liste des Triangles Txx du core
     elem_id_by_rank = {}

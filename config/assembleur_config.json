@@ -1,9 +1,9 @@
 {
-  "lastTriangleExcel": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_v11.xlsx",
+  "lastTriangleExcel": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_v10.xlsx",
   "uiShowDicoPanel": true,
   "uiShowClockOverlay": true,
   "uiMapOpacity": 55,
-  "uiClockRefAzimuth": 185.27174631754195,
+  "uiClockRefAzimuth": 167.54786231065634,
   "uiShowOnlyGroupContours": false,
   "simLastAlgoId": "quadris_par_paires",
   "simLastN": 32,
@@ -52,7 +52,7 @@
   "uiShowBalisesLayer": true,
   "dicoExclureMotsCodes": false,
   "cheminsBaliseRefName": "Grand Ballon",
-  "uiShowGuidesLayer": false,
+  "uiShowGuidesLayer": true,
   "bgSvgPath": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\maps\\899 - Alsace.jpg",
   "bgWorldRect": {
     "x0": -2530.750191680502,
@@ -60,5 +60,6 @@
     "w": 4298.072711792542,
     "h": 5287.600751371898,
     "aspect": 0.8128587830080367
-  }
+  },
+  "uiClockAutoRefSyncEnabled": true
 }

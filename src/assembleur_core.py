@@ -89,7 +89,8 @@ class ScenarioAssemblage:
         self.status: str = "complete"            # "complete", "pruned", etc.
         self.created_at: _dt.datetime = _dt.datetime.now()
 
-        # --- Compas : référence d'azimut + traits persistants (runtime par scénario) ---
+        # --- Compas : compat XML legacy + guides persistants ---
+        # Runtime: la seule référence active est viewer._clock_ref_azimuth_deg.
         self.clockRefEdgeId: str | None = None
         self.clockRefNodeId: str | None = None
         self.clockRefTopoGroupId: str | None = None

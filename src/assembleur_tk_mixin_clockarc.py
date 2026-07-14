@@ -27,6 +27,7 @@ class TriangleViewerClockArcMixin:
             self._clock_clear_snap_target()
             if prev is not None and self._clock_arc_is_available():
                 self._clock_arc_clear_last()
+            self._clock_apply_auto_ref_sync()
             return
         nodeDsu = str(hit["nodeId"])
         topoGroupId = str(hit["groupId"])
@@ -76,6 +77,7 @@ class TriangleViewerClockArcMixin:
                                 outline="#FF0000", width=3,
                                 fill="", tags="clock_snap_target")
         self.canvas.tag_raise("clock_snap_target")
+        self._clock_apply_auto_ref_sync()
 
     def _clock_arc_auto_from_snap_target(self, snap_tgt: dict, drag: bool,
                                          prevNodeDsu: str | None = None, nextNodeDsu: str | None = None
