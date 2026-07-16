@@ -731,6 +731,8 @@ def loadScenarioXml(viewer, path: str):
 
     # 5) triangles poses (monde)
     viewer._last_drawn.clear()
+    if hasattr(viewer, "_invalidate_last_drawn_topo_index"):
+        viewer._invalidate_last_drawn_topo_index()
     tris_xml = root.find("triangles")
     if tris_xml is not None:
         for t_el in tris_xml.findall("triangle"):
@@ -952,6 +954,8 @@ def loadScenarioXml(viewer, path: str):
         if "group" in _t:
             del _t["group"]
     viewer._next_group_id = (max(viewer.groups.keys()) + 1) if viewer.groups else 1
+    if hasattr(viewer, "_rebuild_last_drawn_topo_index"):
+        viewer._rebuild_last_drawn_topo_index()
 
     # 8) selection et aides reset
     viewer._sel = {"mode": None}

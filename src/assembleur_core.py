@@ -67,11 +67,22 @@ class ScenarioAssemblage:
     directes vers les structures runtime du viewer (pas une copie).
     Pour les scénarios automatiques, on utilisera plutôt des copies.
     """
-    def __init__(self, name: str, source_type: str = "manual", algo_id: Optional[str] = None, tri_ids: Optional[List[int]] = None):
+    def __init__(self, name: str, source_type: str = "manual", algo_id: Optional[str] = None,
+                 tri_ids: Optional[List[int]] = None, first_triangle_id: Optional[int] = None,
+                 traversal_direction: Optional[str] = None):
         self.name: str = name
         self.source_type: str = source_type      # "manual" ou "auto"
         self.algo_id: Optional[str] = algo_id    # id de l'algo (pour les auto)
         self.tri_ids: List[int] = list(tri_ids) if tri_ids is not None else []
+        # Métadonnées de génération : elles appartiennent au scénario auto,
+        # jamais au TopologyWorld. ``tri_ids`` reste l'ordre de référence.
+        self.first_triangle_id: Optional[int] = (
+            int(first_triangle_id) if first_triangle_id is not None else
+            (int(self.tri_ids[0]) if self.tri_ids else None)
+        )
+        self.traversal_direction: Optional[str] = (
+            str(traversal_direction).lower() if traversal_direction else None
+        )
 
         # État géométrique associé au scénario
         self.last_drawn: List[Dict] = []         # même structure que viewer._last_drawn
