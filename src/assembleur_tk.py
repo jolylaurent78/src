@@ -7738,36 +7738,6 @@ class TriangleViewerManual(
             return None
         return np.array([sx/n, sy/n], dtype=float)
 
-    # utilitaires de déconnexion/scission ---
-    def _find_group_link_for_vertex(self, idx: int, vkey: str):
-        """
-        Si (idx,vkey) est un sommet de LIAISON dans son groupe, retourne
-        (gid, pos, link_type) où link_type ∈ {"in","out"}.
-        Sinon retourne (None, None, None).
-        """
-        gid = self._get_group_of_triangle(idx)
-        if not gid:
-            return (None, None, None)
-        nodes = self._group_nodes(gid)
-        pos = None
-        for i, nd in enumerate(nodes):
-            if nd.get("tid") == idx:
-                pos = i
-                break
-        if pos is None:
-            return (None, None, None)
-
-        nd = nodes[pos]
-
-        opp_vkey_from_edge = {"OB": "L", "BL": "O", "LO": "B"}
-        ein = nd.get("edge_in")
-        if ein and opp_vkey_from_edge.get(ein) == vkey and pos > 0:
-            return (gid, pos, "in")   # lien avec le précédent
-        eout = nd.get("edge_out")
-        if eout and opp_vkey_from_edge.get(eout) == vkey and pos < len(nodes)-1:
-            return (gid, pos, "out")  # lien avec le suivant
-        return (None, None, None)
-
     def _apply_group_meta_after_split_(self, gid: int):
         """Recalcule bbox et group_pos de tous les noeuds du groupe."""
         g = self.groups.get(gid)
@@ -7779,49 +7749,6 @@ class TriangleViewerManual(
                 self._last_drawn[tid]["group_id"] = gid
                 self._last_drawn[tid]["group_pos"] = i
         self._recompute_group_bbox(gid)
-
-    def _split_group_at(self, gid: int, split_after_pos: int):
-        """
-        Scinde le groupe 'gid' ENTRE split_after_pos et split_after_pos+1.
-        Retourne (left_gid, right_gid).
-        Simplification : on conserve l'invariant « tout triangle appartient à un groupe ».
-        - Le groupe de gauche réutilise 'gid' (même singleton).
-        - Le groupe de droite reçoit toujours un nouveau gid (même singleton).
-        """
-        g = self.groups.get(gid)
-        if not g:
-            return (None, None)
-        nodes = g["nodes"]
-        if not (0 <= split_after_pos < len(nodes)-1):
-            return (gid, None)  # rien à couper
-
-        left_nodes = [dict(n) for n in nodes[:split_after_pos+1]]
-        right_nodes = [dict(n) for n in nodes[split_after_pos+1:]]
-
-        # Corriger les arêtes aux frontières : tête/queue
-        if left_nodes:
-            left_nodes[0]["edge_in"] = None
-            left_nodes[-1]["edge_out"] = None
-        if right_nodes:
-            right_nodes[0]["edge_in"] = None
-            right_nodes[-1]["edge_out"] = None
-
-        # Appliquer côté gauche : réutilise gid (même singleton)
-        left_gid = None
-        if left_nodes:
-            self.groups[gid] = {"id": gid, "nodes": left_nodes, "bbox": None}
-            self._apply_group_meta_after_split_(gid)
-            left_gid = gid
-
-        # Appliquer côté droit : nouveau gid (même singleton)
-        right_gid = None
-        if right_nodes:
-            new_gid = self._new_group_id()
-            self.groups[new_gid] = {"id": new_gid, "nodes": right_nodes, "bbox": None}
-            self._apply_group_meta_after_split_(new_gid)
-            right_gid = new_gid
-
-        return (left_gid, right_gid)
 
     def _cancel_drag(self):
         # Mémoriser la source du drag avant de le remettre à zéro
@@ -9949,6 +9876,55 @@ class TriangleViewerManual(
         """Compatibilité MIG-GEO-002 pour la préparation d'un MOVE."""
         return self._prepare_mig_geo_operation_members("MOVE", tri_index, legacy_group_id)
 
+    def _resolve_core_vertex_move_members(self, tri_index: int, vkey: str) -> Dict:
+        """Résout le groupe Core du sommet sélectionné, sans lire les groupes UI."""
+        result = {
+            "core_group_id": None,
+            "entries": [],
+            "element_id": None,
+            "node_id": None,
+            "node_canon": None,
+        }
+        if not (0 <= int(tri_index) < len(self._last_drawn)):
+            return result
+
+        vertex_index_by_key = {"O": 0, "B": 1, "L": 2}
+        vertex_index = vertex_index_by_key.get(str(vkey))
+        if vertex_index is None:
+            return result
+
+        scen = self._get_active_scenario()
+        world = getattr(scen, "topoWorld", None) if scen is not None else None
+        element_id = str(self._last_drawn[int(tri_index)].get("topoElementId", "") or "").strip()
+        if world is None or not element_id:
+            return result
+
+        try:
+            node_id = world.format_node_id(element_id, vertex_index)
+            node_canon = world.find_node(node_id)
+            core_group_id = str(world.get_group_of_element(element_id))
+            entries = self.get_last_drawn_entries_for_core_group(core_group_id)
+        except Exception as exc:
+            MIG_GEO_LOGGER.warning(
+                "[MOVE] Résolution Core du sommet impossible Element=%s Vertex=%s Error=%s",
+                element_id, vkey, exc,
+            )
+            return result
+
+        result.update({
+            "core_group_id": core_group_id,
+            "entries": entries,
+            "element_id": element_id,
+            "node_id": str(node_id),
+            "node_canon": str(node_canon),
+        })
+        MIG_GEO_LOGGER.debug(
+            "[MOVE] Sommet sélectionné Element=%s Vertex=%s Node=%s CoreGroupId=%s Members=%s",
+            element_id, vkey, node_canon, core_group_id,
+            ",".join(str(entry.get("topoElementId", "")) for entry in entries),
+        )
+        return result
+
     def _snapshot_mig_geo_entries(self, entries: List[Dict]) -> Dict[int, Dict]:
         """Capture les poses des entrées effectivement concernées par l'opération."""
         snapshots: Dict[int, Dict] = {}
@@ -10080,54 +10056,8 @@ class TriangleViewerManual(
             wy = (self.offset[1] - event.y) / self.zoom
             # NOTE: si on est en déconnexion, on désactivera toute aide au collage
 
-            # ----- DEBUG étape 3 : clic sur sommet -----
-            gid0 = self._get_group_of_triangle(idx)
-
-            # si ce sommet est un LIEN -> on DECONNECTE et on démarre un move_group par sommet ---
-            gid_link, pos, link_type = self._find_group_link_for_vertex(idx, vkey)
-            if gid_link and self._ctrl_down:
-                # Déterminer où couper :
-                # - si click sur vkey_in (lien vers le précédent), on coupe AVANT 'pos' -> le morceau MOBILE = suffixe [pos..]
-                # - si click sur vkey_out (lien vers le suivant), on coupe APRÈS  'pos' -> le morceau MOBILE = préfixe [..pos]
-                if link_type == "in":
-                    cut_after = pos - 1
-                    if cut_after < 0:  # sécurité (ne devrait pas arriver car vkey_in implies pos>0)
-                        cut_after = 0
-                else:  # "out"
-                    cut_after = pos
-
-                left_gid, right_gid = self._split_group_at(gid_link, cut_after)
-
-                # Quel groupe contient le triangle cliqué après split ?
-                mobile_gid = None
-                # si pos <= cut_after : le tri cliqué est dans la PARTIE GAUCHE
-                if pos <= cut_after and left_gid:
-                    mobile_gid = left_gid
-                # sinon dans la partie droite
-                elif pos > cut_after and right_gid:
-                    mobile_gid = right_gid
-
-                # Invariant "100% groupes" : même singleton => on force le move_group (assist OFF)
-                if mobile_gid is None:
-                    mobile_gid = gid_link
-                # --- Démarre un déplacement de GROUPE par le SOMMET cliqué ---
-                move_members = self._prepare_mig_geo_move_members(idx, mobile_gid)
-                orig_group_pts = self._snapshot_mig_geo_entries(move_members["entries"])
-                anchor_world = np.array(P[vkey], dtype=float)
-                self._sel = {
-                    "mode": "move_group",
-                    "gid": mobile_gid,
-                    "core_group_id": move_members["core_group_id"],
-                    "move_member_entries": move_members["entries"],
-                    "orig_group_pts": orig_group_pts,
-                    "anchor": {"type": "vertex", "tid": idx, "vkey": vkey},
-                    "grab_offset": np.array([wx, wy]) - anchor_world,
-                    "suppress_assist": True,
-                }
-                self.status.config(text=f"Lien cassé. Déplacement du groupe #{mobile_gid} par sommet {vkey}.")
-                self._clear_nearest_line()
-                self._clear_edge_highlights()
-                self._redraw_from(self._last_drawn)
+            vertex_move_members = self._resolve_core_vertex_move_members(idx, vkey)
+            if not vertex_move_members["entries"]:
                 return
 
             # --- NOUVEAU (CTRL sans lien) : si CTRL est enfoncé mais que le sommet cliqué n'est PAS un lien,
@@ -10135,8 +10065,8 @@ class TriangleViewerManual(
             if self._ctrl_down:
                 gid0 = self._get_group_of_triangle(idx)
                 if gid0:
-                    # Snapshot des membres Core effectivement déplacés.
-                    move_members = self._prepare_mig_geo_move_members(idx, gid0)
+                    # Les membres proviennent du groupe résolu par le sommet Core.
+                    move_members = vertex_move_members
                     orig_group_pts = self._snapshot_mig_geo_entries(move_members["entries"])
 
                     anchor_world = np.array(P[vkey], dtype=float)
@@ -10152,7 +10082,7 @@ class TriangleViewerManual(
                     }
                     # nettoyer toute aide existante
                     self._reset_assist()
-                    self.status.config(text=f"CTRL sans lien : déplacement du groupe #{gid0} par sommet {vkey}.")
+                    self.status.config(text=f"Déplacement du groupe Core {move_members['core_group_id']} par sommet {vkey}.")
 
                     self._redraw_from(self._last_drawn)
                     return
@@ -10161,8 +10091,8 @@ class TriangleViewerManual(
             #               on déplace le **groupe entier** ancré sur ce sommet.
             gid0 = self._get_group_of_triangle(idx)
             if gid0 and not self._ctrl_down:
-                # Snapshot des membres Core effectivement déplacés.
-                move_members = self._prepare_mig_geo_move_members(idx, gid0)
+                # Les membres proviennent du groupe résolu par le sommet Core.
+                move_members = vertex_move_members
                 orig_group_pts = self._snapshot_mig_geo_entries(move_members["entries"])
 
                 anchor_world = np.array(P[vkey], dtype=float)
@@ -10177,7 +10107,7 @@ class TriangleViewerManual(
                     # on veut l'aide de collage active
                     "suppress_assist": False,
                 }
-                self.status.config(text=f"Déplacement du groupe #{gid0} par sommet {vkey}.")
+                self.status.config(text=f"Déplacement du groupe Core {move_members['core_group_id']} par sommet {vkey}.")
                 # Aide immédiate : viser un sommet d'un AUTRE triangle (exclure le groupe lui-même)
                 v_world = np.array(P[vkey], dtype=float)
                 tgt = self._find_nearest_vertex(v_world, exclude_idx=idx, exclude_gid=gid0)

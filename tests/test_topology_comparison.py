@@ -12,6 +12,30 @@ from src.assembleur_topology_comparison import (
 from src.assembleur_tk import TriangleViewerManual
 
 
+class _CoreGroup:
+    def __init__(self, element_ids):
+        self.element_ids = list(element_ids)
+
+
+class _VertexWorld:
+    def __init__(self):
+        self.attachments = {"A001": object()}
+        self.groups = {"G001": _CoreGroup(["T01", "T02"])}
+
+    def format_node_id(self, element_id, vertex_index):
+        return f"{element_id}:N{vertex_index}"
+
+    def find_node(self, node_id):
+        return f"CN:{node_id}"
+
+    def get_group_of_element(self, element_id):
+        assert element_id in {"T01", "T02"}
+        return "G001"
+
+    def find_group(self, group_id):
+        return str(group_id)
+
+
 def _attachment(kind, a_type, a_element, a_index, b_type, b_element, b_index, params=None):
     return TopologyAttachment(
         None,
@@ -197,3 +221,30 @@ def test_prefix_filter_keeps_only_candidates_with_same_ordered_core_path():
     viewer._filter_auto_scenarios_by_prefix_edges(2)
 
     assert viewer.scenarios == [active, same_path, manual]
+
+
+def test_vertex_move_resolution_uses_dsu_node_and_existing_core_group_without_mutation():
+    world = _VertexWorld()
+    scenario = ScenarioAssemblage("manual", source_type="manual")
+    scenario.topoWorld = world
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer._last_drawn = [
+        {"id": 1, "topoElementId": "T01", "pts": {}},
+        {"id": 2, "topoElementId": "T02", "pts": {}},
+    ]
+    viewer._last_drawn_topo_index = {}
+    viewer._last_drawn_topo_index_source = None
+    viewer._last_drawn_topo_index_length = -1
+    viewer._get_active_scenario = lambda: scenario
+    attachments_before = dict(world.attachments)
+    groups_before = dict(world.groups)
+
+    resolved = viewer._resolve_core_vertex_move_members(0, "B")
+
+    assert resolved["element_id"] == "T01"
+    assert resolved["node_id"] == "T01:N1"
+    assert resolved["node_canon"] == "CN:T01:N1"
+    assert resolved["core_group_id"] == "G001"
+    assert [entry["topoElementId"] for entry in resolved["entries"]] == ["T01", "T02"]
+    assert world.attachments == attachments_before
+    assert world.groups == groups_before
