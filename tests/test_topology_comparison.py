@@ -6,6 +6,7 @@ from src.assembleur_core import (
 )
 from src.assembleur_topology_comparison import (
     build_attachment_signature,
+    build_topology_prefix_steps,
     differing_attachment_element_ids,
 )
 from src.assembleur_tk import TriangleViewerManual
@@ -56,3 +57,69 @@ def test_same_scenario_has_no_core_comparison_difference():
     viewer._update_current_scenario_differences()
 
     assert viewer._comparison_diff_indices == set()
+
+
+def test_prefix_step_edge_edge_is_oriented_by_the_traversal_order():
+    world = ScenarioAssemblage("step").topoWorld
+    world.attachments = {
+        "A001": _attachment(
+            "edge-edge", TopologyFeatureType.EDGE, "T02", 1,
+            TopologyFeatureType.EDGE, "T01", 2, {"mapping": "reverse"},
+        ),
+    }
+
+    steps = build_topology_prefix_steps(world, ["T01", "T02"], 1)
+
+    assert steps == [(
+        ("edge-edge", ("edge", "T01", 2), ("edge", "T02", 1), (("mapping", "reverse"),)),
+    )]
+
+
+def test_prefix_step_collects_all_attachments_between_two_triangles_independently_of_storage_order():
+    world = ScenarioAssemblage("step").topoWorld
+    vertex_vertex = _attachment(
+        "vertex-vertex", TopologyFeatureType.VERTEX, "T03", 0,
+        TopologyFeatureType.VERTEX, "T04", 1,
+    )
+    vertex_edge = _attachment(
+        "vertex-edge", TopologyFeatureType.EDGE, "T04", 2,
+        TopologyFeatureType.VERTEX, "T03", 2,
+        {"t": 0.5, "edgeFrom": "T04:N2"},
+    )
+    irrelevant = _attachment(
+        "edge-edge", TopologyFeatureType.EDGE, "T03", 1,
+        TopologyFeatureType.EDGE, "T05", 1, {"mapping": "direct"},
+    )
+    world.attachments = {"A003": vertex_edge, "A001": irrelevant, "A002": vertex_vertex}
+
+    first = build_topology_prefix_steps(world, ["T03", "T04"], 1)
+    world.attachments = {"A002": vertex_vertex, "A003": vertex_edge, "A001": irrelevant}
+    second = build_topology_prefix_steps(world, ["T03", "T04"], 1)
+
+    assert first == second
+    assert len(first[0]) == 2
+    assert {signature[0] for signature in first[0]} == {"vertex-vertex", "vertex-edge"}
+
+
+def test_prefix_steps_have_no_link_for_zero_or_one_triangle_and_none_when_missing():
+    world = ScenarioAssemblage("step").topoWorld
+
+    assert build_topology_prefix_steps(world, [], 0) == []
+    assert build_topology_prefix_steps(world, ["T01"], 0) == []
+    assert build_topology_prefix_steps(world, ["T01", "T02"], 1) is None
+
+
+def test_viewer_core_prefix_steps_uses_tri_ids_and_attachments_without_groups():
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    scenario = ScenarioAssemblage("auto", source_type="auto", tri_ids=[1, 2])
+    scenario.groups = None
+    scenario.topoWorld.attachments = {
+        "A001": _attachment(
+            "edge-edge", TopologyFeatureType.EDGE, "T01", 0,
+            TopologyFeatureType.EDGE, "T02", 1, {"mapping": "direct"},
+        ),
+    }
+
+    assert viewer._scenario_prefix_edge_steps(scenario, 1) == [(
+        ("edge-edge", ("edge", "T01", 0), ("edge", "T02", 1), (("mapping", "direct"),)),
+    )]

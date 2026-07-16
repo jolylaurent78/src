@@ -59,6 +59,7 @@ from src.assembleur_balises import BalisesManager
 from src.utils.logging_utils import get_app_logger, get_mig_geo_logger
 from src.assembleur_topology_comparison import (
     build_world_attachment_connections,
+    build_topology_prefix_steps,
     differing_attachment_element_ids,
 )
 
@@ -9914,7 +9915,7 @@ class TriangleViewerManual(
 
         self._filter_auto_scenarios_by_prefix_edges(clicked_tid)
 
-    def _scenario_prefix_edge_steps(self, scen, upto_index: int):
+    def _scenario_prefix_edge_steps_legacy(self, scen, upto_index: int):
         """
         Retourne la liste des (edge_out, edge_in) pour les liaisons entre
         triangles consécutifs, de 0->1->...->upto_index.
@@ -9955,6 +9956,28 @@ class TriangleViewerManual(
             steps.append((eout, ein))
         return steps
 
+    def _scenario_prefix_edge_steps(self, scen, upto_index: int):
+        """Etapes Core du prefixe, depuis ``tri_ids`` et les attachments.
+
+        Chaque etape contient toutes les contraintes canoniques reliant deux
+        triangles consecutifs. Aucun champ ``groups/nodes`` ou ``edge_in/out``
+        n'est consulte dans ce chemin fonctionnel.
+        """
+        if scen is None:
+            return None
+        world = getattr(scen, "topoWorld", None)
+        tri_ids = list(getattr(scen, "tri_ids", None) or [])
+        if world is None:
+            return None
+
+        element_ids = []
+        for tri_id in tri_ids:
+            try:
+                element_ids.append(TopologyWorld.format_element_id(int(tri_id)))
+            except (TypeError, ValueError):
+                return None
+        return build_topology_prefix_steps(world, element_ids, upto_index)
+
     def _filter_auto_scenarios_by_prefix_edges(self, clicked_tid: int):
         """
         Filtre les scénarios automatiques en conservant uniquement ceux
@@ -9979,11 +10002,23 @@ class TriangleViewerManual(
         prefix = tri_ids[: idx + 1]
 
         ref_steps = self._scenario_prefix_edge_steps(active, idx)
+        legacy_ref_steps = None
+        legacy_oracle_available = True
+        try:
+            legacy_ref_steps = self._scenario_prefix_edge_steps_legacy(active, idx)
+        except Exception as exc:
+            legacy_oracle_available = False
+            MIG_GEO_LOGGER.warning(
+                "[MIG-GEO-006] Oracle legacy indisponible Ref=%s Prefix=%s Error=%s",
+                getattr(active, "name", "(sans nom)"), prefix, exc,
+            )
         if ref_steps is None:
             raise RuntimeError("[FILTER] Données d'arêtes manquantes dans le scénario actif (groups/nodes)")
 
         kept = []
         removed = 0
+        comparisons_ok = 0
+        comparisons_ko = 0
 
         for scen in self.scenarios:
             # Le scénario actif est TOUJOURS conservé
@@ -10002,7 +10037,33 @@ class TriangleViewerManual(
 
             # 2) mêmes arêtes utilisées pour chaîner le préfixe
             steps = self._scenario_prefix_edge_steps(scen, idx)
-            if steps != ref_steps:
+            core_keep = steps == ref_steps
+            legacy_steps = None
+            legacy_keep = None
+            if legacy_oracle_available:
+                try:
+                    legacy_steps = self._scenario_prefix_edge_steps_legacy(scen, idx)
+                    legacy_keep = legacy_steps == legacy_ref_steps
+                except Exception as exc:
+                    legacy_oracle_available = False
+                    MIG_GEO_LOGGER.warning(
+                        "[MIG-GEO-006] Oracle legacy indisponible Ref=%s Candidate=%s Prefix=%s Error=%s",
+                        getattr(active, "name", "(sans nom)"),
+                        getattr(scen, "name", "(sans nom)"), prefix, exc,
+                    )
+            if legacy_keep is not None:
+                if legacy_keep == core_keep:
+                    comparisons_ok += 1
+                else:
+                    comparisons_ko += 1
+                    MIG_GEO_LOGGER.warning(
+                        "[MIG-GEO-006] Prefix filter divergence Ref=%s Candidate=%s Prefix=%s "
+                        "LegacySteps=%r CoreSteps=%r LegacyDecision=%s CoreDecision=%s",
+                        getattr(active, "name", "(sans nom)"),
+                        getattr(scen, "name", "(sans nom)"), prefix,
+                        legacy_steps, steps, legacy_keep, core_keep,
+                    )
+            if not core_keep:
                 removed += 1
                 continue
 
@@ -10016,6 +10077,16 @@ class TriangleViewerManual(
 
         self._refresh_scenario_listbox()
         self._set_active_scenario(self.active_scenario_index)
+        if comparisons_ko:
+            MIG_GEO_LOGGER.warning(
+                "[MIG-GEO-006] Prefix filter legacy/core: KO Ref=%s OK=%s KO=%s",
+                getattr(active, "name", "(sans nom)"), comparisons_ok, comparisons_ko,
+            )
+        elif legacy_oracle_available:
+            MIG_GEO_LOGGER.info(
+                "[MIG-GEO-006] Prefix filter legacy/core: OK Ref=%s Compared=%s",
+                getattr(active, "name", "(sans nom)"), comparisons_ok,
+            )
 
     def _ctx_flip_selected(self):
         """
