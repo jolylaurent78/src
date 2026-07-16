@@ -1,5 +1,9 @@
 from src.assembleur_core import ScenarioAssemblage, TopologyElement, TopologyNodeType
-from src.assembleur_tk import TriangleViewerManual
+from src.assembleur_tk import (
+    TriangleViewerManual,
+    build_last_drawn_index,
+    get_projected_elements,
+)
 
 
 class _StatusStub:
@@ -59,6 +63,50 @@ def test_core_to_last_drawn_helpers_use_active_index_and_core_group():
     assert viewer.get_last_drawn_entries_by_topo_ids(["unknown", "T01"]) == [entry]
     assert viewer.get_last_drawn_entries_for_core_group(core_group_id) == [entry]
     assert viewer.debug_validate_core_ui_group_linking() == []
+
+
+def test_projected_elements_are_resolved_from_core_members_and_index():
+    viewer, core_group_id = _make_viewer_with_one_core_group()
+    group = viewer.scenarios[0].topoWorld.groups[core_group_id]
+
+    index = build_last_drawn_index(viewer._last_drawn)
+
+    assert get_projected_elements(group, index) == (viewer._last_drawn[0],)
+
+
+def test_passive_group_geometry_uses_core_members_not_legacy_nodes():
+    viewer, core_group_id = _make_viewer_with_one_core_group()
+    world = viewer.scenarios[0].topoWorld
+    other_group_id = world.add_element_as_new_group(TopologyElement(
+        element_id="T02",
+        name="Triangle 02",
+        vertex_labels=["O", "B", "L"],
+        vertex_types=[TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE],
+        edge_lengths_km=[3.0, 5.0, 4.0],
+    ))
+    canonical_group_id = world.union_groups(core_group_id, other_group_id)
+    viewer._last_drawn.append({
+        "id": 2,
+        "labels": ("O", "B", "L"),
+        "pts": {"O": (10.0, 0.0), "B": (13.0, 0.0), "L": (10.0, 4.0)},
+        "topoElementId": "T02",
+        "topoGroupId": canonical_group_id,
+        "group_id": 10,
+    })
+    viewer._last_drawn[0]["topoGroupId"] = canonical_group_id
+    viewer.groups[10]["topoGroupId"] = canonical_group_id
+    # La chaine historique reste volontairement incomplete : elle ne contient
+    # que T01. Les lecteurs passifs doivent tout de meme voir T01 + T02.
+    viewer._invalidate_last_drawn_topo_index()
+
+    assert viewer._recompute_group_bbox(10) == (0.0, 0.0, 13.0, 4.0)
+    assert tuple(viewer._group_centroid(10)) == (6.0, 4.0 / 3.0)
+    assert len(viewer._group_outline_segments(10)) == 6
+
+    # T02 porte volontairement un autre group_id UI : l'exclusion doit
+    # neanmoins suivre son groupe Core commun avec T01.
+    viewer._last_drawn[1]["group_id"] = 999
+    assert viewer._find_nearest_vertex((10.0, 0.0), exclude_idx=0, exclude_gid=10) is None
 
 
 def test_topo_index_can_be_invalidated_after_in_place_relink():

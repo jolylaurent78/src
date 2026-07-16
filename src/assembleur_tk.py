@@ -8,7 +8,7 @@ import re
 import copy
 import traceback
 import threading
-from typing import Optional, List, Dict, Tuple
+from typing import Mapping, Optional, List, Dict, Tuple
 
 from tkinter import filedialog, messagebox, simpledialog, colorchooser
 import tkinter as tk
@@ -22,7 +22,6 @@ from shapely.ops import unary_union as _sh_union
 
 # === Modules externalisés (découpage maintenable) ===
 from src.assembleur_core import (
-    _group_shape_from_nodes,
     _build_local_triangle,
     ScenarioAssemblage,
     TopologyWorld, TopologyElement, TopologyNodeType, TopologyCheminTriplet
@@ -66,6 +65,43 @@ from src.assembleur_topology_comparison import (
 EPS_WORLD = 1e-6
 APP_LOGGER = get_app_logger()
 MIG_GEO_LOGGER = get_mig_geo_logger()
+
+
+def build_last_drawn_index(last_drawn) -> Dict[str, Tuple[int, Dict]]:
+    """Construit le cache ``topoElementId -> (tid, entree projetee)``.
+
+    L'index ne porte aucune verite metier : il accelere uniquement la
+    resolution d'un element du Core vers sa projection graphique actuelle.
+    En cas de doublon, la premiere entree conserve le comportement historique
+    de navigation ; le validateur MIG-GEO-001 signale cette incoherence.
+    """
+    index: Dict[str, Tuple[int, Dict]] = {}
+    for tid, entry in enumerate(last_drawn or []):
+        element_id = str(entry.get("topoElementId", "") or "").strip()
+        if element_id:
+            index.setdefault(element_id, (int(tid), entry))
+    return index
+
+
+def get_projected_elements(topology_group, last_drawn_index: Mapping[str, object]) -> Tuple[Dict, ...]:
+    """Resout les ``element_ids`` d'un ``TopologyGroup`` vers ``_last_drawn``.
+
+    Les membres sont toujours lus sur le groupe Core. ``last_drawn_index``
+    accepte le format interne ``element_id -> (tid, entree)`` et, pour les
+    appels autonomes/tests, ``element_id -> entree``. Les elements non
+    projetes sont omis sans mutation de l'etat.
+    """
+    if topology_group is None:
+        return ()
+    entries: List[Dict] = []
+    for element_id in list(getattr(topology_group, "element_ids", []) or []):
+        indexed = last_drawn_index.get(str(element_id or "").strip())
+        if indexed is None:
+            continue
+        entry = indexed[1] if isinstance(indexed, tuple) and len(indexed) >= 2 else indexed
+        if isinstance(entry, dict):
+            entries.append(entry)
+    return tuple(entries)
 
 
 def createDecryptor(decryptorId: str) -> DecryptorBase:
@@ -705,13 +741,7 @@ class TriangleViewerManual(
         En cas de doublon, la première entrée reste la cible de navigation ;
         le validateur DEBUG signale l'écart sans modifier les données.
         """
-        index: Dict[str, Tuple[int, Dict]] = {}
-        for tid, entry in enumerate(self._last_drawn or []):
-            element_id = str(entry.get("topoElementId", "") or "").strip()
-            if not element_id:
-                continue
-            index.setdefault(element_id, (int(tid), entry))
-        self._last_drawn_topo_index = index
+        self._last_drawn_topo_index = build_last_drawn_index(self._last_drawn)
         self._last_drawn_topo_index_source = self._last_drawn
         self._last_drawn_topo_index_length = len(self._last_drawn or [])
 
@@ -742,6 +772,60 @@ class TriangleViewerManual(
             if item is not None:
                 entries.append(item[1])
         return entries
+
+    def _get_active_topology_group_for_ui_gid(self, ui_gid: int):
+        """Resout une cle de projection UI vers son groupe Core canonique.
+
+        Le ``ui_gid`` ne sert ici qu'a retrouver le lien de projection
+        ``topoGroupId``. Les membres ne sont jamais lus dans ``nodes``.
+        """
+        scen = self._get_active_scenario()
+        world = getattr(scen, "topoWorld", None) if scen is not None else None
+        ui_group = self.groups.get(ui_gid) or {}
+        core_gid = str(ui_group.get("topoGroupId", "") or "").strip()
+        if world is None or not core_gid:
+            return None
+        try:
+            return world.groups.get(world.find_group(core_gid))
+        except Exception as exc:
+            MIG_GEO_LOGGER.debug("[MIG-GEO-010] groupe Core illisible pour UI=%s: %s", ui_gid, exc)
+            return None
+
+    def _get_active_topology_group_for_entry(self, entry: Dict):
+        """Resout le groupe Core canonique d'une entree projetee."""
+        scen = self._get_active_scenario()
+        world = getattr(scen, "topoWorld", None) if scen is not None else None
+        element_id = str((entry or {}).get("topoElementId", "") or "").strip()
+        if world is None or not element_id:
+            return None
+        try:
+            core_gid = world.get_group_of_element(element_id)
+            return world.groups.get(world.find_group(str(core_gid))) if core_gid else None
+        except Exception as exc:
+            MIG_GEO_LOGGER.debug("[MIG-GEO-010] groupe Core illisible pour element=%s: %s", element_id, exc)
+            return None
+
+    def _get_projected_elements_for_core_group(self, topology_group) -> Tuple[Dict, ...]:
+        """Retourne la projection active des membres du groupe Core fourni."""
+        self._ensure_last_drawn_topo_index()
+        return get_projected_elements(topology_group, self._last_drawn_topo_index)
+
+    def _get_projected_elements_for_ui_group(self, ui_gid: int) -> Tuple[Dict, ...]:
+        """Pont de compatibilite UI vers les membres projetes du groupe Core."""
+        return self._get_projected_elements_for_core_group(
+            self._get_active_topology_group_for_ui_gid(ui_gid)
+        )
+
+    def _get_projected_element_tids(self, projected_elements) -> List[int]:
+        """Retourne les tids des entrees projetees sans parcourir ``nodes``."""
+        self._ensure_last_drawn_topo_index()
+        tids: List[int] = []
+        for entry in projected_elements or []:
+            element_id = str(entry.get("topoElementId", "") or "").strip()
+            indexed = self._last_drawn_topo_index.get(element_id)
+            if indexed is not None:
+                tids.append(int(indexed[0]))
+        return tids
 
     def get_last_drawn_entries_for_core_group(self, core_group_id: str) -> List[Dict]:
         """Navigue ``groupe Core -> element_ids -> entrées UI``.
@@ -6444,10 +6528,7 @@ class TriangleViewerManual(
         if not self.groups:
             return
 
-        for gid, g in self.groups.items():
-            nodes = g.get("nodes") or []
-            if not nodes:
-                continue
+        for gid, _g in self.groups.items():
             outline = self._group_outline_segments_topo(gid)
             for p1, p2 in outline:
                 x1, y1 = self._world_to_screen(p1)
@@ -7075,12 +7156,19 @@ class TriangleViewerManual(
     def _find_nearest_vertex(self, v_world, exclude_idx=None, exclude_gid=None):
         """Retourne (idx_triangle, key('O'|'B'|'L'), pos_world) du sommet d'un AUTRE triangle le plus proche.
         On peut exclure un triangle précis (exclude_idx) et/ou tout un groupe (exclude_gid)."""
+        excluded_core_group = self._get_active_topology_group_for_ui_gid(exclude_gid) if exclude_gid is not None else None
+        excluded_core_group_id = str(getattr(excluded_core_group, "group_id", "") or "")
         best = None
         best_d2 = None
         for j, t in enumerate(self._last_drawn):
             if j == exclude_idx:
                 continue
-            if exclude_gid is not None and t.get("group_id", None) == exclude_gid:
+            candidate_core_group = self._get_active_topology_group_for_entry(t)
+            if (
+                excluded_core_group_id
+                and candidate_core_group is not None
+                and str(getattr(candidate_core_group, "group_id", "")) == excluded_core_group_id
+            ):
                 continue
             P = t["pts"]
             for k in ("O", "B", "L"):
@@ -7132,22 +7220,22 @@ class TriangleViewerManual(
     # ---------- utilitaires contour de groupe ----------
     def _group_outline_segments_topo(self, gid: int) -> list[tuple[np.ndarray, np.ndarray]]:
         """Retourne le contour du groupe gid depuis la topologie (segments monde)."""
-        g = self.groups.get(gid) or {}
-        core_gid = g.get("topoGroupId", None)
-        if not core_gid:
+        group = self._get_active_topology_group_for_ui_gid(gid)
+        if group is None:
             raise ValueError(f"TopoGroupId manquant pour le groupe {gid}")
 
         scen = self._get_active_scenario()
         topoWorld = scen.topoWorld
 
-        segments = topoWorld.getBoundarySegments(str(core_gid))
+        segments = topoWorld.getBoundarySegments(str(group.group_id))
         if not segments:
             return []
 
-        element_map = {}
-        for t in (self._last_drawn or []):
-            if "topoElementId" in t:
-                element_map[str(t["topoElementId"])] = t
+        element_map = {
+            str(entry.get("topoElementId")): entry
+            for entry in self._get_projected_elements_for_core_group(group)
+            if entry.get("topoElementId")
+        }
 
         outline = []
         for bs in segments:
@@ -7191,19 +7279,17 @@ class TriangleViewerManual(
         **contour extérieur** de l’union des triangles du groupe `gid`.
         (On retire donc toutes les arêtes internes.)
         """
-        g = self.groups.get(gid) or {}
-        nodes = g.get("nodes", [])
-        if not nodes:
+        projected_elements = self._get_projected_elements_for_ui_group(gid)
+        if not projected_elements:
             return []
 
         # 1) collecter triangles (monde) + tous les sommets
         tris = []
         vertices = []
-        for nd in nodes:
-            tid = nd.get("tid")
-            if tid is None or not (0 <= tid < len(self._last_drawn)):
+        for element in projected_elements:
+            P = element.get("pts")
+            if not isinstance(P, dict):
                 continue
-            P = self._last_drawn[tid]["pts"]
             tris.append(_ShPoly([tuple(P["O"]), tuple(P["B"]), tuple(P["L"])]))
             vertices.extend([np.array(P["O"], float), np.array(P["B"], float), np.array(P["L"], float)])
 
@@ -7390,7 +7476,14 @@ class TriangleViewerManual(
         # 4) sélection globale : minimiser l’écart d’azimut + anti-chevauchement
         best = None  # (score, m_edge, t_edge)
         # Unions géométriques brutes des groupes (avant pose)
-        S_m_base = _group_shape_from_nodes(self._group_nodes(gid_m), self._last_drawn)
+        mob_projected_elements = self._get_projected_elements_for_ui_group(gid_m)
+        tgt_projected_elements = self._get_projected_elements_for_ui_group(gid_t)
+        S_m_base = _sh_union([
+            _ShPoly([tuple(P["O"]), tuple(P["B"]), tuple(P["L"])])
+            for entry in mob_projected_elements
+            for P in [entry.get("pts")]
+            if isinstance(P, dict)
+        ])
         # Helper de pose rigide (vm->vt, alignement (vm→mB) // (vt→tB))
 
         def _place_union_on_pair(S_base, vm_pt, mB_pt, vt_pt, tB_pt):
@@ -7420,8 +7513,8 @@ class TriangleViewerManual(
             if srcGroup is None or dstGroup is None:
                 return False
 
-            mob_tids = [nd.get("tid") for nd in (self._group_nodes(gid_m) or []) if nd.get("tid") is not None]
-            tgt_tids = [nd.get("tid") for nd in (self._group_nodes(gid_t) or []) if nd.get("tid") is not None]
+            mob_tids = self._get_projected_element_tids(mob_projected_elements)
+            tgt_tids = self._get_projected_element_tids(tgt_projected_elements)
 
             # 1) fabriquer un "best" local, compatible buildEdgeChoiceEptsFromBest
             best_local = (score, me, te)
@@ -7482,8 +7575,8 @@ class TriangleViewerManual(
         # Contrainte: d'autres appels attendent que choice[4] soit déballable en (m_a,m_b,t_a,t_b).
         self._edge_choice = None
         if best:
-            mob_tids = [nd.get("tid") for nd in (self._group_nodes(gid_m) or []) if nd.get("tid") is not None]
-            tgt_tids = [nd.get("tid") for nd in (self._group_nodes(gid_t) or []) if nd.get("tid") is not None]
+            mob_tids = self._get_projected_element_tids(mob_projected_elements)
+            tgt_tids = self._get_projected_element_tids(tgt_projected_elements)
             res = buildEdgeChoiceEptsFromBest(
                 best,
                 world=world,
@@ -7698,12 +7791,14 @@ class TriangleViewerManual(
 
     def _recompute_group_bbox(self, gid: int):
         g = self.groups.get(gid)
-        if not g or not g["nodes"]:
+        projected_elements = self._get_projected_elements_for_ui_group(gid)
+        if not g or not projected_elements:
             return None
         xs, ys = [], []
-        for node in g["nodes"]:
-            tid = node["tid"]
-            P = self._last_drawn[tid]["pts"]
+        for element in projected_elements:
+            P = element.get("pts")
+            if not isinstance(P, dict):
+                continue
             for k in ("O", "B", "L"):
                 xs.append(float(P[k][0]))
                 ys.append(float(P[k][1]))
@@ -7714,16 +7809,15 @@ class TriangleViewerManual(
 
     def _group_centroid(self, gid: int) -> Optional[np.ndarray]:
         """Barycentre de tous les sommets (O,B,L) du groupe gid."""
-        g = self.groups.get(gid)
-        if not g or not g.get("nodes"):
+        projected_elements = self._get_projected_elements_for_ui_group(gid)
+        if not projected_elements:
             return None
         sx = sy = 0.0
         n = 0
-        for node in g["nodes"]:
-            tid = node["tid"]
-            if not (0 <= tid < len(self._last_drawn)):
+        for element in projected_elements:
+            P = element.get("pts")
+            if not isinstance(P, dict):
                 continue
-            P = self._last_drawn[tid]["pts"]
             for k in ("O", "B", "L"):
                 sx += float(P[k][0])
                 sy += float(P[k][1])
@@ -8187,20 +8281,16 @@ class TriangleViewerManual(
         self._applyDegrouperResultToTk(res)
 
     def _degrouperGroupScreenBBox(self, ui_gid: int) -> Optional[Tuple[float, float, float, float]]:
-        g = self.groups.get(ui_gid)
-        if not g or not g.get("nodes"):
+        projected_elements = self._get_projected_elements_for_ui_group(ui_gid)
+        if not projected_elements:
             return None
 
         xs: list[float] = []
         ys: list[float] = []
-        for nd in list(g.get("nodes", []) or []):
-            tid = nd.get("tid", None)
-            if tid is None:
+        for element in projected_elements:
+            P = element.get("pts")
+            if not isinstance(P, dict):
                 continue
-            tid_i = int(tid)
-            if not (0 <= tid_i < len(self._last_drawn)):
-                continue
-            P = self._last_drawn[tid_i]["pts"]
             for k in ("O", "B", "L"):
                 sx, sy = self._world_to_screen(P[k])
                 xs.append(float(sx))

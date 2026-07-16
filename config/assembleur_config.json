@@ -4,7 +4,7 @@
   "uiShowClockOverlay": false,
   "uiMapOpacity": 55,
   "uiClockRefAzimuth": 167.54786231065634,
-  "uiShowOnlyGroupContours": false,
+  "uiShowOnlyGroupContours": true,
   "simLastAlgoId": "quadris_par_paires",
   "simLastN": 32,
   "simLastOrder": "reverse",
