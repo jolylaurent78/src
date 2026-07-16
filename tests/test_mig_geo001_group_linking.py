@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from src.assembleur_core import ScenarioAssemblage, TopologyElement, TopologyNodeType
 from src.assembleur_tk import (
     TriangleViewerManual,
@@ -28,6 +30,7 @@ def _make_viewer_with_one_core_group():
     viewer.active_scenario_index = 0
 
     scenario = ScenarioAssemblage(name="test")
+    scenario.last_drawn = viewer._last_drawn
     element = TopologyElement(
         element_id="T01",
         name="Triangle 01",
@@ -74,6 +77,23 @@ def test_projected_elements_are_resolved_from_core_members_and_index():
     assert get_projected_elements(group, index) == (viewer._last_drawn[0],)
 
 
+def test_pose_sync_uses_core_members_without_ui_groups():
+    viewer, core_group_id = _make_viewer_with_one_core_group()
+    world = viewer.scenarios[0].topoWorld
+    viewer.groups = {}
+    calls = []
+    original_set_pose = world.setElementPose
+
+    def _record_pose(element_id, **kwargs):
+        calls.append((element_id, kwargs["mirrored"]))
+        return original_set_pose(element_id, **kwargs)
+
+    world.setElementPose = _record_pose
+    viewer._sync_group_elements_pose_to_core(core_group_id)
+
+    assert calls == [("T01", False)]
+
+
 def test_passive_group_geometry_uses_core_members_not_legacy_nodes():
     viewer, core_group_id = _make_viewer_with_one_core_group()
     world = viewer.scenarios[0].topoWorld
@@ -107,6 +127,52 @@ def test_passive_group_geometry_uses_core_members_not_legacy_nodes():
     # neanmoins suivre son groupe Core commun avec T01.
     viewer._last_drawn[1]["group_id"] = 999
     assert viewer._find_nearest_vertex((10.0, 0.0), exclude_idx=0, exclude_gid=10) is None
+
+
+def test_chemin_context_resolves_core_group_without_ui_groups():
+    class _BoundarySegment:
+        fromNodeId = "T01:N0"
+        toNodeId = "T01:N1"
+
+    class _World:
+        def __init__(self):
+            self.boundary_requested_for = None
+
+        def get_group_of_element(self, element_id):
+            assert element_id == "T01"
+            return "G-RAW"
+
+        def find_group(self, group_id):
+            assert group_id == "G-RAW"
+            return "G-CORE"
+
+        def computeBoundary(self, group_id):
+            self.boundary_requested_for = group_id
+
+        def getBoundarySegments(self, group_id):
+            assert group_id == "G-CORE"
+            return [_BoundarySegment()]
+
+        def getConceptNodeWorldXY(self, node_id, group_id):
+            assert group_id == "G-CORE"
+            return {"T01:N0": (0.0, 0.0), "T01:N1": (5.0, 0.0)}[node_id]
+
+        def find_node(self, node_id):
+            return "CANON:" + node_id
+
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    world = _World()
+    viewer._last_drawn = [{"topoElementId": "T01"}]
+    viewer.scenarios = [SimpleNamespace(topoWorld=world)]
+    viewer.active_scenario_index = 0
+    viewer._screen_to_world = lambda x, y: (x, y)
+    # Pas de self.groups : le test garantit l'absence de dependance UI.
+
+    viewer._ctx_capture_chemin_context(0, 4.0, 0.0)
+
+    assert world.boundary_requested_for == "G-CORE"
+    assert viewer.ctxGroupId == "G-CORE"
+    assert viewer.ctxStartNodeId == "CANON:T01:N1"
 
 
 def test_topo_index_can_be_invalidated_after_in_place_relink():

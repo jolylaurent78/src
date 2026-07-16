@@ -937,7 +937,7 @@ class TriangleViewerManual(
         item = self._last_drawn_topo_index.get(key)
         return None if item is None else item[0]
 
-    def _sync_group_elements_pose_to_core(self, ui_gid: int, scen: ScenarioAssemblage = None) -> None:
+    def _sync_group_elements_pose_to_core(self, core_group_id: str, scen: ScenarioAssemblage = None) -> None:
         """Synchronise les poses (R,T,mirrored) de TOUS les éléments du groupe UI vers le Core.
 
         Important:
@@ -947,15 +947,24 @@ class TriangleViewerManual(
         """
         if scen is None:
             scen = self._get_active_scenario()
-        world = scen.topoWorld
-
-        grp = self.groups.get(ui_gid)
-        if not grp:
+        world = getattr(scen, "topoWorld", None) if scen is not None else None
+        if world is None:
+            return
+        try:
+            canonical_gid = world.find_group(str(core_group_id))
+            group = world.groups.get(canonical_gid)
+        except Exception as exc:
+            MIG_GEO_LOGGER.debug("[MIG-GEO-011-B] groupe Core illisible %r: %s", core_group_id, exc)
+            return
+        if group is None:
             return
 
-        nodes = grp.get("nodes", [])
-        if not nodes:
-            return
+        # MIG-GEO-011-B : groupe Core -> element_ids -> projection _last_drawn.
+        # Cette synchronisation ne consulte ni self.groups ni groups[*]["nodes"].
+        last_drawn = getattr(scen, "last_drawn", None)
+        if last_drawn is None:
+            last_drawn = self._last_drawn
+        projected_elements = get_projected_elements(group, build_last_drawn_index(last_drawn))
 
         # Modèle "pose" :
         # - mirrored est réservé AU FLIP utilisateur (fonction _ctx_flip_selected).
@@ -964,12 +973,7 @@ class TriangleViewerManual(
         #   (normalisation des coordonnées locales), pas ici.
         M = np.array([[1.0, 0.0], [0.0, -1.0]], dtype=float)
 
-        for node in nodes:
-            tid = int(node.get("tid", -1))
-            if not (0 <= tid < len(self._last_drawn)):
-                continue
-
-            tri = self._last_drawn[tid]
+        for tri in projected_elements:
             element_id = tri.get("topoElementId", None)
             if not element_id:
                 continue
@@ -1023,8 +1027,12 @@ class TriangleViewerManual(
             if getattr(scen, "source_type", "manual") != "auto":
                 continue
             # On parcours chaque groupe du scénario automatique (en principe un seul) et on synchronise le core
-            for gid in scen.groups:
-                self._sync_group_elements_pose_to_core(gid, scen)
+            world = getattr(scen, "topoWorld", None)
+            if world is None:
+                continue
+            for core_gid in list(world.groups.keys()):
+                if str(world.find_group(str(core_gid))) == str(core_gid):
+                    self._sync_group_elements_pose_to_core(str(core_gid), scen)
 
     def _get_active_scenario(self) -> ScenarioAssemblage | None:
         if not self.scenarios:
@@ -7087,7 +7095,7 @@ class TriangleViewerManual(
                     v = np.array(Orig[k], dtype=float) - pivot
                     Pt[k] = (R @ v) + pivot
             self._recompute_group_bbox(gid)
-            self._sync_group_elements_pose_to_core(gid)
+            self._sync_group_elements_pose_to_core(sel["core_group_id"])
 
             self._redraw_from(self._last_drawn)
             self._sel["last_angle"] = cur_angle
@@ -7748,10 +7756,10 @@ class TriangleViewerManual(
         self._recompute_group_bbox(gid)
 
         # 2bis) Synchroniser le group avec la topo
-        self._sync_group_elements_pose_to_core(gid)
+        core_gid = self._last_drawn[new_tid].get("topoGroupId", None)
+        self._sync_group_elements_pose_to_core(str(core_gid))
 
         # Lier group UI -> group Core
-        core_gid = self._last_drawn[new_tid].get("topoGroupId", None)
         self.groups[gid]["topoGroupId"] = core_gid
 
         # 3) UI
@@ -8177,19 +8185,6 @@ class TriangleViewerManual(
         self.ctxGroupId = None
         self.ctxStartNodeId = None
 
-    def _ctx_get_ui_group_from_triangle_index(self, tri_idx: int) -> Optional[int]:
-        """Retourne le groupId UI qui contient le triangle tri_idx."""
-        idx = int(tri_idx)
-        for gid, grp in (self.groups or {}).items():
-            for nd in grp.get("nodes", []):
-                try:
-                    tid = int(nd.get("tid", -1))
-                except (TypeError, ValueError):
-                    continue
-                if tid == idx:
-                    return gid
-        return None
-
     def _ctx_capture_chemin_context(self, tri_idx: int, sx: float, sy: float) -> None:
         """
         Mémorise ctxGroupId + ctxStartNodeId depuis le clic droit.
@@ -8202,14 +8197,20 @@ class TriangleViewerManual(
             raise RuntimeError("scenario topologique introuvable")
         world = scen.topoWorld
 
-        ui_gid = self._ctx_get_ui_group_from_triangle_index(int(tri_idx))
-        if ui_gid is None:
-            raise ValueError("groupe UI introuvable")
-        g_ui = self.groups.get(ui_gid, {})
-        core_gid = g_ui.get("topoGroupId", None)
-        if not core_gid:
-            raise ValueError(f"topoGroupId manquant pour le groupe UI {ui_gid}")
-        gid = str(world.find_group(str(core_gid)))
+        idx = int(tri_idx)
+        if not (0 <= idx < len(self._last_drawn)):
+            raise ValueError("triangle de contexte invalide")
+        topo_element_id = str(self._last_drawn[idx].get("topoElementId", "") or "").strip()
+        if not topo_element_id:
+            raise ValueError("topoElementId manquant pour le triangle de contexte")
+
+        # MIG-GEO-011-A : triangle projete -> element Core -> groupe DSU.
+        # Le contexte de chemin ne consulte ni self.groups ni la chaine nodes.
+        try:
+            core_gid = world.get_group_of_element(topo_element_id)
+            gid = str(world.find_group(str(core_gid)))
+        except Exception as exc:
+            raise ValueError(f"groupe Core introuvable pour {topo_element_id}") from exc
 
         world.computeBoundary(gid)
         segments = world.getBoundarySegments(gid)
@@ -8474,7 +8475,8 @@ class TriangleViewerManual(
 
         # Sync Core (poses monde) pour les groupes touchés.
         for ui_gid in [int(mainUiGid)] + [int(x) for x in newUiGids]:
-            self._sync_group_elements_pose_to_core(int(ui_gid), scen=scen)
+            core_gid = str(self.groups[int(ui_gid)].get("topoGroupId", "") or "")
+            self._sync_group_elements_pose_to_core(core_gid, scen=scen)
 
         self._sel = None
         self._reset_assist()
@@ -9653,7 +9655,7 @@ class TriangleViewerManual(
         self._recompute_group_bbox(gid)
 
         # On est en manuel, on alimente la topo Core
-        self._sync_group_elements_pose_to_core(gid)
+        self._sync_group_elements_pose_to_core(rotate_members["core_group_id"])
 
         # On raffraichit l'affichage courant
         self._redraw_from(self._last_drawn)
@@ -9824,14 +9826,14 @@ class TriangleViewerManual(
             triangle["mirrored"] = not triangle.get("mirrored", False)
 
         # Alimente la topo Core (poses éléments) depuis l’état graphique legacy (après flip)
-        self._sync_group_elements_pose_to_core(gid)
+        self._sync_group_elements_pose_to_core(flip_members["core_group_id"])
 
         # BBox groupe puis redraw
         self._recompute_group_bbox(gid)
         self._redraw_from(self._last_drawn)
         self.status.config(text=f"Inversion appliquée au groupe #{gid}.")
 
-    def _move_group_world(self, gid, dx_w, dy_w, move_member_entries=None):
+    def _move_group_world(self, gid, dx_w, dy_w, move_member_entries=None, core_group_id=None):
         """Translate rigide de tout le groupe en coordonnées monde."""
         # AUTO: on déplace le référentiel global (commun à tous les scénarios auto)
         if self._is_active_auto_scenario():
@@ -9866,7 +9868,13 @@ class TriangleViewerManual(
             for k in ("O", "B", "L"):
                 P[k] = np.array([P[k][0] + d[0], P[k][1] + d[1]], dtype=float)
         # Sync immédiate : Core = vérité persistée (pose monde du groupe)
-        self._sync_group_elements_pose_to_core(gid)
+        if core_group_id is None and move_member_entries:
+            first_element_id = str(move_member_entries[0].get("topoElementId", "") or "").strip()
+            world = getattr(self._get_active_scenario(), "topoWorld", None)
+            if world is not None and first_element_id:
+                core_group_id = world.get_group_of_element(first_element_id)
+        if core_group_id is not None:
+            self._sync_group_elements_pose_to_core(str(core_group_id))
         self._recompute_group_bbox(gid)
 
     def _prepare_mig_geo_operation_members(
@@ -10087,9 +10095,9 @@ class TriangleViewerManual(
                     self._simulationPersistCurrentAutoPlacement(save=True)
             else:
                 # Manuel: sync classique du groupe vers le core
-                gid_sync = self._sel.get("gid")
-                if gid_sync is not None:
-                    self._sync_group_elements_pose_to_core(int(gid_sync))
+                core_group_id = self._sel.get("core_group_id")
+                if core_group_id is not None:
+                    self._sync_group_elements_pose_to_core(str(core_group_id))
 
             self._sel = None
             self._reset_assist()
@@ -10273,6 +10281,7 @@ class TriangleViewerManual(
                     dx,
                     dy,
                     move_member_entries=self._sel.get("move_member_entries"),
+                    core_group_id=self._sel.get("core_group_id"),
                 )
                 # avancer l'ancre
                 self._sel["mouse_world_prev"] = np.array([wx, wy], dtype=float)
@@ -10498,7 +10507,9 @@ class TriangleViewerManual(
 
                     if element_id_m and element_id_t:
                         # La pose Core doit refléter ce que Tk a effectivement appliqué
-                        self._sync_group_elements_pose_to_core(mob_gid)
+                        self._sync_group_elements_pose_to_core(
+                            str(world.get_group_of_element(str(element_id_m)))
+                        )
 
                         kind = str(epts.kind).strip().lower()
                         if kind not in ("edge-edge", "vertex-edge"):
@@ -10643,9 +10654,9 @@ class TriangleViewerManual(
                 # ====== /FUSION ======
 
             # Sync Core : pose par élément (pas de pose groupe)
-            gid_sync = self._sel.get("gid") if isinstance(self._sel, dict) else None
-            if gid_sync is not None:
-                self._sync_group_elements_pose_to_core(int(gid_sync))
+            core_group_id = self._sel.get("core_group_id") if isinstance(self._sel, dict) else None
+            if core_group_id is not None:
+                self._sync_group_elements_pose_to_core(str(core_group_id))
 
             # Fin (pas de snap : simple dépôt à la dernière position)
             # AUTO: persister position/rotation globale (carte, ordre)
