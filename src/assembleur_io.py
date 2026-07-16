@@ -749,7 +749,6 @@ def loadScenarioXml(viewer, path: str):
                 "pts": P,
                 "mirrored": mirrored,
                 "group_id": None,
-                "group_pos": None,
             }
             topo_element_id = str(t_el.get("topoElementId", "") or "").strip()
             topo_group_id = str(t_el.get("topoGroupId", "") or "").strip()
@@ -834,7 +833,6 @@ def loadScenarioXml(viewer, path: str):
 
                 nodes.append(nd)
                 viewer._last_drawn[tid]["group_id"] = gid
-                viewer._last_drawn[tid]["group_pos"] = len(nodes) - 1
                 if "group" in viewer._last_drawn[tid]:
                     del viewer._last_drawn[tid]["group"]
 

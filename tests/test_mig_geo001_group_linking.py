@@ -39,6 +39,16 @@ def _make_viewer_with_one_core_group():
     return viewer, core_group_id
 
 
+def test_group_fields_keep_only_group_identifier_cache():
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    triangle = {}
+
+    viewer._ensure_group_fields(triangle)
+
+    assert len(triangle) == 1
+    assert triangle.get("group_id") is None
+
+
 def test_core_to_last_drawn_helpers_use_active_index_and_core_group():
     viewer, core_group_id = _make_viewer_with_one_core_group()
 

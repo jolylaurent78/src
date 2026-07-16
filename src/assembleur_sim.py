@@ -744,7 +744,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                     "id": tri1_id,
                     "mirrored": bool(t1.get("mirrored", False)),
                     "group_id": 1,
-                    "group_pos": 0,
                 })
                 last_drawn.append({
                     "labels": t2.get("labels"),
@@ -752,7 +751,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                     "id": tri2_id,
                     "mirrored": bool(t2.get("mirrored", False)),
                     "group_id": 1,
-                    "group_pos": 1,
                 })
                 topoWorld_scen = TopologyWorld()
                 _bootstrap_topo_first_pair(
@@ -818,7 +816,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 "id": tri1_id,
                 "mirrored": bool(t1.get("mirrored", False)),
                 "group_id": 1,
-                "group_pos": 0,
             },
             {
                 "labels": t2.get("labels"),
@@ -826,7 +823,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 "id": tri2_id,
                 "mirrored": bool(t2.get("mirrored", False)),
                 "group_id": 1,
-                "group_pos": 1,
             },
         ]
         _assign_topo_element_id_to_last_drawn(entry=base_last[0])
@@ -971,7 +967,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                         "id": triangleMobFromId,
                         "mirrored": bool(triangleMobFrom.get("mirrored", False)),
                         "group_id": 1,
-                        "group_pos": pos0,
                     })
                     _assign_topo_element_id_to_last_drawn(
                         entry=last_drawn_base[pos0],
@@ -984,7 +979,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                         "id": triangleMobToId,
                         "mirrored": bool(triangleMobTo.get("mirrored", False)),
                         "group_id": 1,
-                        "group_pos": pos1,
                     })
                     _assign_topo_element_id_to_last_drawn(
                         entry=last_drawn_base[pos1],
@@ -1067,7 +1061,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                 "id": triangleMobFromId,
                                 "mirrored": bool(triangleMobFrom.get("mirrored", False)),
                                 "group_id": 1,
-                                "group_pos": pos0,
                             })
                             elem_id_odd = _assign_topo_element_id_to_last_drawn(entry=last_drawn_new[pos0])
                             last_drawn_new[pos0]["_chain_edge_in"] = mobEdgeAtL
@@ -1078,7 +1071,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                 "id": triangleMobToId,
                                 "mirrored": bool(triangleMobTo.get("mirrored", False)),
                                 "group_id": 1,
-                                "group_pos": pos1,
                             })
                             elem_id_even = _assign_topo_element_id_to_last_drawn(entry=last_drawn_new[pos1])
                             # décision de raccord: destEdgeAtL (côté ancre), mobEdgeAtL (côté mobile odd)

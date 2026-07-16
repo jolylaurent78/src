@@ -4863,7 +4863,7 @@ class TriangleViewerManual(
         else:
             self._apply_view_state(getattr(scen, "view_state", None))
 
-        # --- AUTO: réconcilier les métadonnées de groupe (group_id/group_pos) avec scen.groups ---
+        # --- AUTO: réconcilier les métadonnées de groupe avec scen.groups ---
         # Certains chemins (redraw / sélection / tools) se basent encore sur les champs portés par les triangles.
         # Si un scénario auto fournit un dictionnaire groups cohérent mais que les triangles n'ont pas été annotés,
         # on peut se retrouver avec un triangle "orphelin" ou des groupes recomposés de travers.
@@ -4872,12 +4872,11 @@ class TriangleViewerManual(
             # 1) reset défensif
             for _t in scen.last_drawn:
                 _t["group_id"] = None
-                _t["group_pos"] = None
 
             # 2) appliquer groups -> triangles
             for _gid, _g in scen.groups.items():
                 _nodes = (_g or {}).get("nodes", []) or []
-                for _pos, _nd in enumerate(_nodes):
+                for _nd in _nodes:
                     _tid = _nd.get("tid")
                     if _tid is None:
                         continue
@@ -4885,7 +4884,6 @@ class TriangleViewerManual(
 
                     if 0 <= _tid_i < len(scen.last_drawn):
                         scen.last_drawn[_tid_i]["group_id"] = _gid
-                        scen.last_drawn[_tid_i]["group_pos"] = int(_pos)
 
             # 3) fallback : si un triangle n'est dans aucun node, on le rattache au 1er groupe
             _first_gid = next(iter(scen.groups.keys()), None)
@@ -4893,7 +4891,6 @@ class TriangleViewerManual(
                 for _t in scen.last_drawn:
                     if _t.get("group_id") is None:
                         _t["group_id"] = _first_gid
-                        _t["group_pos"] = 0
 
             # 4) bbox
             for _gid in list(scen.groups.keys()):
@@ -7655,7 +7652,6 @@ class TriangleViewerManual(
             "bbox": None,
         }
         self._last_drawn[new_tid]["group_id"] = gid
-        self._last_drawn[new_tid]["group_pos"] = 0
         self._recompute_group_bbox(gid)
 
         # 2bis) Synchroniser le group avec la topo
@@ -7692,8 +7688,6 @@ class TriangleViewerManual(
         """Idempotent: garantit la présence des champs de groupe sur un triangle."""
         if "group_id" not in tri_dict:
             tri_dict["group_id"] = None
-        if "group_pos" not in tri_dict:
-            tri_dict["group_pos"] = None
 
     def _get_group_of_triangle(self, idx: int) -> Optional[int]:
         return self._last_drawn[idx].get("group_id", None)
@@ -7739,15 +7733,14 @@ class TriangleViewerManual(
         return np.array([sx/n, sy/n], dtype=float)
 
     def _apply_group_meta_after_split_(self, gid: int):
-        """Recalcule bbox et group_pos de tous les noeuds du groupe."""
+        """Recalcule bbox et métadonnées d'appartenance des noeuds du groupe."""
         g = self.groups.get(gid)
         if not g:
             return
-        for i, nd in enumerate(g["nodes"]):
+        for nd in g["nodes"]:
             tid = nd["tid"]
             if 0 <= tid < len(self._last_drawn):
                 self._last_drawn[tid]["group_id"] = gid
-                self._last_drawn[tid]["group_pos"] = i
         self._recompute_group_bbox(gid)
 
     def _cancel_drag(self):
@@ -8328,11 +8321,10 @@ class TriangleViewerManual(
             if not new_nodes:
                 emptyGroups.append(int(ui_gid))
                 continue
-            for pos, nd in enumerate(new_nodes):
+            for nd in new_nodes:
                 tid_i = int(nd["tid"])
                 if 0 <= tid_i < len(self._last_drawn):
                     self._last_drawn[tid_i]["group_id"] = int(ui_gid)
-                    self._last_drawn[tid_i]["group_pos"] = int(pos)
             self._recompute_group_bbox(int(ui_gid))
         for gid_empty in emptyGroups:
             self.groups.pop(gid_empty, None)
@@ -9440,12 +9432,11 @@ class TriangleViewerManual(
                 nd2["tid"] = old2new.get(otid, otid)
                 new_nodes.append(nd2)
             g2["nodes"] = new_nodes
-            # Reposer group_id/group_pos cohérents
-            for i, nd in enumerate(g2["nodes"]):
+            # Reposer group_id cohérent
+            for nd in g2["nodes"]:
                 tid = nd["tid"]
                 if 0 <= tid < len(self._last_drawn):
                     self._last_drawn[tid]["group_id"] = g2["id"]
-                    self._last_drawn[tid]["group_pos"] = i
             self._recompute_group_bbox(g2["id"])
 
         # 4) Fin : purge sélection/assist et redraw
@@ -10544,13 +10535,12 @@ class TriangleViewerManual(
                                     tid2 = nd["tid"]
                                     if 0 <= tid2 < len(self._last_drawn):
                                         self._last_drawn[tid2]["group_id"] = mob_gid
-                            # 2.3 Supprimer l'ancien groupe cible et reindexer pos/bbox
+                            # 2.3 Supprimer l'ancien groupe cible et recalculer la bbox
                             del self.groups[tgt_gid]
-                            for i, nd in enumerate(nodes_src):
+                            for nd in nodes_src:
                                 tid2 = nd["tid"]
                                 if 0 <= tid2 < len(self._last_drawn):
                                     self._last_drawn[tid2]["group_id"] = mob_gid
-                                    self._last_drawn[tid2]["group_pos"] = i
                                     if new_core_gid:
                                         self._last_drawn[tid2]["topoGroupId"] = new_core_gid
                             if new_core_gid:
