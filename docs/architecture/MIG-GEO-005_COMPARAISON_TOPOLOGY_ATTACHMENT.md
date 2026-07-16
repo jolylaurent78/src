@@ -6,9 +6,8 @@ La comparaison dynamique référence/scénario actif ne dépend plus de
 `groups[*]["nodes"]`, `edge_in` ou `edge_out` pour décider les triangles à
 surligner. Elle compare maintenant les attachments des deux `TopologyWorld`.
 
-Le calcul legacy est conservé temporairement comme oracle. Une divergence entre
-les ensembles d'indices marqués produit un warning `[TOPO-COMPARE]` dans
-`logs/mig_geo.log`; il n'est ni bloquant ni correctif.
+Depuis MIG-GEO-007, le calcul est exclusivement Core : aucune signature legacy
+ni comparaison temporaire ne participe au surlignage.
 
 ## Fichiers modifiés
 
@@ -16,8 +15,8 @@ les ensembles d'indices marqués produit un warning `[TOPO-COMPARE]` dans
   pures, sans Tk ni structures UI.
 - `src/assembleur_core.py` : métadonnées minimales de parcours sur
   `ScenarioAssemblage`.
-- `src/assembleur_tk.py` : nouveau calcul, double calcul, logs et alimentation
-  des métadonnées à la génération/duplication.
+- `src/assembleur_tk.py` : calcul Core et alimentation des métadonnées à la
+  génération/duplication.
 - `tests/test_topology_comparison.py` : signatures des trois types et scénario
   identique.
 
@@ -51,10 +50,6 @@ courant donnent les `topoElementId` des triangles impliqués. Ces IDs sont
 résolus vers `last_drawn` afin de conserver le surlignage : triangle modifié
 et triangle voisin impliqué.
 
-Le mode `DEBUG_TOPOLOGY_COMPARISON = True` journalise les signatures des deux
-mondes, les différences et les éléments concernés. Il est volontairement
-temporaire et local à MIG-GEO.
-
 ## Métadonnées de parcours
 
 `ScenarioAssemblage` reçoit :
@@ -71,17 +66,15 @@ conformément au périmètre de ce chantier.
 
 - Les libellés de fork `#5 = #4 + (6)` ne sont pas modifiés.
 - La persistance XML reste inchangée.
-- `edge_in/out` est toujours écrit et lu par les fonctionnalités hors
-  comparaison (simulation, filtrage, XML et normalisation).
-- Les scénarios legacy sans attachments produisent une comparaison Core vide ;
-  le double calcul le signale explicitement.
+- Les scénarios sans attachments ne produisent aucune différence Core tant
+  qu'aucun attachment ne distingue leurs mondes.
 
 ## Vérification
 
 Tests ciblés :
 
 ```text
-13 passed
+9 passed
 ```
 
 Ils couvrent le scénario identique et les signatures `edge-edge`,

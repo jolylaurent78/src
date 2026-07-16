@@ -59,6 +59,53 @@ def test_same_scenario_has_no_core_comparison_difference():
     assert viewer._comparison_diff_indices == set()
 
 
+def test_core_comparison_marks_attachment_endpoint_triangles_for_all_kinds_and_params():
+    def marked_indices(reference_attachment, current_attachment):
+        viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+        reference = ScenarioAssemblage("reference", source_type="auto")
+        current = ScenarioAssemblage("current", source_type="auto")
+        reference.last_drawn = [
+            {"id": 1, "topoElementId": "T01"},
+            {"id": 2, "topoElementId": "T02"},
+        ]
+        current.last_drawn = [
+            {"id": 1, "topoElementId": "T01"},
+            {"id": 2, "topoElementId": "T02"},
+        ]
+        reference.topoWorld.attachments = {"A001": reference_attachment}
+        current.topoWorld.attachments = {"A001": current_attachment}
+        viewer.scenarios = [reference, current]
+        viewer.active_scenario_index = 1
+        viewer.ref_scenario_token = id(reference)
+
+        viewer._update_current_scenario_differences()
+        return viewer._comparison_diff_indices
+
+    cases = [
+        (
+            _attachment("edge-edge", TopologyFeatureType.EDGE, "T01", 0,
+                        TopologyFeatureType.EDGE, "T02", 1, {"mapping": "direct"}),
+            _attachment("edge-edge", TopologyFeatureType.EDGE, "T01", 0,
+                        TopologyFeatureType.EDGE, "T02", 1, {"mapping": "reverse"}),
+        ),
+        (
+            _attachment("vertex-edge", TopologyFeatureType.VERTEX, "T01", 1,
+                        TopologyFeatureType.EDGE, "T02", 2, {"edgeFrom": "T02:N1", "t": 0.25}),
+            _attachment("vertex-edge", TopologyFeatureType.VERTEX, "T01", 1,
+                        TopologyFeatureType.EDGE, "T02", 2, {"edgeFrom": "T02:N1", "t": 0.75}),
+        ),
+        (
+            _attachment("vertex-vertex", TopologyFeatureType.VERTEX, "T01", 0,
+                        TopologyFeatureType.VERTEX, "T02", 1),
+            _attachment("vertex-vertex", TopologyFeatureType.VERTEX, "T01", 2,
+                        TopologyFeatureType.VERTEX, "T02", 1),
+        ),
+    ]
+
+    for reference_attachment, current_attachment in cases:
+        assert marked_indices(reference_attachment, current_attachment) == {0, 1}
+
+
 def test_prefix_step_edge_edge_is_oriented_by_the_traversal_order():
     world = ScenarioAssemblage("step").topoWorld
     world.attachments = {
@@ -123,3 +170,30 @@ def test_viewer_core_prefix_steps_uses_tri_ids_and_attachments_without_groups():
     assert viewer._scenario_prefix_edge_steps(scenario, 1) == [(
         ("edge-edge", ("edge", "T01", 0), ("edge", "T02", 1), (("mapping", "direct"),)),
     )]
+
+
+def test_prefix_filter_keeps_only_candidates_with_same_ordered_core_path():
+    def scenario(name, tri_ids, attachment):
+        item = ScenarioAssemblage(name, source_type="auto", tri_ids=tri_ids)
+        item.groups = None
+        item.topoWorld.attachments = {"A001": attachment}
+        return item
+
+    shared = _attachment(
+        "edge-edge", TopologyFeatureType.EDGE, "T01", 0,
+        TopologyFeatureType.EDGE, "T02", 1, {"mapping": "direct"},
+    )
+    active = scenario("active", [1, 2], shared)
+    same_path = scenario("same", [1, 2], shared)
+    different_path = scenario("different", [2, 1], shared)
+    manual = ScenarioAssemblage("manual", source_type="manual", tri_ids=[])
+
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.scenarios = [active, same_path, different_path, manual]
+    viewer.active_scenario_index = 0
+    viewer._refresh_scenario_listbox = lambda: None
+    viewer._set_active_scenario = lambda index: None
+
+    viewer._filter_auto_scenarios_by_prefix_edges(2)
+
+    assert viewer.scenarios == [active, same_path, manual]

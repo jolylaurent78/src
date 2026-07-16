@@ -58,7 +58,6 @@ from src.assembleur_edgechoice import buildEdgeChoiceEptsFromBest
 from src.assembleur_balises import BalisesManager
 from src.utils.logging_utils import get_app_logger, get_mig_geo_logger
 from src.assembleur_topology_comparison import (
-    build_world_attachment_connections,
     build_topology_prefix_steps,
     differing_attachment_element_ids,
 )
@@ -67,7 +66,6 @@ from src.assembleur_topology_comparison import (
 EPS_WORLD = 1e-6
 APP_LOGGER = get_app_logger()
 MIG_GEO_LOGGER = get_mig_geo_logger()
-DEBUG_TOPOLOGY_COMPARISON = True
 
 
 def createDecryptor(decryptorId: str) -> DecryptorBase:
@@ -4521,160 +4519,8 @@ class TriangleViewerManual(
                 return scen
         return None
 
-    def _scenario_connections_signature(self, scen):
-        """Connexions canoniques du Core, sans ``groups/nodes`` ni ``edge_*``."""
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
-        return {} if world is None else build_world_attachment_connections(world)
-
-    def _scenario_connections_signature_legacy(self, scen):
-        """
-        Signature de connexions basée sur les groups:
-        triId -> { edgeName -> (neighborTriId, neighborEdgeName) }
-
-        - triId = triangle["id"] (stable)
-        - edgeName = "OB" / "BL" / "LO"
-        - neighborEdgeName = arête correspondante côté voisin
-
-        Contrat:
-        Dans groups[n]["nodes"], chaque node doit fournir explicitement:
-          - edge_in  (arête partagée avec le précédent)  : "OB"|"BL"|"LO"|None
-          - edge_out (arête partagée avec le suivant)    : "OB"|"BL"|"LO"|None
-        """
-        sig = {}
-        if scen is None:
-            return sig
-
-        last_drawn = getattr(scen, "last_drawn", None)
-        groups = getattr(scen, "groups", None)
-
-        if not last_drawn or not groups:
-            return sig
-
-        # Contrat: groups/nodes doivent fournir edge_in/edge_out (normalisation centralisée)
-        self._normalize_all_groups(scen)
-
-        def tri_id_from_tid(tid):
-            """tid = index dans last_drawn ; retourne triangle["id"]"""
-            tid = int(tid)
-            if 0 <= tid < len(last_drawn):
-                return int(last_drawn[tid].get("id"))
-
-            return None
-
-        def add_link(tri_a, edge_a, tri_b, edge_b):
-            if tri_a is None or tri_b is None or edge_a is None or edge_b is None:
-                return
-            sig.setdefault(tri_a, {})[edge_a] = (tri_b, edge_b)
-
-        # Parcours de tous les groupes (un groupe = une chaîne de nodes)
-        for gid, g in groups.items():
-            nodes = (g or {}).get("nodes") or []
-            if len(nodes) < 2:
-                continue
-
-            # Connexions = paires consécutives dans la chaîne
-            for i in range(len(nodes) - 1):
-                left = nodes[i]
-                right = nodes[i + 1]
-                if not left or not right:
-                    continue
-
-                tri_left = tri_id_from_tid(left.get("tid"))
-                tri_right = tri_id_from_tid(right.get("tid"))
-
-                edge_left = left.get("edge_out")
-                edge_right = right.get("edge_in")
-                if not edge_left or not edge_right:
-                    raise RuntimeError(
-                        f"scenario_connections_signature: edge manquant gid={gid!r} i={i} "
-                        f"edge_out={edge_left!r} edge_in={edge_right!r}"
-                    )
-
-                add_link(tri_left, edge_left, tri_right, edge_right)
-                add_link(tri_right, edge_right, tri_left, edge_left)
-
-        return sig
-
-    def _normalize_group_nodes(self, scen, gid):
-        """Normalise la représentation des nodes d'un groupe.
-
-        Contrat canonique (unique) pour les nodes:
-          - tid: int (index dans scen.last_drawn)
-          - edge_in:  "OB"|"BL"|"LO"|None
-          - edge_out: "OB"|"BL"|"LO"|None
-
-        (Legacy supprimé) : les nodes ne portent plus vkey_in/vkey_out.
-        """
-        if scen is None:
-            raise RuntimeError("normalize_group_nodes: scen is None")
-
-        groups = getattr(scen, "groups", None)
-        if not groups or gid not in groups:
-            raise RuntimeError(f"normalize_group_nodes: groupe introuvable gid={gid!r}")
-
-        g = groups[gid] or {}
-        nodes = g.get("nodes")
-        if nodes is None:
-            raise RuntimeError(f"normalize_group_nodes: nodes manquant gid={gid!r}")
-        if not isinstance(nodes, list):
-            raise RuntimeError(f"normalize_group_nodes: nodes doit être une liste gid={gid!r}")
-
-        allowed_edges = {"OB", "BL", "LO"}
-
-        for i, n in enumerate(nodes):
-            if not isinstance(n, dict):
-                raise RuntimeError(f"normalize_group_nodes: node invalide gid={gid!r} i={i} type={type(n)}")
-
-            if "tid" not in n:
-                raise RuntimeError(f"normalize_group_nodes: tid manquant gid={gid!r} i={i}")
-
-            n["tid"] = int(n["tid"])
-
-            # Hygiène: supprimer les champs legacy si présents
-            n.pop("vkey_in", None)
-            n.pop("vkey_out", None)
-
-            # edge_out / edge_in : doivent être déjà présents (contrat canonique)
-            eout = n.get("edge_out")
-            ein = n.get("edge_in")
-
-            # Validation stricte du contrat
-            ein = n.get("edge_in")
-            eout = n.get("edge_out")
-            if ein is not None and ein not in allowed_edges:
-                raise RuntimeError(f"normalize_group_nodes: edge_in invalide gid={gid!r} i={i} edge_in={ein!r}")
-            if eout is not None and eout not in allowed_edges:
-                raise RuntimeError(f"normalize_group_nodes: edge_out invalide gid={gid!r} i={i} edge_out={eout!r}")
-
-        # Validation supplémentaire: chaque liaison interne doit être définie
-        if len(nodes) >= 2:
-            for i in range(len(nodes) - 1):
-                left = nodes[i]
-                right = nodes[i + 1]
-                if not left.get("edge_out"):
-                    raise RuntimeError(
-                        f"normalize_group_nodes: edge_out manquant gid={gid!r} i={i} (liaison {i}->{i+1})"
-                    )
-                if not right.get("edge_in"):
-                    raise RuntimeError(
-                        f"normalize_group_nodes: edge_in manquant gid={gid!r} i={i+1} (liaison {i}->{i+1})"
-                    )
-
-        g["nodes"] = nodes
-        groups[gid] = g
-
-    def _normalize_all_groups(self, scen):
-        """Normalise tous les groups/nodes d'un scénario (contrat edge_in/out obligatoire)."""
-        if scen is None:
-            raise RuntimeError("normalize_all_groups: scen is None")
-        groups = getattr(scen, "groups", None)
-        if not groups:
-            return
-        for gid in list(groups.keys()):
-            self._normalize_group_nodes(scen, gid)
-
     def _update_current_scenario_differences(self):
-        """Met à jour self._comparison_diff_indices en comparant le scénario actif à la référence."""
+        """Marque les éléments dont les attachments diffèrent de la référence."""
         self._comparison_diff_indices = set()
 
         ref_scen = self._get_reference_scenario()
@@ -4688,92 +4534,11 @@ class TriangleViewerManual(
         if cur_scen is ref_scen:
             return
 
-        # MIG-GEO-005 : comparaison autoritaire via les attachments Core.
-        ref_connections = self._scenario_connections_signature(ref_scen)
-        cur_connections = self._scenario_connections_signature(cur_scen)
         new_element_ids = differing_attachment_element_ids(ref_scen.topoWorld, cur_scen.topoWorld)
-
-        # map triId -> idx dans last_drawn (pour pouvoir marquer les voisins)
-        tri_id_to_idx = {}
-        for idx, tri in enumerate(cur_scen.last_drawn):
-            tri_id_to_idx[int(tri.get("id"))] = idx
-
-        def normalize_edge_map(m):
-            """
-            Normalise une map d'arêtes pour rendre la comparaison stable.
-            Supporte:
-            - edge -> neighborId
-            - edge -> (neighborId, neighborEdge)
-            """
-            if not isinstance(m, dict):
-                return {}
-            out = {}
-            for k, v in m.items():
-                kk = str(k)
-                if isinstance(v, (tuple, list)) and len(v) == 2:
-                    out[kk] = (int(v[0]), str(v[1]))
-                else:
-                    out[kk] = int(v)
-
-            return out
-
-        # Calcul legacy conservé temporairement comme oracle de migration.
-        ref_sig = self._scenario_connections_signature_legacy(ref_scen)
-        cur_sig = self._scenario_connections_signature_legacy(cur_scen)
-        legacy_diff_indices = set()
-
-        # 1) Détecter les triangles du courant qui diffèrent
-        for idx, tri in enumerate(cur_scen.last_drawn):
-            try:
-                tri_id = int(tri.get("id"))
-            except Exception:
-                legacy_diff_indices.add(idx)
-                continue
-
-            ref_edges = normalize_edge_map(ref_sig.get(tri_id, {}))
-            cur_edges = normalize_edge_map(cur_sig.get(tri_id, {}))
-
-            if ref_edges != cur_edges:
-                # Ne marquer que les arêtes qui changent réellement
-                changed_edges = set(ref_edges.keys()) | set(cur_edges.keys())
-                changed_edges = {e for e in changed_edges if ref_edges.get(e) != cur_edges.get(e)}
-
-                # Marquer ce triangle
-                legacy_diff_indices.add(idx)
-
-                # Marquer uniquement les voisins impliqués dans les arêtes modifiées
-                for e in changed_edges:
-                    for m in (cur_edges, ref_edges):
-                        link = m.get(e)
-                        if link is None:
-                            continue
-                        neigh_id = link[0] if isinstance(link, tuple) and len(link) == 2 else link
-                        neigh_idx = tri_id_to_idx.get(neigh_id)
-                        if neigh_idx is not None:
-                            legacy_diff_indices.add(neigh_idx)
-
-        new_diff_indices = {
+        self._comparison_diff_indices = {
             idx for idx, tri in enumerate(cur_scen.last_drawn)
             if str(tri.get("topoElementId", "") or "") in new_element_ids
         }
-        self._comparison_diff_indices = new_diff_indices
-        if legacy_diff_indices != new_diff_indices:
-            MIG_GEO_LOGGER.warning(
-                "[TOPO-COMPARE] divergence Legacy=%s Core=%s RefOnly=%s CurOnly=%s",
-                sorted(legacy_diff_indices),
-                sorted(new_diff_indices),
-                len(set(ref_connections) - set(cur_connections)),
-                len(set(cur_connections) - set(ref_connections)),
-            )
-        if DEBUG_TOPOLOGY_COMPARISON:
-            MIG_GEO_LOGGER.debug(
-                "[TOPO-COMPARE] Ref=%s Cur=%s RefOnly=%s CurOnly=%s Elements=%s",
-                sorted(ref_connections),
-                sorted(cur_connections),
-                sorted(set(ref_connections) - set(cur_connections)),
-                sorted(set(cur_connections) - set(ref_connections)),
-                sorted(new_element_ids),
-            )
 
     def _capture_view_state(self) -> dict:
         return {
@@ -9915,47 +9680,6 @@ class TriangleViewerManual(
 
         self._filter_auto_scenarios_by_prefix_edges(clicked_tid)
 
-    def _scenario_prefix_edge_steps_legacy(self, scen, upto_index: int):
-        """
-        Retourne la liste des (edge_out, edge_in) pour les liaisons entre
-        triangles consécutifs, de 0->1->...->upto_index.
-        - upto_index est INCLUS côté triangle, donc il y a upto_index étapes.
-        """
-        if scen is None:
-            return None
-        groups = getattr(scen, "groups", None)
-        if not groups:
-            return None
-
-        # Contrat: groups/nodes doivent fournir edge_in/edge_out (normalisation centralisée)
-        self._normalize_all_groups(scen)
-
-        # prendre la chaîne la plus longue (design actuel = un seul groupe)
-        best_nodes = None
-        for g in (groups or {}).values():
-            nodes = (g or {}).get("nodes") or []
-            if best_nodes is None or len(nodes) > len(best_nodes):
-                best_nodes = nodes
-        nodes = best_nodes or []
-        if len(nodes) < upto_index + 1:
-            return None
-
-        steps = []
-        for i in range(upto_index):
-            a = nodes[i] or {}
-            b = nodes[i + 1] or {}
-
-            eout = a.get("edge_out")
-            ein = b.get("edge_in")
-            if not eout or not ein:
-                raise RuntimeError(
-                    f"scenario_prefix_edge_steps: edge manquant i={i} "
-                    f"edge_out={eout!r} edge_in={ein!r}"
-                )
-
-            steps.append((eout, ein))
-        return steps
-
     def _scenario_prefix_edge_steps(self, scen, upto_index: int):
         """Etapes Core du prefixe, depuis ``tri_ids`` et les attachments.
 
@@ -9981,8 +9705,8 @@ class TriangleViewerManual(
     def _filter_auto_scenarios_by_prefix_edges(self, clicked_tid: int):
         """
         Filtre les scénarios automatiques en conservant uniquement ceux
-        qui commencent par le même préfixe de triangles ET les mêmes arêtes
-        (edge_out / edge_in) entre triangles consécutifs, jusqu'au triangle cliqué.
+        qui commencent par le même préfixe de triangles ET les mêmes contraintes
+        TopologyAttachment entre triangles consécutifs, jusqu'au triangle cliqué.
 
         Le scénario actif est la référence absolue et ne peut jamais être supprimé.
         """
@@ -10002,23 +9726,11 @@ class TriangleViewerManual(
         prefix = tri_ids[: idx + 1]
 
         ref_steps = self._scenario_prefix_edge_steps(active, idx)
-        legacy_ref_steps = None
-        legacy_oracle_available = True
-        try:
-            legacy_ref_steps = self._scenario_prefix_edge_steps_legacy(active, idx)
-        except Exception as exc:
-            legacy_oracle_available = False
-            MIG_GEO_LOGGER.warning(
-                "[MIG-GEO-006] Oracle legacy indisponible Ref=%s Prefix=%s Error=%s",
-                getattr(active, "name", "(sans nom)"), prefix, exc,
-            )
         if ref_steps is None:
-            raise RuntimeError("[FILTER] Données d'arêtes manquantes dans le scénario actif (groups/nodes)")
+            raise RuntimeError("[FILTER] Données topologiques manquantes dans le scénario actif")
 
         kept = []
         removed = 0
-        comparisons_ok = 0
-        comparisons_ko = 0
 
         for scen in self.scenarios:
             # Le scénario actif est TOUJOURS conservé
@@ -10035,35 +9747,9 @@ class TriangleViewerManual(
                 removed += 1
                 continue
 
-            # 2) mêmes arêtes utilisées pour chaîner le préfixe
+            # 2) mêmes contraintes TopologyAttachment dans le préfixe
             steps = self._scenario_prefix_edge_steps(scen, idx)
-            core_keep = steps == ref_steps
-            legacy_steps = None
-            legacy_keep = None
-            if legacy_oracle_available:
-                try:
-                    legacy_steps = self._scenario_prefix_edge_steps_legacy(scen, idx)
-                    legacy_keep = legacy_steps == legacy_ref_steps
-                except Exception as exc:
-                    legacy_oracle_available = False
-                    MIG_GEO_LOGGER.warning(
-                        "[MIG-GEO-006] Oracle legacy indisponible Ref=%s Candidate=%s Prefix=%s Error=%s",
-                        getattr(active, "name", "(sans nom)"),
-                        getattr(scen, "name", "(sans nom)"), prefix, exc,
-                    )
-            if legacy_keep is not None:
-                if legacy_keep == core_keep:
-                    comparisons_ok += 1
-                else:
-                    comparisons_ko += 1
-                    MIG_GEO_LOGGER.warning(
-                        "[MIG-GEO-006] Prefix filter divergence Ref=%s Candidate=%s Prefix=%s "
-                        "LegacySteps=%r CoreSteps=%r LegacyDecision=%s CoreDecision=%s",
-                        getattr(active, "name", "(sans nom)"),
-                        getattr(scen, "name", "(sans nom)"), prefix,
-                        legacy_steps, steps, legacy_keep, core_keep,
-                    )
-            if not core_keep:
+            if steps != ref_steps:
                 removed += 1
                 continue
 
@@ -10077,16 +9763,6 @@ class TriangleViewerManual(
 
         self._refresh_scenario_listbox()
         self._set_active_scenario(self.active_scenario_index)
-        if comparisons_ko:
-            MIG_GEO_LOGGER.warning(
-                "[MIG-GEO-006] Prefix filter legacy/core: KO Ref=%s OK=%s KO=%s",
-                getattr(active, "name", "(sans nom)"), comparisons_ok, comparisons_ko,
-            )
-        elif legacy_oracle_available:
-            MIG_GEO_LOGGER.info(
-                "[MIG-GEO-006] Prefix filter legacy/core: OK Ref=%s Compared=%s",
-                getattr(active, "name", "(sans nom)"), comparisons_ok,
-            )
 
     def _ctx_flip_selected(self):
         """
