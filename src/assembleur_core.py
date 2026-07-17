@@ -2571,7 +2571,7 @@ class TopologyWorld:
         return True
 
     def simulateOverlapTopologique(self,
-                                   groupDest : TopologyGroup, groupMob: TopologyGroup,
+                                   groupDest : TopologyGroup | str, groupMob: TopologyGroup | str,
                                    attachments : list[TopologyAttachment],
                                    debug : bool = False) -> bool:
         """
@@ -2644,8 +2644,10 @@ class TopologyWorld:
         if groupMob is None or groupDest is None:
             return True
 
-        gid_mob = self.find_group(str(groupMob.group_id))
-        gid_dest = self.find_group(str(groupDest.group_id))
+        group_mob_id = groupMob if isinstance(groupMob, str) else groupMob.group_id
+        group_dest_id = groupDest if isinstance(groupDest, str) else groupDest.group_id
+        gid_mob = self.find_group(str(group_mob_id))
+        gid_dest = self.find_group(str(group_dest_id))
         if not gid_mob or not gid_dest or gid_mob == gid_dest:
             return True
 
@@ -2996,6 +2998,39 @@ class TopologyWorld:
     def group_members(self, group_id: str) -> list[str]:
         c = self.find_group(group_id)
         return list(self._group_members.get(c, [c]))
+
+    def getLiveGroupIds(self) -> list[str]:
+        """Retourne les IDs canoniques, uniques et ordonnés des groupes exploitables.
+
+        Cette vue publique masque les alias DSU présents dans ``groups``. Elle
+        conserve volontairement les groupes canoniques vides encore enregistrés
+        par le monde : leur nettoyage relève d'un chantier Core distinct.
+        """
+        canonical_ids = {
+            str(self.find_group(str(group_id)))
+            for group_id in list(self.groups.keys())
+        }
+        return sorted(
+            core_group_id
+            for core_group_id in canonical_ids
+            if core_group_id in self.groups
+        )
+
+    def hasLiveGroup(self, core_group_id: str) -> bool:
+        """Indique si un ID canonique désigne un groupe exploitable enregistré."""
+        key = str(core_group_id or "")
+        return bool(key) and key in self.groups and self.find_group(key) == key
+
+    def getGroupElementIds(self, core_group_id: str) -> list[str]:
+        """Retourne une copie déterministe des éléments d'un groupe canonique.
+
+        Le contrat public impose un ``core_group_id`` déjà canonique ; le
+        registre ``groups`` et les alias DSU restent internes au Core.
+        """
+        key = str(core_group_id or "")
+        if not self.hasLiveGroup(key):
+            return []
+        return list(self.groups[key].element_ids)
 
     # --- Elements ---
     def add_element_as_new_group(self, element: TopologyElement) -> str:

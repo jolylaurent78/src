@@ -767,12 +767,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 )
                 scen.topoWorld = topoWorld_scen
 
-                xs, ys = [], []
-                for t in last_drawn:
-                    for k in ("O", "B", "L"):
-                        xs.append(float(t["pts"][k][0]))
-                        ys.append(float(t["pts"][k][1]))
-                bbox = (min(xs), min(ys), max(xs), max(ys))
                 groups = {
                     1: {
                         "id": 1,
@@ -780,7 +774,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                             {"tid": 0, "edge_in": None, "edge_out": None},
                             {"tid": 1, "edge_in": None, "edge_out": None},
                         ],
-                        "bbox": bbox,
                     }
                 }
                 groups[1]["topoGroupId"] = last_drawn[0].get("topoGroupId")
@@ -986,7 +979,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
 
                     # On rebuild cache et contours pour éviter les surprises
                     topoWorld_prev.rebuildGroupElementLists()
-                    for gid in list(topoWorld_prev.groups.keys()):
+                    for gid in topoWorld_prev.getLiveGroupIds():
                         topoWorld_prev.ensureConceptGraph(gid)
 
                     pass  # Point de debug
@@ -1021,11 +1014,12 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                             # group ids depuis les elementIds
                             gidDest = topoWorld_prev.get_group_of_element(last_drawn_prev[-1]["topoElementId"])
                             gidMob = topoWorld_prev.get_group_of_element(last_drawn_base[pos0]["topoElementId"])
-                            # simulateOverlapTopologique attend des TopologyGroup (pas des str)
-                            gDest = topoWorld_prev.groups[topoWorld_prev.find_group(gidDest)]
-                            gMob = topoWorld_prev.groups[topoWorld_prev.find_group(gidMob)]
-
-                            overlap = topoWorld_prev.simulateOverlapTopologique(gDest, gMob, topoAttachments, debug=False)
+                            overlap = topoWorld_prev.simulateOverlapTopologique(
+                                gidDest,
+                                gidMob,
+                                topoAttachments,
+                                debug=False,
+                            )
                             if overlap:
                                 dbg_overlap += 1
                                 continue
@@ -1273,15 +1267,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
 
             # Groupe unique
             idxs = list(range(len(last_drawn)))
-            xs, ys = [], []
-            for k in idxs:
-                t = last_drawn[k]
-                for vkey in ("O", "B", "L"):
-                    xs.append(float(t["pts"][vkey][0]))
-                    ys.append(float(t["pts"][vkey][1]))
-            bbox = (min(xs), min(ys), max(xs), max(ys))
             groups = {
-                1: {"id": 1, "nodes": [{"tid": k, "edge_in": None, "edge_out": None} for k in idxs], "bbox": bbox},
+                1: {"id": 1, "nodes": [{"tid": k, "edge_in": None, "edge_out": None} for k in idxs]},
             }
             # Enrichit les nodes (vkey_in / vkey_out) en déduisant l’arête partagée via la géométrie
             AlgoQuadrisParPaires._fill_group_vkeys_from_geometry(last_drawn, groups, Q=1e-6)

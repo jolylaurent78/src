@@ -32,8 +32,9 @@ class _VertexWorld:
         assert element_id in {"T01", "T02"}
         return "G001"
 
-    def find_group(self, group_id):
-        return str(group_id)
+    def getGroupElementIds(self, core_group_id):
+        assert core_group_id == "G001"
+        return ["T01", "T02"]
 
 
 def _attachment(kind, a_type, a_element, a_index, b_type, b_element, b_index, params=None):

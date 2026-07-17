@@ -836,12 +836,11 @@ def loadScenarioXml(viewer, path: str):
                 if "group" in viewer._last_drawn[tid]:
                     del viewer._last_drawn[tid]["group"]
 
-            grp = {"id": gid, "nodes": nodes, "bbox": None}
+            grp = {"id": gid, "nodes": nodes}
             grp_topo_gid = str(g_el.get("topoGroupId", "") or "").strip()
             if grp_topo_gid:
                 grp["topoGroupId"] = grp_topo_gid
             viewer.groups[gid] = grp
-            viewer._recompute_group_bbox(gid)
 
             if len(nodes) >= 2:
                 for i in range(len(nodes) - 1):
@@ -934,7 +933,7 @@ def loadScenarioXml(viewer, path: str):
             elif str(canonical_gid) != str(cgid):
                 raise ValueError(f"Group {gid} topoGroupId mismatch with core DSU canonical.")
 
-        if canonical_gid is None or str(canonical_gid) not in world.groups:
+        if canonical_gid is None or not world.hasLiveGroup(str(canonical_gid)):
             raise ValueError(f"Group {gid} topoGroupId mismatch with core DSU canonical.")
 
         ui_topo_gid = g.get("topoGroupId", None)

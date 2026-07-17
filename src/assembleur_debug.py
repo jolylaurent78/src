@@ -27,30 +27,32 @@ def listTopoGroups(topoWorld, rebuild: bool = True):
         topoWorld.rebuildGroupElementLists()
 
     print("=== TopologyWorld Groups ===")
-    if not getattr(topoWorld, "groups", None):
+    live_group_ids = topoWorld.getLiveGroupIds()
+    if not live_group_ids:
         print("  (no groups)")
         return
 
-    for gid in sorted(topoWorld.groups.keys()):
-        gidc = topoWorld.find_group(gid)
-
-        g = topoWorld.groups.get(gidc)
-        if g is None:
-            continue
-
-        nb_elems = len(getattr(g, "element_ids", []))
-        nb_att = len(getattr(g, "attachment_ids", []))
+    for gid in live_group_ids:
+        element_ids = topoWorld.getGroupElementIds(gid)
+        nb_elems = len(element_ids)
+        element_id_set = set(element_ids)
+        nb_att = sum(
+            1
+            for attachment in getattr(topoWorld, "attachments", {}).values()
+            if str(getattr(attachment.feature_a, "element_id", "")) in element_id_set
+            and str(getattr(attachment.feature_b, "element_id", "")) in element_id_set
+        )
 
         # concept cache (peut être stale si graphValid=False, mais utile)
         try:
-            c = topoWorld._concept_cache(gidc)
+            c = topoWorld._concept_cache(gid)
             nb_nodes = len(getattr(c, "nodes", {}))
             graph_ok = getattr(c, "graphValid", None)
         except Exception:
             nb_nodes = "?"
             graph_ok = None
 
-        print(f"- {gidc} | elements={nb_elems} | attachments={nb_att} | conceptNodes={nb_nodes} | graphValid={graph_ok}")
+        print(f"- {gid} | elements={nb_elems} | attachments={nb_att} | conceptNodes={nb_nodes} | graphValid={graph_ok}")
 
 
 def plotLastDrawn(lastDrawn: List[Dict[str, Any]], showIds: bool = True, ax=None):
@@ -120,12 +122,10 @@ def plotTopoWorldBoundaries(topoWorld, groupIds=None, showNodeIds=False, ax=None
     
     artists = []
 
-    gids = groupIds
-    if gids is None:
-        gids = list(getattr(topoWorld, "groups", {}).keys())
+    gids = topoWorld.getLiveGroupIds() if groupIds is None else groupIds
 
     for gid in gids:
-        gid = topoWorld.find_group(str(gid))
+        gid = str(gid)
 
         topoWorld.ensureConceptGeom(gid)
         topoWorld.computeBoundary(gid)
@@ -188,7 +188,7 @@ def plotConceptGraph(topoWorld, groupId: str, ax=None, showNodeIds: bool = True)
 
     artists = []
 
-    gid = topoWorld.find_group(str(groupId))
+    gid = str(groupId)
 
     # important: construit le cache concept (nodes + edges)
     c = topoWorld.ensureConceptGraph(gid)
