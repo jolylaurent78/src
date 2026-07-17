@@ -120,7 +120,7 @@ def test_passive_group_geometry_uses_core_members_not_legacy_nodes():
     viewer._invalidate_last_drawn_topo_index()
 
     assert viewer._recompute_group_bbox(10) == (0.0, 0.0, 13.0, 4.0)
-    assert tuple(viewer._group_centroid(10)) == (6.0, 4.0 / 3.0)
+    assert tuple(viewer._group_centroid(canonical_group_id)) == (6.0, 4.0 / 3.0)
     assert len(viewer._group_outline_segments(10)) == 6
 
     # T02 porte volontairement un autre group_id UI : l'exclusion doit
