@@ -1265,11 +1265,27 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             scen.topoWorld = topoWorld_leaf
             scen.topoScenarioId = topoScenarioId
 
+            # La projection UI reçoit les groupes canoniques depuis l'état Core
+            # final de la branche, une fois tous les attachments appliqués.
+            for tid, entry in enumerate(last_drawn):
+                element_id = str(entry.get("topoElementId", "") or "").strip()
+                if not element_id:
+                    raise ValueError(
+                        f"Scenario auto final: triangle index={tid} sans topoElementId."
+                    )
+                topo_group_id = topoWorld_leaf.get_group_of_element(element_id)
+                if topo_group_id is None:
+                    raise ValueError(
+                        f"Scenario auto final: element {element_id} sans topoGroupId Core."
+                    )
+                entry["topoGroupId"] = str(topo_group_id)
+
             # Groupe unique
             idxs = list(range(len(last_drawn)))
             groups = {
                 1: {"id": 1, "nodes": [{"tid": k, "edge_in": None, "edge_out": None} for k in idxs]},
             }
+            groups[1]["topoGroupId"] = last_drawn[0]["topoGroupId"]
             # Enrichit les nodes (vkey_in / vkey_out) en déduisant l’arête partagée via la géométrie
             AlgoQuadrisParPaires._fill_group_vkeys_from_geometry(last_drawn, groups, Q=1e-6)
 

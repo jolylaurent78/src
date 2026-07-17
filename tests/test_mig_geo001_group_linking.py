@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import numpy as np
+
 from src.assembleur_core import ScenarioAssemblage, TopologyElement, TopologyNodeType
 from src.assembleur_tk import (
     TriangleViewerManual,
@@ -54,6 +56,126 @@ def test_group_fields_keep_only_group_identifier_cache():
 
     assert len(triangle) == 1
     assert triangle.get("group_id") is None
+
+
+def test_move_group_release_uses_captured_core_members_before_legacy_projection():
+    """MIG-GROUP-017: le commit géométrique ne lit pas ``groups[*][nodes]``."""
+
+    class _World:
+        def __init__(self):
+            self.applied = []
+
+        def get_group_of_element(self, element_id):
+            return "G-TARGET" if element_id == "T02" else "G-MOBILE"
+
+        def beginTopoTransaction(self):
+            self.applied.append("begin")
+
+        def apply_attachments(self, attachments):
+            self.applied.append(tuple(attachments))
+            return "G-MERGED"
+
+        def commitTopoTransaction(self):
+            self.applied.append("commit")
+
+    class _Epts:
+        kind = "edge-edge"
+
+        def computeRigidTransform(self):
+            return np.eye(2), np.array([2.0, -1.0])
+
+        def createTopologyAttachments(self, **_kwargs):
+            return [object()]
+
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    mobile_entry = {
+        "topoElementId": "T01",
+        "group_id": None,
+        "pts": {"O": [0.0, 0.0], "B": [3.0, 0.0], "L": [0.0, 4.0]},
+    }
+    viewer._last_drawn = [
+        mobile_entry,
+        {
+            "topoElementId": "T02",
+            "group_id": None,
+            "pts": {"O": [10.0, 0.0], "B": [13.0, 0.0], "L": [10.0, 4.0]},
+        },
+    ]
+    world = _World()
+    viewer._get_active_scenario = lambda: SimpleNamespace(topoWorld=world)
+    viewer._sel = {
+        "mode": "move_group",
+        "anchor": {"type": "vertex", "tid": 0, "vkey": "O"},
+        "suppress_assist": False,
+        "core_group_id": "G-MOBILE",
+        "ui_group_id": 42,
+        "move_member_entries": [mobile_entry],
+    }
+    viewer._edge_choice = (0, "O", 1, "O", _Epts())
+    viewer._ctrl_down = False
+    viewer._clock_dragging = False
+    viewer._bg_resizing = None
+    viewer._bg_moving = None
+    viewer._pan_anchor = None
+    viewer._drag = None
+    viewer.groups = {}  # L'absence du groupe UI ne doit pas bloquer le commit Core.
+    viewer.auto_geom_state = None
+    viewer._clear_edge_highlights = lambda: None
+    viewer._reset_assist = lambda: None
+    viewer._redraw_from = lambda _entries: None
+    synced_group_ids = []
+    viewer._sync_group_elements_pose_to_core = synced_group_ids.append
+
+    viewer._on_canvas_left_up(SimpleNamespace())
+
+    assert mobile_entry["pts"]["O"] == [2.0, -1.0]
+    assert mobile_entry["pts"]["B"] == [5.0, -1.0]
+    assert world.applied[0] == "begin"
+    assert world.applied[-1] == "commit"
+    assert synced_group_ids == ["G-MOBILE", "G-MOBILE"]
+
+
+def test_legacy_merge_and_last_drawn_projection_have_separate_responsibilities():
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer._last_drawn = [
+        {
+            "group_id": 10,
+            "pts": {"O": [0.0, 0.0], "B": [3.0, 0.0], "L": [0.0, 4.0]},
+        },
+        {
+            "group_id": 20,
+            "pts": {"O": [10.0, 0.0], "B": [13.0, 0.0], "L": [10.0, 4.0]},
+        },
+    ]
+    viewer.groups = {
+        10: {"id": 10, "nodes": [{"tid": 0}]},
+        20: {"id": 20, "nodes": [{"tid": 1}]},
+    }
+    choice = (
+        0,
+        "O",
+        1,
+        "O",
+        ([0.0, 0.0], [3.0, 0.0], [10.0, 0.0], [13.0, 0.0]),
+    )
+
+    merged_nodes = viewer._merge_legacy_groups(
+        10,
+        20,
+        {"tid": 0, "vkey": "O"},
+        choice,
+    )
+
+    # La structure UI est fusionnée, mais la projection n'est pas encore écrite.
+    assert 20 not in viewer.groups
+    assert [node["tid"] for node in merged_nodes] == [0, 1]
+    assert viewer._last_drawn[1]["group_id"] == 20
+
+    viewer._merge_last_drawn_projection(10, merged_nodes, "G-MERGED")
+
+    assert viewer._last_drawn[1]["group_id"] == 10
+    assert viewer._last_drawn[0]["topoGroupId"] == "G-MERGED"
+    assert viewer._last_drawn[1]["topoGroupId"] == "G-MERGED"
 
 
 def test_core_to_last_drawn_helpers_use_active_index_and_core_group():

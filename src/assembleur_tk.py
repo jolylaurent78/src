@@ -4942,50 +4942,6 @@ class TriangleViewerManual(
         else:
             self._apply_view_state(getattr(scen, "view_state", None))
 
-        # --- AUTO: réconcilier les métadonnées de groupe avec scen.groups ---
-        # Certains chemins (redraw / sélection / tools) se basent encore sur les champs portés par les triangles.
-        # Si un scénario auto fournit un dictionnaire groups cohérent mais que les triangles n'ont pas été annotés,
-        # on peut se retrouver avec un triangle "orphelin" ou des groupes recomposés de travers.
-
-        if getattr(scen, "source_type", "manual") == "auto" and isinstance(scen.groups, dict) and scen.last_drawn:
-            # 1) reset défensif
-            for _t in scen.last_drawn:
-                _t["group_id"] = None
-
-            # 2) appliquer groups -> triangles
-            for _gid, _g in scen.groups.items():
-                _nodes = (_g or {}).get("nodes", []) or []
-                for _nd in _nodes:
-                    _tid = _nd.get("tid")
-                    if _tid is None:
-                        continue
-                    _tid_i = int(_tid)
-
-                    if 0 <= _tid_i < len(scen.last_drawn):
-                        scen.last_drawn[_tid_i]["group_id"] = _gid
-
-            # 3) fallback : si un triangle n'est dans aucun node, on le rattache au 1er groupe
-            _first_gid = next(iter(scen.groups.keys()), None)
-            if _first_gid is not None:
-                for _t in scen.last_drawn:
-                    if _t.get("group_id") is None:
-                        _t["group_id"] = _first_gid
-
-            # 4) topoGroupId : propager triangle -> groupe UI (sécurisation)
-            for _gid, _g in scen.groups.items():
-                _nodes = (_g or {}).get("nodes", []) or []
-                if not _nodes:
-                    continue
-                _tid = _nodes[0].get("tid")
-                if _tid is None:
-                    continue
-                _tid_i = int(_tid)
-                if not (0 <= _tid_i < len(scen.last_drawn)):
-                    continue
-                _core_gid = scen.last_drawn[_tid_i].get("topoGroupId", None)
-                if _core_gid is not None:
-                    scen.groups[_gid]["topoGroupId"] = _core_gid
-
         # Recalibrer _next_group_id si besoin
         self._next_group_id = (max(self.groups.keys()) + 1) if self.groups else 1
 
@@ -7028,7 +6984,6 @@ class TriangleViewerManual(
         # 2) Mode rotation de GROUPE : suivre la souris (sans bouton appuyé)
         if self._sel and self._sel.get("mode") == "rotate_group":
             sel = self._sel
-            gid = sel["gid"]
             pivot = sel["pivot"]
             wx = (event.x - self.offset[0]) / self.zoom
             wy = (self.offset[1] - event.y) / self.zoom
@@ -9389,7 +9344,6 @@ class TriangleViewerManual(
 
         # --- CAS MANUEL : rotation UI puis sync core ---
         # Déterminer le groupe (si présent)
-        gid = self._get_group_of_triangle(idx)
         rotate_members = self._prepare_core_group_operation_members("ROTATE", idx)
 
         c, s = math.cos(dtheta), math.sin(dtheta)
@@ -10018,6 +9972,114 @@ class TriangleViewerManual(
                 self._clear_edge_highlights()
             self._clock_apply_auto_ref_sync()
 
+    def _merge_last_drawn_projection(self, ui_group_id, nodes, core_group_id) -> None:
+        """Projette une fusion déjà décidée vers ``_last_drawn`` uniquement.
+
+        Cette méthode ne consulte ni ne modifie ``self.groups``. Les ``nodes``
+        sont la liste legacy déjà fusionnée par `_merge_legacy_groups`.
+        """
+        for node in nodes:
+            tid = node.get("tid")
+            if 0 <= tid < len(self._last_drawn):
+                self._last_drawn[tid]["group_id"] = ui_group_id
+                if core_group_id:
+                    self._last_drawn[tid]["topoGroupId"] = core_group_id
+
+    def _merge_legacy_groups(self, mobile_ui_group_id, target_ui_group_id, anchor, choice):
+        """Fusionne les structures UI historiques et retourne leurs nodes.
+
+        La projection ``_last_drawn`` est volontairement exclue : elle est
+        appliquée par `_merge_last_drawn_projection` après cette maintenance.
+        """
+        g_src = self.groups.get(mobile_ui_group_id)
+        g_tgt = self.groups.get(target_ui_group_id)
+        if not (g_src and g_tgt and anchor and choice):
+            return None
+
+        # 2.1 Localiser ancre (dans src) et cible (dans tgt)
+        anchor_tid = anchor.get("tid")
+        anchor_vkey = anchor.get("vkey")
+        (_, _, idx_t, vkey_t, (m_a, m_b, t_a, t_b)) = choice
+        nodes_src = g_src["nodes"]
+        nodes_tgt = g_tgt["nodes"]
+        pos_anchor = next((i for i, nd in enumerate(nodes_src) if nd.get("tid") == anchor_tid), None)
+        pos_target = next((i for i, nd in enumerate(nodes_tgt) if nd.get("tid") == idx_t), None)
+        if pos_anchor is None or pos_target is None:
+            # Fallback historique : append brut, sans modifier _last_drawn ici.
+            for nd in nodes_tgt:
+                tid2 = nd.get("tid")
+                if tid2 is None:
+                    continue
+                nodes_src.append({"tid": tid2,
+                                  "vkey_in": nd.get("vkey_in"),
+                                  "vkey_out": nd.get("vkey_out")})
+        else:
+
+            def _vkey_from_point(P, pt, eps=EPS_WORLD):
+                x, y = float(pt[0]), float(pt[1])
+                for kk in ("O", "B", "L"):
+                    if abs(float(P[kk][0]) - x) <= eps and abs(float(P[kk][1]) - y) <= eps:
+                        return kk
+                return None
+
+            def _edge_from_vkeys(a, b):
+                if not a or not b or a == b:
+                    return None
+                s = {a, b}
+                if s == {"O", "B"}:
+                    return "OB"
+                if s == {"B", "L"}:
+                    return "BL"
+                if s == {"L", "O"}:
+                    return "LO"
+                return None
+
+            def _opp_vertex(a, b):
+                if a is None or b is None:
+                    return None
+                for kk in ("O", "B", "L"):
+                    if kk != a and kk != b:
+                        return kk
+                return None
+
+            def rotate(L, k):
+                k = k % len(L)
+                return L[k:] + L[:k]
+
+            # On privilégie « coller après l'ancre », comme avant l'extraction.
+            insert_after = True
+            tgt_rot = rotate(list(nodes_tgt), pos_target)
+            nd_anchor = nodes_src[pos_anchor]
+            if insert_after:
+                Pm = self._last_drawn[anchor_tid]["pts"]
+                Pt = self._last_drawn[idx_t]["pts"]
+                mob_neigh = _vkey_from_point(Pm, m_b)
+                tgt_neigh = _vkey_from_point(Pt, t_b)
+                nd_anchor["vkey_out"] = _opp_vertex(anchor_vkey, mob_neigh)
+                nd_anchor["edge_out"] = _edge_from_vkeys(anchor_vkey, mob_neigh)
+                tgt_rot[0] = {"tid": tgt_rot[0]["tid"],
+                              "vkey_in": _opp_vertex(vkey_t, tgt_neigh),
+                              "vkey_out": tgt_rot[0].get("vkey_out"),
+                              "edge_in": _edge_from_vkeys(vkey_t, tgt_neigh),
+                              "edge_out": tgt_rot[0].get("edge_out")}
+                nodes_src[pos_anchor + 1:pos_anchor + 1] = tgt_rot
+            else:
+                Pm = self._last_drawn[anchor_tid]["pts"]
+                Pt = self._last_drawn[idx_t]["pts"]
+                mob_neigh = _vkey_from_point(Pm, m_b)
+                tgt_neigh = _vkey_from_point(Pt, t_b)
+                nd_anchor["vkey_in"] = _opp_vertex(anchor_vkey, mob_neigh)
+                nd_anchor["edge_in"] = _edge_from_vkeys(anchor_vkey, mob_neigh)
+                tgt_rot[-1] = {"tid": tgt_rot[-1]["tid"],
+                               "vkey_in": tgt_rot[-1].get("vkey_in"),
+                               "vkey_out": _opp_vertex(vkey_t, tgt_neigh),
+                               "edge_in": tgt_rot[-1].get("edge_in"),
+                               "edge_out": _edge_from_vkeys(vkey_t, tgt_neigh)}
+                nodes_src[pos_anchor:pos_anchor] = tgt_rot
+
+        del self.groups[target_ui_group_id]
+        return nodes_src
+
     def _on_canvas_left_up(self, event):
         # Horloge : fin de drag
         if self._clock_dragging:
@@ -10119,6 +10181,11 @@ class TriangleViewerManual(
             # et que l'aide de collage était active (pas en déconnexion).
             anchor = self._sel.get("anchor")
             suppress = self._sel.get("suppress_assist")
+            # MIG-GROUP-017 : les données métier du geste sont Core. Les IDs
+            # UI ne restent nécessaires que pour projeter la fusion legacy.
+            mobile_core_group_id = self._sel.get("core_group_id")
+            mobile_ui_group_id = self._sel.get("ui_group_id")
+            move_member_entries = self._sel.get("move_member_entries")
 
             # On nettoie l'aide visuelle dans tous les cas
             self._clear_edge_highlights()
@@ -10144,19 +10211,21 @@ class TriangleViewerManual(
                 scen = self._get_active_scenario()
                 world = scen.topoWorld
                 R, T = epts.computeRigidTransform()
-                # Appliquer p' = R @ p + T à tous
-                gid = self._sel.get("ui_group_id")
-                g = self.groups.get(gid)
-                if g:
-                    for node in g["nodes"]:
-                        tid = node.get("tid")
-                        if 0 <= tid < len(self._last_drawn):
-                            P = self._last_drawn[tid]["pts"]
-                            for k in ("O", "B", "L"):
-                                p = np.array(P[k], dtype=float)
-                                p_fin = (R @ p) + T
-                                P[k][0] = float(p_fin[0])
-                                P[k][1] = float(p_fin[1])
+                # MIG-GROUP-017 : appliquer p' = R @ p + T aux membres
+                # capturés au démarrage du geste, jamais via groups[*][nodes].
+                if move_member_entries is None and mobile_core_group_id:
+                    move_member_entries = self._get_projected_elements_for_core_group(
+                        str(mobile_core_group_id)
+                    )
+                for triangle in move_member_entries or ():
+                    P = triangle.get("pts")
+                    if P is None:
+                        continue
+                    for k in ("O", "B", "L"):
+                        p = np.array(P[k], dtype=float)
+                        p_fin = (R @ p) + T
+                        P[k][0] = float(p_fin[0])
+                        P[k][1] = float(p_fin[1])
 
                 # ------------------------------------------------------------
                 # Topologie Core (intention) : edge-edge OU vertex-edge
@@ -10165,165 +10234,70 @@ class TriangleViewerManual(
                 # ------------------------------------------------------------
                 new_core_gid = None
 
-                tgt_gid = self._last_drawn[idx_t].get("group_id", None)
-                mob_gid = self._sel.get("ui_group_id")
-                if world is not None and mob_gid is not None and tgt_gid is not None and tgt_gid != mob_gid:
-                    tri_m = self._last_drawn[int(anchor.get("tid"))]
+                target_core_group_id = None
+                if world is not None:
                     tri_t = self._last_drawn[int(idx_t)]
-                    element_id_m = tri_m.get("topoElementId", None)
                     element_id_t = tri_t.get("topoElementId", None)
-
-                    if element_id_m and element_id_t:
-                        # La pose Core doit refléter ce que Tk a effectivement appliqué
-                        self._sync_group_elements_pose_to_core(
-                            str(world.get_group_of_element(str(element_id_m)))
+                    if element_id_t:
+                        target_core_group_id = str(
+                            world.get_group_of_element(str(element_id_t))
                         )
 
-                        kind = str(epts.kind).strip().lower()
-                        if kind not in ("edge-edge", "vertex-edge"):
-                            raise RuntimeError(f"kind inattendu: {kind}")
+                # La décision métier « deux groupes différents » relève du
+                # Core. Les IDs UI ne participent qu'à la projection ci-dessous.
+                if (
+                    world is not None
+                    and mobile_core_group_id
+                    and target_core_group_id
+                    and str(target_core_group_id) != str(mobile_core_group_id)
+                ):
+                    # La pose Core doit refléter ce que Tk a effectivement appliqué.
+                    self._sync_group_elements_pose_to_core(str(mobile_core_group_id))
 
-                        attachments_to_apply = epts.createTopologyAttachments(
-                            world=world,
-                            debug=False,
+                    kind = str(epts.kind).strip().lower()
+                    if kind not in ("edge-edge", "vertex-edge"):
+                        raise RuntimeError(f"kind inattendu: {kind}")
+
+                    attachments_to_apply = epts.createTopologyAttachments(
+                        world=world,
+                        debug=False,
+                    )
+                    if attachments_to_apply:
+                        world.beginTopoTransaction()
+                        new_core_gid = world.apply_attachments(attachments_to_apply)
+                        world.commitTopoTransaction()
+
+                    # Projection legacy après la fusion autoritaire du Core.
+                    if new_core_gid and mobile_ui_group_id in self.groups:
+                        self.groups[mobile_ui_group_id]["topoGroupId"] = new_core_gid
+
+                # Projection UI historique, strictement après la fusion Core.
+                target_ui_group_id = self._last_drawn[idx_t].get("group_id", None)
+                if mobile_ui_group_id is not None and target_ui_group_id is not None:
+                    if target_ui_group_id != mobile_ui_group_id:
+                        merged_nodes = self._merge_legacy_groups(
+                            mobile_ui_group_id,
+                            target_ui_group_id,
+                            anchor,
+                            choice,
                         )
-                        if attachments_to_apply:
-                            world.beginTopoTransaction()
-                            new_core_gid = world.apply_attachments(attachments_to_apply)
-                            world.commitTopoTransaction()
-
-                        if new_core_gid:
-                            self.groups[mob_gid]["topoGroupId"] = new_core_gid
-
-                # ====== FUSION DE GROUPE APRÈS COLLAGE (groupe ↔ groupe uniquement) ======
-                tgt_gid = self._last_drawn[idx_t].get("group_id", None)
-                mob_gid = gid
-                if mob_gid is not None and tgt_gid is not None:
-                    if tgt_gid != mob_gid:
-                        # Fusionner tgt_gid → mob_gid AVEC LIEN EXPLICITE
-                        g_src = self.groups.get(mob_gid)
-                        g_tgt = self.groups.get(tgt_gid)
-                        anchor = self._sel.get("anchor")  # {"type":"vertex","tid":...,"vkey":...}
-                        choice = self._edge_choice  # (... idx_t, vkey_t, ...)
-                        if g_src and g_tgt and anchor and choice:
-                            # 2.1 Localiser ancre (dans src) et cible (dans tgt)
-                            anchor_tid = anchor.get("tid")
-                            anchor_vkey = anchor.get("vkey")
-                            (_, _, idx_t, vkey_t, (m_a, m_b, t_a, t_b)) = choice
-                            nodes_src = g_src["nodes"]
-                            nodes_tgt = g_tgt["nodes"]
-                            pos_anchor = next((i for i, nd in enumerate(nodes_src) if nd.get("tid") == anchor_tid), None)
-                            pos_target = next((i for i, nd in enumerate(nodes_tgt) if nd.get("tid") == idx_t), None)
-                            if pos_anchor is None or pos_target is None:
-                                # fallback: conserver l’ancien comportement (append brut)
-                                for nd in nodes_tgt:
-                                    tid2 = nd.get("tid")
-                                    if tid2 is None:
-                                        continue
-                                    self._last_drawn[tid2]["group_id"] = mob_gid
-                                    nodes_src.append({"tid": tid2,
-                                                      "vkey_in": nd.get("vkey_in"),
-                                                      "vkey_out": nd.get("vkey_out")})
-                            else:
-
-                                # --- util: retrouver la vkey ("O","B","L") d'un point exact d'un triangle ---
-                                def _vkey_from_point(P, pt, eps=EPS_WORLD):
-                                    x, y = float(pt[0]), float(pt[1])
-
-                                    for kk in ("O", "B", "L"):
-                                        if abs(float(P[kk][0]) - x) <= eps and abs(float(P[kk][1]) - y) <= eps:
-                                            return kk
-                                    return None
-
-                                # --- util: arête depuis 2 sommets (ex: ("L","B") -> "BL") ---
-                                def _edge_from_vkeys(a, b):
-                                    if not a or not b:
-                                        return None
-                                    if a == b:
-                                        return None
-                                    s = {a, b}
-                                    if s == {"O", "B"}:
-                                        return "OB"
-                                    if s == {"B", "L"}:
-                                        return "BL"
-                                    if s == {"L", "O"}:
-                                        return "LO"
-                                    return None
-
-                                # --- util: sommet opposé à l'arête (a,b) ---
-                                def _opp_vertex(a, b):
-                                    if a is None or b is None:
-                                        return None
-                                    for kk in ("O", "B", "L"):
-                                        if kk != a and kk != b:
-                                            return kk
-                                    return None
-
-                                # 2.2 Construire une vue pivotée de tgt pour que idx_t soit AU BORD collé
-                                def rotate(L, k):
-                                    k = k % len(L)
-                                    return L[k:]+L[:k]
-
-                                # On privilégie "coller APRES l'ancre": ancre --(out)-> [tgt...]
-                                insert_after = True
-                                tgt_rot = rotate(list(nodes_tgt), pos_target)  # idx_t devient tgt_rot[0]
-                                # Poser les marqueurs de lien complémentaires :
-                                nd_anchor = nodes_src[pos_anchor]
-                                if insert_after:
-                                    # ancre sort → cible entre : on stocke le SOMMET OPPOSÉ à l'arête partagée
-                                    Pm = self._last_drawn[anchor_tid]["pts"]
-                                    Pt = self._last_drawn[idx_t]["pts"]
-                                    mob_neigh = _vkey_from_point(Pm, m_b)
-                                    tgt_neigh = _vkey_from_point(Pt, t_b)
-                                    nd_anchor["vkey_out"] = _opp_vertex(anchor_vkey, mob_neigh)
-                                    nd_anchor["edge_out"] = _edge_from_vkeys(anchor_vkey, mob_neigh)
-                                    tgt_rot[0] = {"tid": tgt_rot[0]["tid"],
-                                                  "vkey_in": _opp_vertex(vkey_t, tgt_neigh),
-                                                  "vkey_out": tgt_rot[0].get("vkey_out"),
-                                                  "edge_in": _edge_from_vkeys(vkey_t, tgt_neigh),
-                                                  "edge_out": tgt_rot[0].get("edge_out")}
-                                    # insérer juste après l’ancre
-                                    nodes_src[pos_anchor+1:pos_anchor+1] = tgt_rot
-                                else:
-                                    # ancre entre ← cible sort : idem, stocker sommet opposé à l'arête partagée
-                                    Pm = self._last_drawn[anchor_tid]["pts"]
-                                    Pt = self._last_drawn[idx_t]["pts"]
-                                    mob_neigh = _vkey_from_point(Pm, m_b)
-                                    tgt_neigh = _vkey_from_point(Pt, t_b)
-                                    nd_anchor["vkey_in"] = _opp_vertex(anchor_vkey, mob_neigh)
-                                    nd_anchor["edge_in"] = _edge_from_vkeys(anchor_vkey, mob_neigh)
-                                    tgt_rot[-1] = {"tid": tgt_rot[-1]["tid"],
-                                                   "vkey_in": tgt_rot[-1].get("vkey_in"),
-                                                   "vkey_out": _opp_vertex(vkey_t, tgt_neigh),
-                                                   "edge_in": tgt_rot[-1].get("edge_in"),
-                                                   "edge_out": _edge_from_vkeys(vkey_t, tgt_neigh)}
-                                    # insérer juste avant l’ancre
-                                    nodes_src[pos_anchor:pos_anchor] = tgt_rot
-                                # MAJ group_id sur tout le bloc inséré
-                                for nd in tgt_rot:
-                                    tid2 = nd["tid"]
-                                    if 0 <= tid2 < len(self._last_drawn):
-                                        self._last_drawn[tid2]["group_id"] = mob_gid
-                            # 2.3 Supprimer l'ancien groupe cible
-                            del self.groups[tgt_gid]
-                            for nd in nodes_src:
-                                tid2 = nd["tid"]
-                                if 0 <= tid2 < len(self._last_drawn):
-                                    self._last_drawn[tid2]["group_id"] = mob_gid
-                                    if new_core_gid:
-                                        self._last_drawn[tid2]["topoGroupId"] = new_core_gid
+                        if merged_nodes is not None:
+                            self._merge_last_drawn_projection(
+                                mobile_ui_group_id,
+                                merged_nodes,
+                                new_core_gid,
+                            )
                             if new_core_gid:
-                                self.groups[mob_gid]["topoGroupId"] = new_core_gid
-                            self.status.config(text=f"Groupes fusionnés avec lien: #{tgt_gid} → #{mob_gid}.")
+                                self.groups[mobile_ui_group_id]["topoGroupId"] = new_core_gid
+                            self.status.config(
+                                text=f"Groupes fusionnés avec lien: #{target_ui_group_id} → #{mobile_ui_group_id}."
+                            )
                     else:
-                        # cible déjà dans le même groupe → rien à faire côté structure
-                        self.status.config(text=f"Groupe collé (même groupe #{mob_gid}).")
-                # ====== /FUSION ======
+                        self.status.config(text=f"Groupe collé (même groupe #{mobile_ui_group_id}).")
 
             # Sync Core : pose par élément (pas de pose groupe)
-            core_group_id = self._sel.get("core_group_id") if isinstance(self._sel, dict) else None
-            if core_group_id is not None:
-                self._sync_group_elements_pose_to_core(str(core_group_id))
+            if mobile_core_group_id is not None:
+                self._sync_group_elements_pose_to_core(str(mobile_core_group_id))
 
             # Fin (pas de snap : simple dépôt à la dernière position)
             # AUTO: persister position/rotation globale (carte, ordre)
