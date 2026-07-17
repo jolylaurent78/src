@@ -778,8 +778,6 @@ class TriangleViewerDictionaryMixin:
         self._ctx_menu.add_command(label=label_del, command=(self._ctx_clear_word if exists else None),
                                    state=("normal" if exists else "disabled"))
 
-    # ---------- DEBUG: toggle du filtre d'intersection au highlight ----------
-
     def _simulation_cancel_dictionary_filter(self):
         """Annule le filtrage visuel du dictionnaire (styles)."""
         was_active = bool(self._dico_filter_active) or (self._dico_filter_ref_angle_deg is not None)

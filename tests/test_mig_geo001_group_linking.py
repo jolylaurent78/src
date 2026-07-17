@@ -120,12 +120,6 @@ def test_passive_group_geometry_uses_core_members_not_legacy_nodes():
     viewer._invalidate_last_drawn_topo_index()
 
     assert tuple(viewer._group_centroid(canonical_group_id)) == (6.0, 4.0 / 3.0)
-    assert len(viewer._group_outline_segments(canonical_group_id)) == 6
-
-    legacy_groups = viewer.groups
-    viewer.groups = {}
-    assert len(viewer._outline_for_item(0, eps=1e-6)) == 6
-    viewer.groups = legacy_groups
 
     # T02 porte volontairement un autre group_id UI : l'exclusion doit
     # neanmoins suivre son groupe Core commun avec T01.
@@ -156,9 +150,11 @@ def test_draw_group_outlines_enumerates_canonical_core_groups_without_ui_groups(
     world.getLiveGroupIds = lambda: (
         live_group_calls.append(True) or original_get_live_group_ids()
     )
-    viewer._group_outline_segments_topo = lambda group_id: (
-        requested_core_group_ids.append(group_id) or [((0.0, 0.0), (1.0, 0.0))]
+    original_get_boundary_segments = world.getBoundarySegments
+    world.getBoundarySegments = lambda group_id: (
+        requested_core_group_ids.append(group_id) or original_get_boundary_segments(group_id)
     )
+    viewer._project_boundary_segments = lambda group_id, _segments: [((0.0, 0.0), (1.0, 0.0))]
 
     viewer._draw_group_outlines()
 
@@ -174,15 +170,9 @@ def test_chemin_context_resolves_core_group_without_ui_groups():
         toNodeId = "T01:N1"
 
     class _World:
-        def __init__(self):
-            self.boundary_requested_for = None
-
         def get_group_of_element(self, element_id):
             assert element_id == "T01"
             return "G-CORE"
-
-        def computeBoundary(self, group_id):
-            self.boundary_requested_for = group_id
 
         def getBoundarySegments(self, group_id):
             assert group_id == "G-CORE"
@@ -205,7 +195,6 @@ def test_chemin_context_resolves_core_group_without_ui_groups():
 
     viewer._ctx_capture_chemin_context(0, 4.0, 0.0)
 
-    assert world.boundary_requested_for == "G-CORE"
     assert viewer.ctxGroupId == "G-CORE"
     assert viewer.ctxStartNodeId == "CANON:T01:N1"
 
@@ -242,24 +231,6 @@ def test_projected_core_members_use_public_element_ids_api_only():
     viewer.active_scenario_index = 0
 
     assert viewer._get_projected_elements_for_core_group("G-CORE") == tuple(viewer._last_drawn)
-
-
-def test_group_outline_uses_boundary_api_without_dsu_or_groups_registry():
-    class _World:
-        def __init__(self):
-            self.requested_group_id = None
-
-        def getBoundarySegments(self, core_group_id):
-            self.requested_group_id = core_group_id
-            return []
-
-    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
-    world = _World()
-    viewer.scenarios = [SimpleNamespace(topoWorld=world)]
-    viewer.active_scenario_index = 0
-
-    assert viewer._group_outline_segments_topo("G-CORE") == []
-    assert world.requested_group_id == "G-CORE"
 
 
 def test_topo_index_can_be_invalidated_after_in_place_relink():

@@ -406,6 +406,15 @@ def buildEdgeChoiceEptsFromBest(
         return None
     mAId = getEquivalentNodeInElement(world, mATmpId, elementIdSrc)
     tAId = getEquivalentNodeInElement(world, tATmpId, elementIdDst)
+    if mAId is None or tAId is None:
+        if debug:
+            print(
+                "[EDGECHOICE] candidate rejected: concept anchor has no physical "
+                "vertex occurrence in boundary owner element "
+                f"mATmpId={mATmpId!r} elementIdSrc={elementIdSrc!r} mAId={mAId!r} "
+                f"tATmpId={tATmpId!r} elementIdDst={elementIdDst!r} tAId={tAId!r}"
+            )
+        return None
 
     src_anchor_vkey = world.getNodeType(mAId)
     dst_anchor_vkey = world.getNodeType(tAId)

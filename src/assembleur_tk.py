@@ -17,9 +17,6 @@ import tkinter.font as tkfont
 
 from PIL import Image
 
-from shapely.geometry import Polygon as _ShPoly
-from shapely.ops import unary_union as _sh_union
-
 # === Modules externalisés (découpage maintenable) ===
 from src.assembleur_core import (
     _build_local_triangle,
@@ -537,11 +534,6 @@ class TriangleViewerManual(
 
         # mode "déconnexion" activé par CTRL
         self._ctrl_down = False
-
-        # --- DEBUG: permettre de SKIP le test de chevauchement durant le highlight (F9) ---
-        self.debug_skip_overlap_highlight = False
-        # --- DEBUG: traces console pour l'assist de collage (F10 pour basculer) ---
-        self._debug_snap_assist = False
 
         # === Groupes (Étape A) ===
         self.groups: Dict[int, Dict] = {}
@@ -1404,17 +1396,6 @@ class TriangleViewerManual(
         if status_widget is not None:
             status_widget.config(text=message)
         return "break" if event is not None else path
-
-    # ---------- Dictionnaire : init ----------
-    def _toggle_skip_overlap_highlight(self, event=None):
-        self.debug_skip_overlap_highlight = not self.debug_skip_overlap_highlight
-        state = "IGNORE" if self.debug_skip_overlap_highlight else "APPLIQUE"
-        self.status.config(text=f"[DEBUG] Chevauchement (highlight): {state} — F9 pour basculer")
-
-    def _toggle_debug_snap_assist(self, event=None):
-        self._debug_snap_assist = not bool(self._debug_snap_assist)
-        state = "ON" if self._debug_snap_assist else "OFF"
-        self.status.config(text=f"[DEBUG] Snap assist: {state} — F10 pour basculer")
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -5265,11 +5246,6 @@ class TriangleViewerManual(
 
         # Audit Core ↔ UI manuel : F8 est libre et reste déclenché volontairement.
         self.bind_all("<F8>", self.export_mig_geo001_audit)
-        # DEBUG: F9 pour activer/désactiver le filtrage de chevauchement au highlight
-        # (bind_all pour capter même si le focus clavier n'est pas explicitement sur le canvas)
-        self.bind_all("<F9>", self._toggle_skip_overlap_highlight)
-        self.bind_all("<F10>", self._toggle_debug_snap_assist)
-
         # Export TopoDump (manuel, snapshot volontaire)
         self.bind_all("<F11>", self._on_export_topodump_key)
 
@@ -5519,8 +5495,6 @@ class TriangleViewerManual(
         self.bind_all("<KeyPress-Control_R>", self._on_ctrl_down)
         self.bind_all("<KeyRelease-Control_L>", self._on_ctrl_up)
         self.bind_all("<KeyRelease-Control_R>", self._on_ctrl_up)
-        self.bind_all("<F9>", self._toggle_skip_overlap_highlight)
-
     # --- conversions utilitaires (utilisées par le pick) ---
     def _screen_to_world(self, x, y):
         Z = float(self.zoom)
@@ -6540,7 +6514,8 @@ class TriangleViewerManual(
             return
 
         for core_group_id in world.getLiveGroupIds():
-            outline = self._group_outline_segments_topo(core_group_id)
+            boundary_segments = world.getBoundarySegments(core_group_id)
+            outline = self._project_boundary_segments(core_group_id, boundary_segments)
             for p1, p2 in outline:
                 x1, y1 = self._world_to_screen(p1)
                 x2, y2 = self._world_to_screen(p2)
@@ -6742,11 +6717,6 @@ class TriangleViewerManual(
                     anchor="n", font=("Arial", 9, "italic"),
                     fill="#222", tags="tri_word"
                 )
-
-    def _dbgSnap(self, msg: str):
-        """Trace console pour diagnostiquer l'assist de collage (activable via F10)."""
-        if self._debug_snap_assist:
-            print(msg)
 
     # --- helpers: mode déconnexion (CTRL) + curseur ---
 
@@ -7229,13 +7199,8 @@ class TriangleViewerManual(
         return _id
 
     # ---------- utilitaires contour de groupe ----------
-    def _group_outline_segments_topo(self, core_group_id: str) -> list[tuple[np.ndarray, np.ndarray]]:
-        """Retourne le contour du groupe Core canonique (segments monde)."""
-        scen = self._get_active_scenario()
-        topoWorld = getattr(scen, "topoWorld", None) if scen is not None else None
-        if topoWorld is None or not core_group_id:
-            return []
-        segments = topoWorld.getBoundarySegments(str(core_group_id))
+    def _project_boundary_segments(self, core_group_id: str, segments) -> list[tuple[np.ndarray, np.ndarray]]:
+        """Convertit des `BoundarySegment` Core en segments de rendu temporaires."""
         if not segments:
             return []
 
@@ -7281,135 +7246,8 @@ class TriangleViewerManual(
             outline.append((q0, q1))
         return outline
 
-    def _group_outline_segments(self, core_group_id: str, eps: float = EPS_WORLD):
-        """
-        Retourne une liste de sous-segments (P1,P2) qui appartiennent au
-        **contour extérieur** de l’union des triangles du groupe Core.
-        (On retire donc toutes les arêtes internes.)
-        """
-        projected_elements = self._get_projected_elements_for_core_group(core_group_id)
-        if not projected_elements:
-            return []
-
-        # 1) collecter triangles (monde) + tous les sommets
-        tris = []
-        vertices = []
-        for element in projected_elements:
-            P = element.get("pts")
-            if not isinstance(P, dict):
-                continue
-            tris.append(_ShPoly([tuple(P["O"]), tuple(P["B"]), tuple(P["L"])]))
-            vertices.extend([np.array(P["O"], float), np.array(P["B"], float), np.array(P["L"], float)])
-
-        if not tris:
-            return []
-
-        # 2) union → polygone du groupe
-        # NOTE: on part de l'union géométrique, puis on extrait directement les
-        # exterieures (pas les trous) pour obtenir **uniquement** le contour du groupe.
-        u = _sh_union([p for p in tris if p.is_valid and p.area > 0])
-        # IMPORTANT: l'auto-assemblage passe par des rotations/translations flottantes.
-        # Les sommets/côtés qui devraient coïncider peuvent être séparés d'un micro-écart.
-        # Sans "snap", l'union devient MultiPolygon et les arêtes communes réapparaissent
-        # en contour. On recolle donc les micro-écarts via buffer(+eps)/buffer(-eps).
-        if eps and eps > 0:
-            poly = u.buffer(eps).buffer(-eps).buffer(0)
-        else:
-            poly = u.buffer(0)
-        if getattr(poly, "is_empty", True):
-            return []
-
-        # helper
-        def _split_by_vertices(A, B):
-            """Découpe [A,B] par les sommets colinéaires situés dessus."""
-            A = np.array(A, float)
-            B = np.array(B, float)
-            AB = B - A
-            ts = [0.0, 1.0]
-            for V in vertices:
-                AV = V - A
-                cross = abs(AB[0]*AV[1] - AB[1]*AV[0])
-                if cross > eps:
-                    continue
-                dot = AV[0]*AB[0] + AV[1]*AB[1]
-                ab2 = AB[0]*AB[0] + AB[1]*AB[1]
-                if -eps <= dot <= ab2 + eps:
-                    t = 0.0 if ab2 == 0 else dot / ab2
-                    if 1e-9 < t < 1 - 1e-9:
-                        ts.append(float(t))
-            ts = sorted(set(ts))
-            out = []
-            for i in range(len(ts) - 1):
-                q0 = A + (B - A) * ts[i]
-                q1 = A + (B - A) * ts[i+1]
-                if np.linalg.norm(q1 - q0) > eps:
-                    out.append((q0, q1))
-            return out
-
-        # 3) Extraire le contour EXTERIEUR depuis l'union, puis le "re-découper" sur
-        #    les sommets d'origine pour conserver la granularité (utile pour snap/compas).
-        outline = []
-
-        # Récupérer uniquement les exteriors (pas les trous)
-        lines = []
-        gtype = getattr(poly, "geom_type", "")
-        if gtype == "Polygon":
-            lines = [poly.exterior]
-        elif gtype == "MultiPolygon":
-            lines = [p.exterior for p in getattr(poly, "geoms", [])]
-        else:
-            # fallback: boundary brute (peut inclure des trous)
-            b = getattr(poly, "boundary", None)
-            if b is not None:
-                if getattr(b, "geom_type", "") == "MultiLineString":
-                    lines = list(getattr(b, "geoms", []))
-                else:
-                    lines = [b]
-
-        for ln in (lines or []):
-
-            coords = list(getattr(ln, "coords", []))
-            if len(coords) < 2:
-                continue
-            for i in range(len(coords) - 1):
-                A = coords[i]
-                B = coords[i + 1]
-                for s in _split_by_vertices(A, B):
-                    outline.append(s)
-
-        return outline
-
-    # --- util: segments d'enveloppe (groupe ou triangle seul) ---
-
-    def _outline_for_item(self, idx: int, eps: float | None = None):
-        """
-        Retourne les segments (p1,p2) de l'enveloppe du groupe Core auquel
-        appartient idx.
-        """
-        core_group_id = self._get_core_group_id_for_triangle_index(idx)
-        if not core_group_id:
-            return []
-
-        # Par défaut (eps=None), on calcule un eps "rendu" pour recoller les micro-écarts
-        # numériques (auto-assemblage) et éviter que des arêtes internes ressortent comme contours.
-        # IMPORTANT : certains appels (ex: snap/assist) ont besoin des sommets exacts ; dans ce cas,
-        # passer explicitement eps=EPS_WORLD (ou autre) pour éviter tout regroupement de sommets.
-        if eps is None:
-            tol_world = max(
-                1e-9,
-                float(self.stroke_px) / max(self.zoom, 1e-9)
-            )
-            eps = max(EPS_WORLD, 0.5 * tol_world)
-        return self._group_outline_segments(core_group_id, eps=float(eps))
-
     def _update_edge_highlights(self, mob_idx: int, vkey_m: str, tgt_idx: int, tgt_vkey: str):
-        """Version factorisée 'graphe de frontière' (symétrique) :
-        1) On récupère l'outline des deux groupes
-        2) On construit un graphe de frontière (half-edges) côté mobile & cible
-        3) Au sommet cliqué de chaque côté, on prend **les 2 demi-arêtes incidentes**
-        4) On sélectionne la paire (mobile×cible) qui **minimise globalement** Δ-angle
-        5) Affichage : toujours bleues (incidentes), rouge pour la paire choisie
-        """
+        """Construit l'assistance de snap depuis les segments Boundary fournis par le Core."""
 
         def _to_np(p):
             return np.array([float(p[0]), float(p[1])], dtype=float)
@@ -7432,13 +7270,6 @@ class TriangleViewerManual(
         tri_t = self._last_drawn[tgt_idx]
         Pt = tri_t["pts"]
         vt = _to_np(Pt[tgt_vkey])
-        gid_m = tri_m.get("group_id")
-        gid_t = tri_t.get("group_id")
-        if gid_m is None or gid_t is None:
-            self._clear_edge_highlights()
-            self._edge_choice = None
-            return
-
         # On récupère la topo
         scen = self._get_active_scenario()
         world = scen.topoWorld
@@ -7450,77 +7281,34 @@ class TriangleViewerManual(
         mAElementId = str(tri_m["topoElementId"])
         idx = {"O": 0, "B": 1, "L": 2}[vkey_m]
         mAId = world.format_node_id(mAElementId, idx)
+        core_gid_m = self._get_core_group_id_for_triangle_index(mob_idx)
+        core_gid_t = self._get_core_group_id_for_triangle_index(tgt_idx)
 
-        # DEBUG
-        self._dbgSnap(
-            f"[snap] update_edge_highlights mob={mob_idx}:{vkey_m} (gid={gid_m}) -> tgt={tgt_idx}:{tgt_vkey} (gid={gid_t})"
-        )
+        # MIG-TOPO-SERVICE-001 : le Core décide du contour extérieur et de
+        # l'incidence. L'UI ne fait que projeter ces segments puis les classe.
+        if not core_gid_m or not core_gid_t:
+            self._clear_edge_highlights()
+            self._edge_choice = None
+            return
+        mob_boundary_segments = world.getBoundarySegments(core_gid_m)
+        tgt_boundary_segments = world.getBoundarySegments(core_gid_t)
+        mob_incident_boundary_segments = world.getIncidentBoundarySegments(core_gid_m, mAId)
+        tgt_incident_boundary_segments = world.getIncidentBoundarySegments(core_gid_t, tAId)
 
-        # === Collecte via graphe de frontière puis argmin global (Δ-angle) ===
-        # 1) outlines des deux groupes
-        # IMPORTANT (snap) : on veut les sommets "tels quels" pour que vm/vt appartiennent au graphe.
-        # L'eps "rendu" (contour-only) peut fusionner / décaler légèrement les sommets et casser
-        # l'incidence au sommet cliqué => aucune paire d'arêtes candidate.
-        mob_outline = self._outline_for_item(mob_idx, eps=EPS_WORLD) or []
-        tgt_outline = self._outline_for_item(tgt_idx, eps=EPS_WORLD) or []
-
-        # Fallback : si l'outline "groupe" est vide (ou indisponible),
-        # utiliser l'outline du triangle lui-même pour ne pas casser l'assist.
-        if not mob_outline:
-            mob_outline = [(tuple(Pm["O"]), tuple(Pm["B"])), (tuple(Pm["B"]), tuple(Pm["L"])), (tuple(Pm["L"]), tuple(Pm["O"]))]
-        if not tgt_outline:
-            tgt_outline = [(tuple(Pt["O"]), tuple(Pt["B"])), (tuple(Pt["B"]), tuple(Pt["L"])), (tuple(Pt["L"]), tuple(Pt["O"]))]
-
-        self._dbgSnap(f"[snap] outlines: mob={len(mob_outline)} tgt={len(tgt_outline)}")
-
-        # 2) half-edges incidentes au sommet cliqué, côté mobile et côté cible
-        g_m = self._build_boundary_graph(mob_outline)
-        g_t = self._build_boundary_graph(tgt_outline)
-        m_inc_raw = self._incident_half_edges_at_vertex(g_m, vm)
-        t_inc_raw = self._incident_half_edges_at_vertex(g_t, vt)
-        # 3) normalisation (granularité identique à l’outline) pour l’affichage
-        m_inc = self._normalize_to_outline_granularity(mob_outline, m_inc_raw, eps=EPS_WORLD)
-        t_inc = self._normalize_to_outline_granularity(tgt_outline, t_inc_raw, eps=EPS_WORLD)
+        mob_outline = self._project_boundary_segments(core_gid_m, mob_boundary_segments)
+        tgt_outline = self._project_boundary_segments(core_gid_t, tgt_boundary_segments)
+        m_inc = self._project_boundary_segments(core_gid_m, mob_incident_boundary_segments)
+        t_inc = self._project_boundary_segments(core_gid_t, tgt_incident_boundary_segments)
 
         # 4) sélection globale : minimiser l’écart d’azimut + anti-chevauchement
         best = None  # (score, m_edge, t_edge)
-        # Unions géométriques brutes des groupes (avant pose)
-        mob_projected_elements = self._get_projected_elements_for_ui_group(gid_m)
-        tgt_projected_elements = self._get_projected_elements_for_ui_group(gid_t)
-        S_m_base = _sh_union([
-            _ShPoly([tuple(P["O"]), tuple(P["B"]), tuple(P["L"])])
-            for entry in mob_projected_elements
-            for P in [entry.get("pts")]
-            if isinstance(P, dict)
-        ])
-        # Helper de pose rigide (vm->vt, alignement (vm→mB) // (vt→tB))
-
-        def _place_union_on_pair(S_base, vm_pt, mB_pt, vt_pt, tB_pt):
-
-            from shapely.affinity import translate, rotate
-            vmx, vmy = float(vm_pt[0]), float(vm_pt[1])
-            mBx, mBy = float(mB_pt[0]), float(mB_pt[1])
-            vtx, vty = float(vt_pt[0]), float(vt_pt[1])
-            tBx, tBy = float(tB_pt[0]), float(tB_pt[1])
-            ang_m = atan2(mBy - vmy, mBx - vmx)
-            ang_t = atan2(tBy - vty, tBx - vtx)
-            dtheta = (ang_t - ang_m + pi) % (2*pi) - pi  # wrap [-pi,pi]
-            # T =  translate(vt) ∘ rotate(dtheta around (0,0)) ∘ translate(-vm)
-            S = translate(S_base, xoff=-vmx, yoff=-vmy)
-            S = rotate(S, dtheta * 180.0 / pi, origin=(0.0, 0.0), use_radians=False)
-            S = translate(S, xoff=vtx, yoff=vty)
-            return S
+        mob_projected_elements = self._get_projected_elements_for_core_group(core_gid_m)
+        tgt_projected_elements = self._get_projected_elements_for_core_group(core_gid_t)
+        mob_tids = self._get_projected_element_tids(mob_projected_elements)
+        tgt_tids = self._get_projected_element_tids(tgt_projected_elements)
 
         # Helper pour tester le chevauchement via Algo Topologique
         def _overlap_topo_for_pair(score, me, te) -> bool:
-            core_gid_m = self._get_core_group_id_for_triangle_index(mob_idx)
-            core_gid_t = self._get_core_group_id_for_triangle_index(tgt_idx)
-            if not core_gid_m or not core_gid_t:
-                return False
-
-            mob_tids = self._get_projected_element_tids(mob_projected_elements)
-            tgt_tids = self._get_projected_element_tids(tgt_projected_elements)
-
             # 1) fabriquer un "best" local, compatible buildEdgeChoiceEptsFromBest
             best_local = (score, me, te)
 
@@ -7538,7 +7326,10 @@ class TriangleViewerManual(
                 debug=False,
             )
             if not res:
-                return False
+                # Candidate Boundary non représentable par EdgeChoiceEpts :
+                # même convention que le chevauchement, elle est rejetée mais
+                # les autres paires restent évaluables.
+                return True
 
             epts, _meta = res
             attachments = epts.createTopologyAttachments(world=world, debug=False)
@@ -7549,23 +7340,18 @@ class TriangleViewerManual(
                 core_gid_t,
                 core_gid_m,
                 attachments,
-                debug=self.debug_skip_overlap_highlight,
+                debug=False,
             ))
 
-        m_oriented = [(a, b) if _almost_eq(a, vm) else (b, a) for (a, b) in (m_inc_raw or [])]
-        t_oriented = [(a, b) if _almost_eq(a, vt) else (b, a) for (a, b) in (t_inc_raw or [])]
+        m_oriented = [(a, b) if _almost_eq(a, vm) else (b, a) for (a, b) in (m_inc or [])]
+        t_oriented = [(a, b) if _almost_eq(a, vt) else (b, a) for (a, b) in (t_inc or [])]
         for me in m_oriented:
             azm = _azim(*me)
             for te in t_oriented:
                 azt = _azim(*te)
                 score = _ang_dist(azm, azt)
-                # --- Anti-chevauchement (shrink-only) remis en service ---
-                if not self.debug_skip_overlap_highlight:
-                    S_m_pose = _place_union_on_pair(S_m_base, me[0], me[1], te[0], te[1])
-                    if S_m_pose is not None:
-                        if _overlap_topo_for_pair(score, me, te):
-                            continue  # paire rejetée pour chevauchement
-                # argmin global (parmi les paires admissibles)
+                if _overlap_topo_for_pair(score, me, te):
+                    continue
                 if (best is None) or (score < best[0]):
                     best = (score, me, te)
 
@@ -7598,15 +7384,12 @@ class TriangleViewerManual(
                 eps_world=EPS_WORLD,
                 mATmpId=mAId,
                 tATmpId=tAId,
-                debug=bool(self._debug_snap_assist),
+                debug=False,
             )
             if res:
                 epts, _meta = res
                 self._edge_choice = (mob_idx, vkey_m, tgt_idx, tgt_vkey, epts)
 
-        # Ajout des contours pour le debug (bleu)
-        mob_outline = [(tuple(a), tuple(b)) for (a, b) in self._outline_for_item(mob_idx)]
-        tgt_outline = [(tuple(a), tuple(b)) for (a, b) in self._outline_for_item(tgt_idx)]
         self._redraw_edge_highlights()
 
     def _clear_edge_highlights(self):
@@ -8191,7 +7974,6 @@ class TriangleViewerManual(
         except Exception as exc:
             raise ValueError(f"groupe Core introuvable pour {topo_element_id}") from exc
 
-        world.computeBoundary(gid)
         segments = world.getBoundarySegments(gid)
         if not segments:
             raise ValueError("frontière vide")
@@ -10345,9 +10127,6 @@ class TriangleViewerManual(
             # on applique la même géométrie que pour un triangle seul,
             # mais à TOUS les triangles du groupe.
             choice = self._edge_choice
-            self._dbgSnap(
-                f"[snap] release(move_group) suppress_assist={self._sel.get('suppress_assist')} choice={'OK' if choice else 'None'}"
-            )
             if (
                 not suppress
                 and not self._ctrl_down
@@ -10362,6 +10141,8 @@ class TriangleViewerManual(
                 # epts est un objet séquence (mA,mBEdgeVertex,tA,tBEdgeVertex) enrichi pendant l'assist
                 (_, _, idx_t, vkey_t, epts) = choice
 
+                scen = self._get_active_scenario()
+                world = scen.topoWorld
                 R, T = epts.computeRigidTransform()
                 # Appliquer p' = R @ p + T à tous
                 gid = self._sel.get("ui_group_id")
@@ -10383,8 +10164,6 @@ class TriangleViewerManual(
                 # -> pose Core = sync depuis Tk (pas de compute_pose_* ici)
                 # ------------------------------------------------------------
                 new_core_gid = None
-                scen = self._get_active_scenario()
-                world = scen.topoWorld
 
                 tgt_gid = self._last_drawn[idx_t].get("group_id", None)
                 mob_gid = self._sel.get("ui_group_id")
@@ -10406,7 +10185,7 @@ class TriangleViewerManual(
 
                         attachments_to_apply = epts.createTopologyAttachments(
                             world=world,
-                            debug=bool(self._debug_snap_assist),
+                            debug=False,
                         )
                         if attachments_to_apply:
                             world.beginTopoTransaction()

@@ -2025,49 +2025,67 @@ class TopologyWorld:
         c.boundaryIndex = c.boundaries.index
         c.boundaryOrientation = c.boundaries.orientation
 
-    def getBoundaryCycle(self, group_id: str, startNodeId: str) -> list[str]:
-        gid = self.find_group(str(group_id))
+    def ensureBoundary(self, core_group_id: str) -> None:
+        """Garantit le contour d'un groupe Core **déjà canonique**.
+
+        Le cache Boundary reste interne au Core : l'appelant ne reçoit aucune
+        structure mutable et n'a pas à connaître son invalidation. Un alias
+        DSU n'est pas un identifiant acceptable pour ce contrat public.
+        """
+        gid = str(core_group_id or "")
+        if not gid or gid not in self.groups:
+            raise ValueError(f"[Boundary] unknown canonical group: {gid or '(empty)'}")
+
         c = self._concept_cache(gid)
-        if not c.boundaryCycle:
-            raise ValueError("[Boundary] not computed")
+        boundary_ready = (
+            c.graphValid
+            and c.geomValid
+            and c.boundaryCycle is not None
+            and c.boundaryEdges is not None
+            and c.boundaryIndex is not None
+            and c.boundaryOrientation is not None
+        )
+        if not boundary_ready:
+            self.computeBoundary(gid)
+
+    def getBoundaryCycle(self, group_id: str, startNodeId: str) -> list[str]:
+        gid = str(group_id)
+        self.ensureBoundary(gid)
+        c = self._concept_cache(gid)
         start = str(startNodeId)
         if start not in c.boundaryIndex:
-            raise ValueError("[Boundary] not computed")
+            raise ValueError(f"[Boundary] node not in contour: {start}")
         idx = c.boundaryIndex[start]
-        return c.boundaryCycle[idx:] + c.boundaryCycle[:idx]
+        return list(c.boundaryCycle[idx:] + c.boundaryCycle[:idx])
 
     def getBoundaryOrientation(self, group_id: str) -> str:
-        gid = self.find_group(str(group_id))
+        gid = str(group_id)
+        self.ensureBoundary(gid)
         c = self._concept_cache(gid)
-        if not c.boundaryOrientation:
-            raise ValueError("[Boundary] not computed")
         return str(c.boundaryOrientation)
 
     def getBoundaryNeighbors(self, group_id: str, nodeId: str) -> tuple[str, str]:
-        gid = self.find_group(str(group_id))
+        gid = str(group_id)
+        self.ensureBoundary(gid)
         c = self._concept_cache(gid)
-        if not c.boundaryCycle:
-            raise ValueError("[Boundary] not computed")
         node = str(nodeId)
         if node not in c.boundaryIndex:
-            raise ValueError("[Boundary] not computed")
+            raise ValueError(f"[Boundary] node not in contour: {node}")
         idx = c.boundaryIndex[node]
         prev_node = c.boundaryCycle[idx - 1]
         next_node = c.boundaryCycle[(idx + 1) % len(c.boundaryCycle)]
         return (prev_node, next_node)
 
     def isBoundaryEdge(self, group_id: str, a: str, b: str) -> bool:
-        gid = self.find_group(str(group_id))
+        gid = str(group_id)
+        self.ensureBoundary(gid)
         c = self._concept_cache(gid)
-        if not c.boundaryEdges:
-            raise ValueError("[Boundary] not computed")
         return (str(a), str(b)) in c.boundaryEdges or (str(b), str(a)) in c.boundaryEdges
 
     def getBoundarySegments(self, group_id: str) -> list[BoundarySegment]:
-        gid = self.find_group(str(group_id))
+        gid = str(group_id)
+        self.ensureBoundary(gid)
         c = self._concept_cache(gid)
-        if not c.boundaryCycle or not c.boundaryIndex:
-            raise ValueError("[Boundary] not computed")
         if not c.edges:
             raise ValueError("[Boundary] concept edges missing")
 
@@ -2157,6 +2175,27 @@ class TopologyWorld:
             ))
 
         return segments
+
+    def getIncidentBoundarySegments(
+        self,
+        core_group_id: str,
+        concept_node_id: str,
+    ) -> list[BoundarySegment]:
+        """Retourne, dans l'ordre déterministe du cycle, les segments extérieurs incidents.
+
+        Un segment est incident si son ``conceptA`` ou son ``conceptB`` est le
+        node conceptuel canonique demandé. Les ``BoundarySegment`` sont des
+        valeurs reconstruites par ``getBoundarySegments`` : aucun cache mutable
+        n'est exposé à l'appelant.
+        """
+        gid = str(core_group_id)
+        self.ensureBoundary(gid)
+        node_id = self.find_node(str(concept_node_id))
+        return [
+            segment
+            for segment in self.getBoundarySegments(gid)
+            if str(segment.conceptA) == node_id or str(segment.conceptB) == node_id
+        ]
 
     def _build_ring_from_boundary_cycle(
         self,
