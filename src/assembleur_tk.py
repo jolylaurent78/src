@@ -7997,8 +7997,8 @@ class TriangleViewerManual(
         res = world.degrouperAtNode(str(gid), str(nodeId))
         self._applyDegrouperResultToTk(res)
 
-    def _degrouperGroupScreenBBox(self, ui_gid: int) -> Optional[Tuple[float, float, float, float]]:
-        projected_elements = self._get_projected_elements_for_ui_group(ui_gid)
+    def _degrouperGroupScreenBBox(self, core_group_id: str) -> Optional[Tuple[float, float, float, float]]:
+        projected_elements = self._get_projected_elements_for_core_group(core_group_id)
         if not projected_elements:
             return None
 
@@ -8016,7 +8016,7 @@ class TriangleViewerManual(
             return None
         return (min(xs), min(ys), max(xs), max(ys))
 
-    def _degrouperTranslateGroupByScreen(self, ui_gid: int, dx_screen: float, dy_screen: float) -> None:
+    def _degrouperTranslateGroupByScreen(self, core_group_id: str, dx_screen: float, dy_screen: float) -> None:
         dxs = float(dx_screen)
         dys = float(dy_screen)
         if abs(dxs) <= 1e-12 and abs(dys) <= 1e-12:
@@ -8026,17 +8026,11 @@ class TriangleViewerManual(
         wx1, wy1 = self._screen_to_world(dxs, dys)
         dxy = np.array([float(wx1 - wx0), float(wy1 - wy0)], dtype=float)
 
-        g = self.groups.get(ui_gid)
-        if not g or not g.get("nodes"):
-            return
-        for nd in list(g.get("nodes", []) or []):
-            tid = nd.get("tid", None)
-            if tid is None:
+        projected_elements = self._get_projected_elements_for_core_group(core_group_id)
+        for element in projected_elements:
+            Pt = element.get("pts")
+            if not isinstance(Pt, dict):
                 continue
-            tid_i = int(tid)
-            if not (0 <= tid_i < len(self._last_drawn)):
-                continue
-            Pt = self._last_drawn[tid_i]["pts"]
             for k in ("O", "B", "L"):
                 Pt[k] = np.array(Pt[k], dtype=float) + dxy
 
@@ -8146,6 +8140,7 @@ class TriangleViewerManual(
 
         # Groupes secondaires: un nouveau groupe UI par nouveau groupe Core.
         newUiGids: list[int] = []
+        newCoreGidsWithProjection: list[str] = []
         for core_gid in newCoreGids:
             tids = list(newTidsByCore.get(core_gid, []) or [])
             if not tids:
@@ -8161,14 +8156,18 @@ class TriangleViewerManual(
                 if 0 <= tid < len(self._last_drawn):
                     self._last_drawn[tid]["topoGroupId"] = str(core_gid)
             newUiGids.append(int(new_ui_gid))
+            newCoreGidsWithProjection.append(str(core_gid))
 
         # Décalage visuel: déplacer les nouveaux groupes de 30px (écran), ordre petit -> grand.
-        bboxMain = self._degrouperGroupScreenBBox(int(mainUiGid))
+        bboxMain = self._degrouperGroupScreenBBox(mainCoreGid)
         if bboxMain is not None:
             min_x_m, min_y_m, max_x_m, max_y_m = bboxMain
-            orderedNewUi = sorted(newUiGids, key=lambda ug: (len(self._group_nodes(int(ug))), int(ug)))
-            for ui_gid in orderedNewUi:
-                bboxG = self._degrouperGroupScreenBBox(int(ui_gid))
+            orderedNewCoreGids = sorted(
+                newCoreGidsWithProjection,
+                key=lambda core_gid: len(newTidsByCore.get(core_gid, [])),
+            )
+            for core_gid in orderedNewCoreGids:
+                bboxG = self._degrouperGroupScreenBBox(core_gid)
                 if bboxG is None:
                     continue
                 min_x_g, min_y_g, max_x_g, max_y_g = bboxG
@@ -8182,11 +8181,10 @@ class TriangleViewerManual(
                     dxs = -30.0
                 else:
                     dys = +30.0
-                self._degrouperTranslateGroupByScreen(int(ui_gid), dxs, dys)
+                self._degrouperTranslateGroupByScreen(core_gid, dxs, dys)
 
         # Sync Core (poses monde) pour les groupes touchés.
-        for ui_gid in [int(mainUiGid)] + [int(x) for x in newUiGids]:
-            core_gid = str(self.groups[int(ui_gid)].get("topoGroupId", "") or "")
+        for core_gid in [mainCoreGid] + newCoreGidsWithProjection:
             self._sync_group_elements_pose_to_core(core_gid, scen=scen)
 
         self._sel = None

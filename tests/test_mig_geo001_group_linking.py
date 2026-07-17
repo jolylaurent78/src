@@ -558,3 +558,109 @@ def test_f8_audit_without_active_scenario_is_safe():
     viewer.active_scenario_index = 0
 
     assert viewer.export_mig_geo001_audit() is None
+
+
+def test_degrouper_helpers_use_core_groups_without_legacy_projection():
+    """MIG-GROUP-019A: bbox et translation ne lisent pas ``self.groups``."""
+    viewer, first_core_group_id = _make_viewer_with_one_core_group()
+    world = viewer.scenarios[0].topoWorld
+    second_core_group_id = world.add_element_as_new_group(TopologyElement(
+        element_id="T02",
+        name="Triangle 02",
+        vertex_labels=["O", "B", "L"],
+        vertex_types=[TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE],
+        edge_lengths_km=[3.0, 5.0, 4.0],
+    ))
+    unprojected_core_group_id = world.add_element_as_new_group(TopologyElement(
+        element_id="T03",
+        name="Triangle 03",
+        vertex_labels=["O", "B", "L"],
+        vertex_types=[TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE],
+        edge_lengths_km=[3.0, 5.0, 4.0],
+    ))
+    viewer._last_drawn.append({
+        "id": 2,
+        "labels": ("O", "B", "L"),
+        "pts": {"O": [10.0, 0.0], "B": [13.0, 0.0], "L": [10.0, 4.0]},
+        "topoElementId": "T02",
+        "topoGroupId": second_core_group_id,
+        "group_id": 20,
+    })
+    viewer._invalidate_last_drawn_topo_index()
+    viewer._world_to_screen = lambda point: point
+    viewer._screen_to_world = lambda x, y: (x, y)
+
+    # Les helpers ne peuvent plus s'appuyer sur la projection historique.
+    del viewer.groups
+
+    assert viewer._degrouperGroupScreenBBox(first_core_group_id) == (0.0, 0.0, 3.0, 4.0)
+    assert viewer._degrouperGroupScreenBBox(unprojected_core_group_id) is None
+
+    viewer._degrouperTranslateGroupByScreen(first_core_group_id, 2.0, -1.0)
+
+    assert tuple(viewer._last_drawn[0]["pts"]["O"]) == (2.0, -1.0)
+    assert tuple(viewer._last_drawn[0]["pts"]["B"]) == (5.0, -1.0)
+    assert tuple(viewer._last_drawn[1]["pts"]["O"]) == (10.0, 0.0)
+    assert viewer._last_drawn[0]["group_id"] == 10
+    assert viewer._last_drawn[1]["group_id"] == 20
+
+
+def test_degrouper_result_uses_core_ids_for_visual_separation_and_sync():
+    """MIG-GROUP-019A: les appels post-dégroupage restent dans le Core."""
+    viewer, main_core_group_id = _make_viewer_with_one_core_group()
+    world = viewer.scenarios[0].topoWorld
+    new_core_group_id = world.add_element_as_new_group(TopologyElement(
+        element_id="T02",
+        name="Triangle 02",
+        vertex_labels=["O", "B", "L"],
+        vertex_types=[TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE],
+        edge_lengths_km=[3.0, 5.0, 4.0],
+    ))
+    viewer._last_drawn.append({
+        "id": 2,
+        "labels": ("O", "B", "L"),
+        "pts": {"O": [10.0, 0.0], "B": [13.0, 0.0], "L": [10.0, 4.0]},
+        "topoElementId": "T02",
+        "topoGroupId": new_core_group_id,
+        "group_id": 10,
+    })
+    viewer.groups[10]["nodes"].append({"tid": 1, "edge_in": None, "edge_out": None})
+    viewer._invalidate_last_drawn_topo_index()
+    viewer._ctx_target_idx = 0
+    viewer._next_group_id = 11
+    viewer._world_to_screen = lambda point: point
+    viewer._screen_to_world = lambda x, y: (x, y)
+    viewer._reset_assist = lambda: None
+    viewer._redraw_from = lambda _entries: None
+    viewer.refreshCheminTreeView = lambda: None
+    viewer.status = _StatusStub()
+
+    bbox_core_ids = []
+    translate_core_ids = []
+    sync_core_ids = []
+    original_bbox = viewer._degrouperGroupScreenBBox
+    original_translate = viewer._degrouperTranslateGroupByScreen
+    viewer._degrouperGroupScreenBBox = lambda core_gid: (
+        bbox_core_ids.append(core_gid) or original_bbox(core_gid)
+    )
+    viewer._degrouperTranslateGroupByScreen = lambda core_gid, dx, dy: (
+        translate_core_ids.append(core_gid) or original_translate(core_gid, dx, dy)
+    )
+    viewer._sync_group_elements_pose_to_core = lambda core_gid, scen=None: (
+        sync_core_ids.append((core_gid, scen))
+    )
+
+    viewer._applyDegrouperResultToTk({
+        "mainGroupId": main_core_group_id,
+        "newGroupIds": [new_core_group_id],
+        "movedElementIdsByGroup": {new_core_group_id: ["T02"]},
+    })
+
+    assert bbox_core_ids == [main_core_group_id, new_core_group_id]
+    assert translate_core_ids == [new_core_group_id]
+    assert [core_gid for core_gid, _scen in sync_core_ids] == [
+        main_core_group_id,
+        new_core_group_id,
+    ]
+    assert tuple(viewer._last_drawn[0]["pts"]["O"]) == (0.0, 0.0)
+    assert tuple(viewer._last_drawn[1]["pts"]["O"]) == (-20.0, 0.0)
