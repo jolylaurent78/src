@@ -765,24 +765,6 @@ class TriangleViewerManual(
                 entries.append(item[1])
         return entries
 
-    def _get_active_core_group_id_for_ui_gid(self, ui_gid: int) -> Optional[str]:
-        """Résout une clé UI vers son ``core_group_id`` déjà canonique.
-
-        Le ``ui_gid`` ne sert ici qu'a retrouver le lien de projection
-        ``topoGroupId``. Les membres ne sont jamais lus dans ``nodes``.
-        """
-        scen = self._get_active_scenario()
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
-        ui_group = self.groups.get(ui_gid) or {}
-        core_gid = str(ui_group.get("topoGroupId", "") or "").strip()
-        if world is None or not core_gid:
-            return None
-        try:
-            return core_gid if world.hasLiveGroup(core_gid) else None
-        except Exception as exc:
-            MIG_GEO_LOGGER.debug("[MIG-GEO-010] groupe Core illisible pour UI=%s: %s", ui_gid, exc)
-            return None
-
     def _get_active_core_group_id_for_entry(self, entry: Dict) -> Optional[str]:
         """Résout le ``core_group_id`` canonique d'une entrée projetée."""
         scen = self._get_active_scenario()
@@ -828,11 +810,6 @@ class TriangleViewerManual(
             return ()
         self._ensure_last_drawn_topo_index()
         return tuple(self.get_last_drawn_entries_by_topo_ids(element_ids))
-
-    def _get_projected_elements_for_ui_group(self, ui_gid: int) -> Tuple[Dict, ...]:
-        """Pont de compatibilite reserve au snap et au degrouper legacy."""
-        core_group_id = self._get_active_core_group_id_for_ui_gid(ui_gid)
-        return self._get_projected_elements_for_core_group(core_group_id)
 
     def _get_projected_element_tids(self, projected_elements) -> List[int]:
         """Retourne les tids des entrees projetees sans parcourir ``nodes``."""
@@ -5452,6 +5429,7 @@ class TriangleViewerManual(
         self.bind_all("<KeyRelease-Control_L>", self._on_ctrl_up)
         self.bind_all("<KeyRelease-Control_R>", self._on_ctrl_up)
     # --- conversions utilitaires (utilisées par le pick) ---
+
     def _screen_to_world(self, x, y):
         Z = float(self.zoom)
         Ox, Oy = (float(self.offset[0]), float(self.offset[1]))
@@ -6796,7 +6774,11 @@ class TriangleViewerManual(
                                     # Redessiner + remettre les aides (en excluant le groupe mobile)
                                     self._redraw_from(self._last_drawn)
                                     v_world = np.array(self._last_drawn[anchor_tid]["pts"][anchor_vkey], dtype=float)
-                                    self._update_nearest_line(v_world, exclude_idx=anchor_tid, exclude_gid=gid)
+                                    self._update_nearest_line(
+                                        v_world,
+                                        exclude_idx=anchor_tid,
+                                        exclude_core_group_id=self._sel.get("core_group_id"),
+                                    )
                                     self._update_edge_highlights(anchor_tid, anchor_vkey, idx_t, vkey_t)
 
     def _on_ctrl_up(self, event=None):
@@ -6936,6 +6918,16 @@ class TriangleViewerManual(
         s = str(raw or "").strip()
         return s
 
+    def _resolve_hover_vertex_node_id(self, *, entry: Dict, vertex_key: str, world) -> str | None:
+        """Resout un sommet UI vers son node physique Core, sans format d'ID local."""
+        element_id = str((entry or {}).get("topoElementId", "") or "").strip()
+        if not element_id or world is None:
+            return None
+        try:
+            return world.get_element_vertex_node_id_by_type(element_id, str(vertex_key))
+        except (KeyError, IndexError, ValueError):
+            return None
+
     def _on_canvas_motion_update_drag(self, event):
         if self._clock_trace_active:
             self._clock_trace_update_preview(int(event.x), int(event.y))
@@ -7043,25 +7035,27 @@ class TriangleViewerManual(
             v_world = np.array(P0[vkey], dtype=float) if vkey in ("O", "B", "L") else None
 
             scen = self._get_active_scenario()
-            topoWorld = scen.topoWorld
+            topoWorld = getattr(scen, "topoWorld", None) if scen is not None else None
 
             tooltip_txt = ""
             if v_world is not None and vkey in ("O", "B", "L"):
-                vkey_to_n = {"O": 0, "B": 1, "L": 2}
-                triNum = int(self._last_drawn[idx].get("id", idx + 1))
-                nodeId = topoWorld.format_node_id(element_id=f"T{triNum:02d}", vertex_index=vkey_to_n[vkey])
-
-                lines = ["Noeuds:"]
-                phys_nodes = topoWorld.getPhysicalNodesForConceptNode(nodeId)
-                for nid in phys_nodes:
-                    lines.append(f"- {topoWorld.getPhysicalNodeName(nid)}")
-                lines.append("Liens connectés:")
-                rays = topoWorld.getConceptRays(nodeId)
-                for ray in rays:
-                    other = ray["otherNodeId"]
-                    az = ray["azDeg"]
-                    lines.append(f"- {topoWorld.getConceptNodeName(other)} @ {float(az):0.2f}°")
-                tooltip_txt = "\n".join(lines)
+                nodeId = self._resolve_hover_vertex_node_id(
+                    entry=self._last_drawn[idx],
+                    vertex_key=vkey,
+                    world=topoWorld,
+                )
+                if nodeId is not None:
+                    lines = ["Noeuds:"]
+                    phys_nodes = topoWorld.getPhysicalNodesForConceptNode(nodeId)
+                    for nid in phys_nodes:
+                        lines.append(f"- {topoWorld.getPhysicalNodeName(nid)}")
+                    lines.append("Liens connectés:")
+                    rays = topoWorld.getConceptRays(nodeId)
+                    for ray in rays:
+                        other = ray["otherNodeId"]
+                        az = ray["azDeg"]
+                        lines.append(f"- {topoWorld.getConceptNodeName(other)} @ {float(az):0.2f}°")
+                    tooltip_txt = "\n".join(lines)
             if tooltip_txt:
                 sx_v, sy_v = self._world_to_screen(v_world)
                 self._ensure_canvas_tooltip(tooltip_txt)
@@ -7088,13 +7082,9 @@ class TriangleViewerManual(
             self._rebuild_pick_cache()
 
     # ---------- Lien + surlignage faces candidates ----------
-    def _find_nearest_vertex(self, v_world, exclude_idx=None, exclude_gid=None):
+    def _find_nearest_vertex(self, v_world, exclude_idx=None, exclude_core_group_id=None):
         """Retourne (idx_triangle, key('O'|'B'|'L'), pos_world) du sommet d'un AUTRE triangle le plus proche.
-        On peut exclure un triangle précis (exclude_idx) et/ou tout un groupe (exclude_gid)."""
-        excluded_core_group_id = (
-            self._get_active_core_group_id_for_ui_gid(exclude_gid)
-            if exclude_gid is not None else None
-        )
+        On peut exclure un triangle précis (exclude_idx) et/ou tout un groupe Core."""
         best = None
         best_d2 = None
         for j, t in enumerate(self._last_drawn):
@@ -7102,8 +7092,8 @@ class TriangleViewerManual(
                 continue
             candidate_core_group_id = self._get_active_core_group_id_for_entry(t)
             if (
-                excluded_core_group_id
-                and candidate_core_group_id == excluded_core_group_id
+                exclude_core_group_id
+                and candidate_core_group_id == exclude_core_group_id
             ):
                 continue
             P = t["pts"]
@@ -7115,9 +7105,13 @@ class TriangleViewerManual(
                     best = (j, k, w)
         return best
 
-    def _update_nearest_line(self, v_world, exclude_idx=None, exclude_gid=None):
+    def _update_nearest_line(self, v_world, exclude_idx=None, exclude_core_group_id=None):
         """Dessine (ou MAJ) un trait fin entre v_world et le sommet le plus proche d'un AUTRE triangle."""
-        found = self._find_nearest_vertex(v_world, exclude_idx=exclude_idx, exclude_gid=exclude_gid)
+        found = self._find_nearest_vertex(
+            v_world,
+            exclude_idx=exclude_idx,
+            exclude_core_group_id=exclude_core_group_id,
+        )
 
         if found is None:
             self._clear_nearest_line()
@@ -7228,14 +7222,17 @@ class TriangleViewerManual(
         # On récupère la topo
         scen = self._get_active_scenario()
         world = scen.topoWorld
-        # On récupère les ID des TopoNodes mA et tA
-        tAElementId = str(tri_t["topoElementId"])
-        idx = {"O": 0, "B": 1, "L": 2}[tgt_vkey]
-        tAId = world.format_node_id(tAElementId, idx)
-
-        mAElementId = str(tri_m["topoElementId"])
-        idx = {"O": 0, "B": 1, "L": 2}[vkey_m]
-        mAId = world.format_node_id(mAElementId, idx)
+        # Les nodes physiques sont resolus par le Core; l'UI ne connait ni
+        # leur format ni l'ordre physique des sommets.
+        tAElementId = str(tri_t.get("topoElementId", "") or "").strip()
+        mAElementId = str(tri_m.get("topoElementId", "") or "").strip()
+        try:
+            tAId = world.get_element_vertex_node_id_by_type(tAElementId, tgt_vkey)
+            mAId = world.get_element_vertex_node_id_by_type(mAElementId, vkey_m)
+        except (KeyError, IndexError, ValueError):
+            self._clear_edge_highlights()
+            self._edge_choice = None
+            return
         core_gid_m = self._get_core_group_id_for_triangle_index(mob_idx)
         core_gid_t = self._get_core_group_id_for_triangle_index(tgt_idx)
 
@@ -7427,13 +7424,11 @@ class TriangleViewerManual(
 
         tri_rank = tri.get("id", None)
         # tri_rank attendu : 1..32 (rang importé)
-        if tri_rank is not None:
-            tri_rank_i = int(tri_rank)
-        elif (tri_rank_i - 1 < 0) or (tri_rank_i - 1 >= len(self.df)):
+        if tri_rank is None:
+            raise ValueError("Topology: triRank absent pour le triangle place")
+        tri_rank_i = int(tri_rank)
+        if (tri_rank_i - 1 < 0) or (tri_rank_i - 1 >= len(self.df)):
             raise ValueError(f"Topology: triRank hors df: {tri_rank_i} (len(df)={len(self.df)})")
-
-        # Construire l'élément topo uniquement si on a un tri_rank valide
-        element_id = TopologyWorld.format_element_id(tri_rank_i)
 
         world.beginTopoTransaction()
         try:
@@ -7466,19 +7461,21 @@ class TriangleViewerManual(
 
             # element (coordonnées locales canonisées par le core)
             el = TopologyElement(
-                element_id=element_id,
                 name=f"Triangle {tri_rank_i:02d}",
                 vertex_labels=v_labels,
                 vertex_types=v_types,
                 edge_lengths_km=edge_lengths_km,
-                meta={"orient": orient},
+                meta={"orient": orient, "triRank": tri_rank_i},
             )
 
             # Ajouter au core (nouveau groupe singleton)
             core_gid = world.add_element_as_new_group(el)
+            element_id = el.element_id
+            if not element_id:
+                raise RuntimeError("Topology: le Core n'a pas attribue d'elementId")
 
             # Annotation Tk (pont UI↔Core)
-            self._last_drawn[new_tid]["topoElementId"] = element_id
+            self._last_drawn[new_tid]["topoElementId"] = str(element_id)
             self._last_drawn[new_tid]["topoGroupId"] = core_gid
 
         finally:
@@ -8517,7 +8514,6 @@ class TriangleViewerManual(
         - Le dico doit rester sélectionnable même s'il n'y a pas d'arc mesuré.
         - Seule l'action "Filtrer le dictionnaire…" dépend de l'existence d'un arc.
         """
-        scen = self._get_active_scenario()
         self._clock_auto_ref_sync_var.set(bool(self._clock_auto_ref_sync_enabled))
         has_trace_ref = bool(self._clock_get_anchor_node_hit() is not None)
         menu = self._ctx_menu_compass
@@ -9167,16 +9163,37 @@ class TriangleViewerManual(
         self._ctx_target_idx = None
         if idx is None or not (0 <= idx < len(self._last_drawn)):
             return
-        gid = self._get_group_of_triangle(idx)
-        if not gid:
+
+        world = self._get_active_scenario().topoWorld
+        selected_element_id = str(self._last_drawn[idx].get("topoElementId") or "").strip()
+        if not selected_element_id:
             return
-        g = self.groups.get(gid)
-        if not g or not g.get("nodes"):
+        core_group_id = world.get_group_of_element(selected_element_id)
+        removed_element_ids = [
+            str(element_id)
+            for element_id in world.getGroupElementIds(core_group_id)
+        ]
+        if not removed_element_ids:
+            return
+        removed_tids = sorted(
+            {
+                tid
+                for element_id in removed_element_ids
+                for tid in (self.getTidForTopoElementId(element_id),)
+                if tid is not None
+            },
+            reverse=True,
+        )
+        if not removed_tids:
+            return
+
+        # Le gid UI reste nécessaire uniquement à la maintenance du miroir legacy ci-dessous.
+        legacy_gid = self._get_group_of_triangle(idx)
+        if not legacy_gid:
             return
 
         # --- Confirmation si le groupe comporte au moins 2 triangles ---
-        n_nodes = len(g.get("nodes", []))
-        if n_nodes >= 2:
+        if len(removed_tids) >= 2:
             confirm = messagebox.askyesno(
                 "Supprimer le groupe",
                 "Voulez-vous supprimer le groupe ?"
@@ -9184,21 +9201,7 @@ class TriangleViewerManual(
             if not confirm:
                 return
 
-        # 0) TOPO : capturer les elementId Core AVANT toute modif de _last_drawn
-        scen = self._get_active_scenario()
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
-        removed_element_ids = []
-
-        # tids du groupe (dans l'ordre inverse, comme le reste du code)
-        _tids = sorted({nd["tid"] for nd in g["nodes"] if "tid" in nd}, reverse=True)
-        for tid in _tids:
-            if 0 <= tid < len(self._last_drawn):
-                eid = self._last_drawn[tid].get("topoElementId")
-                if eid:
-                    removed_element_ids.append(str(eid))
-
-        # 1) Réinsertion listbox (avant de modifier _last_drawn)
-        removed_tids = sorted({nd["tid"] for nd in g["nodes"] if "tid" in nd}, reverse=True)
+        # 0) TOPO : les elementId Core sont deja resolus avant toute modif de _last_drawn.
         removed_set = set(removed_tids)
         for tid in removed_tids:
             if 0 <= tid < len(self._last_drawn):
@@ -9221,8 +9224,8 @@ class TriangleViewerManual(
             world.removeElementsAndRebuild(list(removed_element_ids))
 
         # 3) Supprimer le groupe et remapper les autres
-        if gid in self.groups:
-            del self.groups[gid]
+        if legacy_gid in self.groups:
+            del self.groups[legacy_gid]
         for g2 in list(self.groups.values()):
             new_nodes = []
             for nd in g2.get("nodes", []):
@@ -9243,7 +9246,8 @@ class TriangleViewerManual(
         self._sel = None
         self._reset_assist()
         self._redraw_from(self._last_drawn)
-        self.status.config(text=f"Groupe supprimé (gid={gid}, {len(removed_tids)} triangle(s)).")
+        self.status.config(text=f"Groupe supprimé (gid={core_group_id}, {len(removed_tids)} triangle(s)).")
+        print("----------------- Supression Groupe ---------------")
 
     def _ctx_rotate_selected(self):
         """Passe en mode rotation autour du barycentre pour le triangle ciblé."""
@@ -9412,12 +9416,21 @@ class TriangleViewerManual(
         if world is None:
             return None
 
-        element_ids = []
-        for tri_id in tri_ids:
+        element_id_by_tri_rank = {}
+        for entry in list(getattr(scen, "last_drawn", None) or []):
             try:
-                element_ids.append(TopologyWorld.format_element_id(int(tri_id)))
+                tri_rank = int(entry.get("id"))
             except (TypeError, ValueError):
                 return None
+            element_id = str(entry.get("topoElementId", "") or "").strip()
+            if not element_id or tri_rank in element_id_by_tri_rank:
+                return None
+            element_id_by_tri_rank[tri_rank] = element_id
+
+        try:
+            element_ids = [element_id_by_tri_rank[int(tri_id)] for tri_id in tri_ids]
+        except (KeyError, TypeError, ValueError):
+            return None
         return build_topology_prefix_steps(world, element_ids, upto_index)
 
     def _filter_auto_scenarios_by_prefix_edges(self, clicked_tid: int):
@@ -9599,9 +9612,8 @@ class TriangleViewerManual(
         if not (0 <= int(tri_index) < len(self._last_drawn)):
             return result
 
-        vertex_index_by_key = {"O": 0, "B": 1, "L": 2}
-        vertex_index = vertex_index_by_key.get(str(vkey))
-        if vertex_index is None:
+        vertex_type = str(vkey)
+        if vertex_type not in ("O", "B", "L"):
             return result
 
         scen = self._get_active_scenario()
@@ -9611,7 +9623,7 @@ class TriangleViewerManual(
             return result
 
         try:
-            node_id = world.format_node_id(element_id, vertex_index)
+            node_id = world.get_element_vertex_node_id_by_type(element_id, vertex_type)
             node_canon = world.find_node(node_id)
             core_group_id = str(world.get_group_of_element(element_id))
             entries = self.get_last_drawn_entries_for_core_group(core_group_id)
@@ -9771,35 +9783,6 @@ class TriangleViewerManual(
             # --- NOUVEAU (CTRL sans lien) : si CTRL est enfoncé mais que le sommet cliqué n'est PAS un lien,
             #                                on déplace le GROUPE entier ancré sur ce sommet, SANS assist.
             if self._ctrl_down:
-                gid0 = self._get_group_of_triangle(idx)
-                if gid0:
-                    # Les membres proviennent du groupe résolu par le sommet Core.
-                    move_members = vertex_move_members
-                    orig_group_pts = self._snapshot_mig_geo_entries(move_members["entries"])
-
-                    anchor_world = np.array(P[vkey], dtype=float)
-                    self._sel = {
-                        "mode": "move_group",
-                        "ui_group_id": gid0,
-                        "core_group_id": move_members["core_group_id"],
-                        "move_member_entries": move_members["entries"],
-                        "orig_group_pts": orig_group_pts,
-                        "anchor": {"type": "vertex", "tid": idx, "vkey": vkey},
-                        "grab_offset": np.array([wx, wy]) - anchor_world,
-                        "mouse_world_prev": np.array([wx, wy], dtype=float),
-                        "suppress_assist": True,  # pas d'aides visuelles en CTRL
-                    }
-                    # nettoyer toute aide existante
-                    self._reset_assist()
-                    self.status.config(text=f"Déplacement du groupe Core {move_members['core_group_id']} par sommet {vkey}.")
-
-                    self._redraw_from(self._last_drawn)
-                    return
-
-            # --- NOUVEAU : si le triangle appartient à un groupe et qu'on NE tient PAS CTRL,
-            #               on déplace le **groupe entier** ancré sur ce sommet.
-            gid0 = self._get_group_of_triangle(idx)
-            if gid0 and not self._ctrl_down:
                 # Les membres proviennent du groupe résolu par le sommet Core.
                 move_members = vertex_move_members
                 orig_group_pts = self._snapshot_mig_geo_entries(move_members["entries"])
@@ -9807,7 +9790,33 @@ class TriangleViewerManual(
                 anchor_world = np.array(P[vkey], dtype=float)
                 self._sel = {
                     "mode": "move_group",
-                    "ui_group_id": gid0,
+                    "ui_group_id": self._get_group_of_triangle(idx),
+                    "core_group_id": move_members["core_group_id"],
+                    "move_member_entries": move_members["entries"],
+                    "orig_group_pts": orig_group_pts,
+                    "anchor": {"type": "vertex", "tid": idx, "vkey": vkey},
+                    "grab_offset": np.array([wx, wy]) - anchor_world,
+                    "mouse_world_prev": np.array([wx, wy], dtype=float),
+                    "suppress_assist": True,  # pas d'aides visuelles en CTRL
+                }
+                # nettoyer toute aide existante
+                self._reset_assist()
+                self.status.config(text=f"Déplacement du groupe Core {move_members['core_group_id']} par sommet {vkey}.")
+
+                self._redraw_from(self._last_drawn)
+                return
+
+            # --- NOUVEAU : si le triangle appartient à un groupe et qu'on NE tient PAS CTRL,
+            #               on déplace le **groupe entier** ancré sur ce sommet.
+            if not self._ctrl_down:
+                # Les membres proviennent du groupe résolu par le sommet Core.
+                move_members = vertex_move_members
+                orig_group_pts = self._snapshot_mig_geo_entries(move_members["entries"])
+
+                anchor_world = np.array(P[vkey], dtype=float)
+                self._sel = {
+                    "mode": "move_group",
+                    "ui_group_id": self._get_group_of_triangle(idx),
                     "core_group_id": move_members["core_group_id"],
                     "move_member_entries": move_members["entries"],
                     "orig_group_pts": orig_group_pts,
@@ -9820,10 +9829,18 @@ class TriangleViewerManual(
                 self.status.config(text=f"Déplacement du groupe Core {move_members['core_group_id']} par sommet {vkey}.")
                 # Aide immédiate : viser un sommet d'un AUTRE triangle (exclure le groupe lui-même)
                 v_world = np.array(P[vkey], dtype=float)
-                tgt = self._find_nearest_vertex(v_world, exclude_idx=idx, exclude_gid=gid0)
+                tgt = self._find_nearest_vertex(
+                    v_world,
+                    exclude_idx=idx,
+                    exclude_core_group_id=move_members["core_group_id"],
+                )
                 if tgt is not None:
                     j, tgt_key, _ = tgt
-                    self._update_nearest_line(v_world, exclude_idx=idx, exclude_gid=gid0)
+                    self._update_nearest_line(
+                        v_world,
+                        exclude_idx=idx,
+                        exclude_core_group_id=move_members["core_group_id"],
+                    )
                     self._update_edge_highlights(idx, vkey, j, tgt_key)
                 else:
                     self._clear_nearest_line()
@@ -9918,11 +9935,19 @@ class TriangleViewerManual(
                         Panchor = self._last_drawn[anchor_tid]["pts"]
                         v_world = np.array(Panchor[anchor_vkey], dtype=float)
                         # chercher une cible HORS du groupe mobile
-                        ui_group_id = self._sel.get("ui_group_id")
-                        tgt = self._find_nearest_vertex(v_world, exclude_idx=anchor_tid, exclude_gid=ui_group_id)
+                        core_group_id = self._sel.get("core_group_id")
+                        tgt = self._find_nearest_vertex(
+                            v_world,
+                            exclude_idx=anchor_tid,
+                            exclude_core_group_id=core_group_id,
+                        )
                         if tgt is not None:
                             j, tgt_key, _ = tgt
-                            self._update_nearest_line(v_world, exclude_idx=anchor_tid, exclude_gid=ui_group_id)
+                            self._update_nearest_line(
+                                v_world,
+                                exclude_idx=anchor_tid,
+                                exclude_core_group_id=core_group_id,
+                            )
                             self._update_edge_highlights(anchor_tid, anchor_vkey, j, tgt_key)
                         else:
                             self._clear_nearest_line()

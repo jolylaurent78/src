@@ -250,14 +250,11 @@ def createTopoQuadrilateral(
 
     def _ensure_element_from_local(
         *,
-        elementId: str,
         triId: int,
         pts_local: Dict[str, np.ndarray],
         labels: tuple | list | None,
         orient: str,
-    ) -> None:
-        if str(elementId) in world.elements:
-            return
+    ) -> str:
         v_labels = list(labels or ("O", "B", "L"))
         v_types = [TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE]
         edge_lengths = [
@@ -267,32 +264,28 @@ def createTopoQuadrilateral(
         ]
 
         el = TopologyElement(
-            element_id=str(elementId),
             name=f"Triangle {int(triId):02d}",
             vertex_labels=v_labels,
             vertex_types=v_types,
             edge_lengths_km=edge_lengths,
-            meta={"orient": orient},
+            meta={"orient": orient, "triRank": int(triId)},
         )
         # IMPORTANT: crée un nouveau groupe topo pour cet élément
         world.add_element_as_new_group(el)
+        if not el.element_id:
+            raise RuntimeError("createTopoQuadrilateral: le Core n'a pas attribue d'elementId")
+        return str(el.element_id)
 
     world.beginTopoTransaction()
     try:
-        # --- 1) IDs éléments (déterministes) ---
-        elementIdOdd = TopologyWorld.format_element_id(int(triangleMobFromId))
-        elementIdEven = TopologyWorld.format_element_id(int(triangleMobToId))
-
-        # --- 2) Créer les 2 éléments (si absents) ---
-        _ensure_element_from_local(
-            elementId=elementIdOdd,
+        # --- 1) Creer les deux instances et conserver les IDs attribues par le Core. ---
+        elementIdOdd = _ensure_element_from_local(
             triId=int(triangleMobFromId),
             pts_local={k: np.array(triangleMobFrom_PtsLocal[k], dtype=float) for k in ("O", "B", "L")},
             labels=triangleMobFrom.get("labels"),
             orient=triangleMobFrom.get("orient", False),
         )
-        _ensure_element_from_local(
-            elementId=elementIdEven,
+        elementIdEven = _ensure_element_from_local(
             triId=int(triangleMobToId),
             pts_local={k: np.array(triangleMobTo_PtsLocal[k], dtype=float) for k in ("O", "B", "L")},
             labels=triangleMobTo.get("labels"),
@@ -579,32 +572,21 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             labels: tuple | list,
             orient: str,
         ) -> None:
-            if element_id in world.elements:
-                return
-            v_labels = list(labels or ("O", "B", "L"))
-            v_types = [TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE]
-            edge_lengths = [
-                _edge_len(pts_local, "O", "B"),
-                _edge_len(pts_local, "B", "L"),
-                _edge_len(pts_local, "L", "O"),
-            ]
-
-            el = TopologyElement(
-                element_id=element_id,
-                name=f"Triangle {int(tri_id):02d}",
-                vertex_labels=v_labels,
-                vertex_types=v_types,
-                edge_lengths_km=edge_lengths,
-                meta={"orient": orient},
-            )
-            world.add_element_as_new_group(el)
+            # Les candidats proviennent d'un monde deja construit puis clone :
+            # l'ID doit donc deja designer la meme instance Core, sans recreation.
+            if element_id not in world.elements:
+                raise ValueError(
+                    f"Simulation: elementId Core absent dans le clone: {element_id}"
+                )
 
         def _assign_topo_element_id_to_last_drawn(
             *,
             entry: dict,
+            element_id: str,
         ) -> str:
-            tri_id = int(entry.get("id"))
-            elem_id = TopologyWorld.format_element_id(tri_id)
+            elem_id = str(element_id or "").strip()
+            if not elem_id:
+                raise ValueError("Simulation: topoElementId Core absent")
             entry["topoElementId"] = elem_id
             return elem_id
 
@@ -818,9 +800,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 "group_id": 1,
             },
         ]
-        _assign_topo_element_id_to_last_drawn(entry=base_last[0])
-        _assign_topo_element_id_to_last_drawn(entry=base_last[1])
-
         def _orient_O_to_L_north(P: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
             P = {k: np.array(P[k], dtype=float) for k in ("O", "B", "L")}
             vOL = P["L"] - P["O"]
@@ -936,7 +915,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                     mob_keys = ("O", "B")
 
                     # --- Phase 3 : création du quadrilatère topo mobile (UNE FOIS)
-                    createTopoQuadrilateral(
+                    _, element_id_odd, element_id_even, _, _ = createTopoQuadrilateral(
                         world=topoWorld_prev,
                         triangleMobFromId=triangleMobFromId,
                         triangleMobToId=triangleMobToId,
@@ -963,6 +942,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                     })
                     _assign_topo_element_id_to_last_drawn(
                         entry=last_drawn_base[pos0],
+                        element_id=element_id_odd,
                     )
 
                     pos1 = len(last_drawn_base)
@@ -975,6 +955,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                     })
                     _assign_topo_element_id_to_last_drawn(
                         entry=last_drawn_base[pos1],
+                        element_id=element_id_even,
                     )
 
                     # On rebuild cache et contours pour éviter les surprises
@@ -1056,7 +1037,10 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                 "mirrored": bool(triangleMobFrom.get("mirrored", False)),
                                 "group_id": 1,
                             })
-                            elem_id_odd = _assign_topo_element_id_to_last_drawn(entry=last_drawn_new[pos0])
+                            elem_id_odd = _assign_topo_element_id_to_last_drawn(
+                                entry=last_drawn_new[pos0],
+                                element_id=element_id_odd,
+                            )
                             last_drawn_new[pos0]["_chain_edge_in"] = mobEdgeAtL
                             pos1 = len(last_drawn_new)
                             last_drawn_new.append({
@@ -1066,7 +1050,10 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                 "mirrored": bool(triangleMobTo.get("mirrored", False)),
                                 "group_id": 1,
                             })
-                            elem_id_even = _assign_topo_element_id_to_last_drawn(entry=last_drawn_new[pos1])
+                            elem_id_even = _assign_topo_element_id_to_last_drawn(
+                                entry=last_drawn_new[pos1],
+                                element_id=element_id_even,
+                            )
                             # décision de raccord: destEdgeAtL (côté ancre), mobEdgeAtL (côté mobile odd)
                             candKey = f"{baseKey}|{int(triangleMobFromId)}:{mobEdgeAtL}->{destEdgeAtL}"
 

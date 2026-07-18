@@ -93,7 +93,7 @@ def plotLastDrawn(lastDrawn: List[Dict[str, Any]], showIds: bool = True, ax=None
 
         if showIds:
             c = (O + B + L) / 3.0
-            label = d.get("topoElementId") or f'T{d.get("id","?")}'
+            label = d.get("topoElementId") or f'Triangle catalogue {d.get("id", "?")}'
             txt = ax.text(c[0], c[1], label, fontsize=8)
             artists.append(txt)
 

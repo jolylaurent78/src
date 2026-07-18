@@ -3,7 +3,6 @@ import numpy as np
 
 # === Modules externalisés (découpage maintenable) ===
 from src.assembleur_core import (
-    TopologyWorld, TopologyElement, TopologyNodeType,
     TopologyAttachment, TopologyFeatureRef, TopologyFeatureType,
 )
 
@@ -154,7 +153,7 @@ class EdgeChoiceEpts:
             return []
 
         if t_raw <= 1.0:
-            edge_from = world.format_node_id(elementIdDst, int(vtA))
+            edge_from = world.get_element_vertex_node_id(elementIdDst, int(vtA))
             atts.append(
                 TopologyAttachment(
                     attachment_id=None,
@@ -177,7 +176,7 @@ class EdgeChoiceEpts:
             )
         else:
             t_inv = 1.0 / float(t_raw)
-            edge_from = world.format_node_id(elementIdSrc, int(vmA))
+            edge_from = world.get_element_vertex_node_id(elementIdSrc, int(vmA))
             atts.append(
                 TopologyAttachment(
                     attachment_id=None,
@@ -251,6 +250,18 @@ def _edge_labels_for(owner_tid: int, edge_code: str, last_drawn):
 def _find_owner_edge_for_segment(group_tids, A, B, eps_world, last_drawn):
     if not group_tids:
         return (None, None)
+
+    print("group_tids =", group_tids)
+
+    for tid in group_tids:
+        print(
+            "tid",
+            tid,
+            "topoElementId",
+            last_drawn[tid].get("topoElementId"),
+            "pts",
+            last_drawn[tid].get("pts"),
+        )
 
     Ax, Ay = float(A[0]), float(A[1])
     Bx, By = float(B[0]), float(B[1])
@@ -383,7 +394,6 @@ def buildEdgeChoiceEptsFromBest(
     if dst_owner_tid is None:
         dst_owner_tid = tgt_idx
 
-
     src_owner_tid = int(src_owner_tid)
     dst_owner_tid = int(dst_owner_tid)
     tri_src = last_drawn[src_owner_tid]
@@ -433,6 +443,23 @@ def buildEdgeChoiceEptsFromBest(
     edge_code_set = {"OB", "BL", "LO"}
     src_edge = str(src_edge or "").upper().strip()
     dst_edge = str(dst_edge or "").upper().strip()
+
+    print("========== EDGECHOICE ==========")
+    print("src_owner_tid =", src_owner_tid)
+    print("dst_owner_tid =", dst_owner_tid)
+
+    print("src_edge =", src_edge)
+    print("dst_edge =", dst_edge)
+
+    print("mob_tids =", mob_tids)
+    print("tgt_tids =", tgt_tids)
+
+    print("mob_idx =", mob_idx)
+    print("tgt_idx =", tgt_idx)
+
+    print("elementIdSrc =", elementIdSrc)
+    print("elementIdDst =", elementIdDst)
+
     if src_edge not in edge_code_set or dst_edge not in edge_code_set:
         raise ValueError("buildEdgeChoiceEptsFromBest: src_edge/dst_edge invalide")
 

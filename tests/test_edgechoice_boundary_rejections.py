@@ -100,7 +100,8 @@ def test_representable_boundary_owner_still_builds_edge_choice():
 
 def test_snap_loop_continues_after_unrepresentable_boundary_candidate(monkeypatch):
     class _World:
-        def format_node_id(self, element_id, vertex_index):
+        def get_element_vertex_node_id_by_type(self, element_id, vertex_type):
+            vertex_index = {"O": 0, "B": 1, "L": 2}[vertex_type]
             return f"{element_id}:N{vertex_index}"
 
         def getBoundarySegments(self, group_id):

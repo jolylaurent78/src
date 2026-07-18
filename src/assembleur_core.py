@@ -113,10 +113,10 @@ class ScenarioAssemblage:
 # =============================================================================
 #
 # Convention d’identifiants lisibles :
-# - Element (triangle instance) : "T<triRank:02d>"         ex: "T01"
-# - Node atomique (par sommet) : "T<triRank:02d}:N<idx>"   ex: "T01:N0"
-# - Group (DSU)                : "G<k:03d>"                ex: "G001"
-# - Attachment                 : "A<k:03d>"                ex: "A003"
+# - Element (instance topologique) : "T<sequence:02d>"
+# - Node atomique                 : "T<sequence:02d>:N<idx>"
+# - Group (DSU)                 : "G<k:03d>"                ex: "G001"
+# - Attachment                  : "A<k:03d>"                ex: "A003"
 #
 # Remarques :
 # - Les IDs sont des strings pour une lisibilité maximale (TopoDump XML).
@@ -419,14 +419,17 @@ class TopologyElement:
     - edge_lengths_km peut être fourni (recommandé). À défaut, une valeur par défaut est posée
       et remplacée ensuite par la géométrie monde.
     """
-    def __init__(self, element_id: str, name: str,
+    def __init__(self, name: str,
                  vertex_labels: list[str], vertex_types: list[str],
                  edge_lengths_km: list[float],
                  intrinsic_sides_km: dict[str, float] | None = None,
                  local_frame: dict | None = None,
                  vertex_local_xy: dict[int, tuple[float, float]] | None = None,
-                 meta: dict | None = None):
-        self.element_id = str(element_id)
+                 meta: dict | None = None,
+                 element_id: str | None = None):
+        # L'identifiant d'instance est attribue par TopologyWorld lors de
+        # l'insertion normale. Les imports/restaurations peuvent le fournir.
+        self.element_id = None if element_id is None else str(element_id)
         self.name = str(name)
         self.meta = dict(meta) if meta is not None else {}
 
@@ -1610,6 +1613,7 @@ class TopologyWorld:
         self._created_counter_nodes = 0
         self._created_counter_groups = 0
         self._created_counter_attachments = 0
+        self._created_counter_elements = 0
         self._topoTxDepth = 0
         self._topoTxTouchedGroups: set[str] = set()
         self._topoTxOrientation = "cw"
@@ -2907,6 +2911,12 @@ class TopologyWorld:
             return None
         return int(m.group(1))
 
+    @staticmethod
+    def parse_element_sequence_from_id(element_id: str) -> int | None:
+        """Extrait la sequence d'un identifiant d'instance explicite ``T<n>``."""
+        match = re.fullmatch(r"T(\d+)", str(element_id or "").strip())
+        return int(match.group(1)) if match else None
+
     # Azimut (C7) – Référence unique
 
     def azimutDegFromDxDy(self, dx: float, dy: float) -> float:
@@ -2933,6 +2943,11 @@ class TopologyWorld:
         gid = f"G{self._created_counter_groups:03d}"
         self._group_created_order[gid] = self._created_counter_groups
         return gid
+
+    def new_element_id(self) -> str:
+        """Alloue un identifiant d'instance monotone, propre a ce monde."""
+        self._created_counter_elements += 1
+        return f"T{self._created_counter_elements:02d}"
 
     def new_attachment_id(self) -> str:
         self._created_counter_attachments += 1
@@ -3073,8 +3088,20 @@ class TopologyWorld:
 
     # --- Elements ---
     def add_element_as_new_group(self, element: TopologyElement) -> str:
+        explicit_sequence = None
+        if element.element_id is None:
+            element.element_id = self.new_element_id()
+        else:
+            element_id = str(element.element_id).strip()
+            explicit_sequence = self.parse_element_sequence_from_id(element_id)
+            if explicit_sequence is None:
+                raise ValueError(f"TopologyWorld: elementId invalide: {element.element_id}")
+            element.element_id = element_id
+
         if element.element_id in self.elements:
             raise ValueError(f"TopologyWorld: elementId déjà présent: {element.element_id}")
+        if explicit_sequence is not None:
+            self._created_counter_elements = max(self._created_counter_elements, explicit_sequence)
         gid = self.create_group_atomic()
         self.elements[element.element_id] = element
         self.element_to_group[element.element_id] = gid
@@ -3102,6 +3129,46 @@ class TopologyWorld:
 
     def get_vertex(self, element_id: str, vertex_index: int) -> TopologyVertex:
         return self.elements[str(element_id)].vertexes[int(vertex_index)]
+
+    def get_element_vertex_node_id(self, element_id: str, vertex_index: int) -> str:
+        """Retourne le node physique porte par un sommet de l'element.
+
+        Cette API evite aux couches externes de connaitre la convention de
+        construction des IDs de nodes physiques.
+        """
+        key = str(element_id or "").strip()
+        element = self.elements.get(key)
+        if element is None:
+            raise KeyError(f"TopologyWorld: element inconnu: {element_id}")
+        index = int(vertex_index)
+        if index < 0 or index >= len(element.vertexes):
+            raise IndexError(f"TopologyWorld: vertex_index invalide pour {key}: {vertex_index}")
+        return str(element.vertexes[index].node_id)
+
+    def get_element_vertex_node_id_by_type(self, element_id: str, node_type: str) -> str:
+        """Retourne le node physique du sommet ayant le type metier demande."""
+        key = str(element_id or "").strip()
+        element = self.elements.get(key)
+        if element is None:
+            raise KeyError(f"TopologyWorld: element inconnu: {element_id}")
+        wanted = str(node_type)
+        matches = [vertex.node_id for vertex in element.vertexes if vertex.node_type == wanted]
+        if len(matches) != 1:
+            raise ValueError(
+                f"TopologyWorld: sommet de type {wanted!r} ambigu ou absent pour {key}"
+            )
+        return str(matches[0])
+
+    def get_element_edge_id(self, element_id: str, edge_index: int) -> str:
+        """Retourne l'ID physique porte par une arete de l'element."""
+        key = str(element_id or "").strip()
+        element = self.elements.get(key)
+        if element is None:
+            raise KeyError(f"TopologyWorld: element inconnu: {element_id}")
+        index = int(edge_index)
+        if index < 0 or index >= len(element.edges):
+            raise IndexError(f"TopologyWorld: edge_index invalide pour {key}: {edge_index}")
+        return str(element.edges[index].edge_id())
 
     def get_group_of_element(self, element_id: str) -> str:
         gid0 = self.element_to_group.get(str(element_id))

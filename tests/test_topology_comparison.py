@@ -22,7 +22,8 @@ class _VertexWorld:
         self.attachments = {"A001": object()}
         self.groups = {"G001": _CoreGroup(["T01", "T02"])}
 
-    def format_node_id(self, element_id, vertex_index):
+    def get_element_vertex_node_id_by_type(self, element_id, node_type):
+        vertex_index = {"O": 0, "B": 1, "L": 2}[node_type]
         return f"{element_id}:N{vertex_index}"
 
     def find_node(self, node_id):
@@ -185,6 +186,10 @@ def test_viewer_core_prefix_steps_uses_tri_ids_and_attachments_without_groups():
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     scenario = ScenarioAssemblage("auto", source_type="auto", tri_ids=[1, 2])
     scenario.groups = None
+    scenario.last_drawn = [
+        {"id": 1, "topoElementId": "T01"},
+        {"id": 2, "topoElementId": "T02"},
+    ]
     scenario.topoWorld.attachments = {
         "A001": _attachment(
             "edge-edge", TopologyFeatureType.EDGE, "T01", 0,
@@ -201,6 +206,10 @@ def test_prefix_filter_keeps_only_candidates_with_same_ordered_core_path():
     def scenario(name, tri_ids, attachment):
         item = ScenarioAssemblage(name, source_type="auto", tri_ids=tri_ids)
         item.groups = None
+        item.last_drawn = [
+            {"id": 1, "topoElementId": "T01"},
+            {"id": 2, "topoElementId": "T02"},
+        ]
         item.topoWorld.attachments = {"A001": attachment}
         return item
 

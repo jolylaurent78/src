@@ -246,7 +246,11 @@ def test_passive_group_geometry_uses_core_members_not_legacy_nodes():
     # T02 porte volontairement un autre group_id UI : l'exclusion doit
     # neanmoins suivre son groupe Core commun avec T01.
     viewer._last_drawn[1]["group_id"] = 999
-    assert viewer._find_nearest_vertex((10.0, 0.0), exclude_idx=0, exclude_gid=10) is None
+    assert viewer._find_nearest_vertex(
+        (10.0, 0.0),
+        exclude_idx=0,
+        exclude_core_group_id=canonical_group_id,
+    ) is None
 
 
 def test_draw_group_outlines_enumerates_canonical_core_groups_without_ui_groups():
@@ -421,11 +425,19 @@ def test_center_move_initializes_a_core_only_selection_state():
     assert tuple(viewer._last_drawn[0]["pts"]["O"]) == (2.0, -1.0)
 
 
-def test_delete_group_keeps_remaining_ui_tid_mapping():
+def test_delete_group_resolves_members_from_core_and_keeps_legacy_mapping():
     class _World:
         def __init__(self):
             self.groups = {"G-REMOVED": object(), "G-KEEP": object(), "G-ALIAS": object()}
             self.removed_element_ids = None
+            self.requested_group_ids = []
+
+        def get_group_of_element(self, element_id):
+            return "G-REMOVED" if element_id == "T01" else "G-KEEP"
+
+        def getGroupElementIds(self, group_id):
+            self.requested_group_ids.append(group_id)
+            return ["T01"] if group_id == "G-REMOVED" else ["T02"]
 
         def removeElementsAndRebuild(self, element_ids):
             self.removed_element_ids = list(element_ids)
@@ -442,18 +454,21 @@ def test_delete_group_keeps_remaining_ui_tid_mapping():
         {"topoElementId": "T02", "group_id": 20},
     ]
     viewer.groups = {
-        10: {"id": 10, "nodes": [{"tid": 0}]},
+        # Cette donnée legacy est volontairement erronée : le parcours doit suivre le Core.
+        10: {"id": 10, "nodes": [{"tid": 1}]},
         20: {"id": 20, "nodes": [{"tid": 1}]},
     }
     viewer.scenarios = [SimpleNamespace(topoWorld=world)]
     viewer.active_scenario_index = 0
     viewer._reinsert_triangle_to_list = lambda _triangle: None
+    viewer.getTidForTopoElementId = lambda element_id: {"T01": 0, "T02": 1}.get(element_id)
     viewer._reset_assist = lambda: None
     viewer._redraw_from = lambda _entries: None
     viewer.status = _StatusStub()
     viewer._ctx_delete_group()
 
     assert world.removed_element_ids == ["T01"]
+    assert world.requested_group_ids == ["G-REMOVED"]
     assert viewer.groups[20]["nodes"] == [{"tid": 0}]
     assert viewer._last_drawn[0]["group_id"] == 20
 
@@ -664,3 +679,24 @@ def test_degrouper_result_uses_core_ids_for_visual_separation_and_sync():
     ]
     assert tuple(viewer._last_drawn[0]["pts"]["O"]) == (0.0, 0.0)
     assert tuple(viewer._last_drawn[1]["pts"]["O"]) == (-20.0, 0.0)
+
+
+def test_nearest_line_forwards_the_core_group_id_to_snapping():
+    """MIG-GROUP-019: le pipeline de snap ne reçoit plus de gid UI."""
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    calls = []
+    viewer._find_nearest_vertex = lambda *args, **kwargs: calls.append((args, kwargs)) or None
+    viewer._clear_nearest_line = lambda: None
+
+    viewer._update_nearest_line(
+        (1.0, 2.0),
+        exclude_idx=4,
+        exclude_core_group_id="G-CANONICAL",
+    )
+
+    assert calls == [
+        (
+            ((1.0, 2.0),),
+            {"exclude_idx": 4, "exclude_core_group_id": "G-CANONICAL"},
+        )
+    ]

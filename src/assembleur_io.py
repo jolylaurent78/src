@@ -886,24 +886,13 @@ def loadScenarioXml(viewer, path: str):
             "colorHex": color_hex,
         })
 
-    # On construit une table elem_id_by_rank qui contient la liste des Triangles Txx du core
-    elem_id_by_rank = {}
-    for _eid in world.elements.keys():
-        _rank = world.__class__.parse_tri_rank_from_element_id(_eid)
-        if _rank is None:
-            continue
-        if _rank not in elem_id_by_rank:
-            elem_id_by_rank[_rank] = str(_eid)
-
-    # On prend tous les elements de lastdrawn et on vérifie qu'ils sont bien mappés avec le core
+    # Les entrées UI doivent conserver l'identifiant d'instance du snapshot Core.
+    # Un topoElementId absent ne peut pas etre reconstruit depuis le tri_id catalogue.
     for t in viewer._last_drawn:
-        # On remappe chaque triangle
         tid = t.get("id", "?")
         topo_element_id = t.get("topoElementId", None)
         if topo_element_id in (None, ""):
-            topo_element_id = elem_id_by_rank.get(int(tid), None)
-            if topo_element_id is not None:
-                t["topoElementId"] = topo_element_id
+            raise ValueError(f"Triangle {tid} sans topoElementId dans le snapshot Core.")
 
         topo_element_id = str(topo_element_id)
         if topo_element_id not in world.elements:
