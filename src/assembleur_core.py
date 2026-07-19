@@ -83,6 +83,9 @@ class ScenarioAssemblage:
         self.traversal_direction: Optional[str] = (
             str(traversal_direction).lower() if traversal_direction else None
         )
+        # Chronologie de construction des éléments du scénario automatique.
+        # Cette information ne décrit ni la topologie ni la projection graphique.
+        self.orderedElementIds: List[str] = []
 
         # État géométrique associé au scénario
         self.last_drawn: List[Dict] = []         # même structure que viewer._last_drawn

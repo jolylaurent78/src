@@ -4,7 +4,7 @@ Moteur + algorithmes d'assemblage automatique (sans dépendance Tk).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Type, Optional
 import numpy as np
 import math
@@ -25,6 +25,142 @@ from src.assembleur_edgechoice import (
 )
 
 EPS_WORLD = 1e-6
+
+
+@dataclass(eq=False)
+class _BranchNode:
+    parent: Optional["_BranchNode"]
+    children: List["_BranchNode"]
+    branchTriId: Optional[int] = None
+
+
+@dataclass
+class PlacedTriangle:
+    """Triangle projeté manipulé par le moteur de simulation."""
+    triangleId: int
+    points: Dict[str, np.ndarray]
+    labels: tuple | list | None = None
+    mirrored: bool = False
+    topologyElementId: Optional[str] = None
+
+    @classmethod
+    def fromLegacyDict(cls, entry: Dict) -> "PlacedTriangle":
+        if not isinstance(entry, dict):
+            raise TypeError("PlacedTriangle.fromLegacyDict: dictionnaire attendu")
+        return cls(
+            triangleId=entry["id"],
+            points=entry["pts"],
+            labels=entry.get("labels"),
+            mirrored=bool(entry.get("mirrored", False)),
+            topologyElementId=entry.get("topoElementId"),
+        )
+
+    def toLegacyDict(self) -> Dict:
+        entry = {
+            "labels": self.labels,
+            "pts": self.points,
+            "id": self.triangleId,
+            "mirrored": self.mirrored,
+        }
+        if self.topologyElementId is not None:
+            entry["topoElementId"] = self.topologyElementId
+        return entry
+
+
+class PlacedTriangles:
+    """Conteneur minimal des triangles projetés d'une branche."""
+
+    def __init__(self, entries: Optional[List[PlacedTriangle]] = None):
+        self._entries = list(entries) if entries is not None else []
+        if not all(isinstance(entry, PlacedTriangle) for entry in self._entries):
+            raise TypeError("PlacedTriangles: objets PlacedTriangle attendus")
+
+    def append(self, entry: PlacedTriangle) -> None:
+        if not isinstance(entry, PlacedTriangle):
+            raise TypeError("PlacedTriangles.append: objet PlacedTriangle attendu")
+        self._entries.append(entry)
+
+    def clone(self) -> "PlacedTriangles":
+        return PlacedTriangles(copy.deepcopy(self._entries))
+
+    def last(self) -> PlacedTriangle:
+        return self._entries[-1]
+
+    def count(self) -> int:
+        return len(self._entries)
+
+    def items(self) -> List[PlacedTriangle]:
+        return self._entries
+
+    def toLegacyList(self) -> List[Dict]:
+        return [entry.toLegacyDict() for entry in self._entries]
+
+    def findByTopologyElementId(self, element_id: str) -> Optional[PlacedTriangle]:
+        target = str(element_id)
+        for entry in self._entries:
+            if str(entry.topologyElementId or "") == target:
+                return entry
+        return None
+
+    def findByTriangleId(self, triangle_id: int) -> Optional[PlacedTriangle]:
+        for entry in self._entries:
+            if entry.triangleId == triangle_id:
+                return entry
+        return None
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def __iter__(self):
+        return iter(self._entries)
+
+    def __getitem__(self, index):
+        return self._entries[index]
+
+
+@dataclass
+class BranchState:
+    """État explicite d'une branche de simulation automatique."""
+    node: _BranchNode
+    topoWorld: TopologyWorld
+    placedTriangles: PlacedTriangles
+    orderedElementIds: List[str]
+    poly_occ: object
+    tailElementId: Optional[str] = field(init=False, default=None)
+
+    def __post_init__(self) -> None:
+        self.orderedElementIds = list(self.orderedElementIds)
+        self.tailElementId = self.orderedElementIds[-1] if self.orderedElementIds else None
+
+
+def buildLegacyLastDrawnFromTopology(
+    *,
+    topologyWorld: TopologyWorld,
+    orderedElementIds: List[str],
+    placedTriangles: PlacedTriangles,
+) -> List[Dict]:
+    """Projette les triangles depuis la topologie Core, sans groupe UI legacy."""
+    # Le paramètre est conservé pour la compatibilité de l'API de projection.
+    # L'ordre ne sert plus à numéroter artificiellement les groupes UI.
+    last_drawn: List[Dict] = []
+    for tid, triangle in enumerate(placedTriangles):
+        element_id = str(triangle.topologyElementId or "").strip()
+        if not element_id:
+            raise ValueError(f"buildLegacyLastDrawnFromTopology: projection tid={tid} sans topoElementId")
+        if element_id not in topologyWorld.elements:
+            raise ValueError(
+                f"buildLegacyLastDrawnFromTopology: élément Core introuvable: {element_id}"
+            )
+        core_group_id = topologyWorld.get_group_of_element(element_id)
+        if core_group_id is None:
+            raise ValueError(
+                f"buildLegacyLastDrawnFromTopology: groupe Core absent pour {element_id}"
+            )
+        entry = triangle.toLegacyDict()
+        entry["topoGroupId"] = str(core_group_id)
+        last_drawn.append(entry)
+    return last_drawn
+
 
 # ============================================================
 # Décryptage (générique) — sans dépendance UI
@@ -215,8 +351,8 @@ def createTopoQuadrilateral(
     triangleMobTo_PtsLocal: Dict[str, np.ndarray],
     triangleMobFromPts: Dict[str, np.ndarray],
     triangleMobToPts: Dict[str, np.ndarray],
-    entryOdd: dict | None = None,
-    entryEven: dict | None = None,
+    entryOdd: PlacedTriangle | None = None,
+    entryEven: PlacedTriangle | None = None,
     tol_rel: float = 1e-3,
     eps_world: float = 1e-6,
 ) -> tuple[str, str, str, str, str]:
@@ -228,9 +364,8 @@ def createTopoQuadrilateral(
       - commit topo
       - retourne (topoGroupId, elementIdOdd, elementIdEven, src_edge, dst_edge)
 
-    entryOdd/entryEven (si fournis) reçoivent:
-      - topoElementId
-      - topoGroupId (après commit)
+    entryOdd/entryEven (si fournis) reçoivent l'identifiant topologique de leur
+    élément. Le groupe est projeté à la finalisation du scénario.
     """
 
     # --- helpers locaux ---
@@ -298,9 +433,9 @@ def createTopoQuadrilateral(
 
         # Injecter topoElementId dans les entrées graphiques si fournies
         if entryOdd is not None:
-            entryOdd["topoElementId"] = elementIdOdd
+            entryOdd.topologyElementId = elementIdOdd
         if entryEven is not None:
-            entryEven["topoElementId"] = elementIdEven
+            entryEven.topologyElementId = elementIdEven
 
         # --- 4) Détecter l’arête commune (en local) ---
         edges = [("O", "B"), ("O", "L"), ("B", "L")]
@@ -355,11 +490,6 @@ def createTopoQuadrilateral(
 
     # --- 7) Groupe topo résultant (odd/even doivent maintenant être dans le même groupe) ---
     topoGroupId = world.get_group_of_element(elementIdOdd)
-
-    if entryOdd is not None:
-        entryOdd["topoGroupId"] = topoGroupId
-    if entryEven is not None:
-        entryEven["topoGroupId"] = topoGroupId
 
     return (str(topoGroupId), str(elementIdOdd), str(elementIdEven), str(src_edge), str(dst_edge))
 
@@ -418,75 +548,6 @@ def setElementPoseFromWorldPts(
 class AlgoQuadrisParPaires(AlgorithmeAssemblage):
     id = "quadris_par_paires"
     label = "Quadrilatères par paires (bases communes) [WIP]"
-
-    def _fill_group_vkeys_from_geometry(last_drawn: list, groups: dict, Q: float = 1e-6):
-        """
-        Enrichit groups[*]["nodes"] en remplissant :
-        - edge_in / edge_out : l'arête réellement partagée ("OB","BL","LO")
-        # (legacy vkey_in/out supprimé : on ne stocke plus que edge_in/out)
-        """
-        def qpt(p):
-            return (round(float(p[0]) / Q) * Q, round(float(p[1]) / Q) * Q)
-
-        def seg_key(a, b):
-            a2 = qpt(a)
-            b2 = qpt(b)
-            return (a2, b2) if a2 <= b2 else (b2, a2)
-
-        def edges_of(P):
-            return {
-                "OB": seg_key(P["O"], P["B"]),
-                "BL": seg_key(P["B"], P["L"]),
-                "LO": seg_key(P["L"], P["O"]),
-            }
-
-        # arête -> sommet opposé
-        for g in (groups or {}).values():
-            nodes = (g or {}).get("nodes") or []
-            if len(nodes) < 2:
-                continue
-
-            # reset soft (optionnel mais évite les restes)
-            for nd in nodes:
-                nd["edge_in"] = nd.get("edge_in") if nd.get("edge_in") is not None else None
-                nd["edge_out"] = nd.get("edge_out") if nd.get("edge_out") is not None else None
-
-            for i in range(len(nodes) - 1):
-                a = nodes[i]
-                b = nodes[i + 1]
-                ia = int(a.get("tid"))
-                ib = int(b.get("tid"))
-
-                if not (0 <= ia < len(last_drawn) and 0 <= ib < len(last_drawn)):
-                    continue
-
-                Pa = (last_drawn[ia] or {}).get("pts") or {}
-                Pb = (last_drawn[ib] or {}).get("pts") or {}
-                if not all(k in Pa for k in ("O", "B", "L")):
-                    continue
-                if not all(k in Pb for k in ("O", "B", "L")):
-                    continue
-
-                ea = edges_of(Pa)
-                eb = edges_of(Pb)
-
-                shared_a = shared_b = None
-                for name_a, seg_a in ea.items():
-                    for name_b, seg_b in eb.items():
-                        if seg_a == seg_b:
-                            shared_a = name_a
-                            shared_b = name_b
-                            break
-                    if shared_a:
-                        break
-
-                if not shared_a:
-                    # pas d'arête partagée -> on ne remplit pas (normal pour des triangles juste "proches")
-                    continue
-
-                # --- NOUVEAU : stocker explicitement l'arête connectée (non ambigu : BL vs LO, etc.) ---
-                a["edge_out"] = shared_a
-                b["edge_in"] = shared_b
 
     def run(self, tri_ids: List[int]) -> List["ScenarioAssemblage"]:
         """Étape 1+2 :
@@ -579,15 +640,15 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                     f"Simulation: elementId Core absent dans le clone: {element_id}"
                 )
 
-        def _assign_topo_element_id_to_last_drawn(
+        def _assignTopologyElementIdToPlacedTriangle(
             *,
-            entry: dict,
+            entry: PlacedTriangle,
             element_id: str,
         ) -> str:
             elem_id = str(element_id or "").strip()
             if not elem_id:
                 raise ValueError("Simulation: topoElementId Core absent")
-            entry["topoElementId"] = elem_id
+            entry.topologyElementId = elem_id
             return elem_id
 
         def _bootstrap_topo_first_pair(
@@ -601,16 +662,18 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             P2_local: dict,
             P1_world: dict,
             P2_world: dict,
-            base_list: list,
+            base_placed_triangles: PlacedTriangles,
         ):
             """
             Bootstrap du premier quadrilatère topo.
             Délègue intégralement à createTopoQuadrilateral().
             """
 
-            # base_list[0] ↔ tri1, base_list[1] ↔ tri2
-            entryOdd = base_list[0]
-            entryEven = base_list[1]
+            # Entrées placées du premier quadrilatère : tri1 puis tri2.
+            entryOdd = base_placed_triangles.findByTriangleId(tri1_id)
+            entryEven = base_placed_triangles.findByTriangleId(tri2_id)
+            if entryOdd is None or entryEven is None:
+                raise RuntimeError("Simulation: projection absente pour le premier quadrilatère")
 
             topoGroupId, elementIdOdd, elementIdEven, _, _ = createTopoQuadrilateral(
                 world=world,
@@ -626,7 +689,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 entryEven=entryEven,
             )
 
-            return topoGroupId
+            return topoGroupId, [str(elementIdOdd), str(elementIdEven)]
 
         def _orient2d(a, b, c) -> float:
             return (b[0]-a[0])*(c[1]-a[1]) - (b[1]-a[1])*(c[0]-a[0])
@@ -719,23 +782,21 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 scen.status = "complete"
                 scen.topoScenarioId = topoScenarioId
 
-                last_drawn = []
-                last_drawn.append({
-                    "labels": t1.get("labels"),
-                    "pts": P1,
-                    "id": tri1_id,
-                    "mirrored": bool(t1.get("mirrored", False)),
-                    "group_id": 1,
-                })
-                last_drawn.append({
-                    "labels": t2.get("labels"),
-                    "pts": P2,
-                    "id": tri2_id,
-                    "mirrored": bool(t2.get("mirrored", False)),
-                    "group_id": 1,
-                })
+                placed_triangles = PlacedTriangles()
+                placed_triangles.append(PlacedTriangle(
+                    triangleId=tri1_id,
+                    points=P1,
+                    labels=t1.get("labels"),
+                    mirrored=bool(t1.get("mirrored", False)),
+                ))
+                placed_triangles.append(PlacedTriangle(
+                    triangleId=tri2_id,
+                    points=P2,
+                    labels=t2.get("labels"),
+                    mirrored=bool(t2.get("mirrored", False)),
+                ))
                 topoWorld_scen = TopologyWorld()
-                _bootstrap_topo_first_pair(
+                _topo_group_id, ordered_element_ids = _bootstrap_topo_first_pair(
                     world=topoWorld_scen,
                     tri1_id=tri1_id,
                     tri2_id=tri2_id,
@@ -745,25 +806,16 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                     P2_local={k: np.array(t2["pts"][k], dtype=float) for k in ("O", "B", "L")},
                     P1_world=P1,
                     P2_world=P2,
-                    base_list=last_drawn,
+                    base_placed_triangles=placed_triangles,
                 )
                 scen.topoWorld = topoWorld_scen
+                scen.orderedElementIds = list(ordered_element_ids)
 
-                groups = {
-                    1: {
-                        "id": 1,
-                        "nodes": [
-                            {"tid": 0, "edge_in": None, "edge_out": None},
-                            {"tid": 1, "edge_in": None, "edge_out": None},
-                        ],
-                    }
-                }
-                groups[1]["topoGroupId"] = last_drawn[0].get("topoGroupId")
-                scen.last_drawn = last_drawn
-                # Enrichit les nodes (vkey_in / vkey_out) en déduisant l’arête partagée via la géométrie
-                AlgoQuadrisParPaires._fill_group_vkeys_from_geometry(last_drawn, groups, Q=1e-6)
-
-            scen.groups = groups
+                scen.last_drawn = buildLegacyLastDrawnFromTopology(
+                    topologyWorld=topoWorld_scen,
+                    orderedElementIds=ordered_element_ids,
+                    placedTriangles=placed_triangles,
+                )
             out.append(scen)
             return out
 
@@ -774,8 +826,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
         # IMPORTANT :
         # - On fige l'assemblage interne de chaque paire (A,B) à la 1ère pose valide (shrink-only)
         #   pour éviter l'explosion combinatoire.
-        # - Tous les triangles restent dans un SEUL groupe (group_id=1) afin que les tests de chevauchement
-        #   et la manipulation de groupe restent cohérents.
+        # - Tous les triangles sont réunis par le même groupe Core afin que les
+        #   tests de chevauchement et la manipulation de groupe restent cohérents.
 
         if len(tri_ids) < 4:
             return []
@@ -783,23 +835,21 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
         # On fige le 1er quad sur la pose retenue (déjà pruné par overlap shrink-only)
         P2 = poses[0]
 
-        # Fabrique un last_drawn "base" (quad1)
-        base_last = [
-            {
-                "labels": t1.get("labels"),
-                "pts": P1,
-                "id": tri1_id,
-                "mirrored": bool(t1.get("mirrored", False)),
-                "group_id": 1,
-            },
-            {
-                "labels": t2.get("labels"),
-                "pts": P2,
-                "id": tri2_id,
-                "mirrored": bool(t2.get("mirrored", False)),
-                "group_id": 1,
-            },
-        ]
+        # Fabrique la projection placée de base (quad1)
+        base_placed_triangles = PlacedTriangles([
+            PlacedTriangle(
+                triangleId=tri1_id,
+                points=P1,
+                labels=t1.get("labels"),
+                mirrored=bool(t1.get("mirrored", False)),
+            ),
+            PlacedTriangle(
+                triangleId=tri2_id,
+                points=P2,
+                labels=t2.get("labels"),
+                mirrored=bool(t2.get("mirrored", False)),
+            ),
+        ])
         def _orient_O_to_L_north(P: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
             P = {k: np.array(P[k], dtype=float) for k in ("O", "B", "L")}
             vOL = P["L"] - P["O"]
@@ -857,14 +907,13 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
 
             return tA, tB, PA, PB
 
-        # État de recherche : liste de branches (scénarios partiels)
-        # Chaque état = (last_drawn, poly_occ)
+        # État de recherche : liste de branches (scénarios partiels).
         poly_occ0 = _group_shape_from_nodes(
             [{"tid": 0}, {"tid": 1}],
-            base_last
+            base_placed_triangles.toLegacyList()
         )
 
-        _bootstrap_topo_first_pair(
+        _topo_group_id, base_ordered_element_ids = _bootstrap_topo_first_pair(
             world=topoWorld0,
             tri1_id=tri1_id,
             tri2_id=tri2_id,
@@ -874,20 +923,21 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             P2_local={k: np.array(t2["pts"][k], dtype=float) for k in ("O", "B", "L")},
             P1_world=P1,
             P2_world=P2,
-            base_list=base_last,
+            base_placed_triangles=base_placed_triangles,
         )
-
-        @dataclass(eq=False)
-        class _BranchNode:
-            parent: Optional["_BranchNode"]
-            children: List["_BranchNode"]
-            branchTriId: Optional[int] = None
 
         rootNode = _BranchNode(parent=None, children=[], branchTriId=None)
 
         # État de recherche : liste de branches (scénarios partiels)
-        # Chaque état = (node, last_drawn, poly_occ, topoWorld)
-        states = [(rootNode, base_last, poly_occ0, topoWorld0)]
+        # Chaque état conserve sa propre chronologie de construction, indépendante
+        # de la topologie et de sa projection graphique.
+        states = [BranchState(
+            node=rootNode,
+            topoWorld=topoWorld0,
+            placedTriangles=base_placed_triangles,
+            orderedElementIds=base_ordered_element_ids,
+            poly_occ=poly_occ0,
+        )]
 
         # Boucle sur les paires suivantes : (tri3,tri4), (tri5,tri6), ...
         for pair_start in range(2, len(tri_ids), 2):
@@ -909,7 +959,12 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 dbg_overlap = 0
                 dbg_added = 0
 
-                for (node_prev, last_drawn_prev, poly_occ_prev, topoWorld_prev) in states:
+                for state in states:
+                    node_prev = state.node
+                    placed_triangles_prev = state.placedTriangles
+                    poly_occ_prev = state.poly_occ
+                    topoWorld_prev = state.topoWorld
+                    ordered_element_ids_prev = state.orderedElementIds
                     baseKey = getattr(node_prev, "debugKey", "")    # Une cle de debug pour tracer les scénarios
                     candidates = []
                     mob_keys = ("O", "B")
@@ -927,41 +982,48 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                         triangleMobToPts=triangleMobToPts,
                     )
 
-                    # clone du last_drawn de la branche pour référencer les triangles temporaires
-                    last_drawn_base = copy.deepcopy(last_drawn_prev)
+                    # Clone de la projection placée de la branche pour les triangles temporaires.
+                    placed_triangles_base = placed_triangles_prev.clone()
 
-                    # On rajoute le quadrilatère mobile dans last_drawn_base
+                    # On rajoute le quadrilatère mobile dans placed_triangles_base
                     # ET on la synchonise avec la topo pour avoir les coordonnées réels
-                    pos0 = len(last_drawn_base)
-                    last_drawn_base.append({
-                        "labels": triangleMobFrom.get("labels"),
-                        "pts": triangleMobFromPts,          # pose INITIALE (pas Podd_w)
-                        "id": triangleMobFromId,
-                        "mirrored": bool(triangleMobFrom.get("mirrored", False)),
-                        "group_id": 1,
-                    })
-                    _assign_topo_element_id_to_last_drawn(
-                        entry=last_drawn_base[pos0],
+                    placed_triangles_base.append(PlacedTriangle(
+                        triangleId=triangleMobFromId,
+                        points=triangleMobFromPts,          # pose INITIALE (pas Podd_w)
+                        labels=triangleMobFrom.get("labels"),
+                        mirrored=bool(triangleMobFrom.get("mirrored", False)),
+                    ))
+                    _assignTopologyElementIdToPlacedTriangle(
+                        entry=placed_triangles_base.last(),
                         element_id=element_id_odd,
                     )
 
-                    pos1 = len(last_drawn_base)
-                    last_drawn_base.append({
-                        "labels": triangleMobTo.get("labels"),
-                        "pts": triangleMobToPts,         # pose INITIALE
-                        "id": triangleMobToId,
-                        "mirrored": bool(triangleMobTo.get("mirrored", False)),
-                        "group_id": 1,
-                    })
-                    _assign_topo_element_id_to_last_drawn(
-                        entry=last_drawn_base[pos1],
+                    placed_triangles_base.append(PlacedTriangle(
+                        triangleId=triangleMobToId,
+                        points=triangleMobToPts,         # pose INITIALE
+                        labels=triangleMobTo.get("labels"),
+                        mirrored=bool(triangleMobTo.get("mirrored", False)),
+                    ))
+                    _assignTopologyElementIdToPlacedTriangle(
+                        entry=placed_triangles_base.last(),
                         element_id=element_id_even,
                     )
+                    ordered_element_ids_base = [
+                        *ordered_element_ids_prev,
+                        str(element_id_odd),
+                        str(element_id_even),
+                    ]
+                    mobile_base_entry = placed_triangles_base.findByTopologyElementId(element_id_odd)
+                    if mobile_base_entry is None:
+                        raise RuntimeError(f"Simulation: projection absente pour {element_id_odd}")
+                    destination_entry = placed_triangles_base.findByTopologyElementId(state.tailElementId)
+                    if destination_entry is None:
+                        raise RuntimeError(f"Simulation: projection absente pour {state.tailElementId}")
 
                     # On rebuild cache et contours pour éviter les surprises
                     topoWorld_prev.rebuildGroupElementLists()
-                    for gid in topoWorld_prev.getLiveGroupIds():
-                        topoWorld_prev.ensureConceptGraph(gid)
+                    for core_gid in topoWorld_prev.getLiveGroupIds():
+                        topoWorld_prev.ensureConceptGraph(core_gid)
 
                     pass  # Point de debug
 
@@ -978,9 +1040,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
 
                             edgeChoiceEpts, edgeChoiceMeta = buildEdgeChoiceEptsForAutoChain(
                                 world=topoWorld_prev,
-                                last_drawn_base=last_drawn_base,
-                                pos_mobile=pos0,                        # mobile = triangle odd
-                                pos_dest=len(last_drawn_prev) - 1,      # destination = dernier triangle du groupe existant
+                                mobile_entry=mobile_base_entry,
+                                destination_entry=destination_entry,
                                 src_edge=mobEdgeAtL,                    # arêtes explicites
                                 dst_edge=destEdgeAtL,
                                 src_vkey="L",                           # sommet d’ancrage (toujours L en phase 3)
@@ -993,8 +1054,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
 
                             # On teste l'overlap .
                             # group ids depuis les elementIds
-                            gidDest = topoWorld_prev.get_group_of_element(last_drawn_prev[-1]["topoElementId"])
-                            gidMob = topoWorld_prev.get_group_of_element(last_drawn_base[pos0]["topoElementId"])
+                            gidDest = topoWorld_prev.get_group_of_element(state.tailElementId)
+                            gidMob = topoWorld_prev.get_group_of_element(mobile_base_entry.topologyElementId)
                             overlap = topoWorld_prev.simulateOverlapTopologique(
                                 gidDest,
                                 gidMob,
@@ -1019,7 +1080,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                 [{"pts": Podd_w}, {"pts": Peven_w}]
                             )
 
-                            last_drawn_new = copy.deepcopy(last_drawn_prev)
+                            placed_triangles_new = placed_triangles_prev.clone()
 
                             # --- mémoriser la jonction entre quads (connexion via L)
                             # bt_key = côté choisi sur l'ancre (L->O ou L->B)
@@ -1027,38 +1088,35 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                             # On encode l'arête incidente à L : "LO" ou "BL"
                             destEdgeAtL = "LO" if bt_key == "O" else "BL"
                             mobEdgeAtL = "LO" if mob_key == "O" else "BL"
-                            last_drawn_new[-1]["_chain_edge_out"] = destEdgeAtL
 
-                            pos0 = len(last_drawn_new)
-                            last_drawn_new.append({
-                                "labels": triangleMobFrom.get("labels"),
-                                "pts": Podd_w,
-                                "id": triangleMobFromId,
-                                "mirrored": bool(triangleMobFrom.get("mirrored", False)),
-                                "group_id": 1,
-                            })
-                            elem_id_odd = _assign_topo_element_id_to_last_drawn(
-                                entry=last_drawn_new[pos0],
+                            placed_triangles_new.append(PlacedTriangle(
+                                triangleId=triangleMobFromId,
+                                points=Podd_w,
+                                labels=triangleMobFrom.get("labels"),
+                                mirrored=bool(triangleMobFrom.get("mirrored", False)),
+                            ))
+                            elem_id_odd = _assignTopologyElementIdToPlacedTriangle(
+                                entry=placed_triangles_new.last(),
                                 element_id=element_id_odd,
                             )
-                            last_drawn_new[pos0]["_chain_edge_in"] = mobEdgeAtL
-                            pos1 = len(last_drawn_new)
-                            last_drawn_new.append({
-                                "labels": triangleMobTo.get("labels"),
-                                "pts": Peven_w,
-                                "id": triangleMobToId,
-                                "mirrored": bool(triangleMobTo.get("mirrored", False)),
-                                "group_id": 1,
-                            })
-                            elem_id_even = _assign_topo_element_id_to_last_drawn(
-                                entry=last_drawn_new[pos1],
+                            mobile_entry = placed_triangles_new.findByTopologyElementId(elem_id_odd)
+                            if mobile_entry is None:
+                                raise RuntimeError(f"Simulation: projection absente pour {elem_id_odd}")
+                            placed_triangles_new.append(PlacedTriangle(
+                                triangleId=triangleMobToId,
+                                points=Peven_w,
+                                labels=triangleMobTo.get("labels"),
+                                mirrored=bool(triangleMobTo.get("mirrored", False)),
+                            ))
+                            elem_id_even = _assignTopologyElementIdToPlacedTriangle(
+                                entry=placed_triangles_new.last(),
                                 element_id=element_id_even,
                             )
                             # décision de raccord: destEdgeAtL (côté ancre), mobEdgeAtL (côté mobile odd)
                             candKey = f"{baseKey}|{int(triangleMobFromId)}:{mobEdgeAtL}->{destEdgeAtL}"
 
                             candidates.append((
-                                last_drawn_new,
+                                placed_triangles_new,
                                 poly_occ_prev.union(poly_new),
                                 {
                                     "odd": {
@@ -1083,8 +1141,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                         "topoAccepted": True,
                                     },
                                     "topoAttachments": topoAttachments,
-                                    "topoAnchorElemId": last_drawn_prev[-1]["topoElementId"],
-                                    "topoMobileElemId": last_drawn_base[pos0]["topoElementId"],
+                                    "topoAnchorElemId": state.tailElementId,
+                                    "topoMobileElemId": mobile_base_entry.topologyElementId,
                                     "debugKey": candKey,
                                 },
                             ))
@@ -1108,7 +1166,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                         else:
                             topo_candidates = [topoWorld_prev for _ in candidates]
 
-                        for (ld_new, poly_u, topo_meta), topo_new in zip(candidates, topo_candidates):
+                        for (placed_triangles_new, poly_u, topo_meta), topo_new in zip(candidates, topo_candidates):
                             topo_new.beginTopoTransaction()
                             try:
                                 for _key in ("odd", "even"):
@@ -1143,7 +1201,13 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                             child = _BranchNode(parent=node_prev, children=[], branchTriId=None)
                             node_prev.children.append(child)
                             child.debugKey = topo_meta.get("debugKey", baseKey)  # <= AJOUT
-                            new_states.append((child, ld_new, poly_u, topo_new))
+                            new_states.append(BranchState(
+                                node=child,
+                                topoWorld=topo_new,
+                                placedTriangles=placed_triangles_new,
+                                orderedElementIds=ordered_element_ids_base,
+                                poly_occ=poly_u,
+                            ))
 
                 return new_states, dbg_try, dbg_overlap, dbg_added
 
@@ -1177,7 +1241,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
 
         # --- Post-traitement : construire une numérotation COHÉRENTE sur l'arbre survivant ---
         # Objectif : pouvoir "pruner mentalement" par plages (#1..#96 / #97..#117, etc.).
-        leafData = {node: (last_drawn, _poly_occ, topoWorld) for (node, last_drawn, _poly_occ, topoWorld) in states}
+        leafData = {state.node: state for state in states}
 
         kept = set()
         for leaf in leafData.keys():
@@ -1239,61 +1303,28 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
         # Finalisation : créer les scénarios complets
         out: List[ScenarioAssemblage] = []
         for leaf in leaves:
-            (last_drawn, _poly_occ, topoWorld_leaf) = leafData[leaf]
+            state = leafData[leaf]
+            placed_triangles = state.placedTriangles
+            topoWorld_leaf = state.topoWorld
             idx = int(leafIndex.get(leaf, 0) or 0)
             scen = ScenarioAssemblage(
                 name=labels.get(leaf, f"#{idx}"),
                 source_type="auto",
                 algo_id=self.id,
-                tri_ids=[int(x) for x in tri_ids[:len(last_drawn)]],
+                tri_ids=[int(x) for x in tri_ids[:len(placed_triangles)]],
             )
             scen.status = "complete"
-            scen.last_drawn = last_drawn
             scen.topoWorld = topoWorld_leaf
             scen.topoScenarioId = topoScenarioId
+            scen.orderedElementIds = list(state.orderedElementIds)
 
-            # La projection UI reçoit les groupes canoniques depuis l'état Core
-            # final de la branche, une fois tous les attachments appliqués.
-            for tid, entry in enumerate(last_drawn):
-                element_id = str(entry.get("topoElementId", "") or "").strip()
-                if not element_id:
-                    raise ValueError(
-                        f"Scenario auto final: triangle index={tid} sans topoElementId."
-                    )
-                topo_group_id = topoWorld_leaf.get_group_of_element(element_id)
-                if topo_group_id is None:
-                    raise ValueError(
-                        f"Scenario auto final: element {element_id} sans topoGroupId Core."
-                    )
-                entry["topoGroupId"] = str(topo_group_id)
+            last_drawn = buildLegacyLastDrawnFromTopology(
+                topologyWorld=topoWorld_leaf,
+                orderedElementIds=state.orderedElementIds,
+                placedTriangles=placed_triangles,
+            )
+            scen.last_drawn = last_drawn
 
-            # Groupe unique
-            idxs = list(range(len(last_drawn)))
-            groups = {
-                1: {"id": 1, "nodes": [{"tid": k, "edge_in": None, "edge_out": None} for k in idxs]},
-            }
-            groups[1]["topoGroupId"] = last_drawn[0]["topoGroupId"]
-            # Enrichit les nodes (vkey_in / vkey_out) en déduisant l’arête partagée via la géométrie
-            AlgoQuadrisParPaires._fill_group_vkeys_from_geometry(last_drawn, groups, Q=1e-6)
-
-            # --- NOUVEAU : injecter la jonction "chaîne" (L->O vs L->B) dans les nodes
-            # Ici, ce n'est PAS une arête partagée géométriquement, donc _fill_group... ne peut pas la trouver.
-            vkey_from_edge = {"OB": "L", "BL": "O", "LO": "B"}
-            nodes = groups[1]["nodes"]
-            for k in idxs:
-                t = last_drawn[k]
-                if "_chain_edge_out" in t:
-                    eout = t.get("_chain_edge_out")
-                    if eout:
-                        nodes[k]["edge_out"] = eout
-                        nodes[k]["vkey_out"] = vkey_from_edge.get(eout)
-                if "_chain_edge_in" in t:
-                    ein = t.get("_chain_edge_in")
-                    if ein:
-                        nodes[k]["edge_in"] = ein
-                        nodes[k]["vkey_in"] = vkey_from_edge.get(ein)
-
-            scen.groups = groups
             out.append(scen)
 
         return out

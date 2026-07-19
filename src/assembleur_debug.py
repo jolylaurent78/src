@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
-
+from typing import Any, Dict, List
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import CheckButtons
-
-
 
 
 def listTopoGroups(topoWorld, rebuild: bool = True):
@@ -62,17 +59,16 @@ def plotLastDrawn(lastDrawn: List[Dict[str, Any]], showIds: bool = True, ax=None
     Usage
     from assembleur_debug import plotLastDrawn
     plotLastDrawn(last_drawn_base)
-    
+
     Attendu par item:
       - d["pts"]["O"], d["pts"]["B"], d["pts"]["L"] : (x,y)
       - d["id"] optionnel
       - d["topoElementId"] optionnel
     """
-    created = False
+
     if ax is None:
         fig, ax = plt.subplots()
         ax.set_aspect("equal", adjustable="box")
-        created = True
     else:
         ax.set_aspect("equal", adjustable="box")
 
@@ -101,7 +97,6 @@ def plotLastDrawn(lastDrawn: List[Dict[str, Any]], showIds: bool = True, ax=None
     return artists
 
 
-
 def plotTopoWorldBoundaries(topoWorld, groupIds=None, showNodeIds=False, ax=None):
     """
     Usage
@@ -119,7 +114,7 @@ def plotTopoWorldBoundaries(topoWorld, groupIds=None, showNodeIds=False, ax=None
         created = True
     else:
         ax.set_aspect("equal", adjustable="box")
-    
+
     artists = []
 
     gids = topoWorld.getLiveGroupIds() if groupIds is None else groupIds
@@ -171,7 +166,7 @@ def plotConceptGraph(topoWorld, groupId: str, ax=None, showNodeIds: bool = True)
 
     Usage
     from assembleur_debug import plotConceptGraph
-    plotConceptGraph(topoWorld_prev, "SA_AUTO:G010")    
+    plotConceptGraph(topoWorld_prev, "SA_AUTO:G010")
 
         Retour:
       - (fig, ax, artists)
@@ -231,7 +226,6 @@ def plotConceptGraph(topoWorld, groupId: str, ax=None, showNodeIds: bool = True)
     return fig, ax, artists
 
 
-
 def plotScenarioWithToggles(
     lastDrawn,
     topoWorld,
@@ -287,10 +281,11 @@ def plotScenarioWithToggles(
 
     return fig, ax, triArtists, bndArtists
 
+
 """
 sid = "SA_AUTO"          # ou topoScenarioId réel si tu l’as
 from assembleur_core import export_topo_dump_xml
-out_path = r"D:\Dropbox\La Chouette\Python\AssembleurTriangles\exports\TopoXML\TopoDump_SA_AUTO_debug.xml"  
+out_path = r"D:\Dropbox\La Chouette\Python\AssembleurTriangles\exports\TopoXML\TopoDump_SA_AUTO_debug.xml"
 topoWorld_prev.export_topo_dump_xml(out_path, orientation="cw")
 
 """

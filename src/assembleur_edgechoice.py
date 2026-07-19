@@ -100,6 +100,10 @@ class EdgeChoiceEpts:
 
         edge_code_to_index = {"OB": 0, "BL": 1, "LO": 2}
         vkey_to_index = {"O": 0, "B": 1, "L": 2}
+        incident_edges = {
+            str(elementIdSrc): str(self.src_edge).upper(),
+            str(elementIdDst): str(self.dst_edge).upper(),
+        }
 
         kind = str(self.kind or "").strip().lower()
         if kind not in ("edge-edge", "vertex-edge"):
@@ -130,7 +134,7 @@ class EdgeChoiceEpts:
                     kind="edge-edge",
                     feature_a=TopologyFeatureRef(TopologyFeatureType.EDGE, elementIdSrc, int(em)),
                     feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE, elementIdDst, int(et)),
-                    params={"mapping": mapping},
+                    params={"mapping": mapping, "incident_edge_by_element": incident_edges},
                     source="manual",
                 )
             )
@@ -160,7 +164,11 @@ class EdgeChoiceEpts:
                     kind="vertex-edge",
                     feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdSrc, int(vmB)),
                     feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE,   elementIdDst, int(et_dst)),
-                    params={"t": float(t_raw), "edgeFrom": edge_from},
+                    params={
+                        "t": float(t_raw),
+                        "edgeFrom": edge_from,
+                        "incident_edge_by_element": incident_edges,
+                    },
                     source="manual",
                 )
             )
@@ -170,7 +178,7 @@ class EdgeChoiceEpts:
                     kind="vertex-vertex",
                     feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdSrc, int(vmA)),
                     feature_b=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdDst, int(vtA)),
-                    params={},
+                    params={"incident_edge_by_element": incident_edges},
                     source="manual",
                 )
             )
@@ -183,7 +191,11 @@ class EdgeChoiceEpts:
                     kind="vertex-edge",
                     feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdDst, int(vtB)),
                     feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE,   elementIdSrc, int(et_src)),
-                    params={"t": float(t_inv), "edgeFrom": edge_from},
+                    params={
+                        "t": float(t_inv),
+                        "edgeFrom": edge_from,
+                        "incident_edge_by_element": incident_edges,
+                    },
                     source="manual",
                 )
             )
@@ -193,7 +205,7 @@ class EdgeChoiceEpts:
                     kind="vertex-vertex",
                     feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdDst, int(vtA)),
                     feature_b=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdSrc, int(vmA)),
-                    params={},
+                    params={"incident_edge_by_element": incident_edges},
                     source="manual",
                 )
             )
@@ -521,9 +533,8 @@ def buildEdgeChoiceEptsFromBest(
 def buildEdgeChoiceEptsForAutoChain(
     *,
     world,
-    last_drawn_base: list,
-    pos_mobile: int,
-    pos_dest: int,
+    mobile_entry,
+    destination_entry,
     src_edge: str,      # "LO" ou "BL" (côté mobile)
     dst_edge: str,      # "LO" ou "BL" (côté dest)
     src_vkey: str = "L",
@@ -531,6 +542,20 @@ def buildEdgeChoiceEptsForAutoChain(
     kind: str = "vertex-edge",
     debug: bool = False,
 ):
+    def _require_projection_entry(role: str, entry):
+        required = ("triangleId", "points", "topologyElementId")
+        missing = [name for name in required if not hasattr(entry, name)]
+        if missing:
+            raise ValueError(
+                f"buildEdgeChoiceEptsForAutoChain: entrée {role} invalide "
+                f"(attributs manquants: {', '.join(missing)})"
+            )
+        if not isinstance(entry.points, dict):
+            raise ValueError(f"buildEdgeChoiceEptsForAutoChain: entrée {role} invalide (pts attendu)")
+        if entry.triangleId is None or not entry.topologyElementId:
+            raise ValueError(f"buildEdgeChoiceEptsForAutoChain: entrée {role} invalide (identité absente)")
+        return entry
+
     # --- helpers ---
     def _other_vkey_on_edge(edge_code: str, vkey_anchor: str) -> str:
         e = str(edge_code).upper()
@@ -542,16 +567,16 @@ def buildEdgeChoiceEptsForAutoChain(
             return "B" if vkey_anchor == "O" else "O"
         raise ValueError(f"edge_code invalide: {edge_code}")
 
-    mob = last_drawn_base[pos_mobile]
-    dst = last_drawn_base[pos_dest]
+    mob = _require_projection_entry("mobile", mobile_entry)
+    dst = _require_projection_entry("destination", destination_entry)
 
-    elementIdSrc = mob["topoElementId"]
-    elementIdDst = dst["topoElementId"]
-    src_owner_tid = mob["id"]
-    dst_owner_tid = dst["id"]
+    elementIdSrc = mob.topologyElementId
+    elementIdDst = dst.topologyElementId
+    src_owner_tid = mob.triangleId
+    dst_owner_tid = dst.triangleId
 
-    Pm = mob["pts"]
-    Pt = dst["pts"]
+    Pm = mob.points
+    Pt = dst.points
 
     # Ancre = L des deux côtés (Phase 3)
     mA = Pm[src_vkey]
