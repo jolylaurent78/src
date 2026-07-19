@@ -9,6 +9,7 @@ import numpy as np
 from src.assembleur_core import TopologyElement, TopologyWorld
 from src.assembleur_sim import createTopoQuadrilateral
 from src.assembleur_tk import TriangleViewerManual
+from src.canvas_objects_collection import CanvasObjectsCollection
 
 
 def _element(*, element_id=None, tri_rank=1):
@@ -136,9 +137,8 @@ def test_manual_placement_keeps_catalog_id_separate_from_core_instance_id():
     world = TopologyWorld()
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer._last_drawn = []
-    viewer._last_drawn_topo_index = {}
-    viewer._last_drawn_topo_index_source = None
-    viewer._last_drawn_topo_index_length = -1
+    viewer.canvas_objects = CanvasObjectsCollection(viewer._last_drawn)
+    viewer._last_drawn = viewer.canvas_objects.entries
     viewer.groups = {}
     viewer._next_group_id = 1
     viewer._placed_ids = set()

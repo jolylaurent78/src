@@ -40,7 +40,7 @@ class TriangleViewerClockArcMixin:
         wbest = tuple(ref["wbest"])
 
         # On récupère son Tid
-        idx = self.getTidForTopoElementId(ref["elementId"])
+        idx = self.canvas_objects.get_index_by_topology_id(ref["elementId"])
         if idx is None:
             raise RuntimeError(f"[ClockSnap] Topo elementId '{ref['elementId']}' not found in GUI last_drawn")
 

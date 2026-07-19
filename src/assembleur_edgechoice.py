@@ -251,18 +251,6 @@ def _find_owner_edge_for_segment(group_tids, A, B, eps_world, last_drawn):
     if not group_tids:
         return (None, None)
 
-    print("group_tids =", group_tids)
-
-    for tid in group_tids:
-        print(
-            "tid",
-            tid,
-            "topoElementId",
-            last_drawn[tid].get("topoElementId"),
-            "pts",
-            last_drawn[tid].get("pts"),
-        )
-
     Ax, Ay = float(A[0]), float(A[1])
     Bx, By = float(B[0]), float(B[1])
 
@@ -443,22 +431,6 @@ def buildEdgeChoiceEptsFromBest(
     edge_code_set = {"OB", "BL", "LO"}
     src_edge = str(src_edge or "").upper().strip()
     dst_edge = str(dst_edge or "").upper().strip()
-
-    print("========== EDGECHOICE ==========")
-    print("src_owner_tid =", src_owner_tid)
-    print("dst_owner_tid =", dst_owner_tid)
-
-    print("src_edge =", src_edge)
-    print("dst_edge =", dst_edge)
-
-    print("mob_tids =", mob_tids)
-    print("tgt_tids =", tgt_tids)
-
-    print("mob_idx =", mob_idx)
-    print("tgt_idx =", tgt_idx)
-
-    print("elementIdSrc =", elementIdSrc)
-    print("elementIdDst =", elementIdDst)
 
     if src_edge not in edge_code_set or dst_edge not in edge_code_set:
         raise ValueError("buildEdgeChoiceEptsFromBest: src_edge/dst_edge invalide")

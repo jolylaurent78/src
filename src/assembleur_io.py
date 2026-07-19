@@ -13,8 +13,10 @@ import traceback
 import numpy as np
 import pandas as pd
 from math import hypot, acos, degrees
+from src.utils.logging_utils import get_app_logger
 
 CFG_KEY_CHEMINS_BALISE_REF = "cheminsBaliseRefName"
+APP_LOGGER = get_app_logger()
 
 
 class TriangleFileService:
@@ -730,9 +732,7 @@ def loadScenarioXml(viewer, path: str):
                 viewer.listbox.insert("end", f"{int(tid):02d}.")
 
     # 5) triangles poses (monde)
-    viewer._last_drawn.clear()
-    if hasattr(viewer, "_invalidate_last_drawn_topo_index"):
-        viewer._invalidate_last_drawn_topo_index()
+    loaded_entries = []
     tris_xml = root.find("triangles")
     if tris_xml is not None:
         for t_el in tris_xml.findall("triangle"):
@@ -756,7 +756,10 @@ def loadScenarioXml(viewer, path: str):
                 item["topoElementId"] = topo_element_id
             if topo_group_id:
                 item["topoGroupId"] = topo_group_id
-            viewer._last_drawn.append(item)
+            loaded_entries.append(item)
+
+    viewer.canvas_objects.replace_all(loaded_entries)
+    viewer.canvas_objects.dump(APP_LOGGER, "chargement XML")
 
     # 5bis) labels
     try:
@@ -776,7 +779,7 @@ def loadScenarioXml(viewer, path: str):
                 t["labels"] = ("Bourges", "", "")
 
     # 5ter) ids deja poses
-    viewer._placed_ids = {int(t["id"]) for t in viewer._last_drawn}
+    viewer._placed_ids = {int(triangle_id) for triangle_id in viewer.canvas_objects.triangle_ids()}
     viewer._update_triangle_listbox_colors()
 
     # 6) mots associes
@@ -940,9 +943,6 @@ def loadScenarioXml(viewer, path: str):
         if "group" in _t:
             del _t["group"]
     viewer._next_group_id = (max(viewer.groups.keys()) + 1) if viewer.groups else 1
-    if hasattr(viewer, "_rebuild_last_drawn_topo_index"):
-        viewer._rebuild_last_drawn_topo_index()
-
     # 8) selection et aides reset
     viewer._sel = {"mode": None}
     viewer._clear_nearest_line()

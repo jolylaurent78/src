@@ -10,6 +10,7 @@ from src.assembleur_topology_comparison import (
     differing_attachment_element_ids,
 )
 from src.assembleur_tk import TriangleViewerManual
+from src.canvas_objects_collection import CanvasObjectsCollection
 
 
 class _CoreGroup:
@@ -242,9 +243,8 @@ def test_vertex_move_resolution_uses_dsu_node_and_existing_core_group_without_mu
         {"id": 1, "topoElementId": "T01", "pts": {}},
         {"id": 2, "topoElementId": "T02", "pts": {}},
     ]
-    viewer._last_drawn_topo_index = {}
-    viewer._last_drawn_topo_index_source = None
-    viewer._last_drawn_topo_index_length = -1
+    viewer.canvas_objects = CanvasObjectsCollection(viewer._last_drawn)
+    viewer._last_drawn = viewer.canvas_objects.entries
     viewer._get_active_scenario = lambda: scenario
     attachments_before = dict(world.attachments)
     groups_before = dict(world.groups)

@@ -12,6 +12,7 @@ from src.assembleur_core import (
 )
 from src.assembleur_edgechoice import buildEdgeChoiceEptsFromBest
 from src.assembleur_tk import TriangleViewerManual
+from src.canvas_objects_collection import CanvasObjectsCollection
 
 
 def _element(element_id: str) -> TopologyElement:
@@ -131,6 +132,8 @@ def test_snap_loop_continues_after_unrepresentable_boundary_candidate(monkeypatc
             "pts": {"O": (10.0, 0.0), "B": (13.0, 0.0), "L": (10.0, 4.0)},
         },
     ]
+    viewer.canvas_objects = CanvasObjectsCollection(viewer._last_drawn)
+    viewer._last_drawn = viewer.canvas_objects.entries
     viewer.scenarios = [SimpleNamespace(topoWorld=world)]
     viewer.active_scenario_index = 0
     viewer._edge_choice = None
@@ -141,9 +144,6 @@ def test_snap_loop_continues_after_unrepresentable_boundary_candidate(monkeypatc
     viewer._get_projected_elements_for_core_group = lambda group_id: (
         (viewer._last_drawn[0],) if group_id == "GM" else (viewer._last_drawn[1],)
     )
-    viewer._get_projected_element_tids = lambda entries: [
-        0 if entry is viewer._last_drawn[0] else 1 for entry in entries
-    ]
     viewer._project_boundary_segments = lambda _group_id, segments: (
         [((0.0, 0.0), (3.0, 0.0)), ((0.0, 0.0), (0.0, 4.0))]
         if segments == ["incident:GM"]

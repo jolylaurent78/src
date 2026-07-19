@@ -1,13 +1,11 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from src.assembleur_core import ScenarioAssemblage, TopologyElement, TopologyNodeType
-from src.assembleur_tk import (
-    TriangleViewerManual,
-    build_last_drawn_index,
-    get_projected_elements,
-)
+from src.assembleur_tk import TriangleViewerManual
+from src.canvas_objects_collection import CanvasObjectsCollection
 
 
 class _StatusStub:
@@ -25,9 +23,8 @@ def _make_viewer_with_one_core_group():
         "topoGroupId": "G1",
         "group_id": 10,
     }]
-    viewer._last_drawn_topo_index = {}
-    viewer._last_drawn_topo_index_source = None
-    viewer._last_drawn_topo_index_length = -1
+    viewer.canvas_objects = CanvasObjectsCollection(viewer._last_drawn)
+    viewer._last_drawn = viewer.canvas_objects.entries
     viewer.groups = {10: {"id": 10, "topoGroupId": "G1", "nodes": [{"tid": 0}]}}
     viewer.active_scenario_index = 0
 
@@ -135,6 +132,127 @@ def test_move_group_release_uses_captured_core_members_before_legacy_projection(
     assert synced_group_ids == ["G-MOBILE", "G-MOBILE"]
 
 
+def _make_ctrl_move_group_viewer(*, include_second_member=True):
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    first = {
+        "id": 1,
+        "topoElementId": "T01",
+        "pts": {"O": [0.0, 0.0], "B": [3.0, 0.0], "L": [0.0, 4.0]},
+    }
+    second = {
+        "id": 2,
+        "topoElementId": "T02",
+        "pts": {"O": [5.0, 0.0], "B": [8.0, 0.0], "L": [5.0, 4.0]},
+    }
+    outsider = {
+        "id": 3,
+        "topoElementId": "T03",
+        "pts": {"O": [10.0, 0.0], "B": [13.0, 0.0], "L": [10.0, 4.0]},
+    }
+    projected_entries = [first] + ([second] if include_second_member else []) + [outsider]
+    viewer.canvas_objects = CanvasObjectsCollection(projected_entries)
+    viewer._last_drawn = viewer.canvas_objects.entries
+
+    scenario = ScenarioAssemblage(name="ctrl-group")
+    first_group_id = scenario.topoWorld.add_element_as_new_group(TopologyElement(
+        element_id="T01",
+        name="Triangle 01",
+        vertex_labels=["O", "B", "L"],
+        vertex_types=[TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE],
+        edge_lengths_km=[3.0, 5.0, 4.0],
+    ))
+    second_group_id = scenario.topoWorld.add_element_as_new_group(TopologyElement(
+        element_id="T02",
+        name="Triangle 02",
+        vertex_labels=["O", "B", "L"],
+        vertex_types=[TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE],
+        edge_lengths_km=[3.0, 5.0, 4.0],
+    ))
+    scenario.topoWorld.add_element_as_new_group(TopologyElement(
+        element_id="T03",
+        name="Triangle 03",
+        vertex_labels=["O", "B", "L"],
+        vertex_types=[TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE],
+        edge_lengths_km=[3.0, 5.0, 4.0],
+    ))
+    core_group_id = scenario.topoWorld.union_groups(first_group_id, second_group_id)
+    viewer.scenarios = [scenario]
+    viewer.active_scenario_index = 0
+    viewer._sel = {
+        "mode": "move_group",
+        "core_group_id": core_group_id,
+        "anchor": {"type": "vertex", "tid": 0, "vkey": "O"},
+    }
+    viewer._edge_choice = (0, "O", len(projected_entries) - 1, "O", (
+        [0.0, 0.0], [3.0, 0.0], [10.0, 0.0], [10.0, 3.0],
+    ))
+    viewer._ctrl_down = False
+    viewer._clock_measure_active = False
+    viewer._clock_arc_active = False
+    viewer._clock_setref_active = False
+    viewer._clock_trace_active = False
+    viewer._hide_tooltip = lambda: None
+
+    class _Canvas:
+        def configure(self, **_kwargs):
+            pass
+
+    viewer.canvas = _Canvas()
+    viewer._ang_of_vec = lambda x, y: float(np.arctan2(y, x))
+    return viewer, first, second, outsider, core_group_id
+
+
+def test_ctrl_move_group_rotates_core_members_without_legacy_groups():
+    viewer, first, second, outsider, core_group_id = _make_ctrl_move_group_viewer()
+    redraws = []
+    nearest_calls = []
+    highlight_calls = []
+    viewer._redraw_from = lambda entries: redraws.append(entries)
+    viewer._update_nearest_line = lambda *args, **kwargs: nearest_calls.append((args, kwargs))
+    viewer._update_edge_highlights = lambda *args: highlight_calls.append(args)
+
+    viewer._on_ctrl_down()
+
+    assert np.allclose(first["pts"]["B"], [0.0, 3.0])
+    assert np.allclose(first["pts"]["L"], [-4.0, 0.0])
+    assert np.allclose(second["pts"]["O"], [0.0, 5.0])
+    assert np.allclose(second["pts"]["B"], [0.0, 8.0])
+    assert outsider["pts"] == {"O": [10.0, 0.0], "B": [13.0, 0.0], "L": [10.0, 4.0]}
+    assert redraws == [viewer._last_drawn]
+    assert nearest_calls[0][1]["exclude_core_group_id"] == core_group_id
+    assert highlight_calls == [(0, "O", 2, "O")]
+
+
+def test_ctrl_move_group_rejects_incomplete_projection_without_partial_rotation():
+    viewer, first, _second, outsider, _core_group_id = _make_ctrl_move_group_viewer(
+        include_second_member=False,
+    )
+    first_before = {key: list(value) for key, value in first["pts"].items()}
+    outsider_before = {key: list(value) for key, value in outsider["pts"].items()}
+    viewer._redraw_from = lambda _entries: pytest.fail("redraw interdit apres echec atomique")
+    viewer._update_nearest_line = lambda *_args, **_kwargs: pytest.fail("aide interdite apres echec")
+    viewer._update_edge_highlights = lambda *_args: pytest.fail("aide interdite apres echec")
+
+    with pytest.raises(KeyError, match="T02"):
+        viewer._on_ctrl_down()
+
+    assert first["pts"] == first_before
+    assert outsider["pts"] == outsider_before
+
+
+def test_ctrl_move_group_requires_core_group_id_without_legacy_fallback():
+    viewer, first, _second, outsider, _core_group_id = _make_ctrl_move_group_viewer()
+    viewer._sel.pop("core_group_id")
+    first_before = {key: list(value) for key, value in first["pts"].items()}
+    outsider_before = {key: list(value) for key, value in outsider["pts"].items()}
+
+    with pytest.raises(RuntimeError, match="core_group_id absent"):
+        viewer._on_ctrl_down()
+
+    assert first["pts"] == first_before
+    assert outsider["pts"] == outsider_before
+
+
 def test_legacy_merge_and_last_drawn_projection_have_separate_responsibilities():
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer._last_drawn = [
@@ -178,25 +296,31 @@ def test_legacy_merge_and_last_drawn_projection_have_separate_responsibilities()
     assert viewer._last_drawn[1]["topoGroupId"] == "G-MERGED"
 
 
-def test_core_to_last_drawn_helpers_use_active_index_and_core_group():
+def test_canvas_objects_lookups_use_active_index_and_core_group_projection():
     viewer, core_group_id = _make_viewer_with_one_core_group()
 
-    entry = viewer.get_last_drawn_entry_by_topo_id("T01")
+    entry = viewer.canvas_objects.get_by_topology_id("T01")
 
     assert entry is viewer._last_drawn[0]
-    assert viewer.getTidForTopoElementId("T01") == 0
-    assert viewer.get_last_drawn_entries_by_topo_ids(["unknown", "T01"]) == [entry]
+    assert viewer.canvas_objects.get_index_by_topology_id("T01") == 0
+    assert viewer.canvas_objects.get_many_by_topology_ids(["unknown", "T01"]) == (entry,)
     assert viewer.get_last_drawn_entries_for_core_group(core_group_id) == [entry]
-    assert viewer.debug_validate_core_ui_group_linking() == []
 
 
-def test_projected_elements_are_resolved_from_core_members_and_index():
+def test_projected_elements_are_resolved_from_core_members_and_collection_index():
     viewer, core_group_id = _make_viewer_with_one_core_group()
     group = viewer.scenarios[0].topoWorld.groups[core_group_id]
 
-    index = build_last_drawn_index(viewer._last_drawn)
+    projected = tuple(
+        entry
+        for entry in (
+            viewer.canvas_objects.get_by_topology_id(element_id)
+            for element_id in group.element_ids
+        )
+        if entry is not None
+    )
 
-    assert get_projected_elements(group, index) == (viewer._last_drawn[0],)
+    assert projected == (viewer._last_drawn[0],)
 
 
 def test_pose_sync_uses_core_members_without_ui_groups():
@@ -239,8 +363,6 @@ def test_passive_group_geometry_uses_core_members_not_legacy_nodes():
     viewer.groups[10]["topoGroupId"] = canonical_group_id
     # La chaine historique reste volontairement incomplete : elle ne contient
     # que T01. Les lecteurs passifs doivent tout de meme voir T01 + T02.
-    viewer._invalidate_last_drawn_topo_index()
-
     assert tuple(viewer._group_centroid(canonical_group_id)) == (6.0, 4.0 / 3.0)
 
     # T02 porte volontairement un autre group_id UI : l'exclusion doit
@@ -350,24 +472,22 @@ def test_projected_core_members_use_public_element_ids_api_only():
         {"topoElementId": "T01"},
         {"topoElementId": "T02"},
     ]
-    viewer._last_drawn_topo_index = {}
-    viewer._last_drawn_topo_index_source = None
-    viewer._last_drawn_topo_index_length = -1
+    viewer.canvas_objects = CanvasObjectsCollection(viewer._last_drawn)
+    viewer._last_drawn = viewer.canvas_objects.entries
     viewer.scenarios = [SimpleNamespace(topoWorld=_World())]
     viewer.active_scenario_index = 0
 
     assert viewer._get_projected_elements_for_core_group("G-CORE") == tuple(viewer._last_drawn)
 
 
-def test_topo_index_can_be_invalidated_after_in_place_relink():
+def test_topology_lookup_tracks_in_place_relink():
     viewer, _core_group_id = _make_viewer_with_one_core_group()
-    assert viewer.get_last_drawn_entry_by_topo_id("T01") is viewer._last_drawn[0]
+    assert viewer.canvas_objects.get_by_topology_id("T01") is viewer._last_drawn[0]
 
     viewer._last_drawn[0]["topoElementId"] = "T02"
-    viewer._invalidate_last_drawn_topo_index()
 
-    assert viewer.get_last_drawn_entry_by_topo_id("T01") is None
-    assert viewer.get_last_drawn_entry_by_topo_id("T02") is viewer._last_drawn[0]
+    assert viewer.canvas_objects.get_by_topology_id("T01") is None
+    assert viewer.canvas_objects.get_by_topology_id("T02") is viewer._last_drawn[0]
 
 
 def test_move_members_are_resolved_from_core_group():
@@ -453,6 +573,8 @@ def test_delete_group_resolves_members_from_core_and_keeps_legacy_mapping():
         {"topoElementId": "T01", "group_id": 10},
         {"topoElementId": "T02", "group_id": 20},
     ]
+    viewer.canvas_objects = CanvasObjectsCollection(viewer._last_drawn)
+    viewer._last_drawn = viewer.canvas_objects.entries
     viewer.groups = {
         # Cette donnée legacy est volontairement erronée : le parcours doit suivre le Core.
         10: {"id": 10, "nodes": [{"tid": 1}]},
@@ -461,7 +583,6 @@ def test_delete_group_resolves_members_from_core_and_keeps_legacy_mapping():
     viewer.scenarios = [SimpleNamespace(topoWorld=world)]
     viewer.active_scenario_index = 0
     viewer._reinsert_triangle_to_list = lambda _triangle: None
-    viewer.getTidForTopoElementId = lambda element_id: {"T01": 0, "T02": 1}.get(element_id)
     viewer._reset_assist = lambda: None
     viewer._redraw_from = lambda _entries: None
     viewer.status = _StatusStub()
@@ -493,88 +614,6 @@ def test_rotate_and_flip_prepare_members_from_core_group():
     assert viewer._last_drawn[0]["mirrored"] is True
 
 
-def test_f8_audit_exports_ok_report(tmp_path):
-    viewer, _core_group_id = _make_viewer_with_one_core_group()
-    viewer.exports_dir = str(tmp_path)
-    viewer.excel_path = None
-
-    path = viewer.export_mig_geo001_audit()
-
-    report = (tmp_path / "audits" / path.split("\\")[-1]).read_text(encoding="utf-8")
-    assert "Statut global : OK" in report
-    assert "Triangles _last_drawn                    : 1" in report
-    assert "RÉSULTAT FINAL" in report
-
-
-def test_f8_audit_detects_duplicate_or_missing_core_and_missing_projection():
-    viewer, core_group_id = _make_viewer_with_one_core_group()
-    world = viewer.scenarios[0].topoWorld
-    live_group_calls = []
-    original_get_live_group_ids = world.getLiveGroupIds
-    world.getLiveGroupIds = lambda: (
-        live_group_calls.append(True) or original_get_live_group_ids()
-    )
-    world.add_element_as_new_group(TopologyElement(
-        element_id="T02",
-        name="Triangle 02",
-        vertex_labels=["O", "B", "L"],
-        vertex_types=[TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE],
-        edge_lengths_km=[3.0, 5.0, 4.0],
-    ))
-    viewer._last_drawn.append(dict(viewer._last_drawn[0]))
-    viewer._last_drawn.append(dict(viewer._last_drawn[0]))
-    viewer._last_drawn[-1]["topoElementId"] = "UNKNOWN"
-    viewer._last_drawn[-1]["group_id"] = 10
-
-    audit = viewer._collect_mig_geo001_audit(viewer.scenarios[0], world)
-
-    assert audit["status"] == "ERROR"
-    assert audit["ui_orphans"][0]["topoElementId"] == "UNKNOWN"
-    assert audit["duplicate_ids"] == {"T01": [0, 1]}
-    assert any("UNKNOWN" in error for error in audit["errors"])
-    assert "T02" in audit["core_missing_ui_ids"]
-    assert core_group_id in {row["core_group_id"] for row in audit["group_rows"]}
-    assert live_group_calls == [True]
-
-
-def test_f8_audit_marks_ui_group_composition_mismatch_as_error():
-    viewer, core_group_id = _make_viewer_with_one_core_group()
-    world = viewer.scenarios[0].topoWorld
-    element = TopologyElement(
-        element_id="T02",
-        name="Triangle 02",
-        vertex_labels=["O", "B", "L"],
-        vertex_types=[TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE],
-        edge_lengths_km=[3.0, 5.0, 4.0],
-    )
-    second_group_id = world.add_element_as_new_group(element)
-    canonical_group_id = world.union_groups(core_group_id, second_group_id)
-    viewer._last_drawn.append({
-        "id": 2,
-        "labels": ("O", "B", "L"),
-        "pts": {"O": (10.0, 0.0), "B": (13.0, 0.0), "L": (10.0, 4.0)},
-        "topoElementId": "T02",
-        "topoGroupId": canonical_group_id,
-        "group_id": 20,
-    })
-    viewer._last_drawn[0]["topoGroupId"] = canonical_group_id
-    viewer.groups[10]["topoGroupId"] = canonical_group_id
-    viewer.groups[20] = {"id": 20, "topoGroupId": canonical_group_id, "nodes": [{"tid": 1}]}
-
-    audit = viewer._collect_mig_geo001_audit(viewer.scenarios[0], world)
-
-    assert audit["status"] == "ERROR"
-    assert any(row["result"] == "INCOHÉRENT" for row in audit["group_rows"])
-
-
-def test_f8_audit_without_active_scenario_is_safe():
-    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
-    viewer.scenarios = []
-    viewer.active_scenario_index = 0
-
-    assert viewer.export_mig_geo001_audit() is None
-
-
 def test_degrouper_helpers_use_core_groups_without_legacy_projection():
     """MIG-GROUP-019A: bbox et translation ne lisent pas ``self.groups``."""
     viewer, first_core_group_id = _make_viewer_with_one_core_group()
@@ -601,7 +640,6 @@ def test_degrouper_helpers_use_core_groups_without_legacy_projection():
         "topoGroupId": second_core_group_id,
         "group_id": 20,
     })
-    viewer._invalidate_last_drawn_topo_index()
     viewer._world_to_screen = lambda point: point
     viewer._screen_to_world = lambda x, y: (x, y)
 
@@ -640,7 +678,6 @@ def test_degrouper_result_uses_core_ids_for_visual_separation_and_sync():
         "group_id": 10,
     })
     viewer.groups[10]["nodes"].append({"tid": 1, "edge_in": None, "edge_out": None})
-    viewer._invalidate_last_drawn_topo_index()
     viewer._ctx_target_idx = 0
     viewer._next_group_id = 11
     viewer._world_to_screen = lambda point: point

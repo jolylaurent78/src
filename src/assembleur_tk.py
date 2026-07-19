@@ -8,7 +8,7 @@ import re
 import copy
 import traceback
 import threading
-from typing import Mapping, Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple
 
 from tkinter import filedialog, messagebox, simpledialog, colorchooser
 import tkinter as tk
@@ -57,48 +57,12 @@ from src.assembleur_topology_comparison import (
     build_topology_prefix_steps,
     differing_attachment_element_ids,
 )
+from src.canvas_objects_collection import CanvasObjectsCollection
 
 
 EPS_WORLD = 1e-6
 APP_LOGGER = get_app_logger()
 MIG_GEO_LOGGER = get_mig_geo_logger()
-
-
-def build_last_drawn_index(last_drawn) -> Dict[str, Tuple[int, Dict]]:
-    """Construit le cache ``topoElementId -> (tid, entree projetee)``.
-
-    L'index ne porte aucune verite metier : il accelere uniquement la
-    resolution d'un element du Core vers sa projection graphique actuelle.
-    En cas de doublon, la premiere entree conserve le comportement historique
-    de navigation ; le validateur MIG-GEO-001 signale cette incoherence.
-    """
-    index: Dict[str, Tuple[int, Dict]] = {}
-    for tid, entry in enumerate(last_drawn or []):
-        element_id = str(entry.get("topoElementId", "") or "").strip()
-        if element_id:
-            index.setdefault(element_id, (int(tid), entry))
-    return index
-
-
-def get_projected_elements(topology_group, last_drawn_index: Mapping[str, object]) -> Tuple[Dict, ...]:
-    """Resout les ``element_ids`` d'un ``TopologyGroup`` vers ``_last_drawn``.
-
-    Les membres sont toujours lus sur le groupe Core. ``last_drawn_index``
-    accepte le format interne ``element_id -> (tid, entree)`` et, pour les
-    appels autonomes/tests, ``element_id -> entree``. Les elements non
-    projetes sont omis sans mutation de l'etat.
-    """
-    if topology_group is None:
-        return ()
-    entries: List[Dict] = []
-    for element_id in list(getattr(topology_group, "element_ids", []) or []):
-        indexed = last_drawn_index.get(str(element_id or "").strip())
-        if indexed is None:
-            continue
-        entry = indexed[1] if isinstance(indexed, tuple) and len(indexed) >= 2 else indexed
-        if isinstance(entry, dict):
-            entries.append(entry)
-    return tuple(entries)
 
 
 def createDecryptor(decryptorId: str) -> DecryptorBase:
@@ -612,13 +576,8 @@ class TriangleViewerManual(
         self._bg_startup_scheduled = False
 
         self.df = None
-        self._last_drawn = []   # liste d'items: (labels, P_world)
-        # Index de liaison Core -> entrée UI pour le scénario actif.
-        # Il ne remplace pas group_id : il prépare seulement les futures
-        # navigations TopologyWorld -> éléments graphiques.
-        self._last_drawn_topo_index: Dict[str, Tuple[int, Dict]] = {}
-        self._last_drawn_topo_index_source = None
-        self._last_drawn_topo_index_length = -1
+        self.canvas_objects = CanvasObjectsCollection()
+        self._last_drawn = self.canvas_objects.entries
 
         # Crée le scénario manuel "par défaut" qui pointe sur l'état runtime.
         # last_drawn et groups sont partagés par référence : toute modification
@@ -717,53 +676,10 @@ class TriangleViewerManual(
     #  Topologie (bridge minimal Tk -> Core)
     # ======================================================================
 
-    def _invalidate_last_drawn_topo_index(self) -> None:
-        """Invalide l'index de liaison de la liste graphique active.
-
-        Cette opération est sans effet fonctionnel : l'index est un cache de
-        navigation et sera reconstruit paresseusement au prochain accès.
-        """
-        self._last_drawn_topo_index = {}
-        self._last_drawn_topo_index_source = None
-        self._last_drawn_topo_index_length = -1
-
-    def _rebuild_last_drawn_topo_index(self) -> None:
-        """Reconstruit l'index ``topoElementId -> (tid, entrée UI)`` actif.
-
-        En cas de doublon, la première entrée reste la cible de navigation ;
-        le validateur DEBUG signale l'écart sans modifier les données.
-        """
-        self._last_drawn_topo_index = build_last_drawn_index(self._last_drawn)
-        self._last_drawn_topo_index_source = self._last_drawn
-        self._last_drawn_topo_index_length = len(self._last_drawn or [])
-
-    def _ensure_last_drawn_topo_index(self) -> None:
-        """Garantit un index cohérent sans rescanner la liste à chaque lecture."""
-        if (
-            self._last_drawn_topo_index_source is self._last_drawn
-            and self._last_drawn_topo_index_length == len(self._last_drawn or [])
-        ):
-            return
-        self._rebuild_last_drawn_topo_index()
-
-    def get_last_drawn_entry_by_topo_id(self, element_id: str) -> Dict | None:
-        """Retourne l'entrée UI active liée à ``element_id`` en accès indexé."""
-        key = str(element_id or "").strip()
-        if not key:
-            return None
-        self._ensure_last_drawn_topo_index()
-        item = self._last_drawn_topo_index.get(key)
-        return None if item is None else item[1]
-
-    def get_last_drawn_entries_by_topo_ids(self, element_ids) -> List[Dict]:
-        """Retourne les entrées UI actives dans l'ordre des ``element_ids``."""
-        self._ensure_last_drawn_topo_index()
-        entries: List[Dict] = []
-        for element_id in list(element_ids or []):
-            item = self._last_drawn_topo_index.get(str(element_id or "").strip())
-            if item is not None:
-                entries.append(item[1])
-        return entries
+    def _bind_canvas_objects(self, entries) -> None:
+        """Attache la collection structurelle aux entrees du scenario actif."""
+        self.canvas_objects = CanvasObjectsCollection(entries)
+        self._last_drawn = self.canvas_objects.entries
 
     def _get_active_core_group_id_for_entry(self, entry: Dict) -> Optional[str]:
         """Résout le ``core_group_id`` canonique d'une entrée projetée."""
@@ -808,19 +724,7 @@ class TriangleViewerManual(
         except Exception as exc:
             MIG_GEO_LOGGER.debug("[MIG-GEO-012C1] groupe Core illisible %r: %s", core_group_id, exc)
             return ()
-        self._ensure_last_drawn_topo_index()
-        return tuple(self.get_last_drawn_entries_by_topo_ids(element_ids))
-
-    def _get_projected_element_tids(self, projected_elements) -> List[int]:
-        """Retourne les tids des entrees projetees sans parcourir ``nodes``."""
-        self._ensure_last_drawn_topo_index()
-        tids: List[int] = []
-        for entry in projected_elements or []:
-            element_id = str(entry.get("topoElementId", "") or "").strip()
-            indexed = self._last_drawn_topo_index.get(element_id)
-            if indexed is not None:
-                tids.append(int(indexed[0]))
-        return tids
+        return self.canvas_objects.get_many_by_topology_ids(element_ids)
 
     def get_last_drawn_entries_for_core_group(self, core_group_id: str) -> List[Dict]:
         """Navigue ``groupe Core -> element_ids -> entrées UI``.
@@ -839,93 +743,7 @@ class TriangleViewerManual(
         except Exception as exc:
             MIG_GEO_LOGGER.debug("[MIG-GEO-001] groupe Core illisible %r: %s", key, exc)
             return []
-        return self.get_last_drawn_entries_by_topo_ids(element_ids)
-
-    def debug_validate_core_ui_group_linking(self, ui_group_id: int | None = None) -> List[Dict]:
-        """Compare passivement groupes UI et groupes Core pour le DEBUG.
-
-        Le validateur ne modifie aucune structure et ne lève pas d'exception :
-        il journalise des diagnostics exploitables et retourne leur liste pour
-        les appels de diagnostic manuels.
-        """
-        diagnostics: List[Dict] = []
-        scen = self._get_active_scenario()
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
-        if world is None:
-            return diagnostics
-
-        entries_by_ui_group: Dict[int, List[Dict]] = {}
-        for entry in self._last_drawn or []:
-            group_id = entry.get("group_id")
-            if group_id is None:
-                continue
-            try:
-                entries_by_ui_group.setdefault(int(group_id), []).append(entry)
-            except (TypeError, ValueError):
-                continue
-
-        group_ids = [int(ui_group_id)] if ui_group_id is not None else list(self.groups.keys())
-        for gid in group_ids:
-            group_ui = self.groups.get(gid)
-            if not group_ui:
-                diagnostics.append({"ui_group_id": gid, "kind": "missing_ui_group"})
-                continue
-
-            ui_entries = entries_by_ui_group.get(gid, [])
-            ui_element_ids = {
-                str(entry.get("topoElementId", "") or "").strip()
-                for entry in ui_entries
-                if str(entry.get("topoElementId", "") or "").strip()
-            }
-            core_group_id = str(group_ui.get("topoGroupId", "") or "").strip()
-            if not core_group_id and ui_element_ids:
-                try:
-                    core_group_id = str(world.get_group_of_element(next(iter(ui_element_ids))) or "")
-                except Exception:
-                    core_group_id = ""
-
-            core_entries = self.get_last_drawn_entries_for_core_group(core_group_id)
-            core_element_ids = {
-                str(entry.get("topoElementId", "") or "").strip()
-                for entry in core_entries
-                if str(entry.get("topoElementId", "") or "").strip()
-            }
-            if not core_group_id or ui_element_ids != core_element_ids:
-                diagnostic = {
-                    "ui_group_id": gid,
-                    "core_group_id": core_group_id or None,
-                    "kind": "core_ui_group_mismatch",
-                    "ui_only": sorted(ui_element_ids - core_element_ids),
-                    "core_only": sorted(core_element_ids - ui_element_ids),
-                }
-                diagnostics.append(diagnostic)
-                MIG_GEO_LOGGER.warning("[MIG-GEO-001] Core/UI group mismatch: %s", diagnostic)
-
-        self._ensure_last_drawn_topo_index()
-        indexed_ids = set(self._last_drawn_topo_index.keys())
-        actual_ids = [
-            str(entry.get("topoElementId", "") or "").strip()
-            for entry in (self._last_drawn or [])
-            if str(entry.get("topoElementId", "") or "").strip()
-        ]
-        if len(actual_ids) != len(set(actual_ids)):
-            diagnostic = {"kind": "duplicate_topo_element_id", "element_ids": sorted(actual_ids)}
-            diagnostics.append(diagnostic)
-            MIG_GEO_LOGGER.warning("[MIG-GEO-001] duplicate topoElementId in _last_drawn: %s", diagnostic)
-        if set(actual_ids) != indexed_ids:
-            diagnostic = {"kind": "topo_index_incomplete", "actual_ids": sorted(set(actual_ids)), "indexed_ids": sorted(indexed_ids)}
-            diagnostics.append(diagnostic)
-            MIG_GEO_LOGGER.warning("[MIG-GEO-001] incomplete topo index: %s", diagnostic)
-        return diagnostics
-
-    def getTidForTopoElementId(self, topoElementId: str) -> int | None:
-        """Compatibilité : retourne le tid UI lié à un élément Core."""
-        key = str(topoElementId or "").strip()
-        if not key:
-            return None
-        self._ensure_last_drawn_topo_index()
-        item = self._last_drawn_topo_index.get(key)
-        return None if item is None else item[0]
+        return list(self.canvas_objects.get_many_by_topology_ids(element_ids))
 
     def _sync_group_elements_pose_to_core(self, core_group_id: str, scen: ScenarioAssemblage = None) -> None:
         """Synchronise les poses (R,T,mirrored) de TOUS les éléments du groupe UI vers le Core.
@@ -948,14 +766,13 @@ class TriangleViewerManual(
 
         # MIG-GEO-011-B : groupe Core -> element_ids -> projection _last_drawn.
         # Cette synchronisation ne consulte ni self.groups ni groups[*]["nodes"].
-        last_drawn = getattr(scen, "last_drawn", None)
-        if last_drawn is None:
-            last_drawn = self._last_drawn
-        projected_elements = tuple(
-            build_last_drawn_index(last_drawn).get(str(element_id), (None, None))[1]
-            for element_id in element_ids
-        )
-        projected_elements = tuple(entry for entry in projected_elements if entry is not None)
+        if scen is self._get_active_scenario():
+            projected_elements = self.canvas_objects.get_many_by_topology_ids(element_ids)
+        else:
+            # Les scenarios inactifs conservent encore leur liste historique.
+            # Une collection ephemere evite de recréer un cache parallele.
+            projected = CanvasObjectsCollection(getattr(scen, "last_drawn", None) or ())
+            projected_elements = projected.get_many_by_topology_ids(element_ids)
 
         # Modèle "pose" :
         # - mirrored est réservé AU FLIP utilisateur (fonction _ctx_flip_selected).
@@ -1040,339 +857,6 @@ class TriangleViewerManual(
         out_path = os.path.join(self.topo_xml_dir, out_name)
         world.export_topo_dump_xml(out_path, orientation="cw")
         self.status.config(text=f"TopoDump exporté : {out_name}")
-
-    @staticmethod
-    def _is_mig_geo001_projectable_element(element) -> bool:
-        """Applique la règle existante : seules les formes à trois sommets sont UI-projetables."""
-        try:
-            return int(element.n_vertices()) == 3
-        except Exception:
-            return len(getattr(element, "vertex_labels", []) or []) == 3
-
-    def _collect_mig_geo001_audit(self, scen, world) -> Dict:
-        """Collecte passivement les métriques Core ↔ UI du scénario actif."""
-        self._rebuild_last_drawn_topo_index()
-        entries = list(self._last_drawn or [])
-        errors: List[str] = []
-        warnings: List[str] = []
-
-        ids_to_entries: Dict[str, List[Tuple[int, Dict]]] = {}
-        ui_without_topo_id: List[Tuple[int, Dict]] = []
-        ui_orphans: List[Dict] = []
-        for tid, entry in enumerate(entries):
-            element_id = str(entry.get("topoElementId", "") or "").strip()
-            if not element_id:
-                ui_without_topo_id.append((tid, entry))
-                ui_orphans.append({
-                    "tid": tid,
-                    "id": entry.get("id"),
-                    "topoElementId": "(absent)",
-                    "group_id": entry.get("group_id"),
-                    "reason": "topoElementId absent",
-                })
-                warnings.append(f"Entrée UI #{tid} sans topoElementId.")
-                continue
-            ids_to_entries.setdefault(element_id, []).append((tid, entry))
-            if element_id not in world.elements:
-                ui_orphans.append({
-                    "tid": tid,
-                    "id": entry.get("id"),
-                    "topoElementId": element_id,
-                    "group_id": entry.get("group_id"),
-                    "reason": "topoElementId absent du Core",
-                })
-                errors.append(f"Entrée UI #{tid} référence l'élément Core absent {element_id}.")
-
-        duplicate_ids = {
-            element_id: [tid for tid, _entry in matches]
-            for element_id, matches in ids_to_entries.items()
-            if len(matches) > 1
-        }
-        for element_id, tids in duplicate_ids.items():
-            errors.append(f"topoElementId dupliqué {element_id} dans les entrées UI {tids}.")
-
-        expected_core_ids = {
-            str(element_id)
-            for element_id, element in world.elements.items()
-            if self._is_mig_geo001_projectable_element(element)
-        }
-        ui_core_ids = {element_id for element_id in ids_to_entries if element_id in world.elements}
-        core_missing_ui_ids = sorted(expected_core_ids - ui_core_ids)
-        for element_id in core_missing_ui_ids:
-            errors.append(f"Élément Core projetable absent de _last_drawn: {element_id}.")
-
-        indexed_ids = set(self._last_drawn_topo_index.keys())
-        index_problems: List[str] = []
-        for element_id, matches in ids_to_entries.items():
-            indexed = self._last_drawn_topo_index.get(element_id)
-            if indexed is None:
-                index_problems.append(f"{element_id}: absent de l'index")
-                continue
-            index_tid, index_entry = indexed
-            if index_entry is not matches[0][1] or index_tid != matches[0][0]:
-                index_problems.append(f"{element_id}: entrée indexée obsolète")
-            if self.get_last_drawn_entry_by_topo_id(element_id) is not matches[0][1]:
-                index_problems.append(f"{element_id}: helper de lookup incohérent")
-        for element_id in sorted(indexed_ids - set(ids_to_entries.keys())):
-            index_problems.append(f"{element_id}: entrée d'index absente de _last_drawn")
-        for problem in index_problems:
-            errors.append(f"Index Core ↔ UI: {problem}.")
-
-        entries_by_ui_group: Dict[int, List[Dict]] = {}
-        for entry in entries:
-            group_id = entry.get("group_id")
-            if group_id is None:
-                continue
-            try:
-                entries_by_ui_group.setdefault(int(group_id), []).append(entry)
-            except (TypeError, ValueError):
-                warnings.append(f"group_id UI invalide: {group_id!r}.")
-
-        group_rows: List[Dict] = []
-        for core_group_id in world.getLiveGroupIds():
-            core_ids = [str(element_id) for element_id in world.getGroupElementIds(core_group_id)]
-            projectable_ids = [element_id for element_id in core_ids if element_id in expected_core_ids]
-            resolved_entries = self.get_last_drawn_entries_for_core_group(core_group_id)
-            resolved_ids = [
-                str(entry.get("topoElementId", "") or "").strip()
-                for entry in resolved_entries
-                if str(entry.get("topoElementId", "") or "").strip()
-            ]
-            observed_ui_group_ids = sorted({
-                int(entry["group_id"])
-                for entry in resolved_entries
-                if entry.get("group_id") is not None
-                and str(entry.get("group_id")).lstrip("-").isdigit()
-            })
-
-            result = "OK"
-            detail = "Composition Core et groupe UI historique concordants."
-            expected_set = set(projectable_ids)
-            resolved_set = set(resolved_ids)
-            if not projectable_ids:
-                result = "NON COMPARABLE"
-                detail = "Aucun élément triangulaire projetable dans ce groupe Core."
-                warnings.append(f"Groupe Core {core_group_id} non comparable: aucun élément projetable.")
-            elif resolved_set != expected_set:
-                result = "INCOMPLET"
-                detail = "Des éléments Core projetables ne sont pas résolus dans _last_drawn."
-                errors.append(f"Groupe Core {core_group_id} incomplet dans _last_drawn.")
-            elif not observed_ui_group_ids:
-                result = "NON COMPARABLE"
-                detail = "Aucun group_id UI historique disponible pour les entrées résolues."
-                warnings.append(f"Groupe Core {core_group_id} non comparable aux groupes UI.")
-            elif len(observed_ui_group_ids) != 1:
-                result = "INCOHÉRENT"
-                detail = "Les éléments d'un même groupe Core appartiennent à plusieurs group_id UI."
-                errors.append(f"Groupe Core {core_group_id} réparti sur plusieurs groupes UI.")
-            else:
-                ui_group_id = observed_ui_group_ids[0]
-                historical_ids = {
-                    str(entry.get("topoElementId", "") or "").strip()
-                    for entry in entries_by_ui_group.get(ui_group_id, [])
-                    if str(entry.get("topoElementId", "") or "").strip()
-                }
-                if historical_ids != expected_set:
-                    result = "INCOHÉRENT"
-                    detail = "La composition du group_id UI diffère de celle du groupe Core."
-                    errors.append(f"Groupe Core {core_group_id} diffère du groupe UI {ui_group_id}.")
-
-            group_rows.append({
-                "core_group_id": core_group_id,
-                "core_element_ids": core_ids,
-                "projectable_ids": projectable_ids,
-                "resolved_ids": resolved_ids,
-                "ui_group_ids": observed_ui_group_ids,
-                "result": result,
-                "detail": detail,
-            })
-
-        validator_diagnostics = self.debug_validate_core_ui_group_linking()
-        for diagnostic in validator_diagnostics:
-            kind = str(diagnostic.get("kind", "diagnostic"))
-            if kind in {"core_ui_group_mismatch", "duplicate_topo_element_id", "topo_index_incomplete"}:
-                errors.append(f"Validateur Step 1: {diagnostic}")
-            else:
-                warnings.append(f"Validateur Step 1: {diagnostic}")
-
-        if not entries and not expected_core_ids:
-            warnings.append("Scénario vide : aucun triangle UI ni élément Core projetable.")
-
-        status = "ERROR" if errors else ("WARNING" if warnings else "OK")
-        return {
-            "status": status,
-            "errors": errors,
-            "warnings": warnings,
-            "scenario": scen,
-            "total_ui": len(entries),
-            "ui_with_topo_id": sum(len(v) for v in ids_to_entries.values()),
-            "ui_without_topo_id": ui_without_topo_id,
-            "unique_topo_ids": len(ids_to_entries),
-            "duplicate_ids": duplicate_ids,
-            "ui_resolved_core": len(ui_core_ids),
-            "ui_orphans": ui_orphans,
-            "expected_core_ids": sorted(expected_core_ids),
-            "core_found_ui_ids": sorted(expected_core_ids & ui_core_ids),
-            "core_missing_ui_ids": core_missing_ui_ids,
-            "index_problems": index_problems,
-            "group_rows": group_rows,
-            "validator_diagnostics": validator_diagnostics,
-        }
-
-    @staticmethod
-    def _format_mig_geo001_audit_list(values, formatter=str) -> List[str]:
-        values = list(values or [])
-        return ["Aucun"] if not values else [formatter(value) for value in values]
-
-    def _render_mig_geo001_audit_report(self, audit: Dict) -> str:
-        """Produit le rapport texte lisible de l'audit F8."""
-        scen = audit["scenario"]
-        separator = "=" * 50
-        lines = [
-            "MIG-GEO-001 — AUDIT CORE ↔ UI",
-            "",
-            f"Date : {_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            f"Scénario : {getattr(scen, 'name', '') or '(sans nom)'}",
-            f"Fichier source : {getattr(self, 'excel_path', None) or '(non renseigné)'}",
-            f"Type de scénario : {getattr(scen, 'source_type', '') or '(non renseigné)'}",
-            f"Statut global : {audit['status']}",
-            "",
-            separator,
-            "SYNTHÈSE",
-            separator,
-            f"Triangles _last_drawn                    : {audit['total_ui']}",
-            f"Triangles avec topoElementId             : {audit['ui_with_topo_id']}",
-            f"Triangles sans topoElementId             : {len(audit['ui_without_topo_id'])}",
-            f"Triangles résolus dans Core              : {audit['ui_resolved_core']}",
-            f"Triangles UI orphelins                   : {len(audit['ui_orphans'])}",
-            f"topoElementId dupliqués                  : {len(audit['duplicate_ids'])}",
-            "",
-            f"Éléments Core projetables                : {len(audit['expected_core_ids'])}",
-            f"Éléments Core retrouvés dans l’UI        : {len(audit['core_found_ui_ids'])}",
-            f"Éléments Core absents de l’UI            : {len(audit['core_missing_ui_ids'])}",
-            "",
-            f"Groupes Core                             : {len(audit['group_rows'])}",
-            f"Groupes complètement résolus             : {sum(row['result'] == 'OK' for row in audit['group_rows'])}",
-            f"Groupes incomplets                       : {sum(row['result'] == 'INCOMPLET' for row in audit['group_rows'])}",
-            f"Groupes incohérents                      : {sum(row['result'] == 'INCOHÉRENT' for row in audit['group_rows'])}",
-            f"Groupes non comparables                  : {sum(row['result'] == 'NON COMPARABLE' for row in audit['group_rows'])}",
-            f"Index Core ↔ UI                          : {'ERROR' if audit['index_problems'] else 'OK'}",
-            "",
-            separator,
-            "TRIANGLES UI ORPHELINS",
-            separator,
-        ]
-        if not audit["ui_orphans"]:
-            lines.append("Aucun")
-        else:
-            for orphan in audit["ui_orphans"]:
-                lines.extend([
-                    f"Index _last_drawn : {orphan['tid']}",
-                    f"Nom UI : {orphan['id']}",
-                    f"topoElementId : {orphan['topoElementId']}",
-                    f"group_id : {orphan['group_id']}",
-                    f"Raison : {orphan['reason']}",
-                    "",
-                ])
-        lines.extend(["", separator, "ÉLÉMENTS CORE ABSENTS DE _last_drawn", separator])
-        lines.extend(self._format_mig_geo001_audit_list(audit["core_missing_ui_ids"]))
-        lines.extend(["", separator, "DOUBLONS topoElementId", separator])
-        if not audit["duplicate_ids"]:
-            lines.append("Aucun")
-        else:
-            for element_id, tids in sorted(audit["duplicate_ids"].items()):
-                lines.append(f"{element_id} : entrées _last_drawn {tids}")
-
-        lines.extend(["", separator, "COMPARAISON DES GROUPES", separator])
-        if not audit["group_rows"]:
-            lines.append("Aucun groupe Core canonique.")
-        else:
-            for row in audit["group_rows"]:
-                lines.extend([
-                    f"Groupe Core : {row['core_group_id']}",
-                    f"ElementId Core : {', '.join(row['core_element_ids']) or 'Aucun'}",
-                    f"Entrées UI résolues : {', '.join(row['resolved_ids']) or 'Aucune'}",
-                    f"group_id UI observé : {', '.join(map(str, row['ui_group_ids'])) or 'Aucun'}",
-                    f"Résultat : {row['result']}",
-                    f"Détail : {row['detail']}",
-                    "",
-                ])
-
-        lines.extend(["", separator, "DIAGNOSTICS DU VALIDATEUR", separator])
-        lines.extend(self._format_mig_geo001_audit_list(audit["validator_diagnostics"], repr))
-        lines.extend(["", separator, "RÉSULTAT FINAL", separator,
-                      f"Statut : {audit['status']}",
-                      f"Nombre d’erreurs : {len(audit['errors'])}",
-                      f"Nombre d’avertissements : {len(audit['warnings'])}"])
-        if audit["errors"]:
-            lines.extend(["", "Erreurs :", *[f"- {message}" for message in audit["errors"]]])
-        if audit["warnings"]:
-            lines.extend(["", "Avertissements :", *[f"- {message}" for message in audit["warnings"]]])
-        return "\n".join(lines) + "\n"
-
-    def export_mig_geo001_audit(self, event=None):
-        """Exporte sur F8 un audit Core ↔ UI du scénario actif, sans mutation."""
-        scen = self._get_active_scenario()
-        if scen is None:
-            message = "Audit impossible : aucun scénario actif"
-            MIG_GEO_LOGGER.warning("[MIG-GEO] %s", message)
-            status_widget = self.__dict__.get("status")
-            if status_widget is not None:
-                status_widget.config(text=message)
-            return "break" if event is not None else None
-
-        world = getattr(scen, "topoWorld", None)
-        if world is None:
-            message = "Audit MIG-GEO-001 impossible : TopologyWorld actif absent"
-            MIG_GEO_LOGGER.error("[MIG-GEO] %s", message)
-            status_widget = self.__dict__.get("status")
-            if status_widget is not None:
-                status_widget.config(text=message)
-            return "break" if event is not None else None
-
-        try:
-            MIG_GEO_LOGGER.info(
-                "[MIG-GEO] Audit lancé Scenario=%s Type=%s",
-                getattr(scen, "name", "") or "(sans nom)",
-                getattr(scen, "source_type", "") or "(non renseigné)",
-            )
-            audit = self._collect_mig_geo001_audit(scen, world)
-            report = self._render_mig_geo001_audit_report(audit)
-            audit_dir = os.path.join(self.exports_dir, "audits")
-            os.makedirs(audit_dir, exist_ok=True)
-            safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(getattr(scen, "name", "") or "scenario")).strip("._") or "scenario"
-            stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-            path = os.path.join(audit_dir, f"MIG-GEO-001_{safe_name}_{stamp}.txt")
-            with open(path, "w", encoding="utf-8") as handle:
-                handle.write(report)
-        except Exception as exc:
-            MIG_GEO_LOGGER.exception("[MIG-GEO] Audit terminé Status=ERROR")
-            APP_LOGGER.exception("Échec de l'audit MIG-GEO-001 F8")
-            message = f"Audit MIG-GEO-001 : ERROR — {exc}"
-            status_widget = self.__dict__.get("status")
-            if status_widget is not None:
-                status_widget.config(text=message)
-            return "break" if event is not None else None
-
-        MIG_GEO_LOGGER.info(
-            "[MIG-GEO] Audit terminé Status=%s Triangles=%d Groupes=%d Errors=%d Warnings=%d Rapport=%s",
-            audit["status"],
-            audit["total_ui"],
-            len(audit["group_rows"]),
-            len(audit["errors"]),
-            len(audit["warnings"]),
-            path,
-        )
-        if audit["status"] == "OK":
-            message = f"Audit MIG-GEO-001 terminé : OK — rapport créé dans {path}"
-        elif audit["status"] == "WARNING":
-            message = f"Audit MIG-GEO-001 terminé : WARNING — {len(audit['warnings'])} avertissement(s) — {path}"
-        else:
-            message = f"Audit MIG-GEO-001 terminé : ERROR — {len(audit['errors'])} erreur(s) — {path}"
-        status_widget = self.__dict__.get("status")
-        if status_widget is not None:
-            status_widget.config(text=message)
-        return "break" if event is not None else path
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -4787,12 +4271,14 @@ class TriangleViewerManual(
             tt["pts"] = Pw
             world.append(tt)
 
-        scen.last_drawn = world
-
-        # si c'est le scénario actif, on raccorde l'UI
+        # si c'est le scenario actif, la collection conserve son identite.
         if scen is self._get_active_scenario():
-            self._last_drawn = scen.last_drawn
+            self.canvas_objects.replace_all(world)
+            scen.last_drawn = self._last_drawn
             self.groups = scen.groups
+            self.canvas_objects.dump(APP_LOGGER, "reconstruction scenario actif")
+        else:
+            scen.last_drawn = world
 
     def _autoRebuildWorldGeometry(self, redraw: bool = True) -> None:
         for scen in (self.scenarios or []):
@@ -4902,8 +4388,10 @@ class TriangleViewerManual(
         self.active_scenario_index = index
 
         # Rattacher les structures géométriques du scénario courant
-        self._last_drawn = scen.last_drawn
+        self._bind_canvas_objects(scen.last_drawn)
+        scen.last_drawn = self._last_drawn
         self.groups = scen.groups
+        self.canvas_objects.dump(APP_LOGGER, "activation scenario")
 
         # Restaurer carte + vue (sans écraser la config globale)
         scenIsAuto = (getattr(scen, "source_type", "manual") == "auto")
@@ -4923,10 +4411,7 @@ class TriangleViewerManual(
         self._next_group_id = (max(self.groups.keys()) + 1) if self.groups else 1
 
         # Recalcule la liste des triangles déjà utilisés pour ce scénario
-        self._placed_ids = {
-            int(t["id"]) for t in self._last_drawn
-            if t.get("id") is not None
-        }
+        self._placed_ids = {int(triangle_id) for triangle_id in self.canvas_objects.triangle_ids()}
 
         self._update_triangle_listbox_colors()
 
@@ -5177,8 +4662,6 @@ class TriangleViewerManual(
         self._ctx_menu.add_command(label="Effacer …", state="disabled")
         self._ctx_refresh_menu_runtime_indexes()
 
-        # Audit Core ↔ UI manuel : F8 est libre et reste déclenché volontairement.
-        self.bind_all("<F8>", self.export_mig_geo001_audit)
         # Export TopoDump (manuel, snapshot volontaire)
         self.bind_all("<F11>", self._on_export_topodump_key)
 
@@ -5968,11 +5451,7 @@ class TriangleViewerManual(
         # - pas de reset du topoWorld
         #
         # On recalcule seulement la liste des triangles déjà utilisés
-        self._placed_ids = {
-            int(t["id"])
-            for t in self._last_drawn
-            if t.get("id") is not None
-        }
+        self._placed_ids = {int(triangle_id) for triangle_id in self.canvas_objects.triangle_ids()}
 
         self._update_triangle_listbox_colors()
         self._redraw_from(self._last_drawn)
@@ -6049,7 +5528,7 @@ class TriangleViewerManual(
 
         # Réinitialiser l'état d'affichage du scénario actif
         # (vidage en place pour garder le lien scen.last_drawn)
-        self._last_drawn.clear()
+        self.canvas_objects.clear()
         self._nearest_line_id = None
         self._clear_edge_highlights()
         self._edge_choice = None
@@ -6739,7 +6218,7 @@ class TriangleViewerManual(
                     # -------- Cas 2 : déplacement de groupe ancré sur sommet --------
                     elif mode == "move_group":
                         anchor = self._sel.get("anchor")
-                        gid = self._sel.get("gid")
+                        core_group_id = str(self._sel.get("core_group_id") or "").strip()
                         if anchor and anchor.get("type") == "vertex":
                             anchor_tid = anchor.get("tid")
                             anchor_vkey = anchor.get("vkey")
@@ -6759,17 +6238,62 @@ class TriangleViewerManual(
                                     R = np.array([[np.cos(dtheta), -np.sin(dtheta)],
                                                  [np.sin(dtheta),  np.cos(dtheta)]], dtype=float)
 
-                                    g = self.groups.get(gid)
-                                    if g:
-                                        for node in g["nodes"]:
-                                            tid = node.get("tid")
-                                            if 0 <= tid < len(self._last_drawn):
-                                                P = self._last_drawn[tid]["pts"]
-                                                for k in ("O", "B", "L"):
-                                                    p = np.array(P[k], dtype=float)
-                                                    p_rot = A + (R @ (p - A))
-                                                    P[k][0] = float(p_rot[0])
-                                                    P[k][1] = float(p_rot[1])
+                                    # MIG-GROUP-019 : la composition du groupe est Core.
+                                    # La projection doit etre complete avant toute mutation,
+                                    # afin de ne jamais appliquer une rotation partielle.
+                                    scen = self._get_active_scenario()
+                                    world = getattr(scen, "topoWorld", None) if scen is not None else None
+                                    if world is None:
+                                        raise RuntimeError("CTRL move_group: TopologyWorld actif introuvable.")
+                                    if not core_group_id:
+                                        raise RuntimeError("CTRL move_group: core_group_id absent de la selection.")
+                                    try:
+                                        element_ids = world.getGroupElementIds(core_group_id)
+                                    except Exception as exc:
+                                        raise RuntimeError(
+                                            f"CTRL move_group: groupe Core introuvable ({core_group_id})."
+                                        ) from exc
+                                    if not element_ids:
+                                        raise RuntimeError(
+                                            f"CTRL move_group: groupe Core vide ({core_group_id})."
+                                        )
+                                    projected_entries = self.canvas_objects.get_many_by_topology_ids(
+                                        element_ids,
+                                        strict=True,
+                                    )
+                                    if not (0 <= int(anchor_tid) < len(self._last_drawn)):
+                                        raise RuntimeError("CTRL move_group: ancre projetee introuvable.")
+                                    if self._last_drawn[int(anchor_tid)] not in projected_entries:
+                                        raise RuntimeError(
+                                            "CTRL move_group: ancre absente du groupe Core selectionne."
+                                        )
+                                    rotated_points = []
+                                    for entry in projected_entries:
+                                        points = entry.get("pts")
+                                        if not isinstance(points, dict):
+                                            raise RuntimeError(
+                                                "CTRL move_group: entree projetee sans points."
+                                            )
+                                        for key in ("O", "B", "L"):
+                                            if key not in points:
+                                                raise RuntimeError(
+                                                    f"CTRL move_group: sommet {key} absent de la projection."
+                                                )
+                                            if not hasattr(points[key], "__setitem__"):
+                                                raise RuntimeError(
+                                                    f"CTRL move_group: sommet {key} non mutable."
+                                                )
+                                            try:
+                                                point = np.array(points[key], dtype=float)
+                                                rotated = A + (R @ (point - A))
+                                            except Exception as exc:
+                                                raise RuntimeError(
+                                                    f"CTRL move_group: sommet {key} invalide."
+                                                ) from exc
+                                            rotated_points.append((points, key, rotated))
+                                    for points, key, rotated in rotated_points:
+                                        points[key][0] = float(rotated[0])
+                                        points[key][1] = float(rotated[1])
 
                                     # Redessiner + remettre les aides (en excluant le groupe mobile)
                                     self._redraw_from(self._last_drawn)
@@ -6777,7 +6301,7 @@ class TriangleViewerManual(
                                     self._update_nearest_line(
                                         v_world,
                                         exclude_idx=anchor_tid,
-                                        exclude_core_group_id=self._sel.get("core_group_id"),
+                                        exclude_core_group_id=core_group_id,
                                     )
                                     self._update_edge_highlights(anchor_tid, anchor_vkey, idx_t, vkey_t)
 
@@ -7002,7 +6526,7 @@ class TriangleViewerManual(
             # Repartir du snapshot Core pour éviter l'accumulation d'erreurs.
             for triangle in sel.get("rotate_member_entries", []):
                 topo_element_id = str(triangle.get("topoElementId", "") or "").strip()
-                tid = self.getTidForTopoElementId(topo_element_id)
+                tid = self.canvas_objects.get_index_by_topology_id(topo_element_id)
                 if tid is None or tid not in sel["orig_group_pts"]:
                     continue
                 Pt = triangle.get("pts")
@@ -7256,8 +6780,12 @@ class TriangleViewerManual(
         best = None  # (score, m_edge, t_edge)
         mob_projected_elements = self._get_projected_elements_for_core_group(core_gid_m)
         tgt_projected_elements = self._get_projected_elements_for_core_group(core_gid_t)
-        mob_tids = self._get_projected_element_tids(mob_projected_elements)
-        tgt_tids = self._get_projected_element_tids(tgt_projected_elements)
+        mob_tids = [index for index, _entry in self.canvas_objects.get_indexed_by_topology_ids(
+            entry.get("topoElementId") for entry in mob_projected_elements
+        )]
+        tgt_tids = [index for index, _entry in self.canvas_objects.get_indexed_by_topology_ids(
+            entry.get("topoElementId") for entry in tgt_projected_elements
+        )]
 
         # Helper pour tester le chevauchement via Algo Topologique
         def _overlap_topo_for_pair(score, me, te) -> bool:
@@ -7323,8 +6851,12 @@ class TriangleViewerManual(
         # Contrainte: d'autres appels attendent que choice[4] soit déballable en (m_a,m_b,t_a,t_b).
         self._edge_choice = None
         if best:
-            mob_tids = self._get_projected_element_tids(mob_projected_elements)
-            tgt_tids = self._get_projected_element_tids(tgt_projected_elements)
+            mob_tids = [index for index, _entry in self.canvas_objects.get_indexed_by_topology_ids(
+                entry.get("topoElementId") for entry in mob_projected_elements
+            )]
+            tgt_tids = [index for index, _entry in self.canvas_objects.get_indexed_by_topology_ids(
+                entry.get("topoElementId") for entry in tgt_projected_elements
+            )]
             res = buildEdgeChoiceEptsFromBest(
                 best,
                 world=world,
@@ -7410,7 +6942,7 @@ class TriangleViewerManual(
         scen = self._get_active_scenario()
 
         # 1) Ajout de l'item dans le document
-        self._last_drawn.append({
+        self.canvas_objects.add({
             "labels": tri["labels"],
             "pts": Pw,
             "id": tri.get("id"),
@@ -7496,6 +7028,7 @@ class TriangleViewerManual(
 
         # Lier group UI -> group Core
         self.groups[gid]["topoGroupId"] = core_gid
+        self.canvas_objects.dump(APP_LOGGER, "placement manuel")
 
         # 3) UI
         self._redraw_from(self._last_drawn)
@@ -8086,7 +7619,7 @@ class TriangleViewerManual(
         def _elementIdsToTids(element_ids: list[str]) -> list[int]:
             tids: list[int] = []
             for eid in list(element_ids or []):
-                tid = self.getTidForTopoElementId(str(eid))
+                tid = self.canvas_objects.get_index_by_topology_id(str(eid))
                 if tid is None:
                     raise ValueError(f"Dégrouper: triangle UI introuvable pour elementId={eid}")
                 tids.append(int(tid))
@@ -8679,7 +8212,7 @@ class TriangleViewerManual(
                 ref = None
             if isinstance(ref, dict):
                 if binding["idx"] is None:
-                    resolved_idx = self.getTidForTopoElementId(ref.get("elementId"))
+                    resolved_idx = self.canvas_objects.get_index_by_topology_id(ref.get("elementId"))
                     if resolved_idx is not None:
                         binding["idx"] = int(resolved_idx)
                 if binding["vkey"] is None and ref.get("vkey") is not None:
@@ -9179,17 +8712,12 @@ class TriangleViewerManual(
             {
                 tid
                 for element_id in removed_element_ids
-                for tid in (self.getTidForTopoElementId(element_id),)
+                for tid in (self.canvas_objects.get_index_by_topology_id(element_id),)
                 if tid is not None
             },
             reverse=True,
         )
         if not removed_tids:
-            return
-
-        # Le gid UI reste nécessaire uniquement à la maintenance du miroir legacy ci-dessous.
-        legacy_gid = self._get_group_of_triangle(idx)
-        if not legacy_gid:
             return
 
         # --- Confirmation si le groupe comporte au moins 2 triangles ---
@@ -9201,23 +8729,18 @@ class TriangleViewerManual(
             if not confirm:
                 return
 
-        # 0) TOPO : les elementId Core sont deja resolus avant toute modif de _last_drawn.
-        removed_set = set(removed_tids)
-        for tid in removed_tids:
-            if 0 <= tid < len(self._last_drawn):
-                self._reinsert_triangle_to_list(self._last_drawn[tid])
+        # Le gid UI reste nécessaire uniquement à la maintenance du miroir
+        # legacy après la suppression structurelle.
+        legacy_gid = self._get_group_of_triangle(idx)
+        if not legacy_gid:
+            return
 
-        # 2) Reconstruire _last_drawn et table de remap old->new
-        keep, old2new = [], {}
-        for old_i, tri in enumerate(self._last_drawn):
-            if old_i in removed_set:
-                continue
-            new_i = len(keep)
-            old2new[old_i] = new_i
-            keep.append(tri)
-        # IMPORTANT : on remplace le contenu de la liste en place
-        # pour ne pas casser la référence scen.last_drawn.
-        self._last_drawn[:] = keep
+        # 0) La collection conserve le remappage structurel old tid -> new tid.
+        removal = self.canvas_objects.remove_many(removed_tids)
+        removed_set = set(removed_tids)
+        for entry in removal.removed_entries:
+            self._reinsert_triangle_to_list(entry)
+        old2new = removal.old_to_new
 
         # 2bis) TOPO : supprimer les éléments Core + purge des attaches + rebuild
         if world is not None and removed_element_ids:
@@ -9245,9 +8768,9 @@ class TriangleViewerManual(
         # 4) Fin : purge sélection/assist et redraw
         self._sel = None
         self._reset_assist()
+        self.canvas_objects.dump(APP_LOGGER, "suppression groupe")
         self._redraw_from(self._last_drawn)
         self.status.config(text=f"Groupe supprimé (gid={core_group_id}, {len(removed_tids)} triangle(s)).")
-        print("----------------- Supression Groupe ---------------")
 
     def _ctx_rotate_selected(self):
         """Passe en mode rotation autour du barycentre pour le triangle ciblé."""
@@ -9259,7 +8782,6 @@ class TriangleViewerManual(
         core_group_id = self._get_core_group_id_for_triangle_index(idx)
         if not core_group_id:
             return
-        gid = self._get_group_of_triangle(idx)
         rotate_members = self._prepare_core_group_operation_members("ROTATE", idx)
 
         # AUTO: pivot = origine globale (0,0) commune ; MANUAL: barycentre groupe
@@ -9286,7 +8808,7 @@ class TriangleViewerManual(
         start_angle = math.atan2(wy - pivot[1], wx - pivot[0])
         self._sel = {
             "mode": "rotate_group",
-            "gid": gid,
+            "gid": self._get_group_of_triangle(idx),
             "core_group_id": core_group_id,
             "rotate_member_entries": rotate_members["entries"],
             "orig_group_pts": orig_group_pts,
@@ -9296,7 +8818,7 @@ class TriangleViewerManual(
             "auto_theta0": float(self.auto_geom_state.get("thetaDeg", 0.0)) if auto_geom and self.auto_geom_state else 0.0,
             "auto_state0": dict(self.auto_geom_state) if auto_geom and self.auto_geom_state else None,
         }
-        self.status.config(text=f"Mode pivoter GROUPE #{gid} : bouge la souris pour tourner, clic gauche pour valider, ESC pour annuler.")
+        self.status.config(text=f"Mode pivoter GROUPE #{core_group_id} : bouge la souris pour tourner, clic gauche pour valider, ESC pour annuler.")
         return
 
     def _ctx_orient_segment_north(self, from_key: str, to_key: str, status_label: str):
@@ -9653,7 +9175,7 @@ class TriangleViewerManual(
         snapshots: Dict[int, Dict] = {}
         for entry in entries:
             topo_element_id = str(entry.get("topoElementId", "") or "").strip()
-            tid = self.getTidForTopoElementId(topo_element_id)
+            tid = self.canvas_objects.get_index_by_topology_id(topo_element_id)
             if tid is None:
                 continue
             points = entry.get("pts")
