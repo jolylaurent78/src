@@ -850,6 +850,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 mirrored=bool(t2.get("mirrored", False)),
             ),
         ])
+        
         def _orient_O_to_L_north(P: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
             P = {k: np.array(P[k], dtype=float) for k in ("O", "B", "L")}
             vOL = P["L"] - P["O"]

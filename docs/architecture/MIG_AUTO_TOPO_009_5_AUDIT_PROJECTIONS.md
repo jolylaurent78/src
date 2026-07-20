@@ -414,6 +414,11 @@ projection temporaire calculée depuis le Core.
 projection historique des groupes UI a été retirée du simulateur ;
 `TopologyWorld` est l'unique représentation métier des groupes.
 
+**Statut CORE-CLEAN-GROUPS-001 : audit positif.** Hors persistance XML et
+compatibilité historique, aucune structure legacy de groupes ne sert encore de
+source de vérité. Les opérations fonctionnelles résolvent les groupes depuis
+`TopologyWorld`.
+
 Cette suppression doit rester distincte. `Scenario.groups` et le XML historique
 portent encore `nodes` et `edge_in/out`; ils ne sont pas des champs de
 `PlacedTriangle`, mais conditionnent la suppression de `groupId` projeté.

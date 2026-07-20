@@ -393,8 +393,7 @@ def saveScenarioXml(viewer, path: str):
     Sauvegarde 'robuste' (v4) :
       - source excel, view (zoom/offset), clock (pos + hm),
       - ids restants (listbox),
-      - triangles affichés (id, mirrored, points monde O/B/L, group),
-      - groupes (nodes complets : tid + edge_in/out),
+      - triangles projetes (id, mirrored, topoElementId, points monde O/B/L),
       - associations triangle→mot (word,row,col).
     """
     scen = viewer._get_active_scenario()
@@ -409,7 +408,6 @@ def saveScenarioXml(viewer, path: str):
         )
 
     root = ET.Element("scenario", {
-        # v2 : contrat canonique groups/nodes = edge_in/edge_out
         "version": "4",
         "saved_at": _dt.datetime.now().isoformat(timespec="seconds"),
         "topo_tx_orientation": topo_tx_orientation,
@@ -489,36 +487,18 @@ def saveScenarioXml(viewer, path: str):
                 ET.SubElement(lb, "tri", {"id": m.group(1)})
     except Exception as e:
         _ioWarn(viewer, "saveScenarioXml(listbox)", e)
-    # groupes (best-effort)
-    groups_xml = ET.SubElement(root, "groups")
-    try:
-        for gid, gdata in (viewer.groups or {}).items():
-            g_el = ET.SubElement(groups_xml, "group", {"id": str(gid)})
-            # on s'appuie sur l'API viewer._group_nodes(gid) (contrat = nodes complets)
-            nodes = viewer._group_nodes(gid)
-            if nodes is None:
-                raise RuntimeError(f"saveScenarioXml: _group_nodes({gid}) a retourné None")
-            for nd in nodes:
-                if not isinstance(nd, dict):
-                    raise RuntimeError(f"saveScenarioXml: node invalide gid={gid} type={type(nd)}")
-                tid = nd.get("tid")
-                if tid is None:
-                    raise RuntimeError(f"saveScenarioXml: node tid manquant gid={gid}")
-                ET.SubElement(g_el, "node", {
-                    "tid": str(int(tid)),
-                    "edge_in": str(nd.get("edge_in") or ""),
-                    "edge_out": str(nd.get("edge_out") or ""),
-                })
-    except Exception as e:
-        _ioWarn(viewer, "saveScenarioXml(groups)", e)
     # triangles posés
     tris_xml = ET.SubElement(root, "triangles")
     for t in (viewer._last_drawn or []):
+        topo_element_id = str(t.get("topoElementId", "") or "").strip()
+        if not topo_element_id:
+            raise ValueError(
+                f"saveScenarioXml: triangle {t.get('id', '?')} sans topoElementId."
+            )
         tri_el = ET.SubElement(tris_xml, "triangle", {
             "id": str(t.get("id", "")),
             "mirrored": "1" if t.get("mirrored", False) else "0",
-            # on sérialise la valeur runtime correcte
-            "group": str(t.get("group_id", 0)),
+            "topoElementId": topo_element_id,
         })
         P = t.get("pts", {})
         for key in ("O", "B", "L"):
@@ -543,8 +523,9 @@ def loadScenarioXml(viewer, path: str):
     """
     Recharge un scenario v4:
       - tente de recharger le fichier Excel source (mode degrade si absent),
-      - restaure vue, horloge, listbox, triangles poses (+mots), groupes,
-      - restaure la topologie core depuis <topoSnapshot encoding="json">,
+      - restaure la topologie Core depuis <topoSnapshot encoding="json">,
+      - restaure vue, horloge, listbox, triangles projetes (+mots),
+      - ignore les groupes UI legacy eventuellement presents dans un fichier v4,
       - redessine.
     """
     tree = ET.parse(path)
@@ -732,6 +713,56 @@ def loadScenarioXml(viewer, path: str):
                 viewer.listbox.insert("end", f"{int(tid):02d}.")
 
     # 5) triangles poses (monde)
+    # MIG-XML-001 -- le Core est restaure avant toute projection Canvas.
+    from src.assembleur_core import TopologyWorld
+
+    sid = str(getattr(scen, "topoScenarioId", "") or "").strip() or "SCENARIO"
+    scen.topoScenarioId = sid
+    scen.topoWorld = TopologyWorld()
+    world = scen.topoWorld
+    world._topoTxOrientation = topo_tx_orientation
+    world._importPhysicalSnapshot(snapshot)
+
+    def _canonical_group_from_snapshot(persisted_group_id, node_id, label):
+        """Resolve an obsolete XML group id from a physical node in the Core."""
+        group_id = str(persisted_group_id or "").strip()
+        if world.hasLiveGroup(group_id):
+            return group_id
+        match = re.fullmatch(r"(T\d+):N\d+", str(node_id or "").strip())
+        if match is None or match.group(1) not in world.elements:
+            raise ValueError(
+                f"{label} references missing Core group {group_id!r} "
+                f"and cannot be resolved from node {node_id!r}."
+            )
+        core_group_id = world.get_group_of_element(match.group(1))
+        if not core_group_id:
+            raise ValueError(
+                f"{label} cannot resolve a Core group from node {node_id!r}."
+            )
+        return str(core_group_id)
+
+    # MIG-XML-001 -- anciens snapshots peuvent reconstruire un identifiant
+    # canonique different. Les references persistantes sont re-resolues par
+    # leur noeud physique, jamais par un groupe UI legacy.
+    chemins_el = root.find("chemins")
+    if chemins_el is not None and str(chemins_el.get("isDefined", "") or "") == "1":
+        chemins_el.set(
+            "groupId",
+            _canonical_group_from_snapshot(
+                chemins_el.get("groupId"),
+                chemins_el.get("startNodeId"),
+                "Chemins",
+            ),
+        )
+    world.topologyChemins._loadFromXml(chemins_el)
+
+    if scen.clockRefTopoGroupId and scen.clockRefNodeId:
+        scen.clockRefTopoGroupId = _canonical_group_from_snapshot(
+            scen.clockRefTopoGroupId,
+            scen.clockRefNodeId,
+            "clockRef",
+        )
+
     loaded_entries = []
     tris_xml = root.find("triangles")
     if tris_xml is not None:
@@ -748,14 +779,19 @@ def loadScenarioXml(viewer, path: str):
                 "id": tid,
                 "pts": P,
                 "mirrored": mirrored,
-                "group_id": None,
             }
             topo_element_id = str(t_el.get("topoElementId", "") or "").strip()
-            topo_group_id = str(t_el.get("topoGroupId", "") or "").strip()
-            if topo_element_id:
-                item["topoElementId"] = topo_element_id
-            if topo_group_id:
-                item["topoGroupId"] = topo_group_id
+            if not topo_element_id:
+                # Compatibilite temporaire v4 : id catalogue 28 -> element T28.
+                # Ce seul pont historique disparaitra avec les fichiers v4
+                # depourvus de topoElementId.
+                topo_element_id = "T" + f"{tid:02d}"
+            if topo_element_id not in world.elements:
+                raise ValueError(
+                    f"Triangle {tid} references missing topoElementId {topo_element_id}."
+                )
+            item["topoElementId"] = topo_element_id
+            item["topoGroupId"] = str(world.get_group_of_element(topo_element_id))
             loaded_entries.append(item)
 
     viewer.canvas_objects.replace_all(loaded_entries)
@@ -794,78 +830,17 @@ def loadScenarioXml(viewer, path: str):
                 "col": int(w.get("col", "0")) if w.get("col") else 0,
             }
 
-    # 7) groupes
-    viewer.groups.clear()
-    groups_xml = root.find("groups")
-    if groups_xml is not None:
-        for g_el in groups_xml.findall("group"):
-            gid_attr = g_el.get("id")
-            if gid_attr is None:
-                raise ValueError("Scenario XML invalide: group sans 'id'")
-            gid = int(gid_attr)
-
-            nodes = []
-            allowed_edges = {"OB", "BL", "LO"}
-            for nd_i, nd_el in enumerate(g_el.findall("node")):
-                tid_attr = nd_el.get("tid")
-                if tid_attr is None:
-                    raise ValueError(f"Scenario XML invalide: node sans 'tid' (gid={gid})")
-
-                tid = int(tid_attr)
-                if not (0 <= tid < len(viewer._last_drawn)):
-                    raise ValueError(
-                        f"Scenario XML invalide: tid hors bornes (gid={gid} i={nd_i} tid={tid})"
-                    )
-
-                nd = {
-                    "tid": tid,
-                    "edge_in": (nd_el.get("edge_in") or "").strip() or None,
-                    "edge_out": (nd_el.get("edge_out") or "").strip() or None,
-                }
-
-                ein = nd.get("edge_in")
-                eout = nd.get("edge_out")
-                if ein is not None and ein not in allowed_edges:
-                    raise ValueError(f"Scenario XML invalide: edge_in={ein!r} (gid={gid} i={nd_i})")
-                if eout is not None and eout not in allowed_edges:
-                    raise ValueError(f"Scenario XML invalide: edge_out={eout!r} (gid={gid} i={nd_i})")
-                # v4 : edge_in utilisé par la simulation d'assemblage automatique
-                # on laisse None
-                if nd_i > 0 and not ein:
-                    nd["edge_in"] = None
-
-                nodes.append(nd)
-                viewer._last_drawn[tid]["group_id"] = gid
-                if "group" in viewer._last_drawn[tid]:
-                    del viewer._last_drawn[tid]["group"]
-
-            grp = {"id": gid, "nodes": nodes}
-            grp_topo_gid = str(g_el.get("topoGroupId", "") or "").strip()
-            if grp_topo_gid:
-                grp["topoGroupId"] = grp_topo_gid
-            viewer.groups[gid] = grp
-
-            if len(nodes) >= 2:
-                for i in range(len(nodes) - 1):
-                    if not nodes[i].get("edge_out"):
-                        # V2.1: edge_out est un champ UI non bloquant en v4.
-                        nodes[i]["edge_out"] = None
-
-    # 7bis) restore core world from snapshot + strict UI/core relink
-    from src.assembleur_core import TopologyWorld
-
-    sid = str(getattr(scen, "topoScenarioId", "") or "").strip() or "SCENARIO"
-    scen.topoScenarioId = sid
-    scen.topoWorld = TopologyWorld()
-    world = scen.topoWorld
-    world._topoTxOrientation = topo_tx_orientation
-    world._importPhysicalSnapshot(snapshot)
-    world.topologyChemins._loadFromXml(root.find("chemins"))
+    # MIG-XML-001 -- <groups> est une projection v4 legacy volontairement
+    # ignoree : aucun viewer.groups, group_id, edge_in/out ou _next_group_id.
 
     scen.clockAzimuthTraits = []
     ref_az = float(getattr(viewer, "_clock_ref_azimuth_deg", 0.0)) % 360.0
     for guide_spec in raw_guides_specs:
-        topo_group_id = str(guide_spec["topoGroupId"])
+        topo_group_id = _canonical_group_from_snapshot(
+            guide_spec["topoGroupId"],
+            guide_spec["nodeId"],
+            "Guide",
+        )
         node_id = str(guide_spec["nodeId"])
         delta_az = float(guide_spec["deltaAzDeg"]) % 360.0
         color_hex = str(guide_spec["colorHex"])
@@ -889,60 +864,6 @@ def loadScenarioXml(viewer, path: str):
             "colorHex": color_hex,
         })
 
-    # Les entrées UI doivent conserver l'identifiant d'instance du snapshot Core.
-    # Un topoElementId absent ne peut pas etre reconstruit depuis le tri_id catalogue.
-    for t in viewer._last_drawn:
-        tid = t.get("id", "?")
-        topo_element_id = t.get("topoElementId", None)
-        if topo_element_id in (None, ""):
-            raise ValueError(f"Triangle {tid} sans topoElementId dans le snapshot Core.")
-
-        topo_element_id = str(topo_element_id)
-        if topo_element_id not in world.elements:
-            raise ValueError(f"Triangle {tid} references missing topoElementId {topo_element_id}.")
-
-        gid = world.get_group_of_element(topo_element_id)
-        if t.get("topoGroupId") in (None, ""):
-            t["topoGroupId"] = gid
-
-    for gid, g in (viewer.groups or {}).items():
-        nodes = list((g or {}).get("nodes", []) or [])
-        if not nodes:
-            continue
-
-        canonical_gid = None
-        for nd in nodes:
-            tid = int(nd.get("tid"))
-            tri = viewer._last_drawn[tid]
-            topo_element_id = tri.get("topoElementId", None)
-            if topo_element_id in (None, "") or str(topo_element_id) not in world.elements:
-                raise ValueError(
-                    f"Triangle {tri.get('id', tid)} references missing topoElementId {topo_element_id}."
-                )
-            cgid = world.get_group_of_element(str(topo_element_id))
-            if canonical_gid is None:
-                canonical_gid = cgid
-            elif str(canonical_gid) != str(cgid):
-                raise ValueError(f"Group {gid} topoGroupId mismatch with core DSU canonical.")
-
-        if canonical_gid is None or not world.hasLiveGroup(str(canonical_gid)):
-            raise ValueError(f"Group {gid} topoGroupId mismatch with core DSU canonical.")
-
-        ui_topo_gid = g.get("topoGroupId", None)
-        if ui_topo_gid in (None, ""):
-            g["topoGroupId"] = canonical_gid
-        elif str(ui_topo_gid) != str(canonical_gid):
-            raise ValueError(f"Group {gid} topoGroupId mismatch with core DSU canonical.")
-
-        for nd in nodes:
-            tid = int(nd.get("tid"))
-            viewer._last_drawn[tid]["topoGroupId"] = canonical_gid
-
-    # Nettoyage global de compatibilite: purger toute trace residuelle de 'group'
-    for _t in viewer._last_drawn:
-        if "group" in _t:
-            del _t["group"]
-    viewer._next_group_id = (max(viewer.groups.keys()) + 1) if viewer.groups else 1
     # 8) selection et aides reset
     viewer._sel = {"mode": None}
     viewer._clear_nearest_line()

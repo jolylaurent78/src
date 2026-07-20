@@ -4315,22 +4315,11 @@ class TriangleViewerManual(
                 out.append(tt)
             return out
 
-        def clone_groups(groups):
-            if not isinstance(groups, dict):
-                return {}
-            g2 = {}
-            for gid, g in groups.items():
-                gg = dict(g)
-                gg["nodes"] = [dict(n) for n in (g.get("nodes") or [])]
-                g2[gid] = gg
-            return g2
-
         name = str(getattr(scen, "name", "") or "Snapshot")
         name = name + " (manuel)" if "manuel" not in name.lower() else name
 
         new_scen = ScenarioAssemblage(name=name, source_type="manual")
         new_scen.last_drawn = clone_last_drawn_world(getattr(scen, "last_drawn", None))
-        new_scen.groups = clone_groups(getattr(scen, "groups", None))
         new_scen.topoWorld = scen.topoWorld.clonePhysicalState()
         new_scen.clockRefEdgeId = scen.clockRefEdgeId
         new_scen.clockRefNodeId = scen.clockRefNodeId
@@ -4450,7 +4439,6 @@ class TriangleViewerManual(
         )
         # Scénario vide : nouvelles structures indépendantes
         scen.last_drawn = []
-        scen.groups = {}
 
         self.scenarios.append(scen)
         # Bascule sur ce nouveau scénario
@@ -4959,7 +4947,6 @@ class TriangleViewerManual(
         scen.last_drawn = []
         scen.view_state = self._capture_view_state()
         scen.map_state = self._capture_map_state()
-        scen.groups = {}
 
         self.scenarios.append(scen)
 
@@ -7532,7 +7519,7 @@ class TriangleViewerManual(
 
         if not main_core_gid:
             raise ValueError("Dégrouper: mainGroupId absent")
-        
+
         # Vérifier que les groupes retournés existent réellement dans le Core.
         if not world.getGroupElementIds(main_core_gid):
             raise ValueError(
