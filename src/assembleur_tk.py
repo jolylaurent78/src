@@ -2,6 +2,7 @@
 import os
 import datetime as _dt
 import math
+import xml.etree.ElementTree as ET
 from math import atan2, pi
 import numpy as np
 import re
@@ -406,6 +407,9 @@ class TriangleViewerManual(
         self._offset_anchor = None
         self._last_canvas_size = (0, 0)
         self._resize_redraw_after_id = None
+        self.debug_geo_orient = os.environ.get(
+            "ASSEMBLEUR_DEBUG_GEO_ORIENT", ""
+        ) in ("1", "true", "True")
 
         self._ctx_target_idx = None    # index du triangle visé par clic droit (menu contextuel)
         self._ctx_last_rclick = None   # dernière position écran du clic droit (pour pivoter)
@@ -843,13 +847,169 @@ class TriangleViewerManual(
         return self.scenarios[idx]
 
     def _on_export_topodump_key(self, event=None):
-        """Export TopoDump_<scenarioId>.xml du scénario actif (F11/F12)."""
+        """Export TopoDump_<scenarioId>.xml du scénario actif (F11)."""
         scen = self._get_active_scenario()
         world = scen.topoWorld
         out_name = "TopoDump.xml"
         out_path = os.path.join(self.topo_xml_dir, out_name)
         world.export_topo_dump_xml(out_path, orientation="cw")
+        if self._geo_orient_debug_enabled():
+            self._append_geo_orient_debug_to_topodump(out_path, world)
         self.status.config(text=f"TopoDump exporté : {out_name}")
+
+    def _geo_orient_debug_enabled(self) -> bool:
+        """Retourne le mode GEO-ORIENT, initialisable par l'environnement."""
+        return bool(getattr(
+            self,
+            "debug_geo_orient",
+            os.environ.get("ASSEMBLEUR_DEBUG_GEO_ORIENT", "") in ("1", "true", "True"),
+        ))
+
+    def _toggle_geo_orient_debug(self, event=None):
+        """Bascule le diagnostic GEO-ORIENT à l'exécution (F12)."""
+        self.debug_geo_orient = not bool(getattr(self, "debug_geo_orient", False))
+        state = "ON" if self.debug_geo_orient else "OFF"
+        MIG_GEO_LOGGER.info("DEBUG GEO-ORIENT : %s", state)
+        return "break"
+
+    @staticmethod
+    def _geo_orient_from_points(points) -> tuple[str, float | None]:
+        """Mesure l'orientation réelle O/B/L sans consulter orient ni mirrored."""
+        try:
+            O = np.asarray(points["O"], dtype=float)
+            B = np.asarray(points["B"], dtype=float)
+            L = np.asarray(points["L"], dtype=float)
+            cross = float((B[0] - O[0]) * (L[1] - O[1]) - (B[1] - O[1]) * (L[0] - O[0]))
+            if not np.isfinite(cross):
+                return "<invalide>", None
+            if abs(cross) <= 1e-12:
+                return "<degénérée>", cross
+            return ("CCW" if cross > 0.0 else "CW"), cross
+        except Exception:
+            return "<absent>", None
+
+    @staticmethod
+    def _geo_orient_point_text(point) -> str:
+        try:
+            value = np.asarray(point, dtype=float)
+            if value.shape != (2,) or not np.isfinite(value).all():
+                return "<invalide>"
+            return f"({float(value[0]):.9g}, {float(value[1]):.9g})"
+        except Exception:
+            return "<absent>"
+
+    def _append_geo_orient_debug_to_topodump(self, out_path: str, world: TopologyWorld) -> None:
+        """Ajoute au TopoDump F11 un diagnostic non autoritaire Core/UI."""
+        try:
+            tree = ET.parse(out_path)
+            root = tree.getroot()
+            debug_el = ET.SubElement(root, "GeoOrientationDebug", {"version": "1"})
+
+            for entry in self._last_drawn:
+                topo_element_id = str((entry or {}).get("topoElementId", "") or "").strip()
+                element = world.elements.get(topo_element_id)
+                core_group_id = "<absent>"
+                if element is not None:
+                    try:
+                        core_group_id = str(world.get_group_of_element(topo_element_id))
+                    except Exception:
+                        core_group_id = "<invalide>"
+
+                triangle_el = ET.SubElement(debug_el, "Triangle", {
+                    "triangleId": str((entry or {}).get("id", "<absent>")),
+                    "topoElementId": topo_element_id or "<absent>",
+                    "topoGroupId": str((entry or {}).get("topoGroupId", "<absent>")),
+                    "coreGroupId": core_group_id,
+                })
+
+                catalog_orient = "<absent>"
+                if element is not None:
+                    catalog_orient = str((getattr(element, "meta", {}) or {}).get("orient", "") or "<absent>")
+                ET.SubElement(triangle_el, "Catalogue", {"orient": catalog_orient})
+
+                local_points = {}
+                core_attrs = {"rotation": "<absent>", "translation": "<absent>", "mirrored": "<absent>"}
+                if element is not None:
+                    try:
+                        R, T, core_mirrored = element.get_pose()
+                        core_attrs = {
+                            "rotation": np.array2string(np.asarray(R, dtype=float), precision=9, separator=", "),
+                            "translation": self._geo_orient_point_text(T),
+                            "mirrored": str(bool(core_mirrored)),
+                        }
+                    except Exception:
+                        pass
+                    for name, index in (("O", 0), ("B", 1), ("L", 2)):
+                        local_points[name] = (getattr(element, "vertex_local_xy", {}) or {}).get(index)
+
+                core_el = ET.SubElement(triangle_el, "Core", core_attrs)
+                local_el = ET.SubElement(core_el, "VertexLocalXY")
+                for name in ("O", "B", "L"):
+                    ET.SubElement(local_el, "Point", {"vertex": name, "value": self._geo_orient_point_text(local_points.get(name))})
+                labels = getattr(element, "vertex_labels", None) if element is not None else None
+                ET.SubElement(core_el, "VertexLabels", {"value": str(tuple(labels)) if labels is not None else "<absent>"})
+
+                pts = (entry or {}).get("pts") or {}
+                last_el = ET.SubElement(triangle_el, "LastDrawn", {
+                    "orient": str((entry or {}).get("orient", "<absent>")),
+                    "mirrored": str((entry or {}).get("mirrored", "<absent>")),
+                    "topoElementId": topo_element_id or "<absent>",
+                    "topoGroupId": str((entry or {}).get("topoGroupId", "<absent>")),
+                })
+                world_el = ET.SubElement(last_el, "Points")
+                for name in ("O", "B", "L"):
+                    ET.SubElement(world_el, "Point", {"vertex": name, "value": self._geo_orient_point_text(pts.get(name))})
+
+                local_orientation, local_cross = self._geo_orient_from_points(local_points)
+                world_orientation, world_cross = self._geo_orient_from_points(pts)
+                ET.SubElement(triangle_el, "GeometricOrientation", {
+                    "local": local_orientation,
+                    "localCross": "<absent>" if local_cross is None else f"{local_cross:.12g}",
+                    "world": world_orientation,
+                    "worldCross": "<absent>" if world_cross is None else f"{world_cross:.12g}",
+                })
+                ET.SubElement(triangle_el, "XML", {
+                    "topoElementId": topo_element_id or "<absent>",
+                    "mirrored": "1" if bool((entry or {}).get("mirrored", False)) else "0",
+                })
+
+                MIG_GEO_LOGGER.debug(
+                    "[GEO-ORIENT]\n%s",
+                    "\n".join((
+                        "====================================================",
+                        f"Triangle : {topo_element_id or '<absent>'}",
+                        f"TopoElementId : {topo_element_id or '<absent>'}",
+                        f"TopoGroupId   : {(entry or {}).get('topoGroupId', '<absent>')}",
+                        "====================================================",
+                        "CATALOGUE",
+                        f"orient catalogue : {catalog_orient}",
+                        "CORE",
+                        f"rotation        : {core_attrs['rotation']}",
+                        f"translation     : {core_attrs['translation']}",
+                        f"mirrored        : {core_attrs['mirrored']}",
+                        f"vertex_local_xy O : {self._geo_orient_point_text(local_points.get('O'))}",
+                        f"vertex_local_xy B : {self._geo_orient_point_text(local_points.get('B'))}",
+                        f"vertex_local_xy L : {self._geo_orient_point_text(local_points.get('L'))}",
+                        f"vertex_labels   : {str(tuple(labels)) if labels is not None else '<absent>'}",
+                        "LAST_DRAWN",
+                        f"orient          : {(entry or {}).get('orient', '<absent>')}",
+                        f"mirrored        : {(entry or {}).get('mirrored', '<absent>')}",
+                        f"topoElementId   : {topo_element_id or '<absent>'}",
+                        f"topoGroupId     : {(entry or {}).get('topoGroupId', '<absent>')}",
+                        f"pts O : {self._geo_orient_point_text(pts.get('O'))}",
+                        f"pts B : {self._geo_orient_point_text(pts.get('B'))}",
+                        f"pts L : {self._geo_orient_point_text(pts.get('L'))}",
+                        f"Orientation locale : {local_orientation} (cross={local_cross})",
+                        f"Orientation monde  : {world_orientation} (cross={world_cross})",
+                        "XML",
+                        f"topoElementId : {topo_element_id or '<absent>'}",
+                        f"mirrored      : {'1' if bool((entry or {}).get('mirrored', False)) else '0'}",
+                    )),
+                )
+
+            tree.write(out_path, encoding="utf-8", xml_declaration=True)
+        except Exception as exc:
+            MIG_GEO_LOGGER.debug("[GEO-ORIENT] diagnostic F11 ignoré: %s", exc)
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -4638,8 +4798,9 @@ class TriangleViewerManual(
         self._ctx_menu.add_command(label="Effacer …", state="disabled")
         self._ctx_refresh_menu_runtime_indexes()
 
-        # Export TopoDump (manuel, snapshot volontaire)
+        # Export TopoDump (manuel, snapshot volontaire) et toggle diagnostic.
         self.bind_all("<F11>", self._on_export_topodump_key)
+        self.bind_all("<F12>", self._toggle_geo_orient_debug)
 
         # Premier rendu de l'horloge (overlay)
         self._draw_clock_overlay()

@@ -2,9 +2,11 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import numpy as np
+import src.assembleur_tk as assembleur_tk
 
 from src.assembleur_core import ScenarioAssemblage, TopologyElement, TopologyWorld
 from src.assembleur_io import loadScenarioXml, saveScenarioXml
+from src.assembleur_tk import TriangleViewerManual
 from src.canvas_objects_collection import CanvasObjectsCollection
 
 
@@ -187,3 +189,45 @@ def test_xml_core_first_loads_repository_v4_scenario_without_ui_groups(tmp_path)
     reloaded = _Viewer(TopologyWorld(), [])
     loadScenarioXml(reloaded, str(saved))
     assert len(reloaded._last_drawn) == 32
+
+
+def test_f11_geo_orient_dump_contains_core_and_projection_diagnostics(tmp_path):
+    world = _world_with_t28()
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    entry = _entry()
+    entry["orient"] = "CW"
+    entry["topoGroupId"] = str(world.get_group_of_element("T28"))
+    viewer._last_drawn = [entry]
+
+    dump = tmp_path / "TopoDump.xml"
+    world.export_topo_dump_xml(str(dump))
+    viewer._append_geo_orient_debug_to_topodump(str(dump), world)
+
+    triangle = ET.parse(dump).getroot().find("./GeoOrientationDebug/Triangle")
+    assert triangle is not None
+    assert triangle.get("topoElementId") == "T28"
+    assert triangle.find("Catalogue").get("orient") == "<absent>"
+    assert triangle.find("Core/VertexLocalXY/Point[@vertex='O']") is not None
+    assert triangle.find("LastDrawn").get("orient") == "CW"
+    assert triangle.find("GeometricOrientation").get("world") in {"CW", "CCW"}
+    assert triangle.find("XML").get("mirrored") == "0"
+
+
+def test_f12_toggles_geo_orient_debug_and_logs_state(monkeypatch):
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.debug_geo_orient = False
+    messages = []
+    monkeypatch.setattr(
+        assembleur_tk.MIG_GEO_LOGGER,
+        "info",
+        lambda message, state: messages.append(message % state),
+    )
+
+    assert viewer._toggle_geo_orient_debug() == "break"
+    assert viewer.debug_geo_orient is True
+    assert viewer._geo_orient_debug_enabled() is True
+    assert messages == ["DEBUG GEO-ORIENT : ON"]
+
+    assert viewer._toggle_geo_orient_debug() == "break"
+    assert viewer.debug_geo_orient is False
+    assert messages[-1] == "DEBUG GEO-ORIENT : OFF"
