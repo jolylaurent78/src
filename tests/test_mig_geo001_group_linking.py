@@ -187,22 +187,6 @@ def test_projected_elements_are_resolved_from_core_members_and_collection_index(
     assert projected == (viewer._last_drawn[0],)
 
 
-def test_pose_sync_uses_core_members_without_ui_groups():
-    viewer, core_group_id = _make_viewer_with_one_core_group()
-    world = viewer.scenarios[0].topoWorld
-    calls = []
-    original_set_pose = world.setElementPose
-
-    def _record_pose(element_id, **kwargs):
-        calls.append((element_id, kwargs["mirrored"]))
-        return original_set_pose(element_id, **kwargs)
-
-    world.setElementPose = _record_pose
-    viewer._sync_group_elements_pose_to_core(core_group_id)
-
-    assert calls == [("T01", False)]
-
-
 def test_draw_group_outlines_enumerates_canonical_core_groups_without_ui_groups():
     class _Canvas:
         def __init__(self):
@@ -354,7 +338,11 @@ def test_center_move_initializes_a_core_only_selection_state():
     viewer._on_canvas_left_down(SimpleNamespace(x=1.0, y=1.0))
 
     assert viewer._sel["core_group_id"] == core_group_id
-    assert viewer._sel["move_member_entries"] == [viewer._last_drawn[0]]
+    assert "move_member_entries" not in viewer._sel
+    assert "orig_group_pts" not in viewer._sel
+    assert "mouse_world_prev" not in viewer._sel
+    assert tuple(viewer._sel["mouse_world_start"]) == (1.0, -1.0)
+    assert set(viewer._sel["move_preview_initial_pts"]) == {"T01"}
     assert "gid" not in viewer._sel
     assert "ui_group_id" not in viewer._sel
 
@@ -380,12 +368,14 @@ def test_rotate_and_flip_prepare_members_from_core_group():
     viewer._ctx_rotate_selected()
 
     assert viewer._sel["core_group_id"] == core_group_id
-    assert viewer._sel["rotate_member_entries"] == [viewer._last_drawn[0]]
+    assert "rotate_member_entries" not in viewer._sel
+    assert "orig_group_pts" not in viewer._sel
+    assert set(viewer._sel["rotate_preview_initial_pts"]) == {"T01"}
 
     viewer._ctx_target_idx = 0
     viewer._ctx_flip_selected()
 
-    assert viewer._last_drawn[0]["mirrored"] is True
+    assert viewer._get_core_element_mirrored("T01") is True
 
 
 def test_nearest_line_forwards_the_core_group_id_to_snapping():

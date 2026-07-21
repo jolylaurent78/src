@@ -744,99 +744,222 @@ class TriangleViewerManual(
             return []
         return list(self.canvas_objects.get_many_by_topology_ids(element_ids))
 
-    def _sync_group_elements_pose_to_core(self, core_group_id: str, scen: ScenarioAssemblage = None) -> None:
-        """Synchronise les poses (R,T,mirrored) de TOUS les éléments du groupe UI vers le Core.
-
-        Important:
-        - Tk manipule la géométrie au niveau groupe (déplacement/rotation).
-        - Le Core ne porte AUCUNE pose de groupe : les groupes sont topologiques.
-        - La vérité géométrique persistable est donc : pose par élément.
-        """
-        if scen is None:
-            scen = self._get_active_scenario()
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
+    def _get_core_triangle_world_points(
+        self,
+        world: TopologyWorld,
+        element_id: str,
+    ) -> Dict[str, np.ndarray]:
+        """Lit les sommets monde d'un triangle exclusivement depuis le Core."""
+        key = str(element_id or "").strip()
         if world is None:
+            raise RuntimeError("[MIG-CACHE-TRANSFORM-001C2] TopologyWorld absent")
+        if not key:
+            raise ValueError("[MIG-CACHE-TRANSFORM-001C2] topoElementId absent")
+        element = world.elements.get(key)
+        if element is None:
+            raise KeyError(
+                f"[MIG-CACHE-TRANSFORM-001C2] élément Core absent: {key!r}"
+            )
+
+        vertex_key_by_type = {
+            TopologyNodeType.OUVERTURE: "O",
+            TopologyNodeType.BASE: "B",
+            TopologyNodeType.LUMIERE: "L",
+        }
+        points: Dict[str, np.ndarray] = {}
+        for vertex_index, vertex_type in enumerate(element.vertex_types):
+            point_key = vertex_key_by_type.get(vertex_type)
+            if point_key is None:
+                continue
+            if point_key in points:
+                raise ValueError(
+                    f"[MIG-CACHE-TRANSFORM-001C2] type sommet dupliqué "
+                    f"{point_key!r} pour {key}"
+                )
+            local_xy = element.vertex_local_xy.get(vertex_index)
+            if local_xy is None:
+                raise ValueError(
+                    f"[MIG-CACHE-TRANSFORM-001C2] coordonnée locale absente "
+                    f"element={key} vertex_index={vertex_index}"
+                )
+            world_xy = np.asarray(element.localToWorld(local_xy), dtype=float)
+            if world_xy.shape != (2,) or not np.all(np.isfinite(world_xy)):
+                raise ValueError(
+                    f"[MIG-CACHE-TRANSFORM-001C2] coordonnée monde invalide "
+                    f"element={key} vertex={point_key}"
+                )
+            points[point_key] = np.array(world_xy, dtype=float, copy=True)
+
+        missing = {"O", "B", "L"}.difference(points)
+        if missing:
+            raise ValueError(
+                f"[MIG-CACHE-TRANSFORM-001C2] types sommets manquants "
+                f"element={key}: {sorted(missing)}"
+            )
+        return points
+
+    def _get_core_group_world_centroid(
+        self,
+        world: TopologyWorld,
+        core_group_id: str,
+    ) -> np.ndarray:
+        """Retourne le barycentre monde de tous les sommets d'un groupe Core."""
+        if world is None:
+            raise RuntimeError("[MIG-CACHE-TRANSFORM-001D] TopologyWorld absent")
+        key = str(core_group_id or "").strip()
+        if not key:
+            raise ValueError("[MIG-CACHE-TRANSFORM-001D] groupe Core absent")
+        element_ids = tuple(world.getGroupElementIds(key))
+        if not element_ids:
+            raise ValueError(
+                f"[MIG-CACHE-TRANSFORM-001D] groupe Core vide ou introuvable: {key!r}"
+            )
+        points = [
+            point
+            for element_id in element_ids
+            for point in self._get_core_triangle_world_points(world, str(element_id)).values()
+        ]
+        centroid = np.mean(np.asarray(points, dtype=float), axis=0)
+        if centroid.shape != (2,) or not np.all(np.isfinite(centroid)):
+            raise ValueError("[MIG-CACHE-TRANSFORM-001D] barycentre groupe invalide")
+        return np.array(centroid, dtype=float, copy=True)
+
+    def _get_core_element_mirrored(self, element_id: str) -> bool:
+        """Lit l'état miroir d'affichage dans la pose Core, jamais dans le cache."""
+        scen = self._get_active_scenario()
+        world = getattr(scen, "topoWorld", None) if scen is not None else None
+        key = str(element_id or "").strip()
+        if world is None or not key:
+            return False
+        _rotation, _translation, mirrored = world.getElementPose(key)
+        return bool(mirrored)
+
+    def _project_core_element_to_last_drawn(
+        self,
+        world: TopologyWorld,
+        element_id: str,
+    ) -> Dict:
+        """Projette les sommets monde d'un élément Core dans le cache actif.
+
+        Cette projection ne touche qu'à ``entry["pts"]``. Les coordonnées
+        locales et la pose restent l'autorité du Core ; aucune synchronisation
+        inverse ne doit être déclenchée depuis ce chemin.
+        """
+        key = str(element_id or "").strip()
+        if world is None:
+            raise RuntimeError("[MIG-CACHE-TRANSFORM-001] TopologyWorld absent")
+        entry = self.canvas_objects.get_by_topology_id(key)
+        if entry is None:
+            raise KeyError(
+                f"[MIG-CACHE-TRANSFORM-001] projection absente pour topoElementId={key!r}"
+            )
+
+        entry["pts"] = self._get_core_triangle_world_points(world, key)
+        MIG_GEO_LOGGER.debug(
+            "[MIG-CACHE-TRANSFORM-001] projection element=%s", key
+        )
+        return entry
+
+    def _project_core_group_to_last_drawn(
+        self,
+        world: TopologyWorld,
+        core_group_id: str,
+    ) -> Tuple[Dict, ...]:
+        """Projette les membres déterminés exclusivement par le groupe Core."""
+        key = str(core_group_id or "").strip()
+        if world is None or not key:
+            raise ValueError(
+                "[MIG-CACHE-TRANSFORM-001] groupe Core ou monde absent"
+            )
+        element_ids = world.getGroupElementIds(key)
+        if not element_ids and not world.hasLiveGroup(key):
+            raise ValueError(
+                f"[MIG-CACHE-TRANSFORM-001] groupe Core invalide: {key!r}"
+            )
+        return tuple(
+            self._project_core_element_to_last_drawn(world, element_id)
+            for element_id in element_ids
+        )
+
+    def _project_core_group_to_collection(
+        self,
+        world: TopologyWorld,
+        core_group_id: str,
+        collection: CanvasObjectsCollection,
+    ) -> Tuple[Dict, ...]:
+        """Projette un groupe Core dans la collection Canvas explicitement fournie."""
+        if world is None or collection is None:
+            raise ValueError("[MIG-CACHE-TRANSFORM-001H] monde ou collection absent")
+        element_ids = tuple(world.getGroupElementIds(str(core_group_id)))
+        if not element_ids and not world.hasLiveGroup(str(core_group_id)):
+            raise ValueError(
+                f"[MIG-CACHE-TRANSFORM-001H] groupe Core invalide: {core_group_id!r}"
+            )
+        projected = []
+        for element_id in element_ids:
+            entry = collection.get_by_topology_id(str(element_id))
+            if entry is None:
+                raise KeyError(
+                    "[MIG-CACHE-TRANSFORM-001H] projection absente "
+                    f"pour topoElementId={element_id!r}"
+                )
+            entry["pts"] = self._get_core_triangle_world_points(world, str(element_id))
+            projected.append(entry)
+        return tuple(projected)
+
+    def _project_auto_scenario_from_core(self, scen: ScenarioAssemblage) -> None:
+        """Régénère le cache d'un scénario AUTO depuis son propre Core."""
+        if scen is None or getattr(scen, "source_type", "manual") != "auto":
             return
-        try:
-            element_ids = world.getGroupElementIds(str(core_group_id))
-        except Exception as exc:
-            MIG_GEO_LOGGER.debug("[MIG-GEO-011-B] groupe Core illisible %r: %s", core_group_id, exc)
-            return
+        world = getattr(scen, "topoWorld", None)
+        if world is None:
+            raise RuntimeError("[MIG-CACHE-TRANSFORM-001H] TopologyWorld AUTO absent")
+        is_active = scen is self._get_active_scenario()
+        collection = (
+            self.canvas_objects
+            if is_active
+            else CanvasObjectsCollection(getattr(scen, "last_drawn", None) or ())
+        )
+        for core_group_id in world.getLiveGroupIds():
+            self._project_core_group_to_collection(world, str(core_group_id), collection)
+        if is_active:
+            scen.last_drawn = self._last_drawn
 
-        if scen is self._get_active_scenario():
-            projected_elements = self.canvas_objects.get_many_by_topology_ids(element_ids)
-        else:
-            # Les scenarios inactifs conservent encore leur liste historique.
-            # Une collection ephemere evite de recréer un cache parallele.
-            projected = CanvasObjectsCollection(getattr(scen, "last_drawn", None) or ())
-            projected_elements = projected.get_many_by_topology_ids(element_ids)
+    def _project_all_auto_scenarios_from_core(self) -> None:
+        """Régénère chaque cache AUTO après un commit global Core-first."""
+        for scen in self.scenarios or ():
+            self._project_auto_scenario_from_core(scen)
 
-        # Modèle "pose" :
-        # - mirrored est réservé AU FLIP utilisateur (fonction _ctx_flip_selected).
-        # - La pose initiale d'un triangle ne doit PAS activer mirrored.
-        # - L'orientation CW/CCW provenant de l'Excel doit être résolue en amont
-        #   (normalisation des coordonnées locales), pas ici.
-        M = np.array([[1.0, 0.0], [0.0, -1.0]], dtype=float)
-
-        for tri in projected_elements:
-            element_id = tri.get("topoElementId", None)
-            if not element_id:
-                continue
-
-            Pw = tri.get("pts") or tri.get("world_pts")
-            if Pw is None:
-                continue
-
-            # World: O,B,L (nécessaire pour capturer le handedness après un flip legacy)
-            Ow = np.array(Pw["O"], dtype=float)
-            Bw = np.array(Pw["B"], dtype=float)
-            Lw = np.array(Pw["L"], dtype=float)
-
-            # Local: O,B depuis le Core (coordonnées locales figées)
-            el = world.elements.get(str(element_id))
-            if el is None:
-                continue
-
-            pO = np.array(el.vertex_local_xy.get(0, (0.0, 0.0)), dtype=float)
-            pB = np.array(el.vertex_local_xy.get(1, (0.0, 0.0)), dtype=float)
-            pL = np.array(el.vertex_local_xy.get(2, (0.0, 0.0)), dtype=float)
-
-            # mirrored = état "flip" uniquement (par défaut False à la pose initiale)
-            mirrored = bool(tri.get("mirrored", False))
-
-            # local effectif : si flip, on applique une réflexion locale M (le Core appliquera aussi mirrored)
-            # NB: On fit R,T sur X' = M@X afin d'obtenir Y ≈ R @ (M @ X) + T.
-            pO2 = (M @ pO) if mirrored else pO
-            pB2 = (M @ pB) if mirrored else pB
-            pL2 = (M @ pL) if mirrored else pL
-
-            # Fit orthonormal 2D sur 3 points (Kabsch) — R DOIT être une rotation (det=+1)
-            X = np.stack([pO2, pB2, pL2], axis=0)  # (3,2)
-            Y = np.stack([Ow,  Bw,  Lw], axis=0)  # (3,2)
-            Xc = X - X.mean(axis=0)
-            Yc = Y - Y.mean(axis=0)
-            H = Xc.T @ Yc
-            U, _S, Vt = np.linalg.svd(H)
-            R = (Vt.T @ U.T)
-            # Forcer R ∈ SO(2) (det=+1). La réflexion est portée uniquement par `mirrored`.
-            if np.linalg.det(R) < 0.0:
-                Vt[1, :] *= -1.0
-                R = (Vt.T @ U.T)
-            T = Y.mean(axis=0) - (R @ X.mean(axis=0))
-
-            world.setElementPose(str(element_id), R=R, T=T, mirrored=mirrored)
-
-    def _autoSyncAllTopoPoses(self) -> None:
-        """Auto: repère global unique => synchroniser *tous* les topoWorld auto depuis la géométrie monde."""
-        for scen in (self.scenarios or []):
+    def _apply_rigid_transform_to_all_auto_scenarios(
+        self,
+        R: np.ndarray,
+        T: np.ndarray,
+    ) -> None:
+        """Applique une unique transformation rigide à tous les Core AUTO."""
+        rotation = np.asarray(R, dtype=float)
+        translation = np.asarray(T, dtype=float)
+        if rotation.shape != (2, 2) or translation.shape != (2,):
+            raise ValueError("[MIG-CACHE-TRANSFORM-001H] transformation rigide invalide")
+        for scen in self.scenarios or ():
             if getattr(scen, "source_type", "manual") != "auto":
                 continue
-            # On parcours chaque groupe du scénario automatique (en principe un seul) et on synchronise le core
             world = getattr(scen, "topoWorld", None)
             if world is None:
-                continue
-            for core_gid in world.getLiveGroupIds():
-                self._sync_group_elements_pose_to_core(str(core_gid), scen)
+                raise RuntimeError("[MIG-CACHE-TRANSFORM-001H] TopologyWorld AUTO absent")
+            for core_group_id in world.getLiveGroupIds():
+                world.apply_group_rigid_transform(
+                    str(core_group_id), rotation, translation
+                )
+
+    @staticmethod
+    def _rigid_transform_between_auto_states(state0: dict, state1: dict) -> Tuple[np.ndarray, np.ndarray]:
+        """Construit la transformation monde qui fait passer d'un repère AUTO à un autre."""
+        origin0 = np.array((float(state0["ox"]), float(state0["oy"])), dtype=float)
+        origin1 = np.array((float(state1["ox"]), float(state1["oy"])), dtype=float)
+        delta_angle = math.radians(float(state1["thetaDeg"]) - float(state0["thetaDeg"]))
+        c, s = math.cos(delta_angle), math.sin(delta_angle)
+        rotation = np.array(((c, -s), (s, c)), dtype=float)
+        return rotation, origin1 - (rotation @ origin0)
 
     def _get_active_scenario(self) -> ScenarioAssemblage | None:
         if not self.scenarios:
@@ -1166,6 +1289,8 @@ class TriangleViewerManual(
         kept = [s for s in self.scenarios if getattr(s, "source_type", "manual") == "manual"]
         removed = len(self.scenarios) - len(kept)
         self.scenarios = kept
+        if removed:
+            self.auto_geom_state = None
         if not self.scenarios:
             self.scenarios = [ScenarioAssemblage(name="Scénario manuel", source_type="manual")]
         self.active_scenario_index = min(self.active_scenario_index, len(self.scenarios) - 1)
@@ -1347,10 +1472,17 @@ class TriangleViewerManual(
             map_key = self._simulationGetMapKey()
             st = self._simulationGetLastAutoPlacement(map_key, order)
             if isinstance(st, dict):
-                self.auto_geom_state = {"ox": float(st.get("ox", 0.0)),
-                                        "oy": float(st.get("oy", 0.0)),
-                                        "thetaDeg": float(st.get("thetaDeg", 0.0))}
-                self._autoRebuildWorldGeometry(redraw=False)
+                state0 = dict(self.auto_geom_state or {})
+                state1 = {
+                    "ox": float(st.get("ox", 0.0)),
+                    "oy": float(st.get("oy", 0.0)),
+                    "thetaDeg": float(st.get("thetaDeg", 0.0)),
+                }
+                if state0:
+                    rotation, translation = self._rigid_transform_between_auto_states(state0, state1)
+                    self._apply_rigid_transform_to_all_auto_scenarios(rotation, translation)
+                    self._project_all_auto_scenarios_from_core()
+                self.auto_geom_state = state1
                 self._redraw_from(self._last_drawn)
 
         self._refresh_scenario_listbox()
@@ -4452,8 +4584,9 @@ class TriangleViewerManual(
             # ensure local + possibly init auto_geom_state
             self._autoEnsureLocalGeometry(scen)
 
-        # rebuild monde une fois pour tout aligner (no-op visuellement au départ)
-        self._autoRebuildWorldGeometry(redraw=False)
+        # Les scénarios générés ont déjà leur géométrie dans le Core. Le cache
+        # est uniquement projeté ; aucun recalcul UI -> Core n'est nécessaire.
+        self._project_all_auto_scenarios_from_core()
 
     def _convertActiveAutoToManualSnapshot(self):
         """Convertit le scénario auto actif en un nouveau scénario manuel (snapshot monde), et retourne son index."""
@@ -4508,6 +4641,12 @@ class TriangleViewerManual(
             return
         if index == self.active_scenario_index:
             return
+
+        # MIG-CACHE-TRANSFORM-001B : un aperçu MOVE manuel n'est jamais un
+        # état validé ; il doit être restauré avant de quitter son scénario.
+        self._discard_manual_move_preview()
+        self._discard_manual_rotate_preview()
+        self._discard_auto_transform_preview()
 
         # Sauvegarder l'état courant dans l'ancien scénario (vue + carte)
         prev = self.scenarios[self.active_scenario_index]
@@ -5660,6 +5799,7 @@ class TriangleViewerManual(
             "Voulez-vous effacer l'affichage et réinitialiser la liste des triangles ?"
         ):
             return
+        self._discard_manual_move_preview()
         self.canvas.delete("all")
 
         # Réinitialiser l'état d'affichage du scénario actif
@@ -5975,7 +6115,7 @@ class TriangleViewerManual(
                     P,
                     labels=[f"O:{labels[0]}", f"B:{labels[1]}", f"L:{labels[2]}"],
                     tri_id=tri_id,
-                    tri_mirrored=t.get("mirrored", False),
+                    tri_mirrored=self._get_core_element_mirrored(t.get("topoElementId")),
                     fill=fill,
                     diff_outline=bool(fill),
                     drawEdges=(not onlyContours),
@@ -6636,45 +6776,31 @@ class TriangleViewerManual(
         # 2) Mode rotation de GROUPE : suivre la souris (sans bouton appuyé)
         if self._sel and self._sel.get("mode") == "rotate_group":
             sel = self._sel
-            pivot = sel["pivot"]
+            pivot = sel["pivot"] if sel.get("auto_geom") else sel["pivot_world"]
             wx = (event.x - self.offset[0]) / self.zoom
             wy = (self.offset[1] - event.y) / self.zoom
             cur_angle = math.atan2(wy - pivot[1], wx - pivot[0])
-            dtheta = cur_angle - sel["start_angle"]
+            start_angle = sel["start_angle"] if sel.get("auto_geom") else sel["mouse_angle_start"]
+            dtheta_raw = cur_angle - start_angle
+            dtheta = dtheta_raw if sel.get("auto_geom") else self._normalize_rotation_angle(dtheta_raw)
 
             # AUTO: rotation globale partagée (doit impacter TOUS les scénarios auto)
             if sel.get("auto_geom"):
-                if self.auto_geom_state is None:
-                    self._autoEnsureLocalGeometry(self._get_active_scenario())
-                if self.auto_geom_state is None:
-                    return
-                theta0 = float(sel.get("auto_theta0", float(self.auto_geom_state.get("thetaDeg", 0.0))))
-                self.auto_geom_state["thetaDeg"] = float(theta0 + math.degrees(dtheta))
-                self._autoRebuildWorldGeometryScenario(None)
-                self._autoSyncAllTopoPoses()
+                self._preview_auto_rotation_from_snapshot(
+                    sel["auto_preview_initial_pts"],
+                    sel["pivot"],
+                    dtheta,
+                )
                 self._redraw_from(self._last_drawn)
                 self._sel["last_angle"] = cur_angle
                 return
 
-            # MANUAL
-            c, s = math.cos(dtheta), math.sin(dtheta)
-            R = np.array([[c, -s], [s, c]], dtype=float)
-            # Repartir du snapshot Core pour éviter l'accumulation d'erreurs.
-            for triangle in sel.get("rotate_member_entries", []):
-                topo_element_id = str(triangle.get("topoElementId", "") or "").strip()
-                tid = self.canvas_objects.get_index_by_topology_id(topo_element_id)
-                if tid is None or tid not in sel["orig_group_pts"]:
-                    continue
-                Pt = triangle.get("pts")
-                if Pt is None:
-                    continue
-                Orig = sel["orig_group_pts"][tid]
-                for k in ("O", "B", "L"):
-                    v = np.array(Orig[k], dtype=float) - pivot
-                    Pt[k] = (R @ v) + pivot
-            core_gid = sel.get("core_group_id")
-            if core_gid:
-                self._sync_group_elements_pose_to_core(str(core_gid))
+            # MANUAL: preview UI transactionnel depuis le snapshot immuable.
+            self._preview_rotate_group_from_snapshot(
+                sel["rotate_preview_initial_pts"],
+                sel["pivot_world"],
+                dtheta,
+            )
 
             self._redraw_from(self._last_drawn)
             self._sel["last_angle"] = cur_angle
@@ -7068,25 +7194,11 @@ class TriangleViewerManual(
                 self._edge_highlight_ids.append(_id2)
 
     def _place_dragged_triangle(self):
-        """Dépose un triangle et crée immédiatement son groupe singleton Core."""
+        """Dépose un triangle manuel en créant d'abord sa géométrie Core."""
         if not self._drag or "world_pts" not in self._drag:
             return
         tri = self._drag["triangle"]
         Pw = self._drag["world_pts"]
-
-        # --- Topologie (Core) : créer element + groupe singleton + pose monde au niveau groupe ---
-        scen = self._get_active_scenario()
-
-        # 1) Ajout de l'item dans le document
-        self.canvas_objects.add({
-            "labels": tri["labels"],
-            "pts": Pw,
-            "id": tri.get("id"),
-            "mirrored": False,
-            })
-        new_tid = len(self._last_drawn) - 1
-
-        # Annoter l'objet Tk : elementId topo (si possible)
         scen = self._get_active_scenario()
         world = scen.topoWorld
 
@@ -7113,12 +7225,6 @@ class TriangleViewerManual(
             len_BL = float(row["len_BL"])
             orient = str(row.get("orient", "")).strip().upper()
 
-            # --- Orientation source (définition triangle) ---
-            # On l'enregistre côté Tk, et on en déduit le miroir de POSE (pas le miroir visuel Tk).
-            # Convention: mirrored=False.. utilsé uniquement pour le flip
-            self._last_drawn[new_tid]["orient"] = orient
-            self._last_drawn[new_tid]["mirrored"] = False
-
             # labels/types : O/B/L dans l’ordre topo.
             # (convention projet actuelle : O="Bourges", B=row["B"], L=row["L"])
             v_labels = ["Bourges", str(row["B"]), str(row["L"])]
@@ -7142,16 +7248,30 @@ class TriangleViewerManual(
             if not element_id:
                 raise RuntimeError("Topology: le Core n'a pas attribue d'elementId")
 
-            # Annotation Tk (pont UI↔Core)
-            self._last_drawn[new_tid]["topoElementId"] = str(element_id)
-            self._last_drawn[new_tid]["topoGroupId"] = core_gid
+            # MIG-CACHE-TRANSFORM-001G: la pose initiale est la seule
+            # information de drag qui entre dans le Core. Les trois sommets
+            # affichés seront ensuite reconstruits par projection Core -> UI.
+            world.setElementPose(
+                str(element_id),
+                R=np.eye(2),
+                T=np.asarray(Pw["O"], dtype=float),
+                mirrored=False,
+            )
 
         finally:
             world.commitTopoTransaction()
 
-        # 2) Synchroniser la pose depuis la projection vers le groupe Core créé.
-        # MIG-GROUP-001 : le dépôt manuel ne crée plus de groupe UI historique.
-        self._sync_group_elements_pose_to_core(str(core_gid))
+        # La projection est volontairement créée sans ``pts`` : ceux-ci ne
+        # peuvent provenir que du Core via _project_core_element_to_last_drawn.
+        self.canvas_objects.add({
+            "labels": tri["labels"],
+            "id": tri.get("id"),
+            "orient": orient,
+            "mirrored": False,
+            "topoElementId": str(element_id),
+            "topoGroupId": str(core_gid),
+        })
+        self._project_core_element_to_last_drawn(world, str(element_id))
         self.canvas_objects.dump(APP_LOGGER, "placement manuel")
 
         # 3) UI
@@ -7248,15 +7368,18 @@ class TriangleViewerManual(
         if self._sel:
             # rollback rotation de GROUPE
             if self._sel.get("mode") == "rotate_group":
-                # AUTO: rollback du transform global
-                if self._sel.get("auto_geom") and self._sel.get("auto_state0") is not None:
-                    self.auto_geom_state = dict(self._sel.get("auto_state0") or {})
-                    self._autoRebuildWorldGeometryScenario(None)
-                    self._sel = None
+                if self._discard_manual_rotate_preview():
+                    self._redraw_from(self._last_drawn)
+                    self.status.config(text="Rotation de groupe annulée (ESC).")
+                    self._clear_nearest_line()
+                    self._clear_edge_highlights()
+                    return "break"
+                if self._discard_auto_transform_preview():
+                    self._redraw_from(self._last_drawn)
                     self.status.config(text="Rotation auto annulée (ESC).")
                     self._clear_nearest_line()
                     self._clear_edge_highlights()
-                    return
+                    return "break"
                 core_gid = self._sel.get("core_group_id")
                 orig = self._sel.get("orig_group_pts")
                 if core_gid and isinstance(orig, dict):
@@ -7271,14 +7394,25 @@ class TriangleViewerManual(
                 return
             # rollback déplacement de GROUPE
             if self._sel.get("mode") == "move_group":
+                if not self._is_active_auto_scenario() and self._discard_manual_move_preview():
+                    self._redraw_from(self._last_drawn)
+                    self.status.config(text="Déplacement de groupe annulé (ESC).")
+                    self._clear_nearest_line()
+                    self._clear_edge_highlights()
+                    return "break"
+                if self._discard_auto_transform_preview():
+                    self._redraw_from(self._last_drawn)
+                    self.status.config(text="Déplacement de groupe annulé (ESC).")
+                    self._clear_nearest_line()
+                    self._clear_edge_highlights()
+                    return "break"
                 core_gid = self._sel.get("core_group_id")
                 orig = self._sel.get("orig_group_pts")
                 if core_gid and isinstance(orig, dict):
                     for tid, pts in orig.items():
                         if 0 <= tid < len(self._last_drawn):
                             self._last_drawn[tid]["pts"] = {k: np.array(pts[k].copy()) for k in ("O", "B", "L")}
-                    self._autoRebuildWorldGeometryScenario(None)
-                    self._redraw_from(self._last_drawn)
+                self._redraw_from(self._last_drawn)
                 self._sel = None
                 self.status.config(text="Déplacement de groupe annulé (ESC).")
                 self._clear_nearest_line()
@@ -7646,23 +7780,21 @@ class TriangleViewerManual(
             return None
         return (min(xs), min(ys), max(xs), max(ys))
 
-    def _degrouperTranslateGroupByScreen(self, core_group_id: str, dx_screen: float, dy_screen: float) -> None:
+    def _screen_delta_to_world_delta(self, dx_screen: float, dy_screen: float) -> np.ndarray:
+        """Convertit un delta écran en delta monde sans toucher la projection.
+
+        Le layout post-dégroupage reste exprimé en pixels pour préserver son
+        comportement historique. Sa mutation, elle, appartient désormais au
+        Core : l'appelant transmet ce delta à ``TopologyWorld.move_group``.
+        """
         dxs = float(dx_screen)
         dys = float(dy_screen)
-        if abs(dxs) <= 1e-12 and abs(dys) <= 1e-12:
-            return
+        if not np.isfinite(dxs) or not np.isfinite(dys):
+            raise ValueError("Dégrouper: delta écran non fini")
 
         wx0, wy0 = self._screen_to_world(0.0, 0.0)
         wx1, wy1 = self._screen_to_world(dxs, dys)
-        dxy = np.array([float(wx1 - wx0), float(wy1 - wy0)], dtype=float)
-
-        projected_elements = self._get_projected_elements_for_core_group(core_group_id)
-        for element in projected_elements:
-            Pt = element.get("pts")
-            if not isinstance(Pt, dict):
-                continue
-            for k in ("O", "B", "L"):
-                Pt[k] = np.array(Pt[k], dtype=float) + dxy
+        return np.array([float(wx1 - wx0), float(wy1 - wy0)], dtype=float)
 
     def _applyDegrouperResultToTk(self, res: dict) -> None:
         if not isinstance(res, dict):
@@ -7691,6 +7823,12 @@ class TriangleViewerManual(
         for core_gid in new_core_gids:
             if world.getGroupElementIds(core_gid):
                 valid_new_core_gids.append(core_gid)
+
+        # MIG-CACHE-TRANSFORM-001F: le Core vient de scinder la topologie.
+        # Repartir systématiquement de sa géométrie avant le layout écran.
+        affected_core_gids = [main_core_gid] + valid_new_core_gids
+        for core_gid in affected_core_gids:
+            self._project_core_group_to_last_drawn(world, core_gid)
 
         # Décalage visuel des groupes nouvellement détachés.
         bbox_main = self._degrouperGroupScreenBBox(main_core_gid)
@@ -7722,16 +7860,15 @@ class TriangleViewerManual(
                 else:
                     dy_screen = 30.0
 
-                self._degrouperTranslateGroupByScreen(
-                    core_gid,
-                    dx_screen,
-                    dy_screen,
+                delta_world = self._screen_delta_to_world_delta(
+                    dx_screen, dy_screen
                 )
-
-        # Le déplacement visuel vient de modifier les projections Tk :
-        # mettre à jour les poses des groupes Core concernés.
-        for core_gid in [main_core_gid] + valid_new_core_gids:
-            self._sync_group_elements_pose_to_core(core_gid, scen=scen)
+                world.move_group(
+                    core_gid,
+                    float(delta_world[0]),
+                    float(delta_world[1]),
+                )
+                self._project_core_group_to_last_drawn(world, core_gid)
 
         self._sel = None
         self._reset_assist()
@@ -8786,8 +8923,6 @@ class TriangleViewerManual(
             pivot = self._group_centroid(core_group_id)
             if pivot is None:
                 return
-        # Snapshot des membres Core effectivement concernés par la rotation.
-        orig_group_pts = self._snapshot_mig_geo_entries(rotate_members["entries"])
         # angle de départ = angle (pivot -> curseur au clic droit)
         if self._ctx_last_rclick:
             sx, sy = self._ctx_last_rclick
@@ -8796,17 +8931,31 @@ class TriangleViewerManual(
         wx = (sx - self.offset[0]) / self.zoom
         wy = (self.offset[1] - sy) / self.zoom
         start_angle = math.atan2(wy - pivot[1], wx - pivot[0])
-        self._sel = {
-            "mode": "rotate_group",
-            "core_group_id": core_group_id,
-            "rotate_member_entries": rotate_members["entries"],
-            "orig_group_pts": orig_group_pts,
-            "pivot": np.array(pivot, dtype=float),
-            "start_angle": start_angle,
-            "auto_geom": bool(auto_geom),
-            "auto_theta0": float(self.auto_geom_state.get("thetaDeg", 0.0)) if auto_geom and self.auto_geom_state else 0.0,
-            "auto_state0": dict(self.auto_geom_state) if auto_geom and self.auto_geom_state else None,
-        }
+        if auto_geom:
+            # MIG-CACHE-TRANSFORM-001H: aperçu exclusivement dans le cache
+            # actif ; Core et état partagé restent inchangés jusqu'au commit.
+            self._sel = {
+                "mode": "rotate_group",
+                "core_group_id": core_group_id,
+                "pivot": np.array(pivot, dtype=float),
+                "start_angle": start_angle,
+                "auto_geom": True,
+                "auto_state0": dict(self.auto_geom_state) if self.auto_geom_state else None,
+                "auto_preview_initial_pts": self._capture_active_auto_preview_pts(),
+            }
+        else:
+            scen = self._get_active_scenario()
+            world = getattr(scen, "topoWorld", None) if scen is not None else None
+            self._sel = {
+                "mode": "rotate_group",
+                "core_group_id": core_group_id,
+                "pivot_world": np.array(pivot, dtype=float),
+                "mouse_angle_start": start_angle,
+                "rotate_preview_initial_pts": self._capture_move_preview_initial_pts(
+                    world, str(core_group_id)
+                ),
+                "auto_geom": False,
+            }
         self.status.config(text=f"Mode pivoter GROUPE #{core_group_id} : bouge la souris pour tourner, clic gauche pour valider, ESC pour annuler.")
         return
 
@@ -8823,64 +8972,91 @@ class TriangleViewerManual(
         if idx is None or not (0 <= idx < len(self._last_drawn)):
             return
 
-        # Triangle de référence
-        P_ref = self._last_drawn[idx]["pts"]
-        v = np.array(
-            [P_ref[to_key][0] - P_ref[from_key][0], P_ref[to_key][1] - P_ref[from_key][1]],
-            dtype=float
-        )
-
-        if float(np.hypot(v[0], v[1])) < 1e-12:
-            return  # triangle dégénéré, rien à faire
-
-        # Orientation cible : Nord = +Y
-        cur = math.atan2(v[1], v[0])
-        target = math.pi / 2.0
-        dtheta = target - cur
-
         scen = self._get_active_scenario()
         # --- CAS AUTO : rotation globale partagée ---
         if scen.source_type == "auto":
             if self.auto_geom_state is None:
                 self._autoEnsureLocalGeometry(scen)
+            if self.auto_geom_state is None:
+                raise RuntimeError("[MIG-CACHE-TRANSFORM-001H] état AUTO absent")
+            entry = self._last_drawn[idx]
+            element_id = str(entry.get("topoElementId", "") or "").strip()
+            if not element_id:
+                raise ValueError("[MIG-CACHE-TRANSFORM-001H] topoElementId absent")
+            points_world = self._get_core_triangle_world_points(scen.topoWorld, element_id)
+            segment = points_world[to_key] - points_world[from_key]
+            if float(np.hypot(segment[0], segment[1])) < 1e-12:
                 return
-
-            theta0 = float(self.auto_geom_state.get("thetaDeg", 0.0))
-            self.auto_geom_state["thetaDeg"] = float(theta0 + math.degrees(dtheta))
-
-            self._autoRebuildWorldGeometry(redraw=False)   # rebuild monde pour TOUS les autos
-            self._autoSyncAllTopoPoses()                   # sync topoWorld pour TOUS les autos
+            dtheta = (math.pi / 2.0) - math.atan2(segment[1], segment[0])
+            c, s = math.cos(dtheta), math.sin(dtheta)
+            rotation = np.array(((c, -s), (s, c)), dtype=float)
+            state0 = dict(self.auto_geom_state)
+            pivot = np.array((float(state0["ox"]), float(state0["oy"])), dtype=float)
+            self._apply_rigid_transform_to_all_auto_scenarios(
+                rotation, pivot - (rotation @ pivot)
+            )
+            self.auto_geom_state = {
+                "ox": float(state0["ox"]),
+                "oy": float(state0["oy"]),
+                "thetaDeg": float(state0["thetaDeg"] + math.degrees(dtheta)),
+            }
+            self._project_all_auto_scenarios_from_core()
+            self._simulationPersistCurrentAutoPlacement(save=True)
 
             self._redraw_from(self._last_drawn)
             self.status.config(text=f"Orientation appliquée : AUTO — {status_label} au Nord (0°).")
             return
 
-        # --- CAS MANUEL : rotation UI puis sync core ---
-        # Déterminer le groupe (si présent)
-        rotate_members = self._prepare_core_group_operation_members("ROTATE", idx)
+        # --- CAS MANUEL : lecture et commit exclusivement depuis le Core ---
+        world = getattr(scen, "topoWorld", None)
+        entry = self._last_drawn[idx]
+        element_id = str(entry.get("topoElementId", "") or "").strip()
+        if world is None:
+            raise RuntimeError("[MIG-CACHE-TRANSFORM-001C2] TopologyWorld actif absent")
+        if not element_id:
+            raise ValueError("[MIG-CACHE-TRANSFORM-001C2] topoElementId absent")
 
-        c, s = math.cos(dtheta), math.sin(dtheta)
-        R = np.array([[c, -s], [s, c]], dtype=float)
+        points_world = self._get_core_triangle_world_points(world, element_id)
+        segment_start = points_world[from_key]
+        segment_end = points_world[to_key]
+        dx = float(segment_end[0] - segment_start[0])
+        dy = float(segment_end[1] - segment_start[1])
+        if math.hypot(dx, dy) <= 1e-12:
+            raise ValueError(
+                f"[MIG-CACHE-TRANSFORM-001C2] segment dégénéré: {from_key}->{to_key}"
+            )
+        pivot = (points_world["O"] + points_world["B"] + points_world["L"]) / 3.0
+        if pivot.shape != (2,) or not np.all(np.isfinite(pivot)):
+            raise ValueError("[MIG-CACHE-TRANSFORM-001C2] pivot monde invalide")
 
-        # Pivot = barycentre du triangle cliqué (cohérent avec "Pivoter")
-        pivot = self._tri_centroid(P_ref)
-        pivot = np.array(pivot, dtype=float)
+        current_angle_deg = math.degrees(math.atan2(dy, dx))
+        target_angle_deg = 90.0
+        angle_deg = (target_angle_deg - current_angle_deg + 180.0) % 360.0 - 180.0
+        angle_rad = math.radians(angle_deg)
+        if not math.isfinite(angle_rad):
+            raise ValueError("[MIG-CACHE-TRANSFORM-001C2] angle de rotation invalide")
 
-        def rot_point(pt):
-            pt = np.array(pt, dtype=float)
-            return (R @ (pt - pivot)) + pivot
-
-        # Appliquer aux membres résolus depuis le groupe Core.
-        for triangle in rotate_members["entries"]:
-            Pt = triangle.get("pts")
-            if Pt is None:
-                continue
-            for k in ("O", "B", "L"):
-                Pt[k] = rot_point(Pt[k])
-        # On est en manuel, on alimente la topo Core
-        self._sync_group_elements_pose_to_core(rotate_members["core_group_id"])
-
-        # On raffraichit l'affichage courant
+        core_group_id = world.get_group_of_element(element_id)
+        if core_group_id is None:
+            raise ValueError(
+                f"[MIG-CACHE-TRANSFORM-001C2] groupe Core introuvable element={element_id!r}"
+            )
+        world.rotate_group(str(core_group_id), pivot, angle_rad)
+        final_core_group_id = world.get_group_of_element(element_id)
+        if final_core_group_id is None:
+            raise ValueError(
+                f"[MIG-CACHE-TRANSFORM-001C2] groupe Core final introuvable element={element_id!r}"
+            )
+        self._project_core_group_to_last_drawn(world, str(final_core_group_id))
+        self._invalidate_pick_cache()
+        MIG_GEO_LOGGER.info(
+            "[MIG-CACHE-TRANSFORM-001C2] orient-north commit "
+            "element=%s group=%s segment=%s pivot=(%.9g, %.9g) "
+            "currentAngleDeg=%.9g targetAngleDeg=%.9g deltaAngleDeg=%.9g",
+            element_id, final_core_group_id, f"{from_key}->{to_key}",
+            float(pivot[0]), float(pivot[1]), current_angle_deg,
+            target_angle_deg, angle_deg,
+        )
         self._redraw_from(self._last_drawn)
         self.status.config(text=f"Orientation appliquée : GROUPE — {status_label} au Nord (0°).")
 
@@ -9010,7 +9186,7 @@ class TriangleViewerManual(
         """
         Inverse **tout le GROUPE** par symétrie axiale rigide.
         Axe = direction (O→L) du triangle ciblé ; la droite passe par le **barycentre du groupe**.
-        Chaque triangle du groupe garde sa forme; on bascule le flag 'mirrored' de tous.
+        La transformation et l'état ``mirrored`` sont autoritaires dans le Core.
         """
         idx = self._ctx_target_idx
         self._ctx_target_idx = None
@@ -9019,78 +9195,77 @@ class TriangleViewerManual(
         if self._is_active_auto_scenario():
             self.status.config(text="Inversion désactivée pour les scénarios automatiques.")
             return
-        # --- Étendue : GROUPE du triangle ciblé ---
-        flip_members = self._prepare_core_group_operation_members("FLIP", idx)
-        core_group_id = flip_members["core_group_id"]
-        if not core_group_id or not flip_members["entries"]:
-            return
+        scen = self._get_active_scenario()
+        world = getattr(scen, "topoWorld", None) if scen is not None else None
+        if world is None:
+            raise RuntimeError("[MIG-CACHE-TRANSFORM-001D] TopologyWorld actif absent")
+        element_id = str(self._last_drawn[idx].get("topoElementId", "") or "").strip()
+        if not element_id:
+            raise ValueError("[MIG-CACHE-TRANSFORM-001D] topoElementId absent")
+        core_group_id = world.get_group_of_element(element_id)
+        if core_group_id is None:
+            raise ValueError(
+                f"[MIG-CACHE-TRANSFORM-001D] groupe Core introuvable element={element_id!r}"
+            )
 
-        # Axe = O→L du triangle ciblé (en monde)
-        t0 = self._last_drawn[idx]
-        P0 = t0["pts"]
-        axis = np.array([P0["L"][0] - P0["O"][0], P0["L"][1] - P0["O"][1]], dtype=float)
+        # Axe = O→L du triangle ciblé, lu depuis le Core.
+        points_world = self._get_core_triangle_world_points(world, element_id)
+        axis = np.asarray(points_world["L"] - points_world["O"], dtype=float)
         nrm = float(np.hypot(axis[0], axis[1]))
         if nrm < 1e-12:
-            return  # triangle dégénéré
-        u = axis / nrm
+            raise ValueError("[MIG-CACHE-TRANSFORM-001D] axe O->L dégénéré")
+        pivot = self._get_core_group_world_centroid(world, str(core_group_id))
 
-        # Pivot = barycentre du GROUPE (rigide pour tous les triangles)
-        pivot = self._group_centroid(core_group_id)
-        if pivot is None:
-            # secours : barycentre du triangle ciblé
-            pivot = self._tri_centroid(P0)
-
-        # Matrice de réflexion autour de la droite passant par 'pivot' et dirigée par u
-        R = np.array([[2*u[0]*u[0] - 1, 2*u[0]*u[1]],
-                      [2*u[0]*u[1],     2*u[1]*u[1] - 1]], dtype=float)
-
-        # Appliquer la réflexion aux membres résolus depuis le groupe Core.
-        for triangle in flip_members["entries"]:
-            Pt = triangle.get("pts")
-            if Pt is None:
-                continue
-            for k in ("O", "B", "L"):
-                v = np.array([Pt[k][0] - pivot[0], Pt[k][1] - pivot[1]], dtype=float)
-                Pt[k] = (R @ v) + pivot
-            # Toggle du flag 'mirrored' pour l'affichage "S"
-            triangle["mirrored"] = not triangle.get("mirrored", False)
-
-        # Alimente la topo Core (poses éléments) depuis l’état graphique legacy (après flip)
-        self._sync_group_elements_pose_to_core(core_group_id)
+        world.flip_group(str(core_group_id), pivot, axis)
+        final_core_group_id = world.get_group_of_element(element_id)
+        if final_core_group_id is None:
+            raise ValueError(
+                f"[MIG-CACHE-TRANSFORM-001D] groupe Core final introuvable element={element_id!r}"
+            )
+        self._project_core_group_to_last_drawn(world, str(final_core_group_id))
+        self._invalidate_pick_cache()
 
         self._redraw_from(self._last_drawn)
-        self.status.config(text=f"Inversion appliquée au groupe #{core_group_id}.")
+        self.status.config(text=f"Inversion appliquée au groupe #{final_core_group_id}.")
+
+    def _commit_move_group_to_core(self, core_group_id: str, dx_w, dy_w) -> None:
+        """Valide une translation manuelle unique dans le Core puis la projette."""
+        if not core_group_id:
+            return
+        scen = self._get_active_scenario()
+        world = getattr(scen, "topoWorld", None) if scen is not None else None
+        if world is None:
+            raise RuntimeError("[MIG-CACHE-TRANSFORM-001B] TopologyWorld actif absent")
+        try:
+            world.move_group(str(core_group_id), float(dx_w), float(dy_w))
+            self._project_core_group_to_last_drawn(world, str(core_group_id))
+        except Exception:
+            MIG_GEO_LOGGER.exception(
+                "[MIG-CACHE-TRANSFORM-001B] commit translation/projection failed group=%s delta=(%s,%s)",
+                core_group_id, dx_w, dy_w,
+            )
+            raise
 
     def _move_group_world(self, core_group_id: str, dx_w, dy_w, move_member_entries=None):
-        """Translate rigide de tout le groupe en coordonnées monde."""
-        # AUTO: on déplace le référentiel global (commun à tous les scénarios auto)
+        """Compatibilité : commit d'une translation, jamais un aperçu manuel."""
+        # AUTO: commit global explicite dans les Core, puis projection des caches.
         if self._is_active_auto_scenario():
             if self.auto_geom_state is None:
                 self._autoEnsureLocalGeometry(self._get_active_scenario())
-                return
-
-            self.auto_geom_state["ox"] = float(self.auto_geom_state.get("ox", 0.0) + float(dx_w))
-            self.auto_geom_state["oy"] = float(self.auto_geom_state.get("oy", 0.0) + float(dy_w))
-            self._autoRebuildWorldGeometryScenario(None)
+            if self.auto_geom_state is None:
+                raise RuntimeError("[MIG-CACHE-TRANSFORM-001H] état AUTO absent")
+            state0 = dict(self.auto_geom_state)
+            delta = np.array((float(dx_w), float(dy_w)), dtype=float)
+            self._apply_rigid_transform_to_all_auto_scenarios(np.eye(2), delta)
+            self.auto_geom_state = {
+                "ox": float(state0["ox"] + delta[0]),
+                "oy": float(state0["oy"] + delta[1]),
+                "thetaDeg": float(state0["thetaDeg"]),
+            }
+            self._project_all_auto_scenarios_from_core()
             return
 
-        # MIG-GEO-002 : les triangles effectivement translatés proviennent du
-        # groupe Core résolu au début du geste. Le groupe UI reste nécessaire
-        # pour les contrats legacy encore en place, mais ne détermine plus les
-        # membres à déplacer.
-        if not core_group_id:
-            return
-        if move_member_entries is None:
-            move_member_entries = list(self._get_projected_elements_for_core_group(core_group_id))
-        d = np.array([dx_w, dy_w], dtype=float)
-        for triangle in move_member_entries:
-            P = triangle.get("pts")
-            if P is None:
-                continue
-            for k in ("O", "B", "L"):
-                P[k] = np.array([P[k][0] + d[0], P[k][1] + d[1]], dtype=float)
-        # Sync immédiate : Core = vérité persistée (pose monde du groupe)
-        self._sync_group_elements_pose_to_core(str(core_group_id))
+        self._commit_move_group_to_core(core_group_id, dx_w, dy_w)
 
     def _prepare_core_group_operation_members(self, operation: str, tri_index: int) -> Dict:
         """Prepare les membres projetes d'une operation depuis le seul Core."""
@@ -9176,6 +9351,214 @@ class TriangleViewerManual(
             }
         return snapshots
 
+    def _capture_move_preview_initial_pts(
+        self,
+        world: TopologyWorld,
+        core_group_id: str,
+    ) -> Dict[str, Dict[str, np.ndarray]]:
+        """Capture la projection initiale des seuls membres du groupe Core."""
+        if world is None:
+            raise RuntimeError("[MIG-CACHE-TRANSFORM-001B] TopologyWorld absent")
+        snapshots: Dict[str, Dict[str, np.ndarray]] = {}
+        for element_id in world.getGroupElementIds(str(core_group_id)):
+            key = str(element_id)
+            entry = self.canvas_objects.get_by_topology_id(key)
+            if entry is None:
+                raise KeyError(
+                    "[MIG-CACHE-TRANSFORM-001B] projection absente "
+                    f"pour topoElementId={key!r}"
+                )
+            points = entry.get("pts")
+            if not isinstance(points, dict):
+                raise ValueError(
+                    "[MIG-CACHE-TRANSFORM-001B] points absents "
+                    f"pour topoElementId={key!r}"
+                )
+            snapshots[key] = {
+                vertex: np.array(points[vertex], dtype=float, copy=True)
+                for vertex in ("O", "B", "L")
+            }
+        return snapshots
+
+    def _capture_active_auto_preview_pts(self) -> Dict[str, Dict[str, np.ndarray]]:
+        """Capture le cache actif pour un aperçu AUTO, sans toucher au Core."""
+        snapshots: Dict[str, Dict[str, np.ndarray]] = {}
+        for entry in self.canvas_objects:
+            element_id = str(entry.get("topoElementId", "") or "").strip()
+            points = entry.get("pts")
+            if not element_id or not isinstance(points, dict):
+                continue
+            snapshots[element_id] = {
+                vertex: np.array(points[vertex], dtype=float, copy=True)
+                for vertex in ("O", "B", "L")
+            }
+        return snapshots
+
+    def _preview_auto_translation_from_snapshot(
+        self,
+        initial_pts: Dict[str, Dict[str, np.ndarray]],
+        delta_world,
+    ) -> None:
+        """Aperçu MOVE AUTO limité au cache du scénario actif."""
+        delta = np.asarray(delta_world, dtype=float)
+        if delta.shape != (2,) or not np.all(np.isfinite(delta)):
+            raise ValueError("[MIG-CACHE-TRANSFORM-001H] delta preview AUTO invalide")
+        for element_id, points0 in initial_pts.items():
+            entry = self.canvas_objects.get_by_topology_id(element_id)
+            if entry is None:
+                raise KeyError(
+                    f"[MIG-CACHE-TRANSFORM-001H] projection absente: {element_id!r}"
+                )
+            entry["pts"] = {
+                vertex: np.array(points0[vertex], dtype=float, copy=True) + delta
+                for vertex in ("O", "B", "L")
+            }
+        self._invalidate_pick_cache()
+
+    def _preview_auto_rotation_from_snapshot(
+        self,
+        initial_pts: Dict[str, Dict[str, np.ndarray]],
+        pivot_world,
+        angle_rad: float,
+    ) -> None:
+        """Aperçu ROTATE AUTO limité au cache du scénario actif."""
+        pivot = np.asarray(pivot_world, dtype=float)
+        angle = float(angle_rad)
+        if pivot.shape != (2,) or not np.all(np.isfinite(pivot)) or not np.isfinite(angle):
+            raise ValueError("[MIG-CACHE-TRANSFORM-001H] rotation preview AUTO invalide")
+        c, s = math.cos(angle), math.sin(angle)
+        rotation = np.array(((c, -s), (s, c)), dtype=float)
+        for element_id, points0 in initial_pts.items():
+            entry = self.canvas_objects.get_by_topology_id(element_id)
+            if entry is None:
+                raise KeyError(
+                    f"[MIG-CACHE-TRANSFORM-001H] projection absente: {element_id!r}"
+                )
+            entry["pts"] = {
+                vertex: rotation @ (np.asarray(points0[vertex], dtype=float) - pivot) + pivot
+                for vertex in ("O", "B", "L")
+            }
+        self._invalidate_pick_cache()
+
+    def _discard_auto_transform_preview(self) -> bool:
+        """Abandonne un aperçu AUTO en reprojectant le Core actif inchangé."""
+        selection = self._sel if isinstance(getattr(self, "_sel", None), dict) else None
+        scen = self._get_active_scenario()
+        if (
+            selection is None
+            or not selection.get("auto_geom")
+            or scen is None
+            or getattr(scen, "source_type", "manual") != "auto"
+        ):
+            return False
+        self._project_auto_scenario_from_core(scen)
+        self._sel = None
+        return True
+
+    def _preview_move_group_from_snapshot(
+        self,
+        initial_pts: Dict[str, Dict[str, np.ndarray]],
+        dx_total: float,
+        dy_total: float,
+    ) -> None:
+        """Met à jour l'aperçu UI d'un MOVE sans modifier le Core."""
+        delta = np.array((float(dx_total), float(dy_total)), dtype=float)
+        for element_id, points0 in initial_pts.items():
+            entry = self.canvas_objects.get_by_topology_id(str(element_id))
+            if entry is None:
+                raise KeyError(
+                    "[MIG-CACHE-TRANSFORM-001B] projection absente "
+                    f"pour topoElementId={element_id!r}"
+                )
+            entry["pts"] = {
+                vertex: np.array(points0[vertex], dtype=float, copy=True) + delta
+                for vertex in ("O", "B", "L")
+            }
+        self._invalidate_pick_cache()
+
+    @staticmethod
+    def _normalize_rotation_angle(angle_rad: float) -> float:
+        """Normalise un angle dans l'intervalle [-pi, pi[."""
+        return (float(angle_rad) + math.pi) % (2.0 * math.pi) - math.pi
+
+    def _preview_rotate_group_from_snapshot(
+        self,
+        initial_pts: Dict[str, Dict[str, np.ndarray]],
+        pivot_world,
+        angle_rad: float,
+    ) -> None:
+        """Met à jour un aperçu de rotation sans modifier le Core."""
+        pivot = np.asarray(pivot_world, dtype=float)
+        angle = self._normalize_rotation_angle(angle_rad)
+        c, s = math.cos(angle), math.sin(angle)
+        rotation = np.array(((c, -s), (s, c)), dtype=float)
+        for element_id, points0 in initial_pts.items():
+            entry = self.canvas_objects.get_by_topology_id(str(element_id))
+            if entry is None:
+                raise KeyError(
+                    "[MIG-CACHE-TRANSFORM-001C] projection absente "
+                    f"pour topoElementId={element_id!r}"
+                )
+            entry["pts"] = {
+                vertex: rotation @ (np.asarray(points0[vertex], dtype=float) - pivot) + pivot
+                for vertex in ("O", "B", "L")
+            }
+        self._invalidate_pick_cache()
+        MIG_GEO_LOGGER.debug("[MIG-CACHE-TRANSFORM-001C] rotate preview angle=%s", angle)
+
+    def _discard_manual_rotate_preview(self) -> bool:
+        """Abandonne un aperçu ROTATE manuel et restaure la projection Core."""
+        selection = self._sel if isinstance(getattr(self, "_sel", None), dict) else None
+        if (
+            selection is None
+            or selection.get("mode") != "rotate_group"
+            or selection.get("auto_geom")
+        ):
+            return False
+        core_group_id = selection.get("core_group_id")
+        scen = self._get_active_scenario()
+        world = getattr(scen, "topoWorld", None) if scen is not None else None
+        if core_group_id and world is not None:
+            self._project_core_group_to_last_drawn(world, str(core_group_id))
+        self._sel = None
+        MIG_GEO_LOGGER.debug("[MIG-CACHE-TRANSFORM-001C] rotate discard group=%s", core_group_id)
+        return True
+
+    def _discard_manual_move_preview(self) -> bool:
+        """Abandonne un aperçu MOVE manuel et restaure la projection Core."""
+        selection = self._sel if isinstance(getattr(self, "_sel", None), dict) else None
+        if (
+            selection is None
+            or selection.get("mode") != "move_group"
+            or self._is_active_auto_scenario()
+        ):
+            return False
+        core_group_id = selection.get("core_group_id")
+        scen = self._get_active_scenario()
+        world = getattr(scen, "topoWorld", None) if scen is not None else None
+        if core_group_id and world is not None:
+            self._project_core_group_to_last_drawn(world, str(core_group_id))
+        self._sel = None
+        return True
+
+    def _get_move_drag_delta_world(self, event) -> np.ndarray:
+        """Retourne le delta monde total du MOVE transactionnel courant."""
+        if not isinstance(self._sel, dict):
+            raise RuntimeError("[MIG-CACHE-TRANSFORM-001E1-FIX] sélection MOVE absente")
+        start = self._sel.get("mouse_world_start")
+        if start is None:
+            raise RuntimeError(
+                "[MIG-CACHE-TRANSFORM-001E1-FIX] point de départ du MOVE absent"
+            )
+        end = np.asarray(self._screen_to_world(event.x, event.y), dtype=float)
+        start_world = np.asarray(start, dtype=float)
+        delta = end - start_world
+        if delta.shape != (2,) or not np.all(np.isfinite(delta)):
+            raise ValueError(
+                "[MIG-CACHE-TRANSFORM-001E1-FIX] delta monde du MOVE invalide"
+            )
+        return np.array(delta, dtype=float, copy=True)
+
     def _on_canvas_left_down(self, event):
         # Mode compas : arc d'angle (clic pour P1/P2)
         if self._clock_arc_active:
@@ -9233,16 +9616,49 @@ class TriangleViewerManual(
         # Validation d'une rotation en cours : le clic gauche sert à COMMIT, pas à re-sélectionner.
         if isinstance(self._sel, dict) and self._sel.get("mode") == "rotate_group":
             if self._sel.get("auto_geom"):
-                self._autoRebuildWorldGeometry(redraw=True)
-                self._autoSyncAllTopoPoses()
-                # Persistance "Même dernier run" (carte, ordre)
-                if self.auto_geom_state is not None:
-                    self._simulationPersistCurrentAutoPlacement(save=True)
+                state0 = dict(self._sel.get("auto_state0") or {})
+                pivot = np.asarray(self._sel["pivot"], dtype=float)
+                wx, wy = self._screen_to_world(event.x, event.y)
+                current_angle = math.atan2(float(wy - pivot[1]), float(wx - pivot[0]))
+                angle_delta = current_angle - float(self._sel["start_angle"])
+                c, s = math.cos(angle_delta), math.sin(angle_delta)
+                rotation = np.array(((c, -s), (s, c)), dtype=float)
+                translation = pivot - (rotation @ pivot)
+                self._apply_rigid_transform_to_all_auto_scenarios(rotation, translation)
+                self.auto_geom_state = {
+                    "ox": float(state0["ox"]),
+                    "oy": float(state0["oy"]),
+                    "thetaDeg": float(state0["thetaDeg"] + math.degrees(angle_delta)),
+                }
+                self._project_all_auto_scenarios_from_core()
+                self._simulationPersistCurrentAutoPlacement(save=True)
             else:
-                # Manuel: sync classique du groupe vers le core
+                # MIG-CACHE-TRANSFORM-001C : commit Core unique depuis le
+                # clic de validation, jamais depuis le preview UI.
                 core_group_id = self._sel.get("core_group_id")
-                if core_group_id is not None:
-                    self._sync_group_elements_pose_to_core(str(core_group_id))
+                pivot = np.asarray(self._sel["pivot_world"], dtype=float)
+                start_angle = float(self._sel["mouse_angle_start"])
+                wx, wy = self._screen_to_world(event.x, event.y)
+                final_angle = math.atan2(float(wy - pivot[1]), float(wx - pivot[0]))
+                angle_total = self._normalize_rotation_angle(final_angle - start_angle)
+                scen = self._get_active_scenario()
+                world = getattr(scen, "topoWorld", None) if scen is not None else None
+                if core_group_id is None or world is None:
+                    raise RuntimeError(
+                        "[MIG-CACHE-TRANSFORM-001C] groupe Core ou monde absent au commit"
+                    )
+                world.rotate_group(str(core_group_id), pivot, angle_total)
+                element_ids = tuple(self._sel["rotate_preview_initial_pts"])
+                if not element_ids:
+                    raise RuntimeError(
+                        "[MIG-CACHE-TRANSFORM-001C] groupe vide au commit"
+                    )
+                final_core_group_id = world.get_group_of_element(str(element_ids[0]))
+                self._project_core_group_to_last_drawn(world, str(final_core_group_id))
+                MIG_GEO_LOGGER.debug(
+                    "[MIG-CACHE-TRANSFORM-001C] rotate commit group=%s angle=%s",
+                    final_core_group_id, angle_total,
+                )
 
             self._sel = None
             self._reset_assist()
@@ -9269,15 +9685,25 @@ class TriangleViewerManual(
             group_centroid = self._group_centroid(core_group_id)
             if group_centroid is None:
                 return
-            orig_group_pts = self._snapshot_mig_geo_entries(move_member_entries)
+            is_auto_move = self._is_active_auto_scenario()
+            scen = self._get_active_scenario()
+            world = getattr(scen, "topoWorld", None) if scen is not None else None
+            preview_initial_pts = (
+                self._capture_move_preview_initial_pts(world, str(core_group_id))
+                if not is_auto_move else {}
+            )
             self._sel = {
                 "mode": "move_group",
                 "core_group_id": core_group_id,
-                "move_member_entries": move_member_entries,
-                "grab_offset": np.array([wx, wy]) - group_centroid,
-                "orig_group_pts": orig_group_pts,
-                "mouse_world_prev": np.array([wx, wy], dtype=float),
+                "mouse_world_start": np.array([wx, wy], dtype=float),
+                "move_preview_initial_pts": preview_initial_pts,
             }
+            if is_auto_move:
+                self._sel.update({
+                    "auto_geom": True,
+                    "auto_state0": dict(self.auto_geom_state or {}),
+                    "auto_move_preview_pts0": self._capture_active_auto_preview_pts(),
+                })
             self.status.config(text=f"Déplacement du groupe Core {core_group_id} (clic sur tri {self._last_drawn[idx].get('id', '?')})")
         elif mode == "vertex":
             # déplacement par sommet (translation comme 'center', mais calée sur le sommet choisi)
@@ -9296,19 +9722,29 @@ class TriangleViewerManual(
             if self._ctrl_down:
                 # Les membres proviennent du groupe résolu par le sommet Core.
                 move_members = vertex_move_members
-                orig_group_pts = self._snapshot_mig_geo_entries(move_members["entries"])
+                is_auto_move = self._is_active_auto_scenario()
+                scen = self._get_active_scenario()
+                world = getattr(scen, "topoWorld", None) if scen is not None else None
+                preview_initial_pts = (
+                    self._capture_move_preview_initial_pts(world, str(move_members["core_group_id"]))
+                    if not is_auto_move else {}
+                )
 
                 anchor_world = np.array(P[vkey], dtype=float)
                 self._sel = {
                     "mode": "move_group",
                     "core_group_id": move_members["core_group_id"],
-                    "move_member_entries": move_members["entries"],
-                    "orig_group_pts": orig_group_pts,
+                    "mouse_world_start": np.array([wx, wy], dtype=float),
+                    "move_preview_initial_pts": preview_initial_pts,
                     "anchor": {"type": "vertex", "tid": idx, "vkey": vkey},
-                    "grab_offset": np.array([wx, wy]) - anchor_world,
-                    "mouse_world_prev": np.array([wx, wy], dtype=float),
                     "suppress_assist": True,  # pas d'aides visuelles en CTRL
                 }
+                if is_auto_move:
+                    self._sel.update({
+                        "auto_geom": True,
+                        "auto_state0": dict(self.auto_geom_state or {}),
+                        "auto_move_preview_pts0": self._capture_active_auto_preview_pts(),
+                    })
                 # nettoyer toute aide existante
                 self._reset_assist()
                 self.status.config(text=f"Déplacement du groupe Core {move_members['core_group_id']} par sommet {vkey}.")
@@ -9321,20 +9757,30 @@ class TriangleViewerManual(
             if not self._ctrl_down:
                 # Les membres proviennent du groupe résolu par le sommet Core.
                 move_members = vertex_move_members
-                orig_group_pts = self._snapshot_mig_geo_entries(move_members["entries"])
+                is_auto_move = self._is_active_auto_scenario()
+                scen = self._get_active_scenario()
+                world = getattr(scen, "topoWorld", None) if scen is not None else None
+                preview_initial_pts = (
+                    self._capture_move_preview_initial_pts(world, str(move_members["core_group_id"]))
+                    if not is_auto_move else {}
+                )
 
                 anchor_world = np.array(P[vkey], dtype=float)
                 self._sel = {
                     "mode": "move_group",
                     "core_group_id": move_members["core_group_id"],
-                    "move_member_entries": move_members["entries"],
-                    "orig_group_pts": orig_group_pts,
+                    "mouse_world_start": np.array([wx, wy], dtype=float),
+                    "move_preview_initial_pts": preview_initial_pts,
                     "anchor": {"type": "vertex", "tid": idx, "vkey": vkey},
-                    "grab_offset": np.array([wx, wy]) - anchor_world,
-                    "mouse_world_prev": np.array([wx, wy], dtype=float),
                     # on veut l'aide de collage active
                     "suppress_assist": False,
                 }
+                if is_auto_move:
+                    self._sel.update({
+                        "auto_geom": True,
+                        "auto_state0": dict(self.auto_geom_state or {}),
+                        "auto_move_preview_pts0": self._capture_active_auto_preview_pts(),
+                    })
                 self.status.config(text=f"Déplacement du groupe Core {move_members['core_group_id']} par sommet {vkey}.")
                 # Aide immédiate : viser un sommet d'un AUTRE triangle (exclure le groupe lui-même)
                 v_world = np.array(P[vkey], dtype=float)
@@ -9417,22 +9863,29 @@ class TriangleViewerManual(
             core_group_id = self._sel.get("core_group_id")
             if not core_group_id:
                 return
-            # déplacement CALÉ SUR DELTA MONDE: w -> w_prev
+            # MIG-CACHE-TRANSFORM-001B : en manuel, l'aperçu est calculé
+            # depuis le snapshot du mouse-down ; le Core reste inchangé.
             wx, wy = self._screen_to_world(event.x, event.y)
-            prev = self._sel.get("mouse_world_prev")
-            if prev is None:
-                self._sel["mouse_world_prev"] = np.array([wx, wy], dtype=float)
-                return
-            dx, dy = float(wx - prev[0]), float(wy - prev[1])
-            if dx != 0.0 or dy != 0.0:
-                self._move_group_world(
-                    core_group_id,
-                    dx,
-                    dy,
-                    move_member_entries=self._sel.get("move_member_entries"),
+            if self._is_active_auto_scenario():
+                start = self._sel.get("mouse_world_start")
+                initial_pts = self._sel.get("auto_move_preview_pts0")
+                if start is None or not isinstance(initial_pts, dict):
+                    raise RuntimeError(
+                        "[MIG-CACHE-TRANSFORM-001H] état initial du MOVE AUTO absent"
+                    )
+                self._preview_auto_translation_from_snapshot(
+                    initial_pts,
+                    np.array([wx, wy], dtype=float) - np.asarray(start, dtype=float),
                 )
-                # avancer l'ancre
-                self._sel["mouse_world_prev"] = np.array([wx, wy], dtype=float)
+            else:
+                start = self._sel.get("mouse_world_start")
+                initial_pts = self._sel.get("move_preview_initial_pts")
+                if start is None or not isinstance(initial_pts, dict):
+                    raise RuntimeError(
+                        "[MIG-CACHE-TRANSFORM-001B] état initial du MOVE absent"
+                    )
+                dx, dy = float(wx - start[0]), float(wy - start[1])
+                self._preview_move_group_from_snapshot(initial_pts, dx, dy)
             self._redraw_from(self._last_drawn)
             # --- NOUVEAU : pendant un move_group ancré sur SOMMET, afficher l'aide de collage ---
             if not self._sel.get("suppress_assist"):
@@ -9608,7 +10061,9 @@ class TriangleViewerManual(
             # MIG-GROUP-017 : les données métier du geste sont Core. Les IDs
             # UI ne restent nécessaires que pour projeter la fusion legacy.
             mobile_core_group_id = self._sel.get("core_group_id")
-            move_member_entries = self._sel.get("move_member_entries")
+            core_snap_transform_applied = False
+            snap_world = None
+            mobile_element_id = None
 
             # On nettoie l'aide visuelle dans tous les cas
             self._clear_edge_highlights()
@@ -9633,22 +10088,44 @@ class TriangleViewerManual(
 
                 scen = self._get_active_scenario()
                 world = scen.topoWorld
+                snap_world = world
                 R, T = epts.computeRigidTransform()
-                # MIG-GROUP-017 : appliquer p' = R @ p + T aux membres
-                # capturés au démarrage du geste, jamais via groups[*][nodes].
-                if move_member_entries is None and mobile_core_group_id:
-                    move_member_entries = self._get_projected_elements_for_core_group(
-                        str(mobile_core_group_id)
+                if mobile_core_group_id is None:
+                    raise RuntimeError(
+                        "[MIG-CACHE-TRANSFORM-001E1] groupe Core mobile absent"
                     )
-                for triangle in move_member_entries or ():
-                    P = triangle.get("pts")
-                    if P is None:
-                        continue
-                    for k in ("O", "B", "L"):
-                        p = np.array(P[k], dtype=float)
-                        p_fin = (R @ p) + T
-                        P[k][0] = float(p_fin[0])
-                        P[k][1] = float(p_fin[1])
+                mobile_entry = self._last_drawn[int(choice[0])]
+                mobile_element_id = str(mobile_entry.get("topoElementId", "") or "").strip()
+                if not mobile_element_id:
+                    raise RuntimeError(
+                        "[MIG-CACHE-TRANSFORM-001E1] topoElementId mobile absent"
+                    )
+
+                # MIG-CACHE-TRANSFORM-001E1:
+                # la transformation Core précède encore la fusion topologique sans transaction
+                # globale. L’atomicité sera traitée dans une migration dédiée.
+                drag_delta = self._get_move_drag_delta_world(event)
+                R_core = np.array(R, dtype=float, copy=True)
+                T_snap = np.array(T, dtype=float, copy=True)
+                if R_core.shape != (2, 2) or T_snap.shape != (2,):
+                    raise ValueError(
+                        "[MIG-CACHE-TRANSFORM-001E1-FIX] transform de snap invalide"
+                    )
+                T_core = (R_core @ drag_delta) + T_snap
+                if not np.all(np.isfinite(T_core)):
+                    raise ValueError(
+                        "[MIG-CACHE-TRANSFORM-001E1-FIX] translation Core invalide"
+                    )
+                MIG_GEO_LOGGER.debug(
+                    "[MIG-CACHE-TRANSFORM-001E1-FIX] "
+                    "group=%s drag_delta=%s R_snap=%s T_snap=%s T_core=%s",
+                    mobile_core_group_id, drag_delta, R_core, T_snap, T_core,
+                )
+                world.apply_group_rigid_transform(
+                    str(mobile_core_group_id), R_core, T_core
+                )
+                self._project_core_group_to_last_drawn(world, str(mobile_core_group_id))
+                core_snap_transform_applied = True
 
                 # ------------------------------------------------------------
                 # Topologie Core (intention) : edge-edge OU vertex-edge
@@ -9672,9 +10149,6 @@ class TriangleViewerManual(
                     and target_core_group_id
                     and str(target_core_group_id) != str(mobile_core_group_id)
                 ):
-                    # La pose Core doit refléter ce que Tk a effectivement appliqué.
-                    self._sync_group_elements_pose_to_core(str(mobile_core_group_id))
-
                     kind = str(epts.kind).strip().lower()
                     if kind not in ("edge-edge", "vertex-edge"):
                         raise RuntimeError(f"kind inattendu: {kind}")
@@ -9688,16 +10162,44 @@ class TriangleViewerManual(
                         new_core_gid = world.apply_attachments(attachments_to_apply)
                         world.commitTopoTransaction()
 
-            # Sync Core : pose par élément (pas de pose groupe)
-            if mobile_core_group_id is not None:
-                self._sync_group_elements_pose_to_core(str(mobile_core_group_id))
-
-            # Fin (pas de snap : simple dépôt à la dernière position)
-            # AUTO: persister position/rotation globale (carte, ordre)
-            if isinstance(self._sel, dict) and self.auto_geom_state is not None:
-                self._autoRebuildWorldGeometry(redraw=False)
-                self._autoSyncAllTopoPoses()
+            # Commit exclusif : soit snap Core-first, soit translation
+            # libre Core-first (un move_group), jamais les deux.
+            if (
+                self._is_active_auto_scenario()
+                and not core_snap_transform_applied
+                and mobile_core_group_id is not None
+            ):
+                state0 = dict(self._sel.get("auto_state0") or {})
+                drag_delta = self._get_move_drag_delta_world(event)
+                self._apply_rigid_transform_to_all_auto_scenarios(
+                    np.eye(2, dtype=float), drag_delta
+                )
+                self.auto_geom_state = {
+                    "ox": float(state0["ox"] + drag_delta[0]),
+                    "oy": float(state0["oy"] + drag_delta[1]),
+                    "thetaDeg": float(state0["thetaDeg"]),
+                }
+                self._project_all_auto_scenarios_from_core()
                 self._simulationPersistCurrentAutoPlacement(save=True)
+            elif core_snap_transform_applied and mobile_core_group_id is not None:
+                if not mobile_element_id:
+                    raise RuntimeError(
+                        "[MIG-CACHE-TRANSFORM-001B] topoElementId mobile absent après snap"
+                    )
+                final_core_group_id = snap_world.get_group_of_element(
+                    str(mobile_element_id)
+                )
+                self._project_core_group_to_last_drawn(
+                    snap_world, str(final_core_group_id)
+                )
+            elif not self._is_active_auto_scenario() and mobile_core_group_id is not None:
+                drag_delta = self._get_move_drag_delta_world(event)
+                self._commit_move_group_to_core(
+                    str(mobile_core_group_id),
+                    float(drag_delta[0]),
+                    float(drag_delta[1]),
+                )
+
             self._sel = None
             self._reset_assist()
             self._redraw_from(self._last_drawn)
@@ -10184,7 +10686,7 @@ class TriangleViewerManual(
                         P,
                         labels=[f"O:{labels[0]}", f"B:{labels[1]}", f"L:{labels[2]}"],
                         tri_id=tri_id,
-                        tri_mirrored=t.get("mirrored", False),
+                        tri_mirrored=self._get_core_element_mirrored(t.get("topoElementId")),
                         fill=fill,
                         diff_outline=bool(fill),
                         drawEdges=(not onlyContours),

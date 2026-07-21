@@ -431,7 +431,6 @@ def test_manual_placement_keeps_catalog_id_separate_from_core_instance_id():
     viewer._next_group_id = 1
     viewer._placed_ids = set()
     viewer._get_active_scenario = lambda: type("Scenario", (), {"topoWorld": world})()
-    viewer._sync_group_elements_pose_to_core = lambda _core_group_id: None
     viewer._redraw_from = lambda _entries: None
     viewer._reset_assist = lambda: None
     viewer._reinsert_triangle_to_list = lambda _entry: None
@@ -472,7 +471,7 @@ def test_manual_placement_keeps_catalog_id_separate_from_core_instance_id():
         ) == world.get_element_vertex_node_id_by_type("T01", vertex_key)
 
 
-def test_manual_placement_syncs_core_pose_without_creating_a_ui_group():
+def test_manual_placement_projects_core_pose_without_creating_a_ui_group():
     class _Status:
         def config(self, **_kwargs):
             pass
@@ -500,19 +499,24 @@ def test_manual_placement_syncs_core_pose_without_creating_a_ui_group():
         "triangle": {"id": 1, "labels": ("O", "B", "L")},
         "world_pts": world_pts,
     }
-
     viewer._place_dragged_triangle()
 
     entry = viewer._last_drawn[0]
     assert {"topoElementId", "topoGroupId"} <= entry.keys()
     assert "group_id" not in entry
+    assert entry["pts"] is not world_pts
     element_id = entry["topoElementId"]
     assert world.getGroupElementIds(entry["topoGroupId"]) == [element_id]
 
     element = world.elements[element_id]
+    rotation, translation, mirrored = world.getElementPose(element_id)
+    np.testing.assert_allclose(rotation, np.eye(2))
+    np.testing.assert_allclose(translation, world_pts["O"])
+    assert mirrored is False
     for vertex_index, vertex_name in enumerate(("O", "B", "L")):
         actual = world.elementLocalToWorld(element_id, element.vertex_local_xy[vertex_index])
         np.testing.assert_allclose(actual, world_pts[vertex_name], atol=1e-9)
+        np.testing.assert_allclose(entry["pts"][vertex_name], actual, atol=1e-9)
 
 
 def test_core_resolves_vertex_nodes_without_exposing_id_construction_to_ui():

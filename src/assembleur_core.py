@@ -3209,6 +3209,82 @@ class TopologyWorld:
         # pose change -> positions monde changent -> géométrie conceptuelle invalide
         self.invalidateConceptGeom(self.element_to_group.get(str(element_id)))
 
+    def _require_live_group_element_ids(self, core_group_id: str) -> list[str]:
+        """Retourne les éléments d'un groupe canonique ou échoue explicitement.
+
+        Les APIs de transformation ne résolvent pas les alias DSU : leur contrat
+        externe est volontairement un ``core_group_id`` déjà canonique.
+        """
+        key = str(core_group_id or "")
+        if not self.hasLiveGroup(key):
+            raise ValueError(f"Groupe Core canonique inconnu: {core_group_id!r}")
+        return self.getGroupElementIds(key)
+
+    @staticmethod
+    def _world_vector(value, *, name: str) -> np.ndarray:
+        """Normalise un vecteur monde 2D de l'API de transformation."""
+        vector = np.asarray(value, dtype=float)
+        if vector.shape != (2,) or not np.all(np.isfinite(vector)):
+            raise ValueError(f"{name} doit être un vecteur monde fini de dimension 2")
+        return vector
+
+    def move_group(self, core_group_id: str, dx: float, dy: float) -> None:
+        """Translate rigidement les poses de tous les éléments du groupe Core.
+
+        Cette API ne manipule que les poses Core. Les coordonnées locales, la
+        topologie et toute projection Canvas restent inchangées.
+        """
+        delta = self._world_vector((dx, dy), name="delta")
+        for element_id in self._require_live_group_element_ids(core_group_id):
+            R, T, mirrored = self.getElementPose(element_id)
+            self.setElementPose(element_id, R=R, T=np.asarray(T, dtype=float) + delta, mirrored=mirrored)
+
+    def rotate_group(self, core_group_id: str, center_world, angle_rad: float) -> None:
+        """Tourne rigidement un groupe autour d'un point du monde.
+
+        Pour chaque élément, la transformation affine monde est
+        ``x' = Q @ (x - center) + center``. La réflexion locale éventuelle est
+        conservée ; seule la rotation et la translation de sa pose sont mises à
+        jour.
+        """
+        center = self._world_vector(center_world, name="center_world")
+        angle = float(angle_rad)
+        if not np.isfinite(angle):
+            raise ValueError("angle_rad doit être fini")
+        c, s = float(np.cos(angle)), float(np.sin(angle))
+        Q = np.array([[c, -s], [s, c]], dtype=float)
+        for element_id in self._require_live_group_element_ids(core_group_id):
+            R, T, mirrored = self.getElementPose(element_id)
+            T2 = Q @ (np.asarray(T, dtype=float) - center) + center
+            self.setElementPose(element_id, R=Q @ np.asarray(R, dtype=float), T=T2, mirrored=mirrored)
+
+    def apply_group_rigid_transform(self, core_group_id: str, R, T) -> None:
+        """Applique ``P' = R @ P + T`` à toutes les poses d'un groupe Core.
+
+        ``R`` doit être une rotation propre ; une réflexion ne peut pas être
+        introduite par cette API et l'état ``mirrored`` de chaque élément est
+        donc conservé tel quel.
+        """
+        rotation = np.asarray(R, dtype=float)
+        translation = self._world_vector(T, name="T")
+        if rotation.shape != (2, 2) or not np.all(np.isfinite(rotation)):
+            raise ValueError("R doit être une matrice 2x2 finie")
+        tolerance = 1e-8
+        if not np.allclose(rotation.T @ rotation, np.eye(2), rtol=tolerance, atol=tolerance):
+            raise ValueError("R doit être orthonormale")
+        determinant = float(np.linalg.det(rotation))
+        if not np.isclose(determinant, 1.0, rtol=tolerance, atol=tolerance):
+            raise ValueError("det(R) doit être proche de +1")
+
+        for element_id in self._require_live_group_element_ids(core_group_id):
+            element_rotation, element_translation, mirrored = self.getElementPose(element_id)
+            self.setElementPose(
+                element_id,
+                R=rotation @ np.asarray(element_rotation, dtype=float),
+                T=rotation @ np.asarray(element_translation, dtype=float) + translation,
+                mirrored=mirrored,
+            )
+
     # ------------------------------------------------------------------
     # Flip (symétrie axiale) au niveau GROUPE (mais appliquée aux poses d'éléments)
     # - groupes = topologiques
@@ -3239,26 +3315,23 @@ class TopologyWorld:
         uuT = np.outer(u, u)
         return (2.0 * uuT) - I
 
-    def flipGroup(self, group_id: str, axisPoint: np.ndarray, axisDir: np.ndarray) -> None:
+    def flip_group(self, core_group_id: str, axis_point, axis_direction) -> None:
         """Applique une symétrie axiale à tous les éléments du groupe.
 
         Contrat:
         - géométrie monde: x' = S*(x - p) + p  (p = axisPoint, S = reflection(axisDir))
-        - mise à jour des poses éléments uniquement
+        - mise à jour des poses éléments via ``setElementPose`` uniquement
         - LocalCoords inchangés
+        - ``core_group_id`` est déjà canonique
         """
-        gid = self.find_group(str(group_id))
-        g = self.groups.get(gid)
-        if g is None:
-            return
-
-        p = np.array(axisPoint, float).reshape((2,))
-        S = self._reflection_matrix(axisDir)
+        element_ids = self._require_live_group_element_ids(core_group_id)
+        p = self._world_vector(axis_point, name="axis_point")
+        S = self._reflection_matrix(self._world_vector(axis_direction, name="axis_direction"))
         b = p - (S @ p)  # translation affine pour une droite passant par p
 
         M = TopologyElementPose2D.mirror_matrix()
 
-        for eid in list(g.element_ids):
+        for eid in element_ids:
             el = self.elements.get(str(eid))
             if el is None:
                 continue
@@ -3283,7 +3356,19 @@ class TopologyWorld:
                 R2_raw = A2
 
             R2 = self._closest_rotation(R2_raw)
-            el.set_pose(R=R2, T=T2, mirrored=mirrored2)
+            self.setElementPose(str(eid), R=R2, T=T2, mirrored=mirrored2)
+
+    def flipGroup(self, group_id: str, axisPoint: np.ndarray, axisDir: np.ndarray) -> None:
+        """Alias historique de :meth:`flip_group`.
+
+        La conservation de cette signature camelCase évite de modifier les
+        consommateurs existants. La nouvelle API publique Core attend un ID de
+        groupe canonique et s'appelle ``flip_group``.
+        """
+        gid = self.find_group(str(group_id))
+        if gid not in self.groups:
+            return
+        self.flip_group(gid, axisPoint, axisDir)
 
     def elementLocalToWorld(self, element_id: str, p_local: np.ndarray | tuple[float, float]) -> np.ndarray:
         el = self.elements.get(str(element_id))
