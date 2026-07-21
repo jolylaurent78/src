@@ -390,10 +390,10 @@ def setAppConfigValue(viewer, key: str, value):
 
 def saveScenarioXml(viewer, path: str):
     """
-    Sauvegarde 'robuste' (v4) :
+    Sauvegarde XML Core-only v5 :
       - source excel, view (zoom/offset), clock (pos + hm),
       - ids restants (listbox),
-      - triangles projetes (id, topoElementId, points monde O/B/L).
+      - snapshot physique TopologyWorld et états UI persistants.
     """
     scen = viewer._get_active_scenario()
     world = scen.topoWorld
@@ -407,7 +407,7 @@ def saveScenarioXml(viewer, path: str):
         )
 
     root = ET.Element("scenario", {
-        "version": "4",
+        "version": "5",
         "saved_at": _dt.datetime.now().isoformat(timespec="seconds"),
         "topo_tx_orientation": topo_tx_orientation,
     })
@@ -417,6 +417,11 @@ def saveScenarioXml(viewer, path: str):
     # source
     ET.SubElement(root, "source", {
         "excel": os.path.abspath(viewer.excel_path) if getattr(viewer, "excel_path", None) else ""
+    })
+    ET.SubElement(root, "view", {
+        "zoom": f"{float(getattr(viewer, 'zoom', 1.0)):.6g}",
+        "offset_x": f"{float(getattr(viewer, 'offset', (0.0, 0.0))[0]):.6g}",
+        "offset_y": f"{float(getattr(viewer, 'offset', (0.0, 0.0))[1]):.6g}",
     })
 
     # map (fond) : fichier + worldRect + opacité/visibilité + scale
@@ -486,28 +491,6 @@ def saveScenarioXml(viewer, path: str):
                 ET.SubElement(lb, "tri", {"id": m.group(1)})
     except Exception as e:
         _ioWarn(viewer, "saveScenarioXml(listbox)", e)
-    # triangles posés
-    tris_xml = ET.SubElement(root, "triangles")
-    for t in (viewer._last_drawn or []):
-        topo_element_id = str(t.get("topoElementId", "") or "").strip()
-        if not topo_element_id:
-            raise ValueError(
-                f"saveScenarioXml: triangle {t.get('id', '?')} sans topoElementId."
-            )
-        if topo_element_id not in world.elements:
-            raise ValueError(
-                f"saveScenarioXml: element Core introuvable {topo_element_id!r}."
-            )
-        _rotation, _translation, core_mirrored = world.getElementPose(topo_element_id)
-        tri_el = ET.SubElement(tris_xml, "triangle", {
-            "id": str(t.get("id", "")),
-            "mirrored": "1" if core_mirrored else "0",
-            "topoElementId": topo_element_id,
-        })
-        P = t.get("pts", {})
-        for key in ("O", "B", "L"):
-            if key in P:
-                ET.SubElement(tri_el, key).text = viewer._pt_to_xml(P[key])
     # écrire
     tree = ET.ElementTree(root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -516,11 +499,11 @@ def saveScenarioXml(viewer, path: str):
 
 def loadScenarioXml(viewer, path: str):
     """
-    Recharge un scenario v4:
+    Recharge un scénario Core-only v5 :
       - tente de recharger le fichier Excel source (mode degrade si absent),
       - restaure la topologie Core depuis <topoSnapshot encoding="json">,
-      - restaure vue, horloge, listbox et triangles projetes,
-      - ignore les groupes UI legacy eventuellement presents dans un fichier v4,
+      - restaure vue, horloge et listbox,
+      - reconstruit la projection runtime depuis le Core,
       - redessine.
     """
     tree = ET.parse(path)
@@ -529,8 +512,10 @@ def loadScenarioXml(viewer, path: str):
         raise ValueError("Fichier scenario invalide (balise racine).")
 
     ver = str(root.get("version", "") or "").strip()
-    if ver != "4":
-        raise ValueError(f"Unsupported scenario version: expected 4, got {ver}.")
+    if ver != "5":
+        raise ValueError(f"Unsupported scenario version: expected 5, got {ver}.")
+    if root.find("triangles") is not None:
+        raise ValueError("Invalid scenario v5: legacy <triangles> section is forbidden.")
 
     topo_tx_orientation = str(root.get("topo_tx_orientation", "") or "").strip().lower()
     if topo_tx_orientation not in {"cw", "ccw"}:
@@ -545,17 +530,17 @@ def loadScenarioXml(viewer, path: str):
         or str(topo_snapshot_el.get("encoding", "") or "").strip().lower() != "json"
         or not topo_snapshot_txt
     ):
-        raise ValueError("Missing topoSnapshot (encoding=json) in scenario v4.")
+        raise ValueError("Missing topoSnapshot (encoding=json) in scenario v5.")
 
     snapshot = json.loads(topo_snapshot_txt)
     if not isinstance(snapshot, dict):
-        raise ValueError("Missing topoSnapshot (encoding=json) in scenario v4.")
+        raise ValueError("Missing topoSnapshot (encoding=json) in scenario v5.")
 
     scen = viewer._get_active_scenario()
     if scen is None:
-        raise ValueError("loadScenarioXml: active scenario is required for v4 load.")
+        raise ValueError("loadScenarioXml: active scenario is required for v5 load.")
 
-    # clockRef (v4 compatibility: defaults when missing/incomplete)
+    # clockRef optional: clear the runtime reference when it is incomplete.
     clock_ref_el = root.find("clockRef")
     if clock_ref_el is None:
         scen.clockRefTopoGroupId = None
@@ -666,7 +651,7 @@ def loadScenarioXml(viewer, path: str):
     viewer._clear_nearest_line()
     viewer._clear_edge_highlights()
     viewer._hide_tooltip()
-    viewer._ctx_target_idx = None
+    viewer._ctx_target_element_id = None
     viewer._edge_choice = None
     viewer._drag_preview_id = None
     viewer.canvas.delete("preview")
@@ -707,14 +692,13 @@ def loadScenarioXml(viewer, path: str):
             for tid in remain_ids:
                 viewer.listbox.insert("end", f"{int(tid):02d}.")
 
-    # 5) triangles poses (monde)
-    # MIG-XML-001 -- le Core est restaure avant toute projection Canvas.
+    # 5) Core snapshot first; the Canvas projection is rebuilt afterwards.
     from src.assembleur_core import TopologyWorld
 
     sid = str(getattr(scen, "topoScenarioId", "") or "").strip() or "SCENARIO"
-    scen.topoScenarioId = sid
-    scen.topoWorld = TopologyWorld()
-    world = scen.topoWorld
+    # Core restored in isolation; the active scenario is replaced only once
+    # the physical snapshot has been imported successfully.
+    world = TopologyWorld()
     # MIG-CAT-001 : rattache la selection globale deja chargee ; le format
     # XML reste strictement inchange.
     if hasattr(viewer, "_attach_catalog_to_world"):
@@ -762,57 +746,21 @@ def loadScenarioXml(viewer, path: str):
             "clockRef",
         )
 
-    loaded_entries = []
-    tris_xml = root.find("triangles")
-    if tris_xml is not None:
-        for t_el in tris_xml.findall("triangle"):
-            tid = int(t_el.get("id"))
-            xml_mirrored = (t_el.get("mirrored", "0") == "1")
-            P = {}
-            for k in ("O", "B", "L"):
-                n = t_el.find(k)
-                if n is not None and n.text:
-                    P[k] = viewer._xml_to_pt(n.text)
-
-            item = {
-                "id": tid,
-                "pts": P,
-            }
-            topo_element_id = str(t_el.get("topoElementId", "") or "").strip()
-            if not topo_element_id:
-                # Compatibilite temporaire v4 : id catalogue 28 -> element T28.
-                # Ce seul pont historique disparaitra avec les fichiers v4
-                # depourvus de topoElementId.
-                topo_element_id = "T" + f"{tid:02d}"
-            if topo_element_id not in world.elements:
-                raise ValueError(
-                    f"Triangle {tid} references missing topoElementId {topo_element_id}."
-                )
-            item["topoElementId"] = topo_element_id
-            # Le snapshot Core est autoritaire. L'attribut XML historique est
-            # seulement valide ici et ne revient jamais dans la projection.
-            _rotation, _translation, core_mirrored = world.getElementPose(topo_element_id)
-            if bool(core_mirrored) != bool(xml_mirrored):
-                APP_LOGGER.warning(
-                    "loadScenarioXml: mirrored XML/Core divergent triangle=%s element=%s xml=%s core=%s",
-                    tid,
-                    topo_element_id,
-                    bool(xml_mirrored),
-                    bool(core_mirrored),
-                )
-            loaded_entries.append(item)
-
-    viewer.canvas_objects.replace_all(loaded_entries)
+    # The XML contains no projection. A v5 load is always editable manually.
+    scen.topoScenarioId = sid
+    scen.topoWorld = world
+    scen.source_type = "manual"
+    scen.algo_id = None
+    scen.tri_ids = []
+    scen.orderedElementIds = []
+    scen.first_triangle_id = None
+    scen.traversal_direction = None
+    scen.status = None
+    viewer.canvas_objects.clear()
+    scen.last_drawn = []
+    viewer._rebuild_active_projection_from_core()
     viewer.canvas_objects.dump(APP_LOGGER, "chargement XML")
-
-    # 5bis) Les labels sont restaures dans le snapshot TopologyWorld et lus
-    # depuis TopologyElement.vertex_labels par le rendu. Aucune copie UI.
-
-    # 5ter) La disponibilite est derivee de TopologyWorld par la listbox.
     viewer._update_triangle_listbox_colors()
-
-    # MIG-XML-001 -- <groups> est une projection v4 legacy volontairement
-    # ignoree : aucun viewer.groups, group_id, edge_in/out ou _next_group_id.
 
     scen.clockAzimuthTraits = []
     ref_az = float(getattr(viewer, "_clock_ref_azimuth_deg", 0.0)) % 360.0

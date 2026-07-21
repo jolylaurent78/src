@@ -44,7 +44,7 @@ Le contrat normal est désormais :
   `mirrored`; aucune sortie moderne de `toLegacyDict()` ne la produit.
 - Les clés `topoGroupId` des guides, de l'horloge et des traits sont hors
   `last_drawn` et restent des références Core propres à ces structures.
-- `last_drawn_local` est explicitement hors périmètre.
+- L'ancien cache local AUTO est explicitement hors périmètre.
 
 ## Validation
 

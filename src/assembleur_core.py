@@ -240,7 +240,8 @@ class ScenarioAssemblage:
         self.algo_id: Optional[str] = algo_id    # id de l'algo (pour les auto)
         self.tri_ids: List[int] = list(tri_ids) if tri_ids is not None else []
         # Métadonnées de génération : elles appartiennent au scénario auto,
-        # jamais au TopologyWorld. ``tri_ids`` reste l'ordre de référence.
+        # jamais au TopologyWorld. ``tri_ids`` contient des rangs métier de
+        # simulation, jamais une identité géométrique ou Core.
         self.first_triangle_id: Optional[int] = (
             int(first_triangle_id) if first_triangle_id is not None else
             (int(self.tri_ids[0]) if self.tri_ids else None)

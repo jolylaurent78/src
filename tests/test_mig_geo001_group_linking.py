@@ -16,8 +16,6 @@ class _StatusStub:
 def _make_viewer_with_one_core_group():
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer._last_drawn = [{
-        "id": 1,
-        "labels": ("O", "B", "L"),
         "pts": {"O": (0.0, 0.0), "B": (3.0, 0.0), "L": (0.0, 4.0)},
         "topoElementId": "T01",
     }]
@@ -42,17 +40,14 @@ def _make_viewer_with_one_core_group():
 def _make_ctrl_move_group_viewer(*, include_second_member=True):
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     first = {
-        "id": 1,
         "topoElementId": "T01",
         "pts": {"O": [0.0, 0.0], "B": [3.0, 0.0], "L": [0.0, 4.0]},
     }
     second = {
-        "id": 2,
         "topoElementId": "T02",
         "pts": {"O": [5.0, 0.0], "B": [8.0, 0.0], "L": [5.0, 4.0]},
     }
     outsider = {
-        "id": 3,
         "topoElementId": "T03",
         "pts": {"O": [10.0, 0.0], "B": [13.0, 0.0], "L": [10.0, 4.0]},
     }
@@ -229,6 +224,8 @@ def test_chemin_context_resolves_core_group_without_ui_groups():
         toNodeId = "T01:N1"
 
     class _World:
+        elements = {"T01": object()}
+
         def get_group_of_element(self, element_id):
             assert element_id == "T01"
             return "G-CORE"
@@ -246,12 +243,11 @@ def test_chemin_context_resolves_core_group_without_ui_groups():
 
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     world = _World()
-    viewer._last_drawn = [{"topoElementId": "T01"}]
     viewer.scenarios = [SimpleNamespace(topoWorld=world)]
     viewer.active_scenario_index = 0
     viewer._screen_to_world = lambda x, y: (x, y)
 
-    viewer._ctx_capture_chemin_context(0, 4.0, 0.0)
+    viewer._ctx_capture_chemin_context("T01", 4.0, 0.0)
 
     assert viewer.ctxGroupId == "G-CORE"
     assert viewer.ctxStartNodeId == "CANON:T01:N1"
@@ -364,7 +360,7 @@ def test_rotate_and_flip_prepare_members_from_core_group():
     viewer.zoom = 1.0
     viewer._ctx_last_rclick = (0.0, 0.0)
 
-    viewer._ctx_target_idx = 0
+    viewer._ctx_target_element_id = "T01"
     viewer._ctx_rotate_selected()
 
     assert viewer._sel["core_group_id"] == core_group_id
@@ -372,7 +368,7 @@ def test_rotate_and_flip_prepare_members_from_core_group():
     assert "orig_group_pts" not in viewer._sel
     assert set(viewer._sel["rotate_preview_initial_pts"]) == {"T01"}
 
-    viewer._ctx_target_idx = 0
+    viewer._ctx_target_element_id = "T01"
     viewer._ctx_flip_selected()
 
     assert viewer._get_core_element_mirrored("T01") is True

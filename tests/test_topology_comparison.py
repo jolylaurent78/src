@@ -75,7 +75,7 @@ def test_attachment_difference_returns_endpoint_elements():
 def test_same_scenario_has_no_core_comparison_difference():
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     scenario = ScenarioAssemblage("auto", source_type="auto")
-    scenario.last_drawn = [{"id": 1, "topoElementId": "T01"}]
+    scenario.last_drawn = [{"topoElementId": "T01"}]
     viewer.scenarios = [scenario]
     viewer.active_scenario_index = 0
     viewer.ref_scenario_token = id(scenario)
@@ -183,7 +183,7 @@ def test_prefix_steps_have_no_link_for_zero_or_one_triangle_and_none_when_missin
     assert build_topology_prefix_steps(world, ["T01", "T02"], 1) is None
 
 
-def test_viewer_core_prefix_steps_uses_tri_ids_and_attachments_without_groups():
+def test_viewer_core_prefix_steps_uses_ordered_element_ids_and_attachments_without_groups():
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     scenario = ScenarioAssemblage("auto", source_type="auto", tri_ids=[1, 2])
     scenario.groups = None
@@ -191,6 +191,8 @@ def test_viewer_core_prefix_steps_uses_tri_ids_and_attachments_without_groups():
         {"id": 1, "topoElementId": "T01"},
         {"id": 2, "topoElementId": "T02"},
     ]
+    scenario.orderedElementIds = ["T01", "T02"]
+    scenario.topoWorld.elements.update({"T01": object(), "T02": object()})
     scenario.topoWorld.attachments = {
         "A001": _attachment(
             "edge-edge", TopologyFeatureType.EDGE, "T01", 0,
@@ -204,13 +206,15 @@ def test_viewer_core_prefix_steps_uses_tri_ids_and_attachments_without_groups():
 
 
 def test_prefix_filter_keeps_only_candidates_with_same_ordered_core_path():
-    def scenario(name, tri_ids, attachment):
-        item = ScenarioAssemblage(name, source_type="auto", tri_ids=tri_ids)
+    def scenario(name, ordered_element_ids, attachment):
+        item = ScenarioAssemblage(name, source_type="auto", tri_ids=[1, 2])
         item.groups = None
         item.last_drawn = [
             {"id": 1, "topoElementId": "T01"},
             {"id": 2, "topoElementId": "T02"},
         ]
+        item.orderedElementIds = list(ordered_element_ids)
+        item.topoWorld.elements.update({"T01": object(), "T02": object()})
         item.topoWorld.attachments = {"A001": attachment}
         return item
 
@@ -218,9 +222,9 @@ def test_prefix_filter_keeps_only_candidates_with_same_ordered_core_path():
         "edge-edge", TopologyFeatureType.EDGE, "T01", 0,
         TopologyFeatureType.EDGE, "T02", 1, {"mapping": "direct"},
     )
-    active = scenario("active", [1, 2], shared)
-    same_path = scenario("same", [1, 2], shared)
-    different_path = scenario("different", [2, 1], shared)
+    active = scenario("active", ["T01", "T02"], shared)
+    same_path = scenario("same", ["T01", "T02"], shared)
+    different_path = scenario("different", ["T02", "T01"], shared)
     manual = ScenarioAssemblage("manual", source_type="manual", tri_ids=[])
 
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
@@ -229,9 +233,46 @@ def test_prefix_filter_keeps_only_candidates_with_same_ordered_core_path():
     viewer._refresh_scenario_listbox = lambda: None
     viewer._set_active_scenario = lambda index: None
 
-    viewer._filter_auto_scenarios_by_prefix_edges(2)
+    viewer._filter_auto_scenarios_by_prefix_edges("T02")
 
     assert viewer.scenarios == [active, same_path, manual]
+
+
+def test_prefix_filter_accepts_the_first_ordered_element_without_attachment_step():
+    def scenario(name, ordered_element_ids):
+        item = ScenarioAssemblage(name, source_type="auto", tri_ids=[1, 2])
+        item.orderedElementIds = list(ordered_element_ids)
+        item.topoWorld.elements.update({"T01": object(), "T02": object()})
+        return item
+
+    active = scenario("active", ["T01", "T02"])
+    same_prefix = scenario("same", ["T01", "T02"])
+    other_prefix = scenario("other", ["T02", "T01"])
+    manual = ScenarioAssemblage("manual", source_type="manual")
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.scenarios = [active, same_prefix, other_prefix, manual]
+    viewer.active_scenario_index = 0
+    viewer._refresh_scenario_listbox = lambda: None
+    viewer._set_active_scenario = lambda _index: None
+
+    viewer._filter_auto_scenarios_by_prefix_edges("T01")
+
+    assert viewer.scenarios == [active, same_prefix, manual]
+
+
+def test_prefix_steps_reject_invalid_ordered_element_ids():
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    scenario = ScenarioAssemblage("auto", source_type="auto")
+    scenario.topoWorld.elements.update({"T01": object()})
+
+    scenario.orderedElementIds = ["T01", "T01"]
+    assert viewer._scenario_prefix_edge_steps(scenario, 0) is None
+
+    scenario.orderedElementIds = ["T01", "T02"]
+    assert viewer._scenario_prefix_edge_steps(scenario, 1) is None
+
+    scenario.orderedElementIds = ["T01"]
+    assert viewer._scenario_prefix_edge_steps(scenario, 1) is None
 
 
 def test_vertex_move_resolution_uses_dsu_node_and_existing_core_group_without_mutation():
@@ -240,8 +281,8 @@ def test_vertex_move_resolution_uses_dsu_node_and_existing_core_group_without_mu
     scenario.topoWorld = world
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer._last_drawn = [
-        {"id": 1, "topoElementId": "T01", "pts": {}},
-        {"id": 2, "topoElementId": "T02", "pts": {}},
+        {"topoElementId": "T01", "pts": {}},
+        {"topoElementId": "T02", "pts": {}},
     ]
     viewer.canvas_objects = CanvasObjectsCollection(viewer._last_drawn)
     viewer._last_drawn = viewer.canvas_objects.entries

@@ -36,9 +36,9 @@ def _viewer_with_group():
     world.setElementPose("T03", np.eye(2), np.array((30.0, 40.0)), mirrored=False)
 
     entries = [
-        {"id": 1, "topoElementId": "T01", "pts": {"O": (-99, -99)}},
-        {"id": 2, "topoElementId": "T02", "pts": {"O": (-98, -98)}},
-        {"id": 3, "topoElementId": "T03", "pts": {"O": (-97, -97)}},
+        {"topoElementId": "T01", "pts": {"O": (-99, -99)}},
+        {"topoElementId": "T02", "pts": {"O": (-98, -98)}},
+        {"topoElementId": "T03", "pts": {"O": (-97, -97)}},
     ]
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer.canvas_objects = CanvasObjectsCollection(entries)
@@ -154,7 +154,6 @@ def test_automatic_move_commit_uses_the_shared_core_first_path():
     viewer.auto_geom_state = {"ox": 10.0, "oy": -4.0, "thetaDeg": 0.0}
     viewer.scenarios = []
     viewer._is_active_auto_scenario = lambda: True
-    viewer._autoEnsureLocalGeometry = lambda _scen: None
     viewer._get_active_scenario = lambda: SimpleNamespace(source_type="auto")
 
     viewer._move_group_world("G-AUTO", 2.5, -3.0)

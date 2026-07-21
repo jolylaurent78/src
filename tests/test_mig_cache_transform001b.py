@@ -32,9 +32,9 @@ def _viewer_with_group():
     world.setElementPose("T02", np.eye(2), np.array((8.0, -3.0)), mirrored=False)
     world.setElementPose("T03", np.eye(2), np.array((30.0, 40.0)), mirrored=False)
     entries = [
-        {"id": 1, "topoElementId": "T01", "pts": {"O": (-99, -99)}},
-        {"id": 2, "topoElementId": "T02", "pts": {"O": (-98, -98)}},
-        {"id": 3, "topoElementId": "T03", "pts": {"O": (-97, -97)}},
+        {"topoElementId": "T01", "pts": {"O": (-99, -99)}},
+        {"topoElementId": "T02", "pts": {"O": (-98, -98)}},
+        {"topoElementId": "T03", "pts": {"O": (-97, -97)}},
     ]
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer.canvas_objects = CanvasObjectsCollection(entries)

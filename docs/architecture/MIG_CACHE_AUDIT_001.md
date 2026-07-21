@@ -332,11 +332,10 @@ du cache ne doit le restaurer.
 
 ## 5. Données hors entrée à ne pas confondre
 
-### 5.1 `ScenarioAssemblage.last_drawn_local`
+### 5.1 Ancien cache local AUTO
 
-`last_drawn_local` est un attribut **du scénario**, non une clé de chacune de
-ses entrées. `_autoEnsureLocalGeometry()` construit une copie locale et
-`_autoRebuildWorldGeometryScenario()` peut encore reconstruire les points monde
+L'ancien cache local AUTO était un attribut **du scénario**, non une clé de chacune de
+ses entrées. Il pouvait construire une copie locale puis reconstruire les points monde
 par transformation (`assembleur_tk.py:4497-4572`). Les transformations AUTO
 Core-first récentes l'appellent encore comme filet de compatibilité autour de
 `auto_geom_state` (`8917+`, `8978+`, `9253+`).
@@ -399,7 +398,7 @@ réalisées par le présent audit.
 | `labels` | Rendu et chargement dégradé doivent connaître une API catalogue/Core à partir de `topoElementId` ou du `id` catalogue. |
 | `id` | Remplacer listbox, mots, filtres et XML par une consultation des métadonnées catalogue du `TopologyElement`. |
 | `pts` | Aucune suppression tant qu'il existe Canvas/PDF/hit-test/XML ; le but est de le traiter comme cache reconstruisible. |
-| `last_drawn_local` | Remplacer les derniers aperçus AUTO par snapshots/projections Core. |
+| ancien cache local AUTO | Supprimé : les aperçus AUTO proviennent des projections Core. |
 
 ## 8. Fonctions bloquantes à traiter avant un nettoyage complet
 
@@ -413,9 +412,8 @@ réalisées par le présent audit.
    10677+`) : exige `pts` et `labels` dans le cache.
 4. `_rebuild_pick_cache()` / hit-test (`5117-5145`, `7649+`) : exige `pts` ;
    il s'agit d'un consommateur légitime de cache UI, pas d'une violation Core.
-5. `_autoEnsureLocalGeometry()` et `_autoRebuildWorldGeometryScenario()`
-   (`4497-4572`) : reliquat `last_drawn_local` qui doit être isolé avant que
-   la projection automatique soit exclusivement Core -> UI.
+5. Les anciens helpers de géométrie locale AUTO ont été supprimés : la projection
+   automatique est désormais exclusivement Core -> UI.
 6. Les aperçus de drag/rotation (`9398-9510`) : écrire temporairement `pts`
    est légitime visuellement, mais ils doivent continuer à être encadrés par
    projection/annulation Core.
@@ -476,8 +474,8 @@ CanvasObjectsCollection
    faible ; migrer F11 et tests avant les producteurs.
 2. **CLEANUP-001B — rendre `mirrored` XML/Core-first.** Risque moyen, car le
    round-trip XML doit rester compatible.
-3. **CLEANUP-002 — isoler/supprimer `last_drawn_local`.** Risque élevé :
-   concerne les scénarios AUTO et leurs aperçus.
+3. **CLEANUP-002 — supprimer l'ancien cache local AUTO.** Terminé : les
+   scénarios AUTO et leurs aperçus sont projetés depuis le Core.
 4. **CLEANUP-003 — réduire `labels` et `id` à une projection de catalogue.**
    Risque moyen à élevé : listbox, dictionnaire, XML et mode dégradé.
 5. **CLEANUP-004 — formaliser une unique `rebuild_last_drawn_from_core()`.**

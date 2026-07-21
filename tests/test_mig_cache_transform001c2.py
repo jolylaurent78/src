@@ -31,8 +31,8 @@ def _viewer_with_group():
     world.setElementPose("T02", np.eye(2), np.array((9.0, 4.0)), mirrored=True)
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer.canvas_objects = CanvasObjectsCollection([
-        {"id": 1, "topoElementId": "T01", "pts": {}},
-        {"id": 2, "topoElementId": "T02", "pts": {}},
+        {"topoElementId": "T01", "pts": {}},
+        {"topoElementId": "T02", "pts": {}},
     ])
     viewer._last_drawn = viewer.canvas_objects.entries
     viewer.scenarios = [SimpleNamespace(topoWorld=world, source_type="manual")]
@@ -84,7 +84,7 @@ def test_manual_orient_north_commits_core_once_and_overwrites_divergent_cache():
     projected = []
     original_project = viewer._project_core_group_to_last_drawn
     viewer._project_core_group_to_last_drawn = lambda w, gid: (projected.append(gid), original_project(w, gid))[1]
-    viewer._ctx_target_idx = 0
+    viewer._ctx_target_element_id = "T01"
 
     viewer._ctx_orient_OL_north()
 
@@ -112,11 +112,12 @@ def test_auto_orient_north_commits_a_core_first_global_rotation():
     world = TopologyWorld()
     group_id = world.add_element_as_new_group(_element("T01"))
     viewer.canvas_objects = CanvasObjectsCollection([
-        {"id": 1, "topoElementId": "T01", "pts": {}},
+        {"topoElementId": "T01", "pts": {}},
     ])
     viewer._last_drawn = viewer.canvas_objects.entries
     viewer.scenarios = [SimpleNamespace(
         topoWorld=world, source_type="auto", last_drawn=viewer._last_drawn,
+        orderedElementIds=["T01"],
     )]
     viewer.active_scenario_index = 0
     viewer.auto_geom_state = {"ox": 0.0, "oy": 0.0, "thetaDeg": 0.0}
@@ -130,7 +131,7 @@ def test_auto_orient_north_commits_a_core_first_global_rotation():
     viewer._redraw_from = lambda _entries: None
     viewer._simulationPersistCurrentAutoPlacement = lambda **_kwargs: None
     viewer.status = SimpleNamespace(config=lambda **_kwargs: None)
-    viewer._ctx_target_idx = 0
+    viewer._ctx_target_element_id = "T01"
 
     viewer._ctx_orient_OL_north()
 

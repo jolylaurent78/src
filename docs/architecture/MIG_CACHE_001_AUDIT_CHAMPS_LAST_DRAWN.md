@@ -240,7 +240,7 @@ strictement géométrique : la projection est encore source de la pose.
 
 1. **Double autorité de pts** : l'UI écrit les points, puis les synchronise dans le Core. Un rebuild immédiat les écraserait tant que ce flux subsiste.
 2. **Projection auto incomplète** : buildLegacyLastDrawnFromTopology() ne recalcule pas les points depuis le Core ; il ne dérive actuellement que topoGroupId.
-3. **last_drawn_local + auto_geom_state** : les scénarios automatiques portent encore une géométrie locale et une transformation globale hors Core (assembleur_tk.py:4365-4445).
+3. **Ancien cache local AUTO + auto_geom_state** : les scénarios automatiques portaient une géométrie locale et une transformation globale hors Core.
 4. **XML v4** : le chargeur restaure le snapshot Core, mais adopte ensuite les points XML ; la SPEC devra fixer leur rôle de compatibilité.
 5. **Lecteurs nombreux de pts** : rendu, hit-test, snap, EdgeChoice, bbox, fond, PDF et debug. Une première projection reconstruite peut conserver leur contrat de lecture avant de les migrer un par un.
 
@@ -260,4 +260,3 @@ La migration fonctionnelle devra donc inverser le flux :
 Après cette inversion, pts et mirrored seront des valeurs de cache,
 topoGroupId et orient pourront être retirés, et topoElementId restera la
 référence minimale de chaque objet affiché.
-

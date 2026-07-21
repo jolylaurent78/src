@@ -27,8 +27,8 @@ def _viewer_with_group():
     world.setElementPose("T02", np.eye(2), np.array((7.0, -1.0)), mirrored=True)
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer.canvas_objects = CanvasObjectsCollection([
-        {"id": 1, "topoElementId": "T01", "pts": {}},
-        {"id": 2, "topoElementId": "T02", "pts": {}},
+        {"topoElementId": "T01", "pts": {}},
+        {"topoElementId": "T02", "pts": {}},
     ])
     viewer._last_drawn = viewer.canvas_objects.entries
     viewer.scenarios = [SimpleNamespace(topoWorld=world, source_type="manual")]
@@ -47,7 +47,7 @@ def test_manual_flip_uses_core_once_and_preserves_cache_mirrored_field():
     calls = []
     original_flip = world.flip_group
     world.flip_group = lambda *args: (calls.append(args), original_flip(*args))[1]
-    viewer._ctx_target_idx = 0
+    viewer._ctx_target_element_id = "T01"
 
     viewer._ctx_flip_selected()
 
@@ -71,9 +71,9 @@ def test_double_manual_flip_returns_exact_core_geometry():
     }
     mirrored_before = {element.element_id: world.getElementPose(element.element_id)[2] for element in (first, second)}
 
-    viewer._ctx_target_idx = 0
+    viewer._ctx_target_element_id = "T01"
     viewer._ctx_flip_selected()
-    viewer._ctx_target_idx = 0
+    viewer._ctx_target_element_id = "T01"
     viewer._ctx_flip_selected()
 
     for element in (first, second):
@@ -95,7 +95,7 @@ def test_auto_flip_remains_disabled_without_core_change():
     viewer, world, _group_id, _first, _second = _viewer_with_group()
     viewer._is_active_auto_scenario = lambda: True
     before = world.getElementPose("T01")
-    viewer._ctx_target_idx = 0
+    viewer._ctx_target_element_id = "T01"
 
     viewer._ctx_flip_selected()
 

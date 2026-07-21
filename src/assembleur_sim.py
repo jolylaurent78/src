@@ -23,6 +23,7 @@ from src.assembleur_edgechoice import (
     EdgeChoiceEpts,
     buildEdgeChoiceEptsForAutoChain,
 )
+from src.assembleur_projection import buildLastDrawnFromTopology
 
 EPS_WORLD = 1e-6
 
@@ -56,10 +57,7 @@ class PlacedTriangle:
         )
 
     def toLegacyDict(self) -> Dict:
-        entry = {
-            "pts": self.points,
-            "id": self.triangleId,
-        }
+        entry = {"pts": self.points}
         if self.topologyElementId is not None:
             entry["topoElementId"] = self.topologyElementId
         return entry
@@ -129,33 +127,6 @@ class BranchState:
     def __post_init__(self) -> None:
         self.orderedElementIds = list(self.orderedElementIds)
         self.tailElementId = self.orderedElementIds[-1] if self.orderedElementIds else None
-
-
-def buildLegacyLastDrawnFromTopology(
-    *,
-    topologyWorld: TopologyWorld,
-    orderedElementIds: List[str],
-    placedTriangles: PlacedTriangles,
-) -> List[Dict]:
-    """Projette les triangles depuis la topologie Core, sans groupe UI legacy."""
-    # Le paramètre est conservé pour la compatibilité de l'API de projection.
-    # L'ordre ne sert plus à numéroter artificiellement les groupes UI.
-    last_drawn: List[Dict] = []
-    for tid, triangle in enumerate(placedTriangles):
-        element_id = str(triangle.topologyElementId or "").strip()
-        if not element_id:
-            raise ValueError(f"buildLegacyLastDrawnFromTopology: projection tid={tid} sans topoElementId")
-        if element_id not in topologyWorld.elements:
-            raise ValueError(
-                f"buildLegacyLastDrawnFromTopology: élément Core introuvable: {element_id}"
-            )
-        if topologyWorld.get_group_of_element(element_id) is None:
-            raise ValueError(
-                f"buildLegacyLastDrawnFromTopology: groupe Core absent pour {element_id}"
-            )
-        entry = triangle.toLegacyDict()
-        last_drawn.append(entry)
-    return last_drawn
 
 
 # ============================================================
@@ -807,10 +778,9 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 scen.topoWorld = topoWorld_scen
                 scen.orderedElementIds = list(ordered_element_ids)
 
-                scen.last_drawn = buildLegacyLastDrawnFromTopology(
+                scen.last_drawn = buildLastDrawnFromTopology(
                     topologyWorld=topoWorld_scen,
-                    orderedElementIds=ordered_element_ids,
-                    placedTriangles=placed_triangles,
+                    elementIds=ordered_element_ids,
                 )
             out.append(scen)
             return out
@@ -846,7 +816,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 mirrored=bool(t2.get("mirrored", False)),
             ),
         ])
-        
+
         def _orient_O_to_L_north(P: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
             P = {k: np.array(P[k], dtype=float) for k in ("O", "B", "L")}
             vOL = P["L"] - P["O"]
@@ -1315,10 +1285,9 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             scen.topoScenarioId = topoScenarioId
             scen.orderedElementIds = list(state.orderedElementIds)
 
-            last_drawn = buildLegacyLastDrawnFromTopology(
+            last_drawn = buildLastDrawnFromTopology(
                 topologyWorld=topoWorld_leaf,
-                orderedElementIds=state.orderedElementIds,
-                placedTriangles=placed_triangles,
+                elementIds=state.orderedElementIds,
             )
             scen.last_drawn = last_drawn
 

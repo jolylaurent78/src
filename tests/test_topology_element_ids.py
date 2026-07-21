@@ -23,10 +23,10 @@ from src.assembleur_sim import (
     MoteurSimulationAssemblage,
     PlacedTriangle,
     PlacedTriangles,
-    buildLegacyLastDrawnFromTopology,
     _BranchNode,
     createTopoQuadrilateral,
 )
+from src.assembleur_projection import buildLastDrawnFromTopology
 from src.assembleur_tk import TriangleViewerManual
 from src.canvas_objects_collection import CanvasObjectsCollection
 
@@ -227,7 +227,7 @@ def test_auto_scenarios_reconstruct_connections_from_core_attachments():
     assert len(scenarios) >= 2
 
 
-def test_auto_two_triangle_scenario_exposes_legacy_projection_dicts():
+def test_auto_two_triangle_scenario_exposes_core_projection_dicts():
     viewer = SimpleNamespace(df=pd.DataFrame([
         {"id": 1, "len_OB": 3.0, "len_OL": 4.0, "len_BL": 5.0, "orient": "CCW", "B": "B1", "L": "L1"},
         {"id": 2, "len_OB": 3.0, "len_OL": 4.0, "len_BL": 5.0, "orient": "CCW", "B": "B2", "L": "L2"},
@@ -241,13 +241,14 @@ def test_auto_two_triangle_scenario_exposes_legacy_projection_dicts():
     assert scenarios[0].groups == {}
     for entry in scenarios[0].last_drawn:
         assert isinstance(entry, dict)
-        assert {"pts", "id", "topoElementId"} <= entry.keys()
-        assert not {"labels", "orient", "topoGroupId", "mirrored", "group_id"}.intersection(entry)
+        assert {"pts", "topoElementId"} <= entry.keys()
+        assert not {"id", "labels", "orient", "topoGroupId", "mirrored", "group_id"}.intersection(entry)
         assert set(entry["pts"]) == {"O", "B", "L"}
-        assert tuple(scenarios[0].topoWorld.elements[entry["topoElementId"]].vertex_labels) == (
+        element = scenarios[0].topoWorld.elements[entry["topoElementId"]]
+        assert tuple(element.vertex_labels) == (
             "Bourges",
-            f"B{entry['id']}",
-            f"L{entry['id']}",
+            f"B{element.meta['triRank']}",
+            f"L{element.meta['triRank']}",
         )
 
 
@@ -257,7 +258,9 @@ def test_simulator_exposes_no_legacy_group_projection_helpers():
 
 
 def test_scenario_assembly_defaults_to_an_empty_construction_order():
-    assert ScenarioAssemblage("manual").orderedElementIds == []
+    scenario = ScenarioAssemblage("manual")
+    assert scenario.orderedElementIds == []
+    assert not hasattr(scenario, "last" + "_drawn_local")
 
 
 def test_branch_state_derives_tail_from_its_own_ordered_element_ids():
@@ -309,12 +312,10 @@ def test_placed_triangles_preserves_entry_format_and_clones_branch_data():
     assert placed.toLegacyList() == [
         {
             "pts": {"O": [0.0, 0.0]},
-            "id": 1,
             "topoElementId": "T01",
         },
         {
             "pts": {"O": [1.0, 0.0]},
-            "id": 2,
             "topoElementId": "T02",
         },
     ]
@@ -334,7 +335,6 @@ def test_placed_triangle_ignores_obsolete_chain_keys_on_import_and_export():
 
     assert triangle.toLegacyDict() == {
         "pts": {"O": [0.0, 0.0]},
-        "id": 1,
     }
 
 
@@ -351,10 +351,9 @@ def test_placed_triangle_ignores_legacy_group_id_on_import_and_export():
 
     world = TopologyWorld()
     world.add_element_as_new_group(_element(element_id="T01"))
-    last_drawn = buildLegacyLastDrawnFromTopology(
+    last_drawn = buildLastDrawnFromTopology(
         topologyWorld=world,
-        orderedElementIds=["T01"],
-        placedTriangles=PlacedTriangles([triangle]),
+        elementIds=["T01"],
     )
     assert "group_id" not in last_drawn[0]
     assert not {"orient", "topoGroupId", "mirrored"}.intersection(last_drawn[0])
@@ -380,10 +379,9 @@ def test_last_drawn_resolves_its_group_from_current_core(monkeypatch):
     ])
 
     monkeypatch.setattr(world, "get_group_of_element", lambda _element_id: "G-PROJECTED")
-    last_drawn = buildLegacyLastDrawnFromTopology(
+    last_drawn = buildLastDrawnFromTopology(
         topologyWorld=world,
-        orderedElementIds=["T01"],
-        placedTriangles=placed,
+        elementIds=["T01"],
     )
 
     assert "group_id" not in last_drawn[0]
@@ -473,7 +471,7 @@ def test_manual_placement_keeps_catalog_id_separate_from_core_instance_id():
     place(1)
     place(2)
     assert [entry["topoElementId"] for entry in viewer._last_drawn] == ["T01", "T02"]
-    assert [entry["id"] for entry in viewer._last_drawn] == [1, 2]
+    assert all("id" not in entry for entry in viewer._last_drawn)
     assert all("group_id" not in entry for entry in viewer._last_drawn)
     assert viewer.groups == {}
     for entry in viewer._last_drawn:
@@ -566,12 +564,12 @@ def test_core_resolves_vertex_nodes_without_exposing_id_construction_to_ui():
 
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     assert viewer._resolve_hover_vertex_node_id(
-        entry={"id": 1, "topoElementId": "T27"},
+        entry={"topoElementId": "T27"},
         vertex_key="O",
         world=world,
     ) == element.vertexes[1].node_id
     assert viewer._resolve_hover_vertex_node_id(
-        entry={"id": 1, "topoElementId": "T999"},
+        entry={"topoElementId": "T999"},
         vertex_key="O",
         world=world,
     ) is None

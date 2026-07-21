@@ -2,6 +2,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import numpy as np
+import pytest
 import src.assembleur_tk as assembleur_tk
 
 from src.assembleur_core import ScenarioAssemblage, TopologyElement, TopologyWorld
@@ -57,6 +58,13 @@ class _Viewer:
     def _get_active_scenario(self):
         return self.scenarios[self.active_scenario_index]
 
+    _bind_canvas_objects = TriangleViewerManual._bind_canvas_objects
+    _strip_core_duplicates_from_last_drawn_entry = staticmethod(
+        TriangleViewerManual._strip_core_duplicates_from_last_drawn_entry
+    )
+    _build_scenario_projection_from_core = TriangleViewerManual._build_scenario_projection_from_core
+    _rebuild_active_projection_from_core = TriangleViewerManual._rebuild_active_projection_from_core
+
     def _pt_to_xml(self, point):
         return f"{float(point[0])},{float(point[1])}"
 
@@ -106,7 +114,6 @@ def _world_with_t28():
 
 def _entry():
     return {
-        "id": 28,
         "topoElementId": "T28",
         "pts": {
             "O": np.array([0.0, 0.0]),
@@ -116,32 +123,24 @@ def _entry():
     }
 
 
-def test_xml_core_first_load_legacy_id_then_round_trip(tmp_path):
+def test_xml_v5_persists_only_the_core_and_rebuilds_projection(tmp_path):
     source = tmp_path / "source.xml"
     viewer = _Viewer(_world_with_t28(), [_entry()])
     saveScenarioXml(viewer, str(source))
 
     tree = ET.parse(source)
     root = tree.getroot()
-    triangle = root.find("./triangles/triangle")
-    assert triangle is not None
-    assert triangle.get("topoElementId") == "T28"
-
-    # Existing v4 compatibility: no topoElementId and unusable legacy groups.
-    del triangle.attrib["topoElementId"]
-    groups = ET.SubElement(root, "groups")
-    ET.SubElement(groups, "group", {"id": "99"})
-    ET.SubElement(groups[-1], "node", {"tid": "not-an-index", "edge_in": "INVALID"})
-    words = ET.SubElement(root, "words")
-    ET.SubElement(words, "w", {"tri_id": "28", "row": "1", "col": "2", "text": "obsolete"})
-    legacy = tmp_path / "legacy-v4.xml"
-    tree.write(legacy, encoding="utf-8", xml_declaration=True)
+    assert root.get("version") == "5"
+    assert root.find("triangles") is None
+    assert root.find("topoSnapshot") is not None
+    assert root.find("view") is not None
 
     loaded = _Viewer(TopologyWorld(), [])
-    loadScenarioXml(loaded, str(legacy))
+    loadScenarioXml(loaded, str(source))
 
     assert len(loaded._last_drawn) == 1
     assert loaded._last_drawn[0]["topoElementId"] == "T28"
+    assert "id" not in loaded._last_drawn[0]
     assert loaded._last_drawn[0]["topoElementId"] in loaded._get_active_scenario().topoWorld.elements
     assert "group_id" not in loaded._last_drawn[0]
     assert not {"labels", "orient", "topoGroupId", "mirrored"}.intersection(loaded._last_drawn[0])
@@ -152,17 +151,28 @@ def test_xml_core_first_load_legacy_id_then_round_trip(tmp_path):
     saveScenarioXml(loaded, str(saved))
     saved_root = ET.parse(saved).getroot()
     saved_text = saved.read_text(encoding="utf-8")
-    saved_triangle = saved_root.find("./triangles/triangle")
-    assert saved_triangle.get("topoElementId") == "T28"
+    assert saved_root.get("version") == "5"
+    assert saved_root.find("triangles") is None
     assert saved_root.find("groups") is None
     assert saved_root.find("words") is None
-    assert saved_triangle.get("group") is None
     assert "edge_in" not in saved_text
     assert "edge_out" not in saved_text
 
     reloaded = _Viewer(TopologyWorld(), [])
     loadScenarioXml(reloaded, str(saved))
     assert reloaded._last_drawn[0]["topoElementId"] == "T28"
+
+
+def test_xml_v5_rejects_legacy_triangles_section(tmp_path):
+    source = tmp_path / "source.xml"
+    saveScenarioXml(_Viewer(_world_with_t28(), [_entry()]), str(source))
+    tree = ET.parse(source)
+    ET.SubElement(tree.getroot(), "triangles")
+    legacy_only = tmp_path / "invalid-v5.xml"
+    tree.write(legacy_only, encoding="utf-8", xml_declaration=True)
+
+    with pytest.raises(ValueError, match="legacy <triangles>"):
+        loadScenarioXml(_Viewer(TopologyWorld(), []), str(legacy_only))
 
 
 def test_xml_mirrored_round_trip_uses_core_without_cache_duplication(tmp_path):
@@ -173,9 +183,7 @@ def test_xml_mirrored_round_trip_uses_core_without_cache_duplication(tmp_path):
     path = tmp_path / "mirrored.xml"
     saveScenarioXml(viewer, str(path))
 
-    triangle = ET.parse(path).getroot().find("./triangles/triangle")
-    assert triangle is not None
-    assert triangle.get("mirrored") == "1"
+    assert ET.parse(path).getroot().find("triangles") is None
     assert "mirrored" not in viewer._last_drawn[0]
 
     reloaded = _Viewer(TopologyWorld(), [])
@@ -185,7 +193,7 @@ def test_xml_mirrored_round_trip_uses_core_without_cache_duplication(tmp_path):
     assert "mirrored" not in reloaded._last_drawn[0]
 
 
-def test_xml_core_first_loads_repository_v4_scenario_without_ui_groups(tmp_path):
+def test_xml_core_first_rejects_repository_v4_scenario_without_topology_ids():
     legacy_xml = (
         Path(__file__).resolve().parents[1]
         / "scenario"
@@ -193,25 +201,8 @@ def test_xml_core_first_loads_repository_v4_scenario_without_ui_groups(tmp_path)
     )
     viewer = _Viewer(TopologyWorld(), [])
 
-    loadScenarioXml(viewer, str(legacy_xml))
-
-    assert len(viewer._last_drawn) == 32
-    assert not hasattr(viewer, "groups")
-    assert all(
-        entry["topoElementId"] in viewer._get_active_scenario().topoWorld.elements
-        for entry in viewer._last_drawn
-    )
-
-    saved = tmp_path / "repository-round-trip.xml"
-    saveScenarioXml(viewer, str(saved))
-    saved_triangles = ET.parse(saved).getroot().findall("./triangles/triangle")
-    assert len(saved_triangles) == 32
-    assert all(triangle.get("topoElementId") for triangle in saved_triangles)
-    assert ET.parse(saved).getroot().find("groups") is None
-
-    reloaded = _Viewer(TopologyWorld(), [])
-    loadScenarioXml(reloaded, str(saved))
-    assert len(reloaded._last_drawn) == 32
+    with pytest.raises(ValueError, match="expected 5"):
+        loadScenarioXml(viewer, str(legacy_xml))
 
 
 def test_f11_geo_orient_dump_contains_core_and_projection_diagnostics(tmp_path):

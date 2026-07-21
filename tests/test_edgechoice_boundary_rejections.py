@@ -122,12 +122,10 @@ def test_snap_loop_continues_after_unrepresentable_boundary_candidate(monkeypatc
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer._last_drawn = [
         {
-            "group_id": 1,
             "topoElementId": "T02",
             "pts": {"O": (0.0, 0.0), "B": (3.0, 0.0), "L": (0.0, 4.0)},
         },
         {
-            "group_id": 2,
             "topoElementId": "T01",
             "pts": {"O": (10.0, 0.0), "B": (13.0, 0.0), "L": (10.0, 4.0)},
         },

@@ -30,8 +30,8 @@ def _viewer_with_split_groups():
 
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer.canvas_objects = CanvasObjectsCollection([
-        {"id": 1, "topoElementId": "T01", "pts": {}},
-        {"id": 2, "topoElementId": "T02", "pts": {}},
+        {"topoElementId": "T01", "pts": {}},
+        {"topoElementId": "T02", "pts": {}},
     ])
     viewer._last_drawn = viewer.canvas_objects.entries
     viewer.scenarios = [SimpleNamespace(topoWorld=world)]

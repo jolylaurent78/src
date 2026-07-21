@@ -27,8 +27,8 @@ def _viewer_with_group():
     world.setElementPose("T02", np.eye(2), np.array((0.0, 3.0)), mirrored=False)
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer.canvas_objects = CanvasObjectsCollection([
-        {"id": 1, "topoElementId": "T01", "pts": {}},
-        {"id": 2, "topoElementId": "T02", "pts": {}},
+        {"topoElementId": "T01", "pts": {}},
+        {"topoElementId": "T02", "pts": {}},
     ])
     viewer._last_drawn = viewer.canvas_objects.entries
     viewer.scenarios = [SimpleNamespace(topoWorld=world, source_type="manual")]
@@ -152,7 +152,7 @@ def test_automatic_rotate_motion_is_preview_only():
     viewer.offset = np.array((0.0, 0.0))
     viewer.zoom = 1.0
     viewer.canvas_objects = CanvasObjectsCollection([
-        {"id": 1, "topoElementId": "T01", "pts": {
+        {"topoElementId": "T01", "pts": {
             "O": np.array((1.0, 0.0)), "B": np.array((2.0, 0.0)), "L": np.array((1.0, 1.0)),
         }},
     ])

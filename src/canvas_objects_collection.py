@@ -7,6 +7,7 @@ la liste projetée et ses index de navigation.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Dict, Iterable, Iterator, Optional
 
 
@@ -28,15 +29,26 @@ class _ObservableEntries(list):
     def _changed(self) -> None:
         self._owner._rebuild_indexes()
 
+    def _validate_replacement(self, replacement) -> list:
+        candidate = list(replacement)
+        self._owner._validate_entries(candidate)
+        return candidate
+
     def append(self, entry) -> None:
+        self._validate_replacement([*self, entry])
         super().append(entry)
         self._changed()
 
     def extend(self, entries) -> None:
-        super().extend(entries)
+        added = list(entries)
+        self._validate_replacement([*self, *added])
+        super().extend(added)
         self._changed()
 
     def insert(self, index, entry) -> None:
+        candidate = list(self)
+        candidate.insert(index, entry)
+        self._validate_replacement(candidate)
         super().insert(index, entry)
         self._changed()
 
@@ -54,6 +66,9 @@ class _ObservableEntries(list):
         self._changed()
 
     def __setitem__(self, index, value) -> None:
+        candidate = list(self)
+        candidate[index] = value
+        self._validate_replacement(candidate)
         super().__setitem__(index, value)
         self._changed()
 
@@ -62,7 +77,9 @@ class _ObservableEntries(list):
         self._changed()
 
     def __iadd__(self, entries):
-        result = super().__iadd__(entries)
+        added = list(entries)
+        self._validate_replacement([*self, *added])
+        result = super().__iadd__(added)
         self._changed()
         return result
 
@@ -76,9 +93,10 @@ class CanvasObjectsCollection:
 
     def __init__(self, entries: Optional[Iterable[dict]] = None):
         self._by_topology_id: Dict[str, tuple[int, dict]] = {}
-        self._by_triangle_id: Dict[str, tuple[int, dict]] = {}
         self._revision = 0
-        self._entries = _ObservableEntries(self, entries or ())
+        initial_entries = list(entries or ())
+        self._validate_entries(initial_entries)
+        self._entries = _ObservableEntries(self, initial_entries)
         self._rebuild_indexes()
 
     @property
@@ -103,17 +121,6 @@ class CanvasObjectsCollection:
     def get_index_by_topology_id(self, topology_id: str) -> int | None:
         self._rebuild_indexes()
         item = self._by_topology_id.get(str(topology_id or "").strip())
-        return None if item is None else item[0]
-
-    def get_by_triangle_id(self, triangle_id) -> dict | None:
-        self._rebuild_indexes()
-        item = self._by_triangle_id.get(str(triangle_id))
-        return None if item is None else item[1]
-
-    def get_index_by_triangle_id(self, triangle_id) -> int | None:
-        """Retourne l'index de l'entree associee a l'ID catalogue."""
-        self._rebuild_indexes()
-        item = self._by_triangle_id.get(str(triangle_id))
         return None if item is None else item[0]
 
     def get_many_by_topology_ids(
@@ -147,37 +154,11 @@ class CanvasObjectsCollection:
             indexed_entries.append(item)
         return tuple(indexed_entries)
 
-    def get_many_by_triangle_ids(
-        self,
-        triangle_ids,
-        *,
-        strict: bool = False,
-    ) -> tuple[dict, ...]:
-        """Resout plusieurs IDs catalogue en conservant ordre et doublons."""
-        self._rebuild_indexes()
-        entries = []
-        for triangle_id in triangle_ids or ():
-            item = self._by_triangle_id.get(str(triangle_id))
-            if item is None:
-                if strict:
-                    raise KeyError(f"triangle_id absent: {triangle_id!r}")
-                continue
-            entries.append(item[1])
-        return tuple(entries)
-
     def iter_indexed(self, *, reverse: bool = False) -> Iterator[tuple[int, dict]]:
         """Itere sur ``(index, entree)`` sans copier la collection."""
         indices = range(len(self._entries) - 1, -1, -1) if reverse else range(len(self._entries))
         for index in indices:
             yield index, self._entries[index]
-
-    def triangle_ids(self) -> tuple:
-        """Retourne les IDs catalogue presents, dans l'ordre de projection."""
-        return tuple(
-            entry["id"]
-            for entry in self._entries
-            if isinstance(entry, dict) and entry.get("id") is not None
-        )
 
     def topology_ids(self) -> tuple[str, ...]:
         """Retourne les IDs topologiques normalises, dans l'ordre de projection."""
@@ -234,7 +215,9 @@ class CanvasObjectsCollection:
         )
 
     def replace_all(self, entries: Iterable[dict]) -> None:
-        self._entries[:] = list(entries)
+        replacement = list(entries)
+        self._validate_entries(replacement)
+        self._entries[:] = replacement
 
     def clear(self) -> None:
         self._entries.clear()
@@ -253,9 +236,8 @@ class CanvasObjectsCollection:
             for index, entry in enumerate(self._entries):
                 if isinstance(entry, dict):
                     logger.debug(
-                        "[%03d] triangle=%s topo=%s",
+                        "[%03d] topo=%s",
                         index,
-                        entry.get("id"),
                         entry.get("topoElementId"),
                     )
                 else:
@@ -263,28 +245,81 @@ class CanvasObjectsCollection:
             logger.debug("Topology index")
             for topology_id, (index, _entry) in self._by_topology_id.items():
                 logger.debug("%s -> %s", topology_id, index)
-            logger.debug("Triangle index")
-            for triangle_id, (index, _entry) in self._by_triangle_id.items():
-                logger.debug("%s -> %s", triangle_id, index)
         except Exception:
             # Instrumentation pure : un dump ne doit jamais interrompre l'UI.
             return
 
+    def validate_against_world(self, topology_world) -> None:
+        """Valide le contrat minimal d'une projection contre son monde Core.
+
+        Ce contrôle explicite est destiné aux tests et aux diagnostics : il ne
+        modifie ni la collection ni le monde.
+        """
+        self._validate_entries(self._entries)
+        elements = getattr(topology_world, "elements", None)
+        if not isinstance(elements, dict):
+            raise TypeError("CanvasObjectsCollection: TopologyWorld invalide")
+        for entry in self._entries:
+            topology_id = str(entry["topoElementId"]).strip()
+            if topology_id not in elements:
+                raise ValueError(
+                    "CanvasObjectsCollection: topoElementId absent du Core: "
+                    f"{topology_id!r}"
+                )
+            points = entry.get("pts")
+            if not isinstance(points, dict) or set(points) != {"O", "B", "L"}:
+                raise ValueError(
+                    "CanvasObjectsCollection: pts doit contenir exactement O, B et L"
+                )
+            for vertex_name in ("O", "B", "L"):
+                try:
+                    coordinates = tuple(points[vertex_name])
+                except TypeError as exc:
+                    raise ValueError(
+                        f"CanvasObjectsCollection: point {vertex_name} invalide"
+                    ) from exc
+                if len(coordinates) != 2 or not all(
+                    math.isfinite(float(value)) for value in coordinates
+                ):
+                    raise ValueError(
+                        f"CanvasObjectsCollection: point {vertex_name} invalide"
+                    )
+
     def _rebuild_indexes(self) -> None:
         self._by_topology_id = {}
-        self._by_triangle_id = {}
         for index, entry in enumerate(self._entries):
             if not isinstance(entry, dict):
                 continue
             topology_id = str(entry.get("topoElementId", "") or "").strip()
             if topology_id:
                 self._by_topology_id.setdefault(topology_id, (index, entry))
-            triangle_id = entry.get("id")
-            if triangle_id is not None:
-                self._by_triangle_id.setdefault(str(triangle_id), (index, entry))
         self._revision += 1
 
     @staticmethod
     def _validate(entry: dict) -> None:
         if not isinstance(entry, dict):
             raise TypeError("CanvasObjectsCollection: une entree doit etre un dictionnaire")
+        forbidden_fields = {
+            "id", "orient", "mirrored", "group_id", "topoGroupId", "labels",
+        }
+        present_forbidden_fields = forbidden_fields.intersection(entry)
+        if present_forbidden_fields:
+            raise ValueError(
+                "CanvasObjectsCollection: champs legacy interdits: "
+                f"{sorted(present_forbidden_fields)!r}"
+            )
+        topology_id = str(entry.get("topoElementId", "") or "").strip()
+        if not topology_id:
+            raise ValueError("CanvasObjectsCollection: topoElementId obligatoire")
+
+    @classmethod
+    def _validate_entries(cls, entries: Iterable[dict]) -> None:
+        seen_topology_ids = set()
+        for entry in entries:
+            cls._validate(entry)
+            topology_id = str(entry["topoElementId"]).strip()
+            if topology_id in seen_topology_ids:
+                raise ValueError(
+                    f"CanvasObjectsCollection: topoElementId dupliqué: {topology_id!r}"
+                )
+            seen_topology_ids.add(topology_id)

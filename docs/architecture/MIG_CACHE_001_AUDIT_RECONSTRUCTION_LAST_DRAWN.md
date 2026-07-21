@@ -101,8 +101,8 @@ Ces APIs suffisent à reconstruire une géométrie monde par élément. Elles ne
 |---|---|---|---|
 | assembleur_sim.py | buildLegacyLastDrawnFromTopology() | convertit PlacedTriangles en dictionnaires et calcule topoGroupId depuis le Core | moyenne : prouve le contrat de sortie, mais réutilise les points déjà portés par PlacedTriangle |
 | assembleur_sim.py | PlacedTriangle.toLegacyDict() | adapte une projection de simulation au dictionnaire UI | faible à moyenne : pas de calcul Core → points |
-| assembleur_tk.py | _autoEnsureLocalGeometry() | construit last_drawn_local depuis la projection auto existante | faible : source encore UI |
-| assembleur_tk.py | _autoRebuildWorldGeometryScenario() | applique auto_geom_state à last_drawn_local puis réécrit pts | moyenne : mécanisme de rebuild UI, mais source locale hors Core |
+| assembleur_tk.py | ancien cache local AUTO | mécanisme historique de projection locale | supprimé : la projection est désormais Core-first |
+| assembleur_tk.py | ancien rebuild AUTO | réécrivait les points depuis un état local | supprimé : la projection est désormais Core-first |
 | assembleur_tk.py | _redraw_from() | dessine une projection fournie | élevée : consommateur naturel d'un nouveau rebuild |
 | assembleur_tk.py | _get_projected_elements_for_core_group() | résout Core group → entrées Canvas par topoElementId | élevée comme façade de lecture après rebuild |
 | assembleur_io.py | loadScenarioXml() | remplit la projection depuis XML et rattache les IDs au Core | faible : conserve des points XML comme autorité de fait |
@@ -122,7 +122,7 @@ Conclusion : il existe des briques de conversion et de rendu, mais pas encore un
 | assembleur_tk.py | _ctx_flip_selected() | reflète pts et bascule mirrored | UI → Core |
 | assembleur_tk.py | collage/commit dans _on_canvas_left_up() | applique la transformation rigide finale aux entrées mobiles | UI → Core |
 | assembleur_tk.py | dégroupage / application du résultat Core | remplace ou répartit des projections et synchronise les poses | mixte, encore couplé |
-| assembleur_tk.py | _autoRebuildWorldGeometryScenario() | recalcule pts auto à partir de last_drawn_local et auto_geom_state | UI auto → Core via _autoSyncAllTopoPoses() |
+| assembleur_tk.py | ancien rebuild AUTO | recalculait les points depuis un état local | supprimé |
 | assembleur_io.py | loadScenarioXml() | construit pts depuis XML | XML projection → Core déjà importé |
 | assembleur_sim.py | création de branches / PlacedTriangles | conserve points de simulation | simulation → projection ; poses Core sont aussi posées |
 | canvas_objects_collection.py | add/remove/replace_all/remove_many | structure de collection, pas points | infrastructure |
@@ -220,7 +220,7 @@ Les poses Core sont persistées dans topoSnapshot ; le rebuild sera donc stable 
 | annotations textuelles historiques | supprimées du runtime | sans objet |
 | état de sélection/drag | hors Core | faible : doit être invalidé après rebuild |
 | caches écran | hors Core | faible : recalculer |
-| géométrie locale auto | aujourd'hui last_drawn_local | fort : auto_geom_state doit être absorbé par des poses Core ou rester explicitement un transform de vue |
+| géométrie locale auto | ancien cache local AUTO | supprimé : les poses Core sont désormais l'autorité |
 | anciennes projections XML | points XML encore lus | moyen : caractériser la réconciliation Core/points |
 
 ### 7.3 Risques majeurs

@@ -59,6 +59,11 @@ from src.assembleur_topology_comparison import (
     differing_attachment_element_ids,
 )
 from src.canvas_objects_collection import CanvasObjectsCollection
+from src.assembleur_projection import (
+    buildLastDrawnFromTopology,
+    getCoreTriangleWorldPoints,
+    getManualProjectionElementIds,
+)
 
 
 EPS_WORLD = 1e-6
@@ -411,7 +416,9 @@ class TriangleViewerManual(
             "ASSEMBLEUR_DEBUG_GEO_ORIENT", ""
         ) in ("1", "true", "True")
 
-        self._ctx_target_idx = None    # index du triangle visé par clic droit (menu contextuel)
+        # ElementID Core du triangle visé par clic droit (menu contextuel).
+        # Un index UI ne vit que pendant le hit-test et n'est jamais persisté.
+        self._ctx_target_element_id: Optional[str] = None
         self._ctx_last_rclick = None   # dernière position écran du clic droit (pour pivoter)
         self._ctx_nearest_vertex_key = None  # 'O'|'B'|'L' sommet le plus proche du clic droit
         self._ctx_compass_idx_clear_traits: int | None = None
@@ -684,7 +691,7 @@ class TriangleViewerManual(
     def _strip_core_duplicates_from_last_drawn_entry(entry: Dict) -> None:
         """Retire les anciennes copies Core d'une entree de projection."""
         if isinstance(entry, dict):
-            for key in ("orient", "topoGroupId", "mirrored", "group_id", "labels"):
+            for key in ("id", "orient", "topoGroupId", "mirrored", "group_id", "labels"):
                 entry.pop(key, None)
 
     def _get_active_core_group_id_for_entry(self, entry: Dict) -> Optional[str]:
@@ -757,53 +764,7 @@ class TriangleViewerManual(
         element_id: str,
     ) -> Dict[str, np.ndarray]:
         """Lit les sommets monde d'un triangle exclusivement depuis le Core."""
-        key = str(element_id or "").strip()
-        if world is None:
-            raise RuntimeError("[MIG-CACHE-TRANSFORM-001C2] TopologyWorld absent")
-        if not key:
-            raise ValueError("[MIG-CACHE-TRANSFORM-001C2] topoElementId absent")
-        element = world.elements.get(key)
-        if element is None:
-            raise KeyError(
-                f"[MIG-CACHE-TRANSFORM-001C2] élément Core absent: {key!r}"
-            )
-
-        vertex_key_by_type = {
-            TopologyNodeType.OUVERTURE: "O",
-            TopologyNodeType.BASE: "B",
-            TopologyNodeType.LUMIERE: "L",
-        }
-        points: Dict[str, np.ndarray] = {}
-        for vertex_index, vertex_type in enumerate(element.vertex_types):
-            point_key = vertex_key_by_type.get(vertex_type)
-            if point_key is None:
-                continue
-            if point_key in points:
-                raise ValueError(
-                    f"[MIG-CACHE-TRANSFORM-001C2] type sommet dupliqué "
-                    f"{point_key!r} pour {key}"
-                )
-            local_xy = element.vertex_local_xy.get(vertex_index)
-            if local_xy is None:
-                raise ValueError(
-                    f"[MIG-CACHE-TRANSFORM-001C2] coordonnée locale absente "
-                    f"element={key} vertex_index={vertex_index}"
-                )
-            world_xy = np.asarray(element.localToWorld(local_xy), dtype=float)
-            if world_xy.shape != (2,) or not np.all(np.isfinite(world_xy)):
-                raise ValueError(
-                    f"[MIG-CACHE-TRANSFORM-001C2] coordonnée monde invalide "
-                    f"element={key} vertex={point_key}"
-                )
-            points[point_key] = np.array(world_xy, dtype=float, copy=True)
-
-        missing = {"O", "B", "L"}.difference(points)
-        if missing:
-            raise ValueError(
-                f"[MIG-CACHE-TRANSFORM-001C2] types sommets manquants "
-                f"element={key}: {sorted(missing)}"
-            )
-        return points
+        return getCoreTriangleWorldPoints(world, element_id)
 
     def _get_core_group_world_centroid(
         self,
@@ -886,8 +847,7 @@ class TriangleViewerManual(
     ) -> str:
         """Construit le label UX depuis ``triRank`` et la pose Core.
 
-        ``entry["id"]`` reste une compatibilite de projection mais ne participe
-        jamais au texte rouge affiche sur le Canvas ou dans le PDF.
+        Le rang n'est jamais dupliqué dans la projection : il reste lu dans le Core.
         """
         element = self._get_core_element_from_last_drawn_entry(entry, world)
         element_id = str((entry or {}).get("topoElementId", "") or "").strip()
@@ -980,23 +940,54 @@ class TriangleViewerManual(
             projected.append(entry)
         return tuple(projected)
 
-    def _project_auto_scenario_from_core(self, scen: ScenarioAssemblage) -> None:
-        """Régénère le cache d'un scénario AUTO depuis son propre Core."""
-        if scen is None or getattr(scen, "source_type", "manual") != "auto":
-            return
+    def _build_scenario_projection_from_core(self, scen: ScenarioAssemblage) -> list[dict]:
+        """Construit une projection neuve sans lire le cache du scénario."""
+        if scen is None:
+            raise ValueError("[MIG-CACHE-REBUILD-003] scénario absent")
         world = getattr(scen, "topoWorld", None)
         if world is None:
-            raise RuntimeError("[MIG-CACHE-TRANSFORM-001H] TopologyWorld AUTO absent")
-        is_active = scen is self._get_active_scenario()
-        collection = (
-            self.canvas_objects
-            if is_active
-            else CanvasObjectsCollection(getattr(scen, "last_drawn", None) or ())
+            raise RuntimeError("[MIG-CACHE-REBUILD-003] TopologyWorld absent")
+        if getattr(scen, "source_type", "manual") == "auto":
+            element_ids = list(getattr(scen, "orderedElementIds", None) or ())
+        else:
+            element_ids = getManualProjectionElementIds(world)
+        return buildLastDrawnFromTopology(
+            topologyWorld=world,
+            elementIds=element_ids,
         )
-        for core_group_id in world.getLiveGroupIds():
-            self._project_core_group_to_collection(world, str(core_group_id), collection)
-        if is_active:
-            scen.last_drawn = self._last_drawn
+
+    def _rebuild_active_projection_from_core(self) -> None:
+        """Remplace le cache actif par une projection entièrement issue du Core."""
+        scen = self._get_active_scenario()
+        if scen is None:
+            raise RuntimeError("[MIG-CACHE-REBUILD-003] scénario actif absent")
+        world = getattr(scen, "topoWorld", None)
+        previous_count = len(getattr(scen, "last_drawn", None) or ())
+        projection = self._build_scenario_projection_from_core(scen)
+        self._bind_canvas_objects(projection)
+        self.canvas_objects.validate_against_world(world)
+        scen.last_drawn = self._last_drawn
+        MIG_GEO_LOGGER.debug(
+            "[MIG-CACHE] projection rebuilt from Core scenario=%s source_type=%s "
+            "groups=%s elements=%s previous_cache_entries=%s rebuilt_entries=%s",
+            getattr(scen, "name", "<sans nom>"),
+            getattr(scen, "source_type", "manual"),
+            len(world.getLiveGroupIds()),
+            len(world.elements),
+            previous_count,
+            len(projection),
+        )
+
+    def _project_auto_scenario_from_core(self, scen: ScenarioAssemblage) -> None:
+        """Régénère le cache AUTO depuis son monde et son ordre Core explicite."""
+        if scen is None or getattr(scen, "source_type", "manual") != "auto":
+            return
+        if scen is self._get_active_scenario():
+            self._rebuild_active_projection_from_core()
+            return
+        projection = self._build_scenario_projection_from_core(scen)
+        CanvasObjectsCollection(projection).validate_against_world(scen.topoWorld)
+        scen.last_drawn = projection
 
     def _project_all_auto_scenarios_from_core(self) -> None:
         """Régénère chaque cache AUTO après un commit global Core-first."""
@@ -1116,8 +1107,10 @@ class TriangleViewerManual(
                         core_group_id = "<invalide>"
 
                 triangle_el = ET.SubElement(debug_el, "Triangle", {
-                    "triangleId": str((entry or {}).get("id", "<absent>")),
                     "topoElementId": topo_element_id or "<absent>",
+                    "triangleRank": str(
+                        (getattr(element, "meta", {}) or {}).get("triRank", "<absent>")
+                    ),
                     "coreGroupId": core_group_id,
                 })
 
@@ -1513,7 +1506,7 @@ class TriangleViewerManual(
                 scen.name = f"Auto #{count_auto + k + 1}"
             self.scenarios.append(scen)
 
-        # AUTO: construire géométrie locale + init transform global (commun)
+        # AUTO: initialiser le repère global depuis le Core, puis projeter.
         self._autoInitFromGeneratedScenarios(base_idx, order)
 
         # Persister le repère auto initial (carte, ordre) après génération
@@ -2286,30 +2279,7 @@ class TriangleViewerManual(
         scen_lb_frame = tk.Frame(self._ui_scenarios_content, bd=0, highlightthickness=0)
         scen_lb_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
 
-        # Liste des scénarios (Treeview) : groupes Manuels / Automatiques
-        # + colonnes de propriétés calculées sur l'assemblage final.
-
-        # Spécification extensible des colonnes (ajout facile de nouvelles propriétés)
-        # - getter(scen) doit retourner une string affichable ;
-        #   en cas de valeur indéfinie, retourner "".
-        self._scenario_prop_specs = [
-            {
-                "id": "dist_km",
-                "title": "D(km)",
-                "width": 80,
-                "anchor": "center",
-                "getter": self._scenarioPropDistanceKm,
-            },
-            {
-                "id": "az_deg",
-                "title": "Az(°)",
-                "width": 70,
-                "anchor": "center",
-                "getter": self._scenarioPropAzimuthDeltaDeg,
-            },
-        ]
-
-        columns = tuple([c["id"] for c in self._scenario_prop_specs])
+        # Liste des scénarios : groupes Manuels / Automatiques et colonne #0.
 
         # IMPORTANT:
         # - ttk ajoute une indentation (~20px) pour les items enfants => gros espace avant l'icône.
@@ -2319,7 +2289,6 @@ class TriangleViewerManual(
 
         self.scenario_tree = ttk.Treeview(
             scen_lb_frame,
-            columns=columns,
             show="tree headings",
             selectmode="browse",
             height=6,
@@ -2335,21 +2304,6 @@ class TriangleViewerManual(
             command=lambda c="#0": self._scenarioTreeSortBy(c),
         )
         self.scenario_tree.column("#0", width=230, stretch=True, anchor="w")
-
-        # Colonnes propriétés
-        for spec in self._scenario_prop_specs:
-            cid = spec["id"]
-            self.scenario_tree.heading(
-                cid,
-                text=str(spec.get("title", cid)),
-                command=lambda c=cid: self._scenarioTreeSortBy(c),
-            )
-            self.scenario_tree.column(
-                cid,
-                width=int(spec.get("width", 70)),
-                stretch=False,
-                anchor=str(spec.get("anchor", "center")),
-            )
 
         # Scrollbar verticale (toujours visible)
         # IMPORTANT: garder une référence (sinon GC => scrollbar détruite et elle "disparaît")
@@ -2667,17 +2621,7 @@ class TriangleViewerManual(
                 text = "★ " + text
             img = self.icon_scen_manual if scen.source_type == "manual" else self.icon_scen_auto
 
-            # Valeurs des colonnes additionnelles (propriétés calculées)
-            values = []
-            for spec in (self._scenario_prop_specs or []):
-                getter = spec.get("getter")
-                if callable(getter):
-                    v = getter(scen)
-                    values.append("" if v is None else str(v))
-                else:
-                    values.append("")
-
-            kwargs = {"text": text, "tags": tags, "values": tuple(values)}
+            kwargs = {"text": text, "tags": tags}
             if img is not None:
                 kwargs["image"] = img
             tree.insert(parent, tk.END, iid=iid, **kwargs)
@@ -4041,18 +3985,9 @@ class TriangleViewerManual(
         tc.supprimerChemin()
         self.refreshCheminTreeView()
 
-    # =========================
-    # Scénarios: propriétés calculées (Treeview)
-    # =========================
-
     def _scenarioTreeSortBy(self, col_id: str):
-        """Tri au clic sur une colonne de la Treeview Scénarios.
-
-        - Trie séparément dans chaque groupe (Manuels / Automatiques).
-        - Tri numérique pour D(km)/Az(°) quand possible.
-        - Les valeurs vides sont toujours envoyées en bas.
-        """
-        if not hasattr(self, "scenario_tree"):
+        """Trie séparément Manuels et Automatiques sur la colonne ID (#0)."""
+        if col_id != "#0" or not hasattr(self, "scenario_tree"):
             return
         tree = self.scenario_tree
 
@@ -4071,29 +4006,13 @@ class TriangleViewerManual(
             m = re.match(r"^#(\d+)", s)
             return int(m.group(1)) if m else None
 
-        def _coerceKey(val: str):
-            s = str(val or "").strip()
-            if s == "":
-                return (1, 0.0, "")  # vide => en bas
-            # numérique si possible
-            try:
-                return (0, float(s.replace(",", ".")), "")
-            except Exception:
-                return (0, 0.0, s.lower())
-
         def _itemKey(iid: str):
-            if col_id == "#0":
-                txt = tree.item(iid, "text")
-                did = _parseDisplayIdFromText(txt)
-                if did is None:
-                    # fallback string (vide en bas)
-                    s = str(txt or "").strip()
-                    if s == "":
-                        return (1, 0.0, "")
-                    return (0, 0.0, s.lower())
-                return (0, float(did), "")
-            else:
-                return _coerceKey(tree.set(iid, col_id))
+            txt = tree.item(iid, "text")
+            did = _parseDisplayIdFromText(txt)
+            if did is None:
+                s = str(txt or "").strip()
+                return (1, 0.0, "") if s == "" else (0, 0.0, s.lower())
+            return (0, float(did), "")
 
         # Trier dans chaque groupe sans casser la structure
         for parent in ("grp_manual", "grp_auto"):
@@ -4110,129 +4029,11 @@ class TriangleViewerManual(
             for pos, iid in enumerate(kids_sorted):
                 tree.move(iid, parent, pos)
 
-        # Optionnel: petit indicateur ▲/▼ sur l'en-tête trié
+        # Indicateur ▲/▼ sur l'unique en-tête trié.
         base_id_title = "ID"
         tree.heading("#0", text=base_id_title, command=lambda c="#0": self._scenarioTreeSortBy(c))
-        for spec in (self._scenario_prop_specs or []):
-            cid = spec.get("id")
-            if not cid:
-                continue
-            title = str(spec.get("title", cid))
-            tree.heading(cid, text=title, command=lambda c=cid: self._scenarioTreeSortBy(c))
-
         arrow = " ▼" if bool(self._scenario_tree_sort_reverse) else " ▲"
-        if self._scenario_tree_sort_col == "#0":
-            tree.heading("#0", text=base_id_title + arrow, command=lambda c="#0": self._scenarioTreeSortBy(c))
-        elif self._scenario_tree_sort_col:
-            # retrouver le titre de la colonne
-            title = None
-            for spec in (self._scenario_prop_specs or []):
-                if spec.get("id") == self._scenario_tree_sort_col:
-                    title = str(spec.get("title", self._scenario_tree_sort_col))
-                    break
-            if title is None:
-                title = str(self._scenario_tree_sort_col)
-            tree.heading(self._scenario_tree_sort_col, text=title + arrow,
-                         command=lambda c=self._scenario_tree_sort_col: self._scenarioTreeSortBy(c))
-
-    def _scenarioGetFirstLastTriangles(self, scen):
-        """Retourne (t_first, t_last) en se basant sur scen.tri_ids (ordre d'assemblage).
-
-        Contrat: en fin d'assemblage, ces triangles doivent exister et contenir les clés 'pts' avec 'L' et 'B'.
-        """
-        if scen is None:
-            return (None, None)
-
-        last_drawn = getattr(scen, "last_drawn", None)
-        tri_ids = list(getattr(scen, "tri_ids", None) or [])
-        if not last_drawn or not tri_ids:
-            return (None, None)
-
-        first_id = int(tri_ids[0])
-        last_id = int(tri_ids[-1])
-
-        t_first = None
-        t_last = None
-        for t in last_drawn:
-            tid = t.get("id")
-            if tid is None:
-                continue
-            if int(tid) == first_id:
-                t_first = t
-            if int(tid) == last_id:
-                t_last = t
-
-        if t_first is None or t_last is None:
-            raise RuntimeError(
-                f"scenarioGetFirstLastTriangles: triangles introuvables dans last_drawn (first={first_id}, last={last_id})"
-            )
-        return (t_first, t_last)
-
-    def _scenarioPropDistanceKm(self, scen) -> str:
-        """Distance (km) entre les 2 points de Lumière libres: L du 1er triangle et L du dernier triangle.
-
-        - Nécessite une carte chargée + calibration Lambert.
-        - Affichage: 1 décimale, toujours positive.
-        - Si pas de carte: retourne "".
-        """
-        # Pas de carte => pas de distance (par design)
-        if self._bg is None:
-            return ""
-
-        (t_first, t_last) = self._scenarioGetFirstLastTriangles(scen)
-        if t_first is None or t_last is None:
-            return ""
-
-        P1 = (t_first.get("pts") or {}).get("L")
-        P2 = (t_last.get("pts") or {}).get("L")
-        if P1 is None or P2 is None:
-            raise RuntimeError("scenarioPropDistanceKm: point 'L' manquant sur first/last")
-
-        x1_km, y1_km = self._bgWorldToLambertKm(float(P1[0]), float(P1[1]))
-        x2_km, y2_km = self._bgWorldToLambertKm(float(P2[0]), float(P2[1]))
-        d = math.hypot(x2_km - x1_km, y2_km - y1_km)
-        return f"{abs(d):.1f}"
-
-    def _scenarioPropAzimuthDeltaDeg(self, scen) -> str:
-        """Différence d'azimut (degrés) entre LB du 1er triangle et LB du dernier triangle.
-
-        - Ordre strict L -> B.
-        - 0° = Nord, sens horaire.
-        - Normalisé sur [0..360).
-        - Si azimut indéterminé (points confondus): retourne "".
-        """
-        (t_first, t_last) = self._scenarioGetFirstLastTriangles(scen)
-        if t_first is None or t_last is None:
-            return ""
-
-        P1 = t_first.get("pts") or {}
-        P2 = t_last.get("pts") or {}
-        if "L" not in P1 or "B" not in P1 or "L" not in P2 or "B" not in P2:
-            raise RuntimeError("scenarioPropAzimuthDeltaDeg: points 'L'/'B' manquants sur first/last")
-
-        a1 = self._azimuthDegFromWorld(P1["L"], P1["B"])
-        a2 = self._azimuthDegFromWorld(P2["L"], P2["B"])
-        if a1 is None or a2 is None:
-            return ""
-        d = (float(a2) - float(a1)) % 360.0
-        return f"{d:.1f}"
-
-    def _azimuthDegFromWorld(self, p1, p2) -> Optional[float]:
-        """Azimut absolu en degrés pour le segment p1->p2.
-
-        - p1/p2 sont des points en coordonnées monde.
-        - 0° = Nord (axe +Y), 90° = Est (axe +X).
-        Retourne None si les points sont confondus.
-        """
-        x1, y1 = float(p1[0]), float(p1[1])
-        x2, y2 = float(p2[0]), float(p2[1])
-        dx = x2 - x1
-        dy = y2 - y1
-        if abs(dx) < 1e-12 and abs(dy) < 1e-12:
-            return None
-        # atan2(E, N) => 0° au Nord, sens horaire
-        ang = math.degrees(math.atan2(dx, dy)) % 360.0
-        return float(ang)
+        tree.heading("#0", text=base_id_title + arrow, command=lambda c="#0": self._scenarioTreeSortBy(c))
 
     def _bgWorldToLambertKm(self, wx: float, wy: float) -> Tuple[float, float]:
         """Convertit un point monde -> Lambert93 (km), en tenant compte du redimensionnement/déplacement du fond.
@@ -4545,134 +4346,61 @@ class TriangleViewerManual(
         scen = self._get_active_scenario()
         return bool(scen is not None and getattr(scen, "source_type", "manual") == "auto")
 
-    def _autoGetAnchorWorld(self, scen):
-        """Retourne l'ancre monde (sommet L du triangle de référence).
-
-        IMPORTANT:
-        - Ne pas se baser sur l'ordre de `last_drawn`, qui peut varier.
-        - On se base sur `scen.tri_ids` (ordre d'assemblage) et on retrouve le triangle correspondant dans `last_drawn`.
-        """
-        if scen is None or not getattr(scen, "last_drawn", None):
-            return None
-
-        tri_ids = list(getattr(scen, "tri_ids", None) or [])
-
-        tid_ref = None
-        if tri_ids:
-            tid_ref = tri_ids[0]
-
-        t_ref = None
-        if tid_ref is not None:
-            for t in scen.last_drawn:
-                if int(t.get("id", -1)) == int(tid_ref):
-                    t_ref = t
-                    break
-
-        """
-        if t_ref is None:
-            # fallback legacy: premier/dernier de last_drawn
-            idx = 0 if str(order) == "forward" else (len(scen.last_drawn) - 1)
-            idx = max(0, min(int(idx), len(scen.last_drawn) - 1))
-            t_ref = scen.last_drawn[idx]
-        """
-
-        P = (t_ref or {}).get("pts", {})
-        if "L" not in P:
-            return None
-        return np.array(P["L"], dtype=float)
-
-    def _autoEnsureLocalGeometry(self, scen):
-        """Construit scen.last_drawn_local si absent (coords relatives à l'ancre L_ref)."""
+    def _auto_get_anchor_world_from_core(self, scen: ScenarioAssemblage) -> np.ndarray:
+        """Lit l'ancre AUTO (sommet ``L`` du premier ElementID construit) depuis le Core."""
         if scen is None or getattr(scen, "source_type", "manual") != "auto":
-            return
-        if getattr(scen, "last_drawn_local", None) is not None:
-            return
-        anchor = self._autoGetAnchorWorld(scen)
+            raise ValueError("[MIG-GEO-001] scénario AUTO invalide pour l'ancre")
+        world = getattr(scen, "topoWorld", None)
+        if world is None:
+            raise RuntimeError("[MIG-GEO-001] TopologyWorld AUTO absent")
+        ordered_element_ids = tuple(
+            str(element_id or "").strip()
+            for element_id in (getattr(scen, "orderedElementIds", None) or ())
+        )
+        if not ordered_element_ids or not ordered_element_ids[0]:
+            raise ValueError("[MIG-GEO-001] scénario AUTO sans orderedElementIds")
+        anchor_element_id = ordered_element_ids[0]
+        if anchor_element_id not in world.elements:
+            raise KeyError(
+                f"[MIG-GEO-001] élément d'ancrage absent du Core: {anchor_element_id!r}"
+            )
+        points_world = self._get_core_triangle_world_points(world, anchor_element_id)
+        anchor = points_world.get("L")
         if anchor is None:
+            raise ValueError(
+                f"[MIG-GEO-001] sommet L absent pour l'élément d'ancrage {anchor_element_id!r}"
+            )
+        return np.array(anchor, dtype=float, copy=True)
+
+    def _auto_ensure_geometry_state(self, scen: ScenarioAssemblage) -> None:
+        """Initialise le repère synthétique AUTO depuis le premier élément Core."""
+        if self.auto_geom_state is not None:
             return
-
-        local = []
-        for t in (scen.last_drawn or []):
-            tt = dict(t)
-            P = t.get("pts", {})
-            Pl = {}
-            for k in ("O", "B", "L"):
-                if k in P:
-                    Pl[k] = np.array(P[k], dtype=float) - anchor
-            tt["pts"] = Pl
-            local.append(tt)
-        scen.last_drawn_local = local
-
-        # init auto_geom_state si nécessaire (origine = ancre monde, theta=0)
-        if self.auto_geom_state is None:
-            self.auto_geom_state = {"ox": float(anchor[0]), "oy": float(anchor[1]), "thetaDeg": 0.0}
-
-    def _autoRebuildWorldGeometryScenario(self, scen: ScenarioAssemblage = None) -> None:
-        if self.auto_geom_state is None:
-            return
-        if scen is None:
-            scen = self._get_active_scenario()
-        if scen.source_type != "auto":
-            return
-
-        # garantir la géométrie locale
-        self._autoEnsureLocalGeometry(scen)
-
-        local = scen.last_drawn_local
-        if not local:
-            return
-
-        ox = float(self.auto_geom_state.get("ox", 0.0))
-        oy = float(self.auto_geom_state.get("oy", 0.0))
-        thetaDeg = float(self.auto_geom_state.get("thetaDeg", 0.0))
-
-        th = math.radians(thetaDeg)
-        c, s = math.cos(th), math.sin(th)
-        R = np.array([[c, -s], [s, c]], dtype=float)
-        origin = np.array([ox, oy], dtype=float)
-
-        world = []
-        for tloc in local:
-            tt = dict(tloc)
-            Ploc = tloc.get("pts", {})
-            Pw = {}
-            for k in ("O", "B", "L"):
-                if k in Ploc:
-                    v = np.array(Ploc[k], dtype=float)
-                    Pw[k] = origin + (R @ v)
-            tt["pts"] = Pw
-            world.append(tt)
-
-        # si c'est le scenario actif, la collection conserve son identite.
-        if scen is self._get_active_scenario():
-            self.canvas_objects.replace_all(world)
-            scen.last_drawn = self._last_drawn
-            self.canvas_objects.dump(APP_LOGGER, "reconstruction scenario actif")
-        else:
-            scen.last_drawn = world
-
-    def _autoRebuildWorldGeometry(self, redraw: bool = True) -> None:
-        for scen in (self.scenarios or []):
-            if scen.source_type != "auto":
-                continue
-            self._autoRebuildWorldGeometryScenario(scen)
-        if redraw:
-            self._redraw_from(self._last_drawn)
+        anchor = self._auto_get_anchor_world_from_core(scen)
+        self.auto_geom_state = {
+            "ox": float(anchor[0]),
+            "oy": float(anchor[1]),
+            "thetaDeg": 0.0,
+        }
 
     def _autoInitFromGeneratedScenarios(self, base_idx: int, order: str):
-        """Après génération d'autos, construit les géométries locales + initialise le transform global."""
+        """Après génération d'autos, initialise le repère Core puis projette les caches."""
         if not self.scenarios:
             return
+        new_auto_scenarios = []
         for i in range(int(base_idx), len(self.scenarios)):
             scen = self.scenarios[i]
             if scen.source_type != "auto":
                 continue
             scen.autoOrder = str(order or "forward")
-            # ensure local + possibly init auto_geom_state
-            self._autoEnsureLocalGeometry(scen)
+            new_auto_scenarios.append(scen)
 
-        # Les scénarios générés ont déjà leur géométrie dans le Core. Le cache
-        # est uniquement projeté ; aucun recalcul UI -> Core n'est nécessaire.
+        if not new_auto_scenarios:
+            return
+        self._auto_ensure_geometry_state(new_auto_scenarios[0])
+
+        # Les scénarios générés ont déjà leur géométrie dans le Core : le cache
+        # UI est exclusivement projeté depuis leurs TopologyWorld.
         self._project_all_auto_scenarios_from_core()
 
     def _convertActiveAutoToManualSnapshot(self):
@@ -4756,9 +4484,8 @@ class TriangleViewerManual(
         if not scen.topoWorld.scenario_triangle_set.ranks():
             self._attach_catalog_to_world(scen.topoWorld)
 
-        # Rattacher les structures géométriques du scénario courant
-        self._bind_canvas_objects(scen.last_drawn)
-        scen.last_drawn = self._last_drawn
+        # MIG-CACHE-REBUILD-003 : l'ancien cache est volontairement ignoré.
+        self._rebuild_active_projection_from_core()
         self.canvas_objects.dump(APP_LOGGER, "activation scenario")
 
         # Restaurer carte + vue (sans écraser la config globale)
@@ -7267,10 +6994,7 @@ class TriangleViewerManual(
 
         # La projection est volontairement créée sans ``pts`` : ceux-ci ne
         # peuvent provenir que du Core via _project_core_element_to_last_drawn.
-        self.canvas_objects.add({
-            "id": model.rank,
-            "topoElementId": str(element_id),
-        })
+        self.canvas_objects.add({"topoElementId": str(element_id)})
         self._project_core_element_to_last_drawn(world, str(element_id))
         self.canvas_objects.dump(APP_LOGGER, "placement manuel")
 
@@ -7552,7 +7276,7 @@ class TriangleViewerManual(
             return
         # Si clic droit sur le compas : menu dédié (même si aucun triangle)
         if self._is_point_in_clock(event.x, event.y):
-            self._ctx_target_idx = None
+            self._ctx_target_element_id = None
             self._ctx_last_rclick = (event.x, event.y)
             self._ctx_clear_chemin_context()
             self._update_compass_ctx_menu_and_dico_state()
@@ -7562,15 +7286,24 @@ class TriangleViewerManual(
 
         mode, idx, extra = self._hit_test(event.x, event.y)
         if idx is None:
+            self._ctx_target_element_id = None
             self._ctx_clear_chemin_context()
             return
         # On ne propose Supprimer que si on est sur un triangle
         if mode in ("center", "vertex"):
-            self._ctx_target_idx = idx
+            entry = self._last_drawn[idx]
+            element_id = str(entry.get("topoElementId", "") or "").strip()
+            scen = self._get_active_scenario()
+            world = getattr(scen, "topoWorld", None) if scen is not None else None
+            if not element_id or world is None or element_id not in world.elements:
+                self._ctx_target_element_id = None
+                self._ctx_clear_chemin_context()
+                return
+            self._ctx_target_element_id = element_id
             self._ctx_last_rclick = (event.x, event.y)
-            self._ctx_nearest_vertex_key = self._ctx_compute_nearest_vertex_key(idx, event.x, event.y)
+            self._ctx_nearest_vertex_key = self._ctx_compute_nearest_vertex_key(element_id, event.x, event.y)
             try:
-                self._ctx_capture_chemin_context(idx, event.x, event.y)
+                self._ctx_capture_chemin_context(element_id, event.x, event.y)
             except (ValueError, RuntimeError):
                 self._ctx_clear_chemin_context()
 
@@ -7588,11 +7321,17 @@ class TriangleViewerManual(
             self._ctx_menu.tk_popup(event.x_root, event.y_root)
             self._ctx_menu.grab_release()
 
-    def _ctx_compute_nearest_vertex_key(self, tri_idx: int, sx: float, sy: float) -> str:
+    def _ctx_take_target_element_id(self) -> Optional[str]:
+        """Consomme l'ElementID Core mémorisé par le menu contextuel."""
+        element_id = str(getattr(self, "_ctx_target_element_id", "") or "").strip()
+        self._ctx_target_element_id = None
+        return element_id or None
+
+    def _ctx_compute_nearest_vertex_key(self, element_id: str, sx: float, sy: float) -> str:
         """Retourne 'O'/'B'/'L' du sommet le plus proche du point écran (sx,sy)."""
-        if tri_idx is None or not (0 <= int(tri_idx) < len(self._last_drawn)):
+        tri = self.canvas_objects.get_by_topology_id(str(element_id or "").strip())
+        if tri is None:
             return "L"
-        tri = self._last_drawn[int(tri_idx)]
         pts = tri.get("_pick_pts") or {}
         best_k = None
         best_d2 = None
@@ -7613,7 +7352,7 @@ class TriangleViewerManual(
         self.ctxGroupId = None
         self.ctxStartNodeId = None
 
-    def _ctx_capture_chemin_context(self, tri_idx: int, sx: float, sy: float) -> None:
+    def _ctx_capture_chemin_context(self, element_id: str, sx: float, sy: float) -> None:
         """
         Mémorise ctxGroupId + ctxStartNodeId depuis le clic droit.
 
@@ -7625,11 +7364,8 @@ class TriangleViewerManual(
             raise RuntimeError("scenario topologique introuvable")
         world = scen.topoWorld
 
-        idx = int(tri_idx)
-        if not (0 <= idx < len(self._last_drawn)):
-            raise ValueError("triangle de contexte invalide")
-        topo_element_id = str(self._last_drawn[idx].get("topoElementId", "") or "").strip()
-        if not topo_element_id:
+        topo_element_id = str(element_id or "").strip()
+        if not topo_element_id or topo_element_id not in world.elements:
             raise ValueError("topoElementId manquant pour le triangle de contexte")
 
         # MIG-GEO-011-A : triangle projete -> element Core -> groupe DSU.
@@ -8792,14 +8528,12 @@ class TriangleViewerManual(
     def _ctx_delete_group(self):
         """Supprime **tout le groupe** du triangle ciblé, réinsère les triangles dans la liste,
         puis remappe les tids restants."""
-        idx = self._ctx_target_idx
-        self._ctx_target_idx = None
-        if idx is None or not (0 <= idx < len(self._last_drawn)):
+        selected_element_id = self._ctx_take_target_element_id()
+        if selected_element_id is None:
             return
 
         world = self._get_active_scenario().topoWorld
-        selected_element_id = str(self._last_drawn[idx].get("topoElementId") or "").strip()
-        if not selected_element_id:
+        if world is None or selected_element_id not in world.elements:
             return
         core_group_id = world.get_group_of_element(selected_element_id)
         removed_element_ids = [
@@ -8846,21 +8580,23 @@ class TriangleViewerManual(
 
     def _ctx_rotate_selected(self):
         """Passe en mode rotation autour du barycentre pour le triangle ciblé."""
-        idx = self._ctx_target_idx
-        self._ctx_target_idx = None
-        if idx is None or not (0 <= idx < len(self._last_drawn)):
+        element_id = self._ctx_take_target_element_id()
+        if element_id is None:
+            return
+        scen = self._get_active_scenario()
+        world = getattr(scen, "topoWorld", None) if scen is not None else None
+        if world is None or element_id not in world.elements:
             return
         # le triangle fait toujours partie d'un groupe : PIVOTER LE GROUPE
-        core_group_id = self._get_core_group_id_for_triangle_index(idx)
+        core_group_id = world.get_group_of_element(element_id)
         if not core_group_id:
             return
-        rotate_members = self._prepare_core_group_operation_members("ROTATE", idx)
 
         # AUTO: pivot = origine globale (0,0) commune ; MANUAL: barycentre groupe
         auto_geom = self._is_active_auto_scenario()
         if auto_geom:
             if self.auto_geom_state is None:
-                self._autoEnsureLocalGeometry(self._get_active_scenario())
+                self._auto_ensure_geometry_state(self._get_active_scenario())
             if self.auto_geom_state is None:
                 return
             pivot = (float(self.auto_geom_state.get("ox", 0.0)), float(self.auto_geom_state.get("oy", 0.0)))
@@ -8889,8 +8625,6 @@ class TriangleViewerManual(
                 "auto_preview_initial_pts": self._capture_active_auto_preview_pts(),
             }
         else:
-            scen = self._get_active_scenario()
-            world = getattr(scen, "topoWorld", None) if scen is not None else None
             self._sel = {
                 "mode": "rotate_group",
                 "core_group_id": core_group_id,
@@ -8912,23 +8646,21 @@ class TriangleViewerManual(
         - Triangle seul : rotation autour du barycentre du triangle cliqué.
         - Groupe : rotation RIGIDE de tout le groupe autour du barycentre du triangle cliqué.
         """
-        idx = self._ctx_target_idx
-        self._ctx_target_idx = None
-        if idx is None or not (0 <= idx < len(self._last_drawn)):
+        element_id = self._ctx_take_target_element_id()
+        if element_id is None:
             return
 
         scen = self._get_active_scenario()
+        world = getattr(scen, "topoWorld", None) if scen is not None else None
+        if world is None or element_id not in world.elements:
+            raise ValueError("[MIG-GEO-001] ElementID contextuel invalide")
         # --- CAS AUTO : rotation globale partagée ---
         if scen.source_type == "auto":
             if self.auto_geom_state is None:
-                self._autoEnsureLocalGeometry(scen)
+                self._auto_ensure_geometry_state(scen)
             if self.auto_geom_state is None:
                 raise RuntimeError("[MIG-CACHE-TRANSFORM-001H] état AUTO absent")
-            entry = self._last_drawn[idx]
-            element_id = str(entry.get("topoElementId", "") or "").strip()
-            if not element_id:
-                raise ValueError("[MIG-CACHE-TRANSFORM-001H] topoElementId absent")
-            points_world = self._get_core_triangle_world_points(scen.topoWorld, element_id)
+            points_world = self._get_core_triangle_world_points(world, element_id)
             segment = points_world[to_key] - points_world[from_key]
             if float(np.hypot(segment[0], segment[1])) < 1e-12:
                 return
@@ -8953,14 +8685,6 @@ class TriangleViewerManual(
             return
 
         # --- CAS MANUEL : lecture et commit exclusivement depuis le Core ---
-        world = getattr(scen, "topoWorld", None)
-        entry = self._last_drawn[idx]
-        element_id = str(entry.get("topoElementId", "") or "").strip()
-        if world is None:
-            raise RuntimeError("[MIG-CACHE-TRANSFORM-001C2] TopologyWorld actif absent")
-        if not element_id:
-            raise ValueError("[MIG-CACHE-TRANSFORM-001C2] topoElementId absent")
-
         points_world = self._get_core_triangle_world_points(world, element_id)
         segment_start = points_world[from_key]
         segment_end = points_world[to_key]
@@ -9019,11 +8743,9 @@ class TriangleViewerManual(
 
         Le scénario actif est la référence absolue et ne peut jamais être supprimé.
         """
-        idx = self._ctx_target_idx
-        self._ctx_target_idx = None
-        if idx is None or not (0 <= idx < len(self._last_drawn)):
+        clicked_element_id = self._ctx_take_target_element_id()
+        if clicked_element_id is None:
             return
-        clicked_tid = int(self._last_drawn[idx].get("id"))
 
         ok = messagebox.askyesno(
             "Filtrer les scénarios",
@@ -9032,10 +8754,10 @@ class TriangleViewerManual(
         if not ok:
             return
 
-        self._filter_auto_scenarios_by_prefix_edges(clicked_tid)
+        self._filter_auto_scenarios_by_prefix_edges(clicked_element_id)
 
     def _scenario_prefix_edge_steps(self, scen, upto_index: int):
-        """Etapes Core du prefixe, depuis ``tri_ids`` et les attachments.
+        """Étapes Core du préfixe, depuis ``orderedElementIds`` et les attachments.
 
         Chaque etape contient toutes les contraintes canoniques reliant deux
         triangles consecutifs. Aucun champ ``groups/nodes`` ou ``edge_in/out``
@@ -9044,28 +8766,24 @@ class TriangleViewerManual(
         if scen is None:
             return None
         world = getattr(scen, "topoWorld", None)
-        tri_ids = list(getattr(scen, "tri_ids", None) or [])
         if world is None:
             return None
-
-        element_id_by_tri_rank = {}
-        for entry in list(getattr(scen, "last_drawn", None) or []):
-            try:
-                tri_rank = int(entry.get("id"))
-            except (TypeError, ValueError):
-                return None
-            element_id = str(entry.get("topoElementId", "") or "").strip()
-            if not element_id or tri_rank in element_id_by_tri_rank:
-                return None
-            element_id_by_tri_rank[tri_rank] = element_id
-
-        try:
-            element_ids = [element_id_by_tri_rank[int(tri_id)] for tri_id in tri_ids]
-        except (KeyError, TypeError, ValueError):
+        element_ids = [
+            str(element_id or "").strip()
+            for element_id in (getattr(scen, "orderedElementIds", None) or [])
+        ]
+        if (
+            not element_ids
+            or any(not element_id for element_id in element_ids)
+            or len(set(element_ids)) != len(element_ids)
+            or any(element_id not in world.elements for element_id in element_ids)
+            or upto_index < 0
+            or upto_index >= len(element_ids)
+        ):
             return None
         return build_topology_prefix_steps(world, element_ids, upto_index)
 
-    def _filter_auto_scenarios_by_prefix_edges(self, clicked_tid: int):
+    def _filter_auto_scenarios_by_prefix_edges(self, clicked_element_id: str):
         """
         Filtre les scénarios automatiques en conservant uniquement ceux
         qui commencent par le même préfixe de triangles ET les mêmes contraintes
@@ -9080,15 +8798,18 @@ class TriangleViewerManual(
         if getattr(active, "source_type", "manual") != "auto":
             return  # filtrage auto uniquement
 
-        tri_ids = list(getattr(active, "tri_ids", None) or [])
-        if clicked_tid not in tri_ids:
+        active_order = [
+            str(element_id or "").strip()
+            for element_id in (getattr(active, "orderedElementIds", None) or [])
+        ]
+        if not clicked_element_id or clicked_element_id not in active_order:
             # Impossible par design → bug
-            raise RuntimeError(f"[FILTER] Triangle {clicked_tid} absent du scénario actif")
+            raise RuntimeError(f"[FILTER] ElementID {clicked_element_id!r} absent du scénario actif")
 
-        idx = tri_ids.index(clicked_tid)
-        prefix = tri_ids[: idx + 1]
+        upto_index = active_order.index(clicked_element_id)
+        reference_prefix = active_order[: upto_index + 1]
 
-        ref_steps = self._scenario_prefix_edge_steps(active, idx)
+        ref_steps = self._scenario_prefix_edge_steps(active, upto_index)
         if ref_steps is None:
             raise RuntimeError("[FILTER] Données topologiques manquantes dans le scénario actif")
 
@@ -9106,12 +8827,16 @@ class TriangleViewerManual(
                 continue
 
             # 1) même préfixe de triangles (ordre)
-            if list(getattr(scen, "tri_ids", None) or [])[: len(prefix)] != prefix:
+            candidate_order = [
+                str(element_id or "").strip()
+                for element_id in (getattr(scen, "orderedElementIds", None) or [])
+            ]
+            if candidate_order[: len(reference_prefix)] != reference_prefix:
                 removed += 1
                 continue
 
             # 2) mêmes contraintes TopologyAttachment dans le préfixe
-            steps = self._scenario_prefix_edge_steps(scen, idx)
+            steps = self._scenario_prefix_edge_steps(scen, upto_index)
             if steps != ref_steps:
                 removed += 1
                 continue
@@ -9133,9 +8858,8 @@ class TriangleViewerManual(
         Axe = direction (O→L) du triangle ciblé ; la droite passe par le **barycentre du groupe**.
         La transformation et l'état ``mirrored`` sont autoritaires dans le Core.
         """
-        idx = self._ctx_target_idx
-        self._ctx_target_idx = None
-        if idx is None or not (0 <= idx < len(self._last_drawn)):
+        element_id = self._ctx_take_target_element_id()
+        if element_id is None:
             return
         if self._is_active_auto_scenario():
             self.status.config(text="Inversion désactivée pour les scénarios automatiques.")
@@ -9144,8 +8868,7 @@ class TriangleViewerManual(
         world = getattr(scen, "topoWorld", None) if scen is not None else None
         if world is None:
             raise RuntimeError("[MIG-CACHE-TRANSFORM-001D] TopologyWorld actif absent")
-        element_id = str(self._last_drawn[idx].get("topoElementId", "") or "").strip()
-        if not element_id:
+        if element_id not in world.elements:
             raise ValueError("[MIG-CACHE-TRANSFORM-001D] topoElementId absent")
         core_group_id = world.get_group_of_element(element_id)
         if core_group_id is None:
@@ -9196,7 +8919,7 @@ class TriangleViewerManual(
         # AUTO: commit global explicite dans les Core, puis projection des caches.
         if self._is_active_auto_scenario():
             if self.auto_geom_state is None:
-                self._autoEnsureLocalGeometry(self._get_active_scenario())
+                self._auto_ensure_geometry_state(self._get_active_scenario())
             if self.auto_geom_state is None:
                 raise RuntimeError("[MIG-CACHE-TRANSFORM-001H] état AUTO absent")
             state0 = dict(self.auto_geom_state)
@@ -9226,7 +8949,7 @@ class TriangleViewerManual(
             MIG_GEO_LOGGER.warning("[%s] groupe Core introuvable topoElementId=%s", operation_name, topo_element_id or "(absent)")
             return result
         entries = list(self._get_projected_elements_for_core_group(core_group_id))
-        MIG_GEO_LOGGER.debug("[%s] Triangle=%s topoElementId=%s CoreGroupId=%s Members=%s", operation_name, triangle.get("id", "?"), topo_element_id or "(absent)", core_group_id, ",".join(str(e.get("topoElementId", "")) for e in entries) or "(aucun)")
+        MIG_GEO_LOGGER.debug("[%s] topoElementId=%s CoreGroupId=%s Members=%s", operation_name, topo_element_id or "(absent)", core_group_id, ",".join(str(e.get("topoElementId", "")) for e in entries) or "(aucun)")
         if not entries:
             MIG_GEO_LOGGER.warning("[%s] aucun membre projete CoreGroupId=%s", operation_name, core_group_id)
         return {"core_group_id": core_group_id, "entries": entries}
@@ -9649,7 +9372,7 @@ class TriangleViewerManual(
                     "auto_state0": dict(self.auto_geom_state or {}),
                     "auto_move_preview_pts0": self._capture_active_auto_preview_pts(),
                 })
-            self.status.config(text=f"Déplacement du groupe Core {core_group_id} (clic sur tri {self._last_drawn[idx].get('id', '?')})")
+            self.status.config(text=f"Déplacement du groupe Core {core_group_id}.")
         elif mode == "vertex":
             # déplacement par sommet (translation comme 'center', mais calée sur le sommet choisi)
             vkey = extra or "O"
