@@ -12,30 +12,30 @@ class _WorldStub:
             "O": (0.0, 0.0),
             "B": (0.0, 1.0),
         }
-        self._balises = {
-            "RefEast": (1.0, 0.0),
-            "RefNorth": (0.0, 1.0),
+        self._beacons = {
+            "B01": (1.0, 0.0),
+            "B02": (0.0, 1.0),
         }
 
     def getConceptNodeWorldXY(self, node_id: str, _group_id: str) -> tuple[float, float]:
         return self._nodes[str(node_id)]
 
-    def hasBalise(self, name: str) -> bool:
-        return str(name) in self._balises
+    def hasBeacon(self, beacon_id: str) -> bool:
+        return str(beacon_id) in self._beacons
 
-    def getBaliseWorldXY(self, name: str) -> tuple[float, float]:
-        return self._balises[str(name)]
+    def getBeaconWorldXY(self, beacon_id: str) -> tuple[float, float]:
+        return self._beacons[str(beacon_id)]
 
     def azimutDegFromDxDy(self, dx: float, dy: float) -> float:
         # 0 deg = Nord, sens horaire (convention Core)
         return float((math.degrees(math.atan2(dx, dy)) + 360.0) % 360.0)
 
 
-def test_triplet_calculer_geometrie_balise_ref_name_required() -> None:
+def test_triplet_calculer_geometrie_beacon_id_required() -> None:
     t = TopologyCheminTriplet("A", "O", "B")
     world = _WorldStub()
 
-    with pytest.raises(ValueError, match="baliseRefName invalide"):
+    with pytest.raises(ValueError, match="beacon_id invalide"):
         t.calculerGeometrie(world, "G1", "cw", "")
 
 
@@ -52,8 +52,8 @@ def test_triplet_calculer_geometrie_uses_selected_balise_reference() -> None:
     t_east = TopologyCheminTriplet("A", "O", "B")
     t_north = TopologyCheminTriplet("A", "O", "B")
 
-    t_east.calculerGeometrie(world, "G1", "cw", "RefEast")
-    t_north.calculerGeometrie(world, "G1", "cw", "RefNorth")
+    t_east.calculerGeometrie(world, "G1", "cw", "B01")
+    t_north.calculerGeometrie(world, "G1", "cw", "B02")
 
     assert t_east.isGeometrieValide
     assert t_north.isGeometrieValide

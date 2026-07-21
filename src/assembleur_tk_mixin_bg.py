@@ -260,6 +260,7 @@ class TriangleViewerBackgroundMapMixin:
         with open(out_path, "w", encoding="utf-8") as f_out:
             json.dump(payload, f_out, ensure_ascii=False, indent=2)
 
+        self._bg_try_load_calibration(svg_path)
         self.status.config(text=f"Calibration enregistrée : {out_path}")
 
     # =========================
@@ -273,6 +274,7 @@ class TriangleViewerBackgroundMapMixin:
         self._bg_resizing = None
         self._bg_calib_data = None
         self._bg_scale_base_w = None
+        self._reproject_beacons_from_map()
 
         if persist:
             self._persistBackgroundConfig()
@@ -288,6 +290,7 @@ class TriangleViewerBackgroundMapMixin:
             if not os.path.isfile(calib_path):
                 self._bg_calib_data = None
                 self._bg_scale_base_w = None
+                self._reproject_beacons_from_map()
                 return
 
             with open(calib_path, "r", encoding="utf-8") as f_in:
@@ -296,6 +299,7 @@ class TriangleViewerBackgroundMapMixin:
             aff = data.get("affineLambertKmToWorld")
             if not (isinstance(aff, list) and len(aff) == 6):
                 self._bg_calib_data = None
+                self._reproject_beacons_from_map()
                 return
 
             # Normaliser en float
@@ -323,10 +327,13 @@ class TriangleViewerBackgroundMapMixin:
             else:
                 self._bg_scale_base_w = None
 
+            self._reproject_beacons_from_map()
+
         except Exception:
             # best-effort
             self._bg_calib_data = None
             self._bg_scale_base_w = None
+            self._reproject_beacons_from_map()
 
     def _bg_load_svg_dialog(self):
         path = filedialog.askopenfilename(
@@ -823,6 +830,7 @@ class TriangleViewerBackgroundMapMixin:
         dy = float(my - smy)
         self._bg["x0"] = float(x0 + dx)
         self._bg["y0"] = float(y0 + dy)
+        self._reproject_beacons_from_map()
 
     def _bg_update_resize(self, sx: int, sy: int):
         if not self._bg_resizing or not self._bg:
@@ -858,6 +866,7 @@ class TriangleViewerBackgroundMapMixin:
         self._bg["y0"] = float(y0)
         self._bg["w"] = float(w)
         self._bg["h"] = float(h)
+        self._reproject_beacons_from_map()
 
         # Afficher l'échelle relative (x1, x1/3.15, x2.49...) pendant le resize
         self._bg_update_scale_status()

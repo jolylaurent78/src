@@ -1,10 +1,10 @@
 {
   "lastTriangleExcel": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_v10.xlsx",
   "uiShowDicoPanel": false,
-  "uiShowClockOverlay": true,
+  "uiShowClockOverlay": false,
   "uiMapOpacity": 55,
   "uiClockRefAzimuth": 167.54786231065634,
-  "uiShowOnlyGroupContours": true,
+  "uiShowOnlyGroupContours": false,
   "simLastAlgoId": "quadris_par_paires",
   "simLastN": 32,
   "simLastOrder": "reverse",

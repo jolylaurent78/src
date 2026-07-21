@@ -1,11 +1,13 @@
 """Contrat XML v5 : le snapshot Core est l'unique persistence geometrique."""
 
+import json
 import xml.etree.ElementTree as ET
 
 import numpy as np
 import pytest
 
 from src.assembleur_core import ScenarioAssemblage, TopologyElement, TopologyWorld
+from src.assembleur_balises import Beacon, BeaconCatalog
 from src.assembleur_io import loadScenarioXml, saveScenarioXml
 from src.assembleur_tk import TriangleViewerManual
 from src.canvas_objects_collection import CanvasObjectsCollection
@@ -31,7 +33,7 @@ class _Viewer:
         TriangleViewerManual._strip_core_duplicates_from_last_drawn_entry
     )
 
-    def __init__(self, world, entries, source_type="auto"):
+    def __init__(self, world, entries, source_type="auto", beacon_catalog=None):
         scenario = ScenarioAssemblage("XML Core 004", source_type=source_type)
         scenario.topoWorld = world
         scenario.topoScenarioId = "SCENARIO"
@@ -46,8 +48,11 @@ class _Viewer:
         self.listbox, self.canvas, self.df = _Listbox(), _Canvas(), None
         self.zoom, self.offset = 1.0, np.zeros(2)
         self._clock_ref_azimuth_deg = 0.0
+        self.beacon_catalog = beacon_catalog
 
     def _get_active_scenario(self): return self.scenarios[self.active_scenario_index]
+    def _attach_catalog_to_world(self, world):
+        world.attachBeaconCatalog(self.beacon_catalog)
     def _bg_clear(self, persist=False): pass
     def _clear_nearest_line(self): pass
     def _clear_edge_highlights(self): pass
@@ -163,3 +168,38 @@ def test_v5_round_trip_preserves_core_poses_and_handles_empty_world(tmp_path):
     with pytest.raises(ValueError, match="Missing topoSnapshot"):
         loadScenarioXml(viewer, str(invalid))
     assert viewer._get_active_scenario().topoWorld is original_world
+
+
+def test_v5_round_trip_preserves_group_anchors(tmp_path):
+    catalog = BeaconCatalog()
+    catalog._by_id = {
+        "BAL-Bourges": Beacon(
+            "BAL-Bourges", "Bourges", 47.0, 2.0, 600.0, 6700.0, 1.0, 2.0
+        )
+    }
+    world = _world()
+    world.attachBeaconCatalog(catalog)
+    group_id = world.get_group_of_element("T01")
+    node_id = str(world.elements["T01"].vertexes[0].node_id)
+    anchor = world.createGroupAnchor(group_id, "BAL-Bourges", node_id)
+    path = tmp_path / "anchors.xml"
+
+    saveScenarioXml(_Viewer(world, [], beacon_catalog=catalog), str(path))
+
+    root = ET.parse(path).getroot()
+    assert root.find("anchors") is None
+    snapshot = json.loads(root.find("topoSnapshot").text)
+    assert snapshot["group_anchors"] == [{
+        "anchor_id": anchor.anchor_id,
+        "group_id": group_id,
+        "beacon_id": "BAL-Bourges",
+        "node_id": node_id,
+    }]
+
+    loaded = _Viewer(TopologyWorld(), [], beacon_catalog=catalog)
+    loadScenarioXml(loaded, str(path))
+    restored = loaded._get_active_scenario().topoWorld
+    restored_anchor = restored.getGroupAnchor(anchor.anchor_id)
+    assert restored_anchor.beacon_id == "BAL-Bourges"
+    assert restored_anchor.node_id == node_id
+    assert restored.getAnchorForGroup(restored_anchor.group_id) is restored_anchor

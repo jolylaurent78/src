@@ -52,8 +52,8 @@ from src.assembleur_tk_mixin_frontier import TriangleViewerFrontierGraphMixin
 from src.assembleur_tk_mixin_bg import TriangleViewerBackgroundMapMixin
 from src.assembleur_tk_mixin_clockarc import TriangleViewerClockArcMixin
 from src.assembleur_edgechoice import buildEdgeChoiceEptsFromBest
-from src.assembleur_balises import BalisesManager
-from src.utils.logging_utils import get_app_logger, get_mig_geo_logger
+from src.assembleur_balises import BeaconCatalog
+from src.utils.logging_utils import get_mig_geo_logger
 from src.assembleur_topology_comparison import (
     build_topology_prefix_steps,
     differing_attachment_element_ids,
@@ -67,7 +67,6 @@ from src.assembleur_projection import (
 
 
 EPS_WORLD = 1e-6
-APP_LOGGER = get_app_logger()
 MIG_GEO_LOGGER = get_mig_geo_logger()
 
 
@@ -468,7 +467,7 @@ class TriangleViewerManual(
         self._map_opacity_redraw_job = None
         self._guidesCurrentColorHex: str = "#0b3d91"
         self._guides_color_btn: tk.Button | None = None
-        self.balisesManager = BalisesManager()
+        self.beacon_catalog = BeaconCatalog()
         # Gestion du contour
         self.show_only_group_contours = tk.BooleanVar(value=False)
         self.only_group_contours = None
@@ -597,6 +596,7 @@ class TriangleViewerManual(
         manual.view_state = self._capture_view_state()
         manual.map_state = self._capture_map_state()
         self.scenarios.append(manual)
+        self._attach_catalog_to_world(manual.topoWorld)
 
         # --- Horloge (overlay fixe) : état par défaut ---
         # hour peut être un float (si l'aiguille des heures avance avec les minutes)
@@ -705,7 +705,7 @@ class TriangleViewerManual(
             core_gid = world.get_group_of_element(element_id)
             return str(core_gid) if core_gid else None
         except Exception as exc:
-            MIG_GEO_LOGGER.debug("[MIG-GEO-010] groupe Core illisible pour element=%s: %s", element_id, exc)
+            MIG_GEO_LOGGER.debug("Groupe Core illisible pour element=%s: %s", element_id, exc)
             return None
 
     def _get_core_group_id_for_triangle_index(self, tri_index: int) -> Optional[str]:
@@ -723,7 +723,7 @@ class TriangleViewerManual(
             core_group_id = world.get_group_of_element(topo_element_id)
             return None if not core_group_id else str(core_group_id)
         except Exception as exc:
-            MIG_GEO_LOGGER.debug("[MIG-GEO-012C1] groupe Core triangle=%s: %s", tri_index, exc)
+            MIG_GEO_LOGGER.debug("Groupe Core triangle=%s: %s", tri_index, exc)
             return None
 
     def _get_projected_elements_for_core_group(self, core_group_id: str) -> Tuple[Dict, ...]:
@@ -735,7 +735,7 @@ class TriangleViewerManual(
         try:
             element_ids = world.getGroupElementIds(str(core_group_id))
         except Exception as exc:
-            MIG_GEO_LOGGER.debug("[MIG-GEO-012C1] groupe Core illisible %r: %s", core_group_id, exc)
+            MIG_GEO_LOGGER.debug("Groupe Core illisible %r: %s", core_group_id, exc)
             return ()
         return self.canvas_objects.get_many_by_topology_ids(element_ids)
 
@@ -754,7 +754,7 @@ class TriangleViewerManual(
         try:
             element_ids = world.getGroupElementIds(key)
         except Exception as exc:
-            MIG_GEO_LOGGER.debug("[MIG-GEO-001] groupe Core illisible %r: %s", key, exc)
+            MIG_GEO_LOGGER.debug("Groupe Core illisible %r: %s", key, exc)
             return []
         return list(self.canvas_objects.get_many_by_topology_ids(element_ids))
 
@@ -968,7 +968,7 @@ class TriangleViewerManual(
         self.canvas_objects.validate_against_world(world)
         scen.last_drawn = self._last_drawn
         MIG_GEO_LOGGER.debug(
-            "[MIG-CACHE] projection rebuilt from Core scenario=%s source_type=%s "
+            "Projection rebuilt from Core scenario=%s source_type=%s "
             "groups=%s elements=%s previous_cache_entries=%s rebuilt_entries=%s",
             getattr(scen, "name", "<sans nom>"),
             getattr(scen, "source_type", "manual"),
@@ -1338,7 +1338,9 @@ class TriangleViewerManual(
         if removed:
             self.auto_geom_state = None
         if not self.scenarios:
-            self.scenarios = [ScenarioAssemblage(name="Scénario manuel", source_type="manual")]
+            manual = ScenarioAssemblage(name="Scénario manuel", source_type="manual")
+            self._attach_catalog_to_world(manual.topoWorld)
+            self.scenarios = [manual]
         self.active_scenario_index = min(self.active_scenario_index, len(self.scenarios) - 1)
         self._set_active_scenario(self.active_scenario_index)
         self._refresh_scenario_listbox()
@@ -2289,19 +2291,10 @@ class TriangleViewerManual(
 
         self.scenario_tree = ttk.Treeview(
             scen_lb_frame,
-            show="tree headings",
+            show="tree",
             selectmode="browse",
             height=6,
             style="Scenario.Treeview",
-        )
-        # Colonne principale = ID (libellé)
-        # Tri au clic sur en-tête
-        self._scenario_tree_sort_col = None
-        self._scenario_tree_sort_reverse = False
-        self.scenario_tree.heading(
-            "#0",
-            text="ID",
-            command=lambda c="#0": self._scenarioTreeSortBy(c),
         )
         self.scenario_tree.column("#0", width=230, stretch=True, anchor="w")
 
@@ -2708,47 +2701,49 @@ class TriangleViewerManual(
         if not hasattr(self, "chemins_balise_ref_combo"):
             return
 
-        names = [str(name) for name in self.balisesManager.listNoms()]
-        self.chemins_balise_ref_combo.configure(values=names)
-        if not names:
+        beacons = list(self.beacon_catalog.iter_beacons())
+        option_to_id = {
+            f"{beacon.name} ({beacon.beacon_id})": beacon.beacon_id
+            for beacon in beacons
+        }
+        self._chemins_beacon_option_ids = option_to_id
+        options = list(option_to_id)
+        self.chemins_balise_ref_combo.configure(values=options)
+        if not options:
             self.chemins_balise_ref_var.set("")
             self.chemins_balise_ref_combo.configure(state="disabled")
             return
 
-        saved = str(self.getAppConfigValue(_assembleur_io.CFG_KEY_CHEMINS_BALISE_REF, "") or "").strip()
-        if not saved:
-            selected = names[0]
-        elif saved not in names:
-            raise ValueError(f"[CheminsUI] balise de reference invalide dans la config: '{saved}'")
-        else:
-            selected = saved
+        saved = str(self.getAppConfigValue(_assembleur_io.CFG_KEY_CHEMINS_BEACON_REF, "") or "").strip()
+        selected_id = saved if self.beacon_catalog.contains(saved) else beacons[0].beacon_id
+        selected = next(option for option, beacon_id in option_to_id.items() if beacon_id == selected_id)
 
         self.chemins_balise_ref_var.set(selected)
         self.chemins_balise_ref_combo.configure(state="readonly")
 
-    def _getCheminsBaliseRefName(self) -> str:
+    def _getCheminsBeaconRefId(self) -> str:
         if not hasattr(self, "chemins_balise_ref_var"):
             return ""
-        return str(self.chemins_balise_ref_var.get() or "").strip()
+        return str(getattr(self, "_chemins_beacon_option_ids", {}).get(
+            str(self.chemins_balise_ref_var.get() or "").strip(), ""
+        ))
 
-    def _recalculerCheminFromSelection(self, baliseRefName: str) -> None:
+    def _recalculerCheminFromSelection(self, beacon_id: str) -> None:
         scen = self._get_active_scenario()
         tc = scen.topoWorld.topologyChemins
         if not tc.isDefined:
             return
 
-        # On raffraichit les balises et on recalcule
-        self._syncBalisesToWorld(scen.topoWorld)
-        tc.recalculerChemin(str(baliseRefName or ""))
+        tc.recalculerChemin(str(beacon_id or ""))
         self.refreshCheminTreeView()
 
     def _onCheminsBaliseRefSelected(self, _evt=None) -> None:
-        selectedName = self._getCheminsBaliseRefName()
-        if not selectedName:
+        beacon_id = self._getCheminsBeaconRefId()
+        if not beacon_id:
             return
-        self.setAppConfigValue(_assembleur_io.CFG_KEY_CHEMINS_BALISE_REF, selectedName)
+        self.setAppConfigValue(_assembleur_io.CFG_KEY_CHEMINS_BEACON_REF, beacon_id)
         self.saveAppConfig()
-        self._recalculerCheminFromSelection(selectedName)
+        self._recalculerCheminFromSelection(beacon_id)
         self._clock_apply_auto_ref_sync()
 
     def refreshCheminTreeView(self) -> None:
@@ -3161,7 +3156,7 @@ class TriangleViewerManual(
             world.topologyChemins.appliquerEdition(
                 newOrientationUser,
                 newSelectionMaskSnapshotOrder,
-                self._getCheminsBaliseRefName(),
+                self._getCheminsBeaconRefId(),
             )
             dlg.destroy()
             self.refreshCheminTreeView()
@@ -3179,8 +3174,8 @@ class TriangleViewerManual(
 
     def onRecalculerChemin(self) -> None:
         """Demande au Core de recalculer le chemin courant puis rafraîchit l'UI."""
-        baliseRefName = self._getCheminsBaliseRefName()
-        self._recalculerCheminFromSelection(baliseRefName)
+        beacon_id = self._getCheminsBeaconRefId()
+        self._recalculerCheminFromSelection(beacon_id)
 
     def onDecryptageEngine(self) -> None:
         win = getattr(self, "_decryptage_engine_win", None)
@@ -3819,9 +3814,6 @@ class TriangleViewerManual(
             tc = world.topologyChemins
             dico = self.dico
 
-            # On raffraichit les balises et on recalcule
-            self._syncBalisesToWorld(world)
-
             patterns_actifs = []
             for p in list(win._patterns or []):
                 if not isinstance(p, dict):
@@ -3985,56 +3977,6 @@ class TriangleViewerManual(
         tc.supprimerChemin()
         self.refreshCheminTreeView()
 
-    def _scenarioTreeSortBy(self, col_id: str):
-        """Trie séparément Manuels et Automatiques sur la colonne ID (#0)."""
-        if col_id != "#0" or not hasattr(self, "scenario_tree"):
-            return
-        tree = self.scenario_tree
-
-        # Toggle sens de tri
-        if self._scenario_tree_sort_col == col_id:
-            self._scenario_tree_sort_reverse = not bool(self._scenario_tree_sort_reverse)
-        else:
-            self._scenario_tree_sort_col = col_id
-            self._scenario_tree_sort_reverse = False
-
-        # Helpers de parsing
-        def _parseDisplayIdFromText(txt: str):
-            s = str(txt or "").strip()
-            if s.startswith("★"):
-                s = s.lstrip("★ ").strip()
-            m = re.match(r"^#(\d+)", s)
-            return int(m.group(1)) if m else None
-
-        def _itemKey(iid: str):
-            txt = tree.item(iid, "text")
-            did = _parseDisplayIdFromText(txt)
-            if did is None:
-                s = str(txt or "").strip()
-                return (1, 0.0, "") if s == "" else (0, 0.0, s.lower())
-            return (0, float(did), "")
-
-        # Trier dans chaque groupe sans casser la structure
-        for parent in ("grp_manual", "grp_auto"):
-            if not (hasattr(tree, "exists") and tree.exists(parent)):
-                continue
-            kids = list(tree.get_children(parent))
-            if not kids:
-                continue
-            kids_sorted = sorted(
-                kids,
-                key=_itemKey,
-                reverse=bool(self._scenario_tree_sort_reverse),
-            )
-            for pos, iid in enumerate(kids_sorted):
-                tree.move(iid, parent, pos)
-
-        # Indicateur ▲/▼ sur l'unique en-tête trié.
-        base_id_title = "ID"
-        tree.heading("#0", text=base_id_title, command=lambda c="#0": self._scenarioTreeSortBy(c))
-        arrow = " ▼" if bool(self._scenario_tree_sort_reverse) else " ▲"
-        tree.heading("#0", text=base_id_title + arrow, command=lambda c="#0": self._scenarioTreeSortBy(c))
-
     def _bgWorldToLambertKm(self, wx: float, wy: float) -> Tuple[float, float]:
         """Convertit un point monde -> Lambert93 (km), en tenant compte du redimensionnement/déplacement du fond.
 
@@ -4142,10 +4084,23 @@ class TriangleViewerManual(
             lb.itemconfig(idx, fg="gray50" if world.is_triangle_rank_used(rank) else "black")
 
     def _attach_catalog_to_world(self, world: TopologyWorld | None) -> None:
-        """Associe au scenario actif la selection complete du catalogue V1."""
-        if world is None or self.triangle_catalog is None:
+        """Injecte les référentiels runtime partagés dans un monde Core."""
+        if world is None:
             return
-        world.set_scenario_triangle_set(ScenarioTriangleSet.from_catalog(self.triangle_catalog))
+        world.attachBeaconCatalog(self.beacon_catalog)
+        if self.triangle_catalog is not None:
+            world.set_scenario_triangle_set(ScenarioTriangleSet.from_catalog(self.triangle_catalog))
+
+    def _reproject_beacons_from_map(self) -> None:
+        """Recalcule le référentiel BeaconCatalog après un changement de projection."""
+        catalog = getattr(self, "beacon_catalog", None)
+        if catalog is None:
+            return
+        try:
+            catalog.reproject_world(self.bgLambertKmToWorld)
+        except RuntimeError:
+            # Sans carte calibrée, aucune coordonnée World ne doit survivre.
+            catalog.clear_world_coordinates()
 
     def _rebuild_triangle_listbox_from_core(self) -> None:
         """Projette la selection du scenario dans la listbox, sans lire ``last_drawn``."""
@@ -4481,12 +4436,10 @@ class TriangleViewerManual(
 
         scen = self.scenarios[index]
         self.active_scenario_index = index
-        if not scen.topoWorld.scenario_triangle_set.ranks():
-            self._attach_catalog_to_world(scen.topoWorld)
+        self._attach_catalog_to_world(scen.topoWorld)
 
         # MIG-CACHE-REBUILD-003 : l'ancien cache est volontairement ignoré.
         self._rebuild_active_projection_from_core()
-        self.canvas_objects.dump(APP_LOGGER, "activation scenario")
 
         # Restaurer carte + vue (sans écraser la config globale)
         scenIsAuto = (getattr(scen, "source_type", "manual") == "auto")
@@ -5435,18 +5388,13 @@ class TriangleViewerManual(
             return
         csv_path = os.path.normpath(saved_path)
         try:
-            self.balisesManager.loadFromCsv(csv_path)
+            self.beacon_catalog.load_from_csv(csv_path)
+            self._reproject_beacons_from_map()
         except Exception:
-            self.balisesManager.clear()
+            self.beacon_catalog.clear()
             print(f"[Balises][AUTOLOAD] Echec du chargement: {csv_path}")
             traceback.print_exc()
         self._refreshCheminsBaliseRefCombo()
-
-    def _syncBalisesToWorld(self, world: TopologyWorld) -> None:
-        world.clearBalises()
-        for name in self.balisesManager.listNoms():
-            xW, yW = self.balisesManager.getWorld(self, name)
-            world.setBaliseWorldXY(name, float(xW), float(yW))
 
     def _initialdir_from_current(self, current_path: str) -> str:
         p = str(current_path or "").strip()
@@ -5468,7 +5416,8 @@ class TriangleViewerManual(
 
         csv_path = os.path.normpath(selected)
         try:
-            self.balisesManager.loadFromCsv(csv_path)
+            self.beacon_catalog.load_from_csv(csv_path)
+            self._reproject_beacons_from_map()
         except Exception as e:
             messagebox.showerror("Balises", f"Impossible de charger le CSV balises:\n\n{e}")
             return
@@ -5929,19 +5878,19 @@ class TriangleViewerManual(
 
     def _draw_balises_layer(self):
         """Dessine les balises en points fixes (pixels) + libellé."""
-        if not hasattr(self, "balisesManager") or self.balisesManager is None:
+        if not hasattr(self, "beacon_catalog") or self.beacon_catalog is None:
             return
 
         try:
-            noms = self.balisesManager.listNoms()
+            beacons = tuple(self.beacon_catalog.iter_beacons())
         except Exception:
             return
-        if not noms:
+        if not beacons:
             return
 
-        for nom in noms:
+        for beacon in beacons:
             try:
-                wx, wy = self.balisesManager.getWorld(self, nom)
+                wx, wy = self.beacon_catalog.get_world(beacon.beacon_id)
             except RuntimeError:
                 return
             except KeyError:
@@ -5958,7 +5907,7 @@ class TriangleViewerManual(
             self.canvas.create_text(
                 sx,
                 sy + r + 2,
-                text=nom,
+                text=beacon.name,
                 anchor="n",
                 font=("Arial", 8),
                 fill="#000000",
@@ -6996,7 +6945,6 @@ class TriangleViewerManual(
         # peuvent provenir que du Core via _project_core_element_to_last_drawn.
         self.canvas_objects.add({"topoElementId": str(element_id)})
         self._project_core_element_to_last_drawn(world, str(element_id))
-        self.canvas_objects.dump(APP_LOGGER, "placement manuel")
 
         # 3) UI
         self._redraw_from(self._last_drawn)
@@ -7417,14 +7365,11 @@ class TriangleViewerManual(
         if bool(world.topologyChemins.isDefined):
             if not messagebox.askokcancel("Créer un chemin", "Un chemin existe déjà. Remplacer ?"):
                 return
-        # On synchronise les balises avant la création du chemin
-        self._syncBalisesToWorld(world)
-
         world.topologyChemins.creerDepuisGroupe(
             gid,
             startNodeId,
             orientationUser,
-            self._getCheminsBaliseRefName(),
+            self._getCheminsBeaconRefId(),
         )
         self.refreshCheminTreeView()
 
@@ -8103,15 +8048,15 @@ class TriangleViewerManual(
             return
 
     def _clock_get_selected_balise_world(self) -> tuple[float, float] | None:
-        balise_name = self._getCheminsBaliseRefName()
-        if not balise_name:
+        beacon_id = self._getCheminsBeaconRefId()
+        if not beacon_id:
             return None
-        if not hasattr(self, "balisesManager") or self.balisesManager is None:
+        if not hasattr(self, "beacon_catalog") or self.beacon_catalog is None:
             return None
-        if not self.balisesManager.hasBalise(balise_name):
+        if not self.beacon_catalog.contains(beacon_id):
             return None
         try:
-            wx, wy = self.balisesManager.getWorld(self, balise_name)
+            wx, wy = self.beacon_catalog.get_world(beacon_id)
         except Exception:
             return None
         return (float(wx), float(wy))
@@ -8220,26 +8165,26 @@ class TriangleViewerManual(
                     }
                 )
 
-        if hasattr(self, "balisesManager") and self.balisesManager is not None:
-            for balise_name in self.balisesManager.listNoms():
+        if hasattr(self, "beacon_catalog") and self.beacon_catalog is not None:
+            for beacon in self.beacon_catalog.iter_beacons():
                 try:
-                    balise_world = np.array(self.balisesManager.getWorld(self, balise_name), dtype=float)
+                    balise_world = np.array(self.beacon_catalog.get_world(beacon.beacon_id), dtype=float)
                 except Exception:
                     continue
                 if float(np.linalg.norm(balise_world - center_world)) <= EPS_WORLD:
                     continue
-                key = ("balise", "", str(balise_name))
+                key = ("balise", "", beacon.beacon_id)
                 if key in seen:
                     continue
                 seen.add(key)
                 out.append(
                     {
                         "type": "balise",
-                        "id": str(balise_name),
-                        "baliseName": str(balise_name),
+                        "id": beacon.beacon_id,
+                        "beaconId": beacon.beacon_id,
                         "world": balise_world,
                         "azAbsDeg": float(self._azimuth_world_deg(center_world, balise_world)),
-                        "label": str(balise_name),
+                        "label": beacon.name,
                     }
                 )
 
@@ -8574,7 +8519,6 @@ class TriangleViewerManual(
         # 4) Fin : purge sélection/assist et redraw
         self._sel = None
         self._reset_assist()
-        self.canvas_objects.dump(APP_LOGGER, "suppression groupe")
         self._redraw_from(self._last_drawn)
         self.status.config(text=f"Groupe supprimé (gid={core_group_id}, {len(removed_tids)} triangle(s)).")
 

@@ -766,6 +766,21 @@ class TopologyGroup:
 
 
 @dataclass
+class TopologyGroupAnchor:
+    """Décision métier reliant un groupe topologique à une balise.
+
+    La classe est volontairement limitée à son identité et à ses deux
+    références métier. Des propriétés d'ancrage pourront être ajoutées sans
+    modifier les API de ``TopologyWorld`` ni la forme générale de l'objet.
+    """
+
+    anchor_id: str
+    group_id: str
+    beacon_id: str
+    node_id: str
+
+
+@dataclass
 class ConceptNodeInfo:
     concept_id: str
     members: set[str]
@@ -1116,21 +1131,21 @@ class TopologyCheminTriplet:
         world: "TopologyWorld",
         groupId: str,
         orientationUser: str,
-        baliseRefName: str,
+        beaconId: str,
     ) -> None:
         """Calcule azimuts, distances et angle orienté à partir du world courant.
 
         azOA/azOB sont exprimés RELATIVEMENT à l'axe de référence défini par:
-            axe 0° = (O -> baliseRefName)
+            axe 0° = (O -> beaconId)
         """
         # Balise de référence utilisée par le Core pour définir l'axe 0°
         gid = str(groupId)
         orient = TopologyChemins._normalizeOrientation(orientationUser)
-        balise_name = str(baliseRefName or "").strip()
-        if not balise_name:
-            raise ValueError("[Chemins][Triplet] baliseRefName invalide (vide)")
-        if not world.hasBalise(balise_name):
-            raise ValueError(f"[Chemins][Triplet] balise de reference introuvable: '{balise_name}'")
+        beacon_id = str(beaconId or "").strip()
+        if not beacon_id:
+            raise ValueError("[Chemins][Triplet] beacon_id invalide (vide)")
+        if not world.hasBeacon(beacon_id):
+            raise ValueError(f"[Chemins][Triplet] balise de reference introuvable: '{beacon_id}'")
 
         # --- Points du triplet (World XY) ---
         xA, yA = world.getConceptNodeWorldXY(self.nodeA, gid)
@@ -1138,7 +1153,7 @@ class TopologyCheminTriplet:
         xB, yB = world.getConceptNodeWorldXY(self.nodeB, gid)
 
         # --- Balise de référence (World XY) ---
-        xR, yR = world.getBaliseWorldXY(balise_name)
+        xR, yR = world.getBeaconWorldXY(beacon_id)
 
         # Axe de référence = O -> R
         dxOR = float(xR - xO)
@@ -1317,7 +1332,7 @@ class TopologyChemins:
         if not self.isDefined:
             raise ValueError("[Chemins] chemin non defini")
 
-    def creerDepuisGroupe(self, groupId: str, startNodeId: str, orientationUser: str, baliseRefName: str) -> None:
+    def creerDepuisGroupe(self, groupId: str, startNodeId: str, orientationUser: str, beaconId: str) -> None:
         """Cree un chemin depuis un groupe + start node + orientation utilisateur."""
         orient = self._normalizeOrientation(orientationUser)
         gid = self._world.find_group(str(groupId))
@@ -1337,7 +1352,7 @@ class TopologyChemins:
             raise ValueError("[Chemins] pathNodesOrdered invalide: moins de 3 nodes")
         tripletsLocal = self._buildTriplets(pathLocal)
         for t in tripletsLocal:
-            t.calculerGeometrie(self._world, gid, orient, baliseRefName)
+            t.calculerGeometrie(self._world, gid, orient, beaconId)
 
         self.isDefined = True
         self.groupId = gid
@@ -1349,7 +1364,7 @@ class TopologyChemins:
         self.triplets = tripletsLocal
         self._assertDefinedInvariants()
 
-    def appliquerEdition(self, orientationUser: str, selectionMask: list[bool], baliseRefName: str) -> None:
+    def appliquerEdition(self, orientationUser: str, selectionMask: list[bool], beaconId: str) -> None:
         """Applique orientation + mask sur le snapshot puis recalcule path/triplets/geometrie."""
         self._requireDefined()
         orient = self._normalizeOrientation(orientationUser)
@@ -1365,7 +1380,7 @@ class TopologyChemins:
             raise ValueError("[Chemins] edition invalide: moins de 3 nodes selectionnes")
         tripletsLocal = self._buildTriplets(pathLocal)
         for t in tripletsLocal:
-            t.calculerGeometrie(self._world, str(self.groupId), orient, baliseRefName)
+            t.calculerGeometrie(self._world, str(self.groupId), orient, beaconId)
 
         self.orientationUser = orient
         self.selectionMask = mask
@@ -1389,12 +1404,12 @@ class TopologyChemins:
         self._requireDefined()
         self.triplets = self._buildTriplets(self.pathNodesOrdered)
 
-    def calculerGeometrieTriplets(self, baliseRefName: str) -> None:
+    def calculerGeometrieTriplets(self, beaconId: str) -> None:
         """Met a jour la geometrie de tous les triplets sans changer la combinatoire."""
         self._requireDefined()
         gid = str(self.groupId)
         for t in self.triplets:
-            t.calculerGeometrie(self._world, gid, str(self.orientationUser), baliseRefName)
+            t.calculerGeometrie(self._world, gid, str(self.orientationUser), beaconId)
 
     def exportXlsx(self, filePath: str, columns: list[dict], scenarioName: str) -> None:
         """
@@ -1665,7 +1680,7 @@ class TopologyChemins:
         self.triplets = newTriplets
         self._assertDefinedInvariants()
 
-    def recalculerChemin(self, baliseRefName: str) -> None:
+    def recalculerChemin(self, beaconId: str) -> None:
         """Reconstruit snapshot/mask/path/triplets depuis le contour courant en conservant start/sens."""
         self._requireDefined()
 
@@ -1710,7 +1725,7 @@ class TopologyChemins:
 
         newTriplets = self._buildTriplets(newPath)
         for t in newTriplets:
-            t.calculerGeometrie(self._world, gid, oldOrient, baliseRefName)
+            t.calculerGeometrie(self._world, gid, oldOrient, beaconId)
 
         oldPath = list(self.pathNodesOrdered)
         oldTriplets = list(self.triplets)
@@ -1781,7 +1796,7 @@ class TopologyWorld:
     - Applique vertex↔vertex, vertex↔edge et edge↔edge (mapping direct|reverse) au niveau DSU + coverages.
     - Dégrouper/undo = suppression d’attaches puis rebuild complet (petits scénarios).
     """
-    def __init__(self):
+    def __init__(self, beacon_catalog=None):
         self.fusion_distance_km: float = 1.0
 
         # Repère "monde" pour les calculs d'azimut (0°=Nord, sens horaire).
@@ -1796,6 +1811,7 @@ class TopologyWorld:
         self.elements: dict[str, TopologyElement] = {}
         self.element_to_group: dict[str, str] = {}
         self.attachments: dict[str, TopologyAttachment] = {}
+        self.groupAnchors: dict[str, TopologyGroupAnchor] = {}
 
         self._node_parent: dict[str, str] = {}
         self._node_type: dict[str, str] = {}
@@ -1809,6 +1825,7 @@ class TopologyWorld:
         self._created_counter_nodes = 0
         self._created_counter_groups = 0
         self._created_counter_attachments = 0
+        self._created_counter_anchors = 0
         self._created_counter_elements = 0
         self._topoTxDepth = 0
         self._topoTxTouchedGroups: set[str] = set()
@@ -1816,13 +1833,16 @@ class TopologyWorld:
         self._isImportingSnapshot = False
         self.topologyChemins = TopologyChemins(self)
 
-        self.balisesWorld: dict[str, tuple[float, float]] = {}
+        self._beacon_catalog = beacon_catalog
         self.scenario_triangle_set = ScenarioTriangleSet()
 
     def set_scenario_triangle_set(self, triangle_set: ScenarioTriangleSet) -> None:
         if not isinstance(triangle_set, ScenarioTriangleSet):
             raise TypeError("TopologyWorld: ScenarioTriangleSet attendu")
         self.scenario_triangle_set = triangle_set
+
+    def attachBeaconCatalog(self, beacon_catalog) -> None:
+        self._beacon_catalog = beacon_catalog
 
     def get_used_triangle_ranks(self) -> frozenset[int]:
         return frozenset(
@@ -3171,6 +3191,10 @@ class TopologyWorld:
         self._created_counter_attachments += 1
         return f"A{self._created_counter_attachments:03d}"
 
+    def new_group_anchor_id(self) -> str:
+        self._created_counter_anchors += 1
+        return f"AN{self._created_counter_anchors:03d}"
+
     # --- DSU nodes ---
     def create_node_atomic(self, node_id: str, node_type: str) -> str:
         node_id = str(node_id)
@@ -3244,6 +3268,96 @@ class TopologyWorld:
             self._group_parent[group_id] = self.find_group(parent)
         return self._group_parent.get(group_id, group_id)
 
+    def _require_live_group_id(self, group_id: str) -> str:
+        canonical_group_id = str(self.find_group(str(group_id)))
+        if canonical_group_id not in self.getLiveGroupIds():
+            raise ValueError(f"TopologyWorld: groupe inexistant: {group_id!r}")
+        return canonical_group_id
+
+    def _require_beacon_id(self, beacon_id: str) -> str:
+        beacon_id = str(beacon_id or "").strip()
+        if not beacon_id:
+            raise ValueError("TopologyWorld: beacon_id vide")
+        if self._beacon_catalog is None or not self._beacon_catalog.contains(beacon_id):
+            raise ValueError(f"TopologyWorld: balise inexistante: {beacon_id!r}")
+        return beacon_id
+
+    def _require_anchor_node_id(self, group_id: str, node_id: str) -> str:
+        node_id = str(node_id or "").strip()
+        if node_id not in self._node_parent:
+            raise ValueError(f"TopologyWorld: nœud d'ancrage inexistant: {node_id!r}")
+        node_group_id = self.getGroupIdFromConceptNode(node_id)
+        if node_group_id != group_id:
+            raise ValueError(
+                "TopologyWorld: nœud d'ancrage hors du groupe "
+                f"({node_id!r} appartient à {node_group_id!r}, attendu {group_id!r})"
+            )
+        concept_node_id = self.find_node(node_id)
+        if concept_node_id not in self.ensureConceptGraph(group_id).nodes:
+            raise ValueError(f"TopologyWorld: ConceptNode d'ancrage invalide: {node_id!r}")
+        return node_id
+
+    def createGroupAnchor(
+        self, group_id: str, beacon_id: str, node_id: str
+    ) -> TopologyGroupAnchor:
+        """Ancre un groupe canonique sur une balise du catalogue partagé."""
+        canonical_group_id = self._require_live_group_id(group_id)
+        beacon_id = self._require_beacon_id(beacon_id)
+        node_id = self._require_anchor_node_id(canonical_group_id, node_id)
+        if self.getAnchorForGroup(canonical_group_id) is not None:
+            raise ValueError(f"TopologyWorld: groupe déjà ancré: {canonical_group_id}")
+        anchor = TopologyGroupAnchor(
+            anchor_id=self.new_group_anchor_id(),
+            group_id=canonical_group_id,
+            beacon_id=beacon_id,
+            node_id=node_id,
+        )
+        self.groupAnchors[anchor.anchor_id] = anchor
+        return anchor
+
+    def removeGroupAnchor(self, anchor_id: str) -> TopologyGroupAnchor:
+        key = str(anchor_id or "").strip()
+        if key not in self.groupAnchors:
+            raise KeyError(key)
+        return self.groupAnchors.pop(key)
+
+    def getGroupAnchor(self, anchor_id: str) -> TopologyGroupAnchor:
+        return self.groupAnchors[str(anchor_id or "").strip()]
+
+    def getAnchorForGroup(self, group_id: str) -> TopologyGroupAnchor | None:
+        canonical_group_id = str(self.find_group(str(group_id)))
+        for anchor in self.groupAnchors.values():
+            if str(anchor.group_id) == canonical_group_id:
+                return anchor
+        return None
+
+    def setGroupAnchorBeacon(self, anchor_id: str, beacon_id: str) -> TopologyGroupAnchor:
+        anchor = self.getGroupAnchor(anchor_id)
+        anchor.beacon_id = self._require_beacon_id(beacon_id)
+        return anchor
+
+    def _reconcile_group_anchors(self) -> None:
+        """Canonise les références d'ancres et retire celles dont le groupe a disparu."""
+        live_group_ids = set(self.getLiveGroupIds())
+        for anchor_id, anchor in list(self.groupAnchors.items()):
+            canonical_group_id = str(self.find_group(anchor.group_id))
+            if canonical_group_id not in live_group_ids:
+                self.groupAnchors.pop(anchor_id, None)
+                continue
+            anchor.group_id = canonical_group_id
+
+    def applyGroupAnchor(self, anchor_id: str) -> None:
+        """Translate rigidement le groupe pour superposer son nœud à sa balise."""
+        anchor = self.getGroupAnchor(anchor_id)
+        group_id = self._require_live_group_id(anchor.group_id)
+        self._require_beacon_id(anchor.beacon_id)
+        self._require_anchor_node_id(group_id, anchor.node_id)
+        node_world = np.asarray(
+            self.getConceptNodeWorldXY(anchor.node_id, group_id), dtype=float
+        )
+        beacon_world = np.asarray(self.getBeaconWorldXY(anchor.beacon_id), dtype=float)
+        self._translate_group_poses(group_id, beacon_world - node_world)
+
     def _group_rank_key(self, group_id: str) -> tuple[int, str]:
         c = self.find_group(group_id)
         created = self._group_created_order.get(c, 0)
@@ -3254,6 +3368,13 @@ class TopologyWorld:
         rb = self.find_group(b)
         if ra == rb:
             return ra
+        anchor_a = self.getAnchorForGroup(ra)
+        anchor_b = self.getAnchorForGroup(rb)
+        if anchor_a is not None and anchor_b is not None:
+            raise ValueError(
+                "TopologyWorld: fusion interdite entre deux groupes ancrés "
+                f"({ra!r} -> {anchor_a.beacon_id!r}, {rb!r} -> {anchor_b.beacon_id!r})"
+            )
         canonical = ra if self._group_rank_key(ra) >= self._group_rank_key(rb) else rb
         other = rb if canonical == ra else ra
         self._group_parent[other] = canonical
@@ -3265,6 +3386,10 @@ class TopologyWorld:
             self.groups[canonical].attachment_ids.extend(self.groups[other].attachment_ids)
         self.invalidateConceptGraph(canonical)
         self._markTopoTouched(canonical)
+        if anchor_a is not None:
+            anchor_a.group_id = canonical
+        elif anchor_b is not None:
+            anchor_b.group_id = canonical
         return canonical
 
     def group_members(self, group_id: str) -> list[str]:
@@ -3435,6 +3560,24 @@ class TopologyWorld:
             raise ValueError(f"Groupe Core canonique inconnu: {core_group_id!r}")
         return self.getGroupElementIds(key)
 
+    def _reject_transform_of_anchored_group(self, core_group_id: str, operation: str) -> None:
+        anchor = self.getAnchorForGroup(core_group_id)
+        if anchor is not None:
+            raise ValueError(
+                f"TopologyWorld: {operation} interdit pour le groupe ancré "
+                f"{core_group_id!r} (ancre {anchor.anchor_id})"
+            )
+
+    def _translate_group_poses(self, core_group_id: str, delta: np.ndarray) -> None:
+        for element_id in self._require_live_group_element_ids(core_group_id):
+            R, T, mirrored = self.getElementPose(element_id)
+            self.setElementPose(
+                element_id,
+                R=R,
+                T=np.asarray(T, dtype=float) + delta,
+                mirrored=mirrored,
+            )
+
     @staticmethod
     def _world_vector(value, *, name: str) -> np.ndarray:
         """Normalise un vecteur monde 2D de l'API de transformation."""
@@ -3450,9 +3593,8 @@ class TopologyWorld:
         topologie et toute projection Canvas restent inchangées.
         """
         delta = self._world_vector((dx, dy), name="delta")
-        for element_id in self._require_live_group_element_ids(core_group_id):
-            R, T, mirrored = self.getElementPose(element_id)
-            self.setElementPose(element_id, R=R, T=np.asarray(T, dtype=float) + delta, mirrored=mirrored)
+        self._reject_transform_of_anchored_group(core_group_id, "MOVE")
+        self._translate_group_poses(core_group_id, delta)
 
     def rotate_group(self, core_group_id: str, center_world, angle_rad: float) -> None:
         """Tourne rigidement un groupe autour d'un point du monde.
@@ -3463,6 +3605,7 @@ class TopologyWorld:
         jour.
         """
         center = self._world_vector(center_world, name="center_world")
+        self._reject_transform_of_anchored_group(core_group_id, "ROTATE")
         angle = float(angle_rad)
         if not np.isfinite(angle):
             raise ValueError("angle_rad doit être fini")
@@ -3480,6 +3623,7 @@ class TopologyWorld:
         introduite par cette API et l'état ``mirrored`` de chaque élément est
         donc conservé tel quel.
         """
+        self._reject_transform_of_anchored_group(core_group_id, "RIGID_TRANSFORM")
         rotation = np.asarray(R, dtype=float)
         translation = self._world_vector(T, name="T")
         if rotation.shape != (2, 2) or not np.all(np.isfinite(rotation)):
@@ -3539,6 +3683,7 @@ class TopologyWorld:
         - LocalCoords inchangés
         - ``core_group_id`` est déjà canonique
         """
+        self._reject_transform_of_anchored_group(core_group_id, "FLIP")
         element_ids = self._require_live_group_element_ids(core_group_id)
         p = self._world_vector(axis_point, name="axis_point")
         S = self._reflection_matrix(self._world_vector(axis_direction, name="axis_direction"))
@@ -4068,6 +4213,7 @@ class TopologyWorld:
         # 4) Reconstruire la topologie depuis les attachments conservés
         self.rebuild_from_attachments(keptAttachments)
         self.rebuildGroupElementLists()
+        self._reconcile_group_anchors()
 
         # 5) Chemins : si le chemin courant porte sur un groupe supprimé, on le supprime.
         tc = getattr(self, "topologyChemins", None)
@@ -4185,6 +4331,7 @@ class TopologyWorld:
                 self._group_members.pop(gid, None)
                 self._group_created_order.pop(gid, None)
                 self._concept_by_gid.pop(gid, None)
+        self._reconcile_group_anchors()
 
     def degrouperAtNode(self, groupId: str, nodeId: str) -> dict:
         if int(getattr(self, "_topoTxDepth", 0)) > 0:
@@ -4292,6 +4439,7 @@ class TopologyWorld:
         self.rebuild_from_attachments(keptAttachments)
         self.rebuildGroupElementLists()
         self.pruneOrphanGroups()
+        self._reconcile_group_anchors()
 
         allResultGroupIds = [mainGroupId] + list(newGroupIds)
 
@@ -4383,10 +4531,21 @@ class TopologyWorld:
         if hasattr(self, "vertex_edge_endpoint_epsilon"):
             config_payload["vertex_edge_endpoint_epsilon"] = float(getattr(self, "vertex_edge_endpoint_epsilon"))
 
+        anchors_payload = [
+            {
+                "anchor_id": str(anchor.anchor_id),
+                "group_id": str(anchor.group_id),
+                "beacon_id": str(anchor.beacon_id),
+                "node_id": str(anchor.node_id),
+            }
+            for anchor in sorted(self.groupAnchors.values(), key=lambda item: item.anchor_id)
+        ]
+
         return {
             "config": config_payload,
             "elements": elements_payload,
             "attachments": attachments_payload,
+            "group_anchors": anchors_payload,
         }
 
     def _importPhysicalSnapshot(self, snapshot: dict) -> None:
@@ -4468,6 +4627,32 @@ class TopologyWorld:
             for gid in sorted(self.groups.keys()):
                 if gid == self.find_group(gid):
                     self.recomputeConceptAndBoundary(gid)
+
+            anchors_payload = list(snapshot.get("group_anchors", []) or [])
+            self.groupAnchors = {}
+            max_anchor_num = 0
+            for payload in anchors_payload:
+                anchor_id = str(payload.get("anchor_id", "") or "").strip()
+                group_id = str(payload.get("group_id", "") or "").strip()
+                beacon_id = str(payload.get("beacon_id", "") or "").strip()
+                node_id = str(payload.get("node_id", "") or "").strip()
+                if not anchor_id or not re.fullmatch(r"AN\d{3,}", anchor_id):
+                    raise ValueError(f"TopologyWorld: anchor_id invalide: {anchor_id!r}")
+                if anchor_id in self.groupAnchors:
+                    raise ValueError(f"TopologyWorld: anchor_id dupliqué: {anchor_id!r}")
+                canonical_group_id = self._require_live_group_id(group_id)
+                beacon_id = self._require_beacon_id(beacon_id)
+                node_id = self._require_anchor_node_id(canonical_group_id, node_id)
+                if self.getAnchorForGroup(canonical_group_id) is not None:
+                    raise ValueError(f"TopologyWorld: plusieurs ancres pour {canonical_group_id!r}")
+                self.groupAnchors[anchor_id] = TopologyGroupAnchor(
+                    anchor_id=anchor_id,
+                    group_id=canonical_group_id,
+                    beacon_id=beacon_id,
+                    node_id=node_id,
+                )
+                max_anchor_num = max(max_anchor_num, int(anchor_id[2:]))
+            self._created_counter_anchors = max_anchor_num
         finally:
             self._isImportingSnapshot = False
 
@@ -4477,7 +4662,7 @@ class TopologyWorld:
             raise ValueError("TopologyWorld.clonePhysicalState: transaction ouverte")
 
         snapshot = self._exportPhysicalSnapshot()
-        target = TopologyWorld()
+        target = TopologyWorld(beacon_catalog=self._beacon_catalog)
         target._importPhysicalSnapshot(snapshot)
         target.set_scenario_triangle_set(self.scenario_triangle_set.clone())
         return target
@@ -4891,6 +5076,15 @@ class TopologyWorld:
             errs = self.validate_world()
             _ET.SubElement(grp, "Validate", {"errors": str(len(errs)), "warnings": "0"})
 
+        anchors_el = _ET.SubElement(root, "GroupAnchors")
+        for anchor in sorted(self.groupAnchors.values(), key=lambda item: item.anchor_id):
+            _ET.SubElement(anchors_el, "GroupAnchor", {
+                "id": str(anchor.anchor_id),
+                "group": str(anchor.group_id),
+                "beacon": str(anchor.beacon_id),
+                "node": str(anchor.node_id),
+            })
+
         nodes_el = _ET.SubElement(root, "Nodes")
         canonical_nodes = sorted({self.find_node(nid) for nid in self._node_parent.keys()})
         for cn in canonical_nodes:
@@ -5183,17 +5377,13 @@ class TopologyWorld:
 
         return None if bestHit is None else bestHit[1]
 
-    def setBaliseWorldXY(self, name: str, x: float, y: float) -> None:
-        self.balisesWorld[str(name)] = (float(x), float(y))
+    def hasBeacon(self, beacon_id: str) -> bool:
+        return self._beacon_catalog is not None and self._beacon_catalog.contains(beacon_id)
 
-    def clearBalises(self) -> None:
-        self.balisesWorld.clear()
-
-    def hasBalise(self, name: str) -> bool:
-        return str(name) in self.balisesWorld
-
-    def getBaliseWorldXY(self, name: str) -> tuple[float, float]:
-        key = str(name)
-        if key not in self.balisesWorld:
-            raise KeyError(f"[Balises] balise absente: {name}")
-        return self.balisesWorld[key]
+    def getBeaconWorldXY(self, beacon_id: str) -> tuple[float, float]:
+        if self._beacon_catalog is None:
+            raise RuntimeError("[Beacons] BeaconCatalog absent")
+        beacon = self._beacon_catalog.get(beacon_id)
+        if beacon.world_x is None or beacon.world_y is None:
+            raise RuntimeError(f"[Beacons] coordonnées World absentes: {beacon_id}")
+        return (float(beacon.world_x), float(beacon.world_y))

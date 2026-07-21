@@ -1,4 +1,9 @@
-"""assembleur_io.py
+"""Services d'entrée/sortie de l'assembleur.
+
+Le module gère la configuration JSON, la conversion CSV/Excel et les
+scénarios XML v5. Le TopologyWorld est persisté comme source de vérité ; la
+projection Canvas et ``ScenarioAssemblage.last_drawn`` sont des caches runtime
+reconstruits depuis le Core après chargement.
 Persistance (config JSON + scénario XML) isolée du GUI.
 Les fonctions prennent 'viewer' en paramètre (duck-typing) pour éviter les imports circulaires.
 """
@@ -13,10 +18,8 @@ import traceback
 import numpy as np
 import pandas as pd
 from math import hypot, acos, degrees
-from src.utils.logging_utils import get_app_logger
 
-CFG_KEY_CHEMINS_BALISE_REF = "cheminsBaliseRefName"
-APP_LOGGER = get_app_logger()
+CFG_KEY_CHEMINS_BEACON_REF = "cheminsBeaconRefId"
 
 
 class TriangleFileService:
@@ -504,6 +507,8 @@ def loadScenarioXml(viewer, path: str):
       - restaure la topologie Core depuis <topoSnapshot encoding="json">,
       - restaure vue, horloge et listbox,
       - reconstruit la projection runtime depuis le Core,
+      - remplace le scénario actif par un scénario manuel ;
+      - vide le cache puis le reconstruit depuis le Core ;
       - redessine.
     """
     tree = ET.parse(path)
@@ -699,8 +704,7 @@ def loadScenarioXml(viewer, path: str):
     # Core restored in isolation; the active scenario is replaced only once
     # the physical snapshot has been imported successfully.
     world = TopologyWorld()
-    # MIG-CAT-001 : rattache la selection globale deja chargee ; le format
-    # XML reste strictement inchange.
+    # Le catalogue déjà chargé par le viewer est partagé avec le monde restauré.
     if hasattr(viewer, "_attach_catalog_to_world"):
         viewer._attach_catalog_to_world(world)
     world._topoTxOrientation = topo_tx_orientation
@@ -724,9 +728,8 @@ def loadScenarioXml(viewer, path: str):
             )
         return str(core_group_id)
 
-    # MIG-XML-001 -- anciens snapshots peuvent reconstruire un identifiant
-    # canonique different. Les references persistantes sont re-resolues par
-    # leur noeud physique, jamais par un groupe UI legacy.
+    # Les références persistées sont recanonisées à partir du nœud physique,
+    # car l'identifiant de groupe peut changer pendant l'import du snapshot.
     chemins_el = root.find("chemins")
     if chemins_el is not None and str(chemins_el.get("isDefined", "") or "") == "1":
         chemins_el.set(
@@ -759,7 +762,6 @@ def loadScenarioXml(viewer, path: str):
     viewer.canvas_objects.clear()
     scen.last_drawn = []
     viewer._rebuild_active_projection_from_core()
-    viewer.canvas_objects.dump(APP_LOGGER, "chargement XML")
     viewer._update_triangle_listbox_colors()
 
     scen.clockAzimuthTraits = []

@@ -1,145 +1,149 @@
-"""Gestion des balises GPS (CSV DMS -> Lambert93 km -> World)."""
+"""Catalogue global des repères géographiques partagés par les scénarios."""
 
 from __future__ import annotations
 
 import csv
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Iterable
 
 from src.assembleur_io import TriangleFileService
+from src.utils.logging_utils import get_app_logger
 
 
 @dataclass(frozen=True)
-class Balise:
-    nom: str
-    latDms: str
-    lonDms: str
-    lambertXKm: float
-    lambertYKm: float
+class Beacon:
+    """Repère géographique identifié indépendamment de son libellé."""
+
+    beacon_id: str
+    name: str
+    latitude: float
+    longitude: float
+    lambert_x: float
+    lambert_y: float
+    world_x: float | None = None
+    world_y: float | None = None
 
 
-class BalisesManager:
-    _EXPECTED_HEADER = ["Nom", "Latitude", "Longitude"]
+class BeaconCatalog:
+    """Référentiel global immuable côté consommateurs, indexé par ``beacon_id``."""
+
+    _EXPECTED_HEADER = ["Id", "Nom", "Latitude", "Longitude"]
     _DMS_RE = TriangleFileService.DMS_RE
 
     def __init__(self) -> None:
-        self._balisesByName: dict[str, Balise] = {}
+        self._by_id: dict[str, Beacon] = {}
         self._transformer = None
 
     def clear(self) -> None:
-        self._balisesByName = {}
+        self._by_id = {}
 
-    def loadFromCsv(self, csvPath: str) -> None:
-        csv_path = os.path.normpath(str(csvPath or "").strip())
-        if not csv_path:
-            raise ValueError("CSV balises: chemin vide.")
-        if not os.path.isfile(csv_path):
-            raise ValueError(f"CSV balises introuvable: {csv_path}")
+    def load_from_csv(self, csv_path: str) -> None:
+        path = os.path.normpath(str(csv_path or "").strip())
+        if not path:
+            raise ValueError("Beacon CSV: missing path.")
+        if not os.path.isfile(path):
+            raise ValueError(f"Beacon CSV not found: {path}")
 
-        loaded: dict[str, Balise] = {}
-        with open(csv_path, "r", encoding="utf-8-sig", newline="") as f_in:
-            reader = csv.reader(f_in, delimiter=",")
+        loaded: dict[str, Beacon] = {}
+        with open(path, "r", encoding="utf-8-sig", newline="") as source:
+            reader = csv.reader(source, delimiter=",")
             try:
-                raw_header = next(reader)
-            except StopIteration as e:
-                raise ValueError(
-                    "CSV balises vide. Entete attendue: Nom,Latitude,Longitude"
-                ) from e
-
-            header = [str(c).strip() for c in raw_header]
+                header = [str(value).strip() for value in next(reader)]
+            except StopIteration as exc:
+                raise ValueError("Beacon CSV is empty; expected Id,Nom,Latitude,Longitude.") from exc
             if header != self._EXPECTED_HEADER:
-                raise ValueError(
-                    "CSV balises: entete invalide. Colonnes attendues: Nom,Latitude,Longitude"
-                )
+                raise ValueError("Beacon CSV header must be Id,Nom,Latitude,Longitude.")
 
             for line_no, row in enumerate(reader, start=2):
-                if len(row) == 0 or all(str(c).strip() == "" for c in row):
+                if not row or all(not str(value).strip() for value in row):
                     continue
-                if len(row) != 3:
-                    raise ValueError(
-                        f"CSV balises: ligne {line_no} invalide (3 colonnes attendues)."
-                    )
-
-                nom = str(row[0]).strip()
-                lat_dms = str(row[1]).strip()
-                lon_dms = str(row[2]).strip()
-                if not nom:
-                    raise ValueError(f"CSV balises: Nom vide a la ligne {line_no}.")
-                if nom in loaded:
-                    raise ValueError(f"CSV balises: Nom duplique '{nom}'.")
-
-                lat_deg = self._parseDms(lat_dms, expected_hemispheres=("N", "S"), field_label="latitude")
-                lon_deg = self._parseDms(lon_dms, expected_hemispheres=("E", "W"), field_label="longitude")
+                if len(row) != 4:
+                    raise ValueError(f"Beacon CSV line {line_no}: expected 4 columns.")
+                beacon_id, name, raw_latitude, raw_longitude = (str(value).strip() for value in row)
+                if not beacon_id:
+                    raise ValueError(f"Beacon CSV line {line_no}: missing beacon_id.")
+                if beacon_id in loaded:
+                    raise ValueError(f"Beacon CSV line {line_no}: duplicate beacon_id {beacon_id!r}.")
+                if not name:
+                    raise ValueError(f"Beacon CSV line {line_no}: missing name.")
+                latitude = self._parse_coordinate(raw_latitude, ("N", "S"), "latitude")
+                longitude = self._parse_coordinate(raw_longitude, ("E", "W"), "longitude")
                 try:
-                    x_m, y_m = self._getTransformer().transform(lon_deg, lat_deg)
-                except Exception as e:
-                    raise RuntimeError(f"Projection Lambert93 impossible pour '{nom}': {e}") from e
-
-                loaded[nom] = Balise(
-                    nom=nom,
-                    latDms=lat_dms,
-                    lonDms=lon_dms,
-                    lambertXKm=float(x_m) / 1000.0,
-                    lambertYKm=float(y_m) / 1000.0,
+                    x_m, y_m = self._get_transformer().transform(longitude, latitude)
+                except Exception as exc:
+                    raise RuntimeError(f"Beacon projection failure for {beacon_id!r}: {exc}") from exc
+                loaded[beacon_id] = Beacon(
+                    beacon_id=beacon_id,
+                    name=name,
+                    latitude=latitude,
+                    longitude=longitude,
+                    lambert_x=float(x_m) / 1000.0,
+                    lambert_y=float(y_m) / 1000.0,
                 )
 
-        self._balisesByName = loaded
+        self._by_id = loaded
+        get_app_logger().info("BeaconCatalog loaded: %s beacons", len(loaded))
 
-    def hasBalise(self, nom: str) -> bool:
-        return self._normNom(nom) in self._balisesByName
+    def get(self, beacon_id: str) -> Beacon:
+        return self._by_id[str(beacon_id or "").strip()]
 
-    def getLambertKm(self, nom: str) -> tuple[float, float]:
-        key = self._normNom(nom)
-        balise = self._balisesByName[key]
-        return (float(balise.lambertXKm), float(balise.lambertYKm))
+    def contains(self, beacon_id: str) -> bool:
+        return str(beacon_id or "").strip() in self._by_id
 
-    def getWorld(self, viewer, nom: str) -> tuple[float, float]:
-        if viewer is None or not hasattr(viewer, "bgLambertKmToWorld"):
-            raise RuntimeError("Viewer incompatible: bgLambertKmToWorld manquant.")
-        x_km, y_km = self.getLambertKm(nom)
-        wx, wy = viewer.bgLambertKmToWorld(x_km, y_km)
-        return (float(wx), float(wy))
+    def iter_beacons(self) -> Iterable[Beacon]:
+        return tuple(sorted(self._by_id.values(), key=lambda beacon: beacon.beacon_id))
 
-    def listNoms(self) -> list[str]:
-        return sorted(self._balisesByName.keys(), key=str.casefold)
+    def find_by_name(self, name: str) -> list[Beacon]:
+        target = str(name or "").strip().casefold()
+        return [beacon for beacon in self.iter_beacons() if beacon.name.casefold() == target]
 
-    def _normNom(self, nom: str) -> str:
-        return str(nom or "").strip()
+    def get_world(self, beacon_id: str) -> tuple[float, float]:
+        beacon = self.get(beacon_id)
+        if beacon.world_x is None or beacon.world_y is None:
+            raise RuntimeError(f"Beacon {beacon_id!r} has no World coordinates.")
+        return (float(beacon.world_x), float(beacon.world_y))
 
-    def _parseDmsParts(self, dms: str):
-        if not isinstance(dms, str):
-            raise ValueError(f"DMS invalide: {dms!r}")
-        m = self._DMS_RE.match(dms)
-        if m is None:
-            raise ValueError(f"DMS invalide: {dms!r}")
+    def reproject_world(self, lambert_to_world) -> None:
+        """Rebuild immutable beacons from the current Lambert→World projection."""
+        projected: dict[str, Beacon] = {}
+        for beacon in self.iter_beacons():
+            wx, wy = lambert_to_world(beacon.lambert_x, beacon.lambert_y)
+            projected[beacon.beacon_id] = replace(
+                beacon, world_x=float(wx), world_y=float(wy)
+            )
+        self._by_id = projected
 
-        deg = int(m.group(1))
-        minute = int(m.group(2))
-        second = int(m.group(3))
-        hemisphere = m.group(4)
-        if minute < 0 or minute >= 60:
-            raise ValueError(f"DMS invalide (minutes): {dms!r}")
-        if second < 0 or second >= 60:
-            raise ValueError(f"DMS invalide (secondes): {dms!r}")
-        return (deg, minute, second, hemisphere)
+    def clear_world_coordinates(self) -> None:
+        """Rebuild beacons without a currently usable World projection."""
+        self._by_id = {
+            beacon.beacon_id: replace(beacon, world_x=None, world_y=None)
+            for beacon in self.iter_beacons()
+        }
 
-    def _parseDms(self, dms: str, expected_hemispheres: tuple[str, ...], field_label: str) -> float:
-        deg, minute, second, hemisphere = self._parseDmsParts(dms)
-        if hemisphere not in expected_hemispheres:
-            raise ValueError(f"DMS {field_label} invalide: {dms!r}")
-        decimal = float(deg) + (float(minute) / 60.0) + (float(second) / 3600.0)
-        if hemisphere in ("S", "W"):
-            decimal = -decimal
-        return decimal
+    def _parse_coordinate(self, raw: str, hemispheres: tuple[str, ...], label: str) -> float:
+        value = str(raw or "").strip()
+        try:
+            numeric = float(value)
+        except ValueError:
+            match = self._DMS_RE.match(value)
+            if match is None:
+                raise ValueError(f"Invalid {label}: {raw!r}")
+            degrees, minutes, seconds, hemisphere = match.groups()
+            if hemisphere not in hemispheres or int(minutes) >= 60 or int(seconds) >= 60:
+                raise ValueError(f"Invalid {label}: {raw!r}")
+            numeric = int(degrees) + int(minutes) / 60.0 + int(seconds) / 3600.0
+            if hemisphere in ("S", "W"):
+                numeric = -numeric
+        if not (-90.0 <= numeric <= 90.0 if label == "latitude" else -180.0 <= numeric <= 180.0):
+            raise ValueError(f"Invalid {label}: {raw!r}")
+        return float(numeric)
 
-    def _getTransformer(self):
+    def _get_transformer(self):
         if self._transformer is None:
             try:
                 from pyproj import Transformer
-            except Exception as e:
-                raise RuntimeError("Projection Lambert93 indisponible (pyproj non importable).") from e
-            try:
                 self._transformer = Transformer.from_crs("EPSG:4326", "EPSG:2154", always_xy=True)
-            except Exception as e:
-                raise RuntimeError(f"Projection Lambert93 indisponible: {e}") from e
+            except Exception as exc:
+                raise RuntimeError("Lambert93 projection unavailable.") from exc
         return self._transformer
