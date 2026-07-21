@@ -393,8 +393,7 @@ def saveScenarioXml(viewer, path: str):
     Sauvegarde 'robuste' (v4) :
       - source excel, view (zoom/offset), clock (pos + hm),
       - ids restants (listbox),
-      - triangles projetes (id, mirrored, topoElementId, points monde O/B/L),
-      - associations triangle→mot (word,row,col).
+      - triangles projetes (id, topoElementId, points monde O/B/L).
     """
     scen = viewer._get_active_scenario()
     world = scen.topoWorld
@@ -495,24 +494,20 @@ def saveScenarioXml(viewer, path: str):
             raise ValueError(
                 f"saveScenarioXml: triangle {t.get('id', '?')} sans topoElementId."
             )
+        if topo_element_id not in world.elements:
+            raise ValueError(
+                f"saveScenarioXml: element Core introuvable {topo_element_id!r}."
+            )
+        _rotation, _translation, core_mirrored = world.getElementPose(topo_element_id)
         tri_el = ET.SubElement(tris_xml, "triangle", {
             "id": str(t.get("id", "")),
-            "mirrored": "1" if t.get("mirrored", False) else "0",
+            "mirrored": "1" if core_mirrored else "0",
             "topoElementId": topo_element_id,
         })
         P = t.get("pts", {})
         for key in ("O", "B", "L"):
             if key in P:
                 ET.SubElement(tri_el, key).text = viewer._pt_to_xml(P[key])
-    # mots associés
-    words_xml = ET.SubElement(root, "words")
-    for tri_id, info in (viewer._tri_words or {}).items():
-        ET.SubElement(words_xml, "w", {
-            "tri_id": str(tri_id),
-            "row": str(info.get("row", "")),
-            "col": str(info.get("col", "")),
-            "text": str(info.get("word", "")),
-        })
     # écrire
     tree = ET.ElementTree(root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -524,7 +519,7 @@ def loadScenarioXml(viewer, path: str):
     Recharge un scenario v4:
       - tente de recharger le fichier Excel source (mode degrade si absent),
       - restaure la topologie Core depuis <topoSnapshot encoding="json">,
-      - restaure vue, horloge, listbox, triangles projetes (+mots),
+      - restaure vue, horloge, listbox et triangles projetes,
       - ignore les groupes UI legacy eventuellement presents dans un fichier v4,
       - redessine.
     """
@@ -720,6 +715,10 @@ def loadScenarioXml(viewer, path: str):
     scen.topoScenarioId = sid
     scen.topoWorld = TopologyWorld()
     world = scen.topoWorld
+    # MIG-CAT-001 : rattache la selection globale deja chargee ; le format
+    # XML reste strictement inchange.
+    if hasattr(viewer, "_attach_catalog_to_world"):
+        viewer._attach_catalog_to_world(world)
     world._topoTxOrientation = topo_tx_orientation
     world._importPhysicalSnapshot(snapshot)
 
@@ -768,7 +767,7 @@ def loadScenarioXml(viewer, path: str):
     if tris_xml is not None:
         for t_el in tris_xml.findall("triangle"):
             tid = int(t_el.get("id"))
-            mirrored = (t_el.get("mirrored", "0") == "1")
+            xml_mirrored = (t_el.get("mirrored", "0") == "1")
             P = {}
             for k in ("O", "B", "L"):
                 n = t_el.find(k)
@@ -778,7 +777,6 @@ def loadScenarioXml(viewer, path: str):
             item = {
                 "id": tid,
                 "pts": P,
-                "mirrored": mirrored,
             }
             topo_element_id = str(t_el.get("topoElementId", "") or "").strip()
             if not topo_element_id:
@@ -791,44 +789,27 @@ def loadScenarioXml(viewer, path: str):
                     f"Triangle {tid} references missing topoElementId {topo_element_id}."
                 )
             item["topoElementId"] = topo_element_id
-            item["topoGroupId"] = str(world.get_group_of_element(topo_element_id))
+            # Le snapshot Core est autoritaire. L'attribut XML historique est
+            # seulement valide ici et ne revient jamais dans la projection.
+            _rotation, _translation, core_mirrored = world.getElementPose(topo_element_id)
+            if bool(core_mirrored) != bool(xml_mirrored):
+                APP_LOGGER.warning(
+                    "loadScenarioXml: mirrored XML/Core divergent triangle=%s element=%s xml=%s core=%s",
+                    tid,
+                    topo_element_id,
+                    bool(xml_mirrored),
+                    bool(core_mirrored),
+                )
             loaded_entries.append(item)
 
     viewer.canvas_objects.replace_all(loaded_entries)
     viewer.canvas_objects.dump(APP_LOGGER, "chargement XML")
 
-    # 5bis) labels
-    try:
-        if getattr(viewer, "df", None) is not None and not viewer.df.empty and (excel_loaded or not excel):
-            by_id = {int(r["id"]): (str(r["B"]), str(r["L"])) for _, r in viewer.df.iterrows()}
-            for t in viewer._last_drawn:
-                if "labels" not in t or not t["labels"]:
-                    b, l = by_id.get(int(t.get("id", -1)), ("", ""))
-                    t["labels"] = ("Bourges", b, l)
-        else:
-            for t in viewer._last_drawn:
-                if "labels" not in t or not t["labels"]:
-                    t["labels"] = ("Bourges", "", "")
-    except Exception:
-        for t in viewer._last_drawn:
-            if "labels" not in t or not t["labels"]:
-                t["labels"] = ("Bourges", "", "")
+    # 5bis) Les labels sont restaures dans le snapshot TopologyWorld et lus
+    # depuis TopologyElement.vertex_labels par le rendu. Aucune copie UI.
 
-    # 5ter) ids deja poses
-    viewer._placed_ids = {int(triangle_id) for triangle_id in viewer.canvas_objects.triangle_ids()}
+    # 5ter) La disponibilite est derivee de TopologyWorld par la listbox.
     viewer._update_triangle_listbox_colors()
-
-    # 6) mots associes
-    viewer._tri_words = {}
-    words_xml = root.find("words")
-    if words_xml is not None:
-        for w in words_xml.findall("w"):
-            tid = int(w.get("tri_id"))
-            viewer._tri_words[tid] = {
-                "word": w.get("text", ""),
-                "row": int(w.get("row", "0")) if w.get("row") else 0,
-                "col": int(w.get("col", "0")) if w.get("col") else 0,
-            }
 
     # MIG-XML-001 -- <groups> est une projection v4 legacy volontairement
     # ignoree : aucun viewer.groups, group_id, edge_in/out ou _next_group_id.

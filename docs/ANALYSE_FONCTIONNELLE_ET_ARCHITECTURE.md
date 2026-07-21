@@ -127,10 +127,10 @@ Gestion d'erreur observée : les dialogues de sélection remontent en `messagebo
 | Scénarios | Treeview manuel/automatique et barre d'icônes | `_set_active_scenario` échange les références de dessin, groupes, monde et vue; comparaison possible avec scénario de référence. |
 | Chemins | Treeview mesures, référence de balise, éditer/recalculer/exporter/décrypter | lit `active_scenario.topoWorld.topologyChemins`. |
 | Canvas | carte, triangles, contour, aides de collage, compas, guides, balises | coordonnées écran/monde; événements souris, clavier Escape, Ctrl, roue et configure. |
-| Dictionnaire bas | `tksheet`, recherche, filtres, menu contextuel | `DictionnaireEnigmes`; une cellule peut mettre à jour le compas ou associer un mot au triangle sélectionné. |
+| Dictionnaire bas | `tksheet`, recherche, filtres, menu contextuel | `DictionnaireEnigmes`; une cellule peut mettre à jour le compas. |
 | Fenêtre déchiffreur | paramètres, liste de patterns, barre de progression, solutions | `DecryptorEngine`, `EngineControl`, `EventQueue`; la solution affichée est `mot(r,c) … - score`. |
 
-Synchronisations importantes : le scénario actif porte le `TopologyWorld`; le chemin appartient à ce monde; les balises y sont recopiées avant calcul; la sélection du dictionnaire peut modifier l'état de compas et l'association `_tri_words`; toute mutation cartographique/triangle passe habituellement par `_redraw_from`. Les guides et référence de compas sont stockés dans le scénario.
+Synchronisations importantes : le scénario actif porte le `TopologyWorld`; le chemin appartient à ce monde; les balises y sont recopiées avant calcul; la sélection du dictionnaire peut modifier l'état de compas; toute mutation cartographique/triangle passe habituellement par `_redraw_from`. Les guides et référence de compas sont stockés dans le scénario.
 
 ## 9. Architecture générale
 
@@ -196,7 +196,7 @@ Ressources actives : trois `.xlsx` de catalogues, `triangle_3villes*.csv`, `livr
 | Sauvegarde, chargement et aide visuelle | `_scenario_save_dialog`, `_load_scenario_into_new_scenario`, wrappers XML, tooltips | scénario actif, `Toplevel`, chemin courant | `assembleur_io` | 5124-5449 |
 | Configuration et démarrage différé | `loadAppConfig`, `_persistBackgroundConfig`, `autoLoad*AtStartup` | `appConfig`, fond, fichiers récents, balises | `assembleur_io`, mixin carte, `BalisesManager` | 5452-5565 |
 | Import catalogue et balises | `_onSelectBalisesCsv`, `open_excel`, `load_excel`, `_triangle_from_index` | `df`, `excel_path`, `listbox`, balises | `TriangleFileService`, `BalisesManager` | 5566-5722 |
-| Dictionnaire et associations mot/triangle | appels `_init_dictionary`, `_build_dico_grid` dans `__init__`; callbacks hérités de `TriangleViewerDictionaryMixin` | `dico`, `dicoSheet`, filtres, `_tri_words` | `DictionnaireEnigmes`, `tksheet`, mixin dictionnaire | 644-676 pour l'orchestration ; logique détaillée dans `assembleur_tk_mixin_dictionary.py` |
+| Dictionnaire | appels `_init_dictionary`, `_build_dico_grid` dans `__init__`; callbacks hérités de `TriangleViewerDictionaryMixin` | `dico`, `dicoSheet`, filtres | `DictionnaireEnigmes`, `tksheet`, mixin dictionnaire | 644-676 pour l'orchestration ; logique détaillée dans `assembleur_tk_mixin_dictionary.py` |
 | Rendu des triangles et couches | `_redraw_from`, `_draw_triangle_screen`, `_draw_balises_layer`, `_draw_group_outlines` | canvas, `_last_drawn`, layers, cache de pick | mixin carte, `BalisesManager`, Core via contour | 5723-6337 |
 | Sélection, drag depuis liste et aide de collage | `_on_triangle_list_select`, `_on_list_mouse_down`, `_find_nearest_vertex`, `_update_edge_highlights` | `_drag`, `_sel`, `_edge_choice`, aides canvas | `EdgeChoiceEpts` indirect, NumPy | 6365-7246 |
 | Pose initiale, groupes UI et rollback | `_place_dragged_triangle`, `_new_group_id`, `_recompute_group_bbox`, `_on_escape_key` | `_last_drawn`, `groups`, `_placed_ids`, poses Core | `TopologyWorld`, Core bridge | 7247-7672 |
@@ -357,14 +357,14 @@ Le seul algorithme enregistré dans `src/assembleur_sim.py::ALGORITHMES_ASSEMBLA
 | `data/balises.csv` | `BalisesManager.loadFromCsv` | CSV comma, trois colonnes et DMS stricts. |
 | `data/maps/*.calib_points.json` | mixin background | trois points WGS84 à cliquer. |
 | `data/maps/*.json` | mixin background | calibration affine, date, rectangle, transformations 6 coefficients. |
-| `scenario/*.xml` | `saveScenarioXml`, `loadScenarioXml` | XML version strictement `4`: snapshot topologique JSON, chemin, source Excel, carte, horloge, référence/guides, listbox, groupes, triangles et mots. Les chemins de source/carte sont absolus; l'absence de l'Excel est dégradée mais un XML incomplet est refusé. |
+| `scenario/*.xml` | `saveScenarioXml`, `loadScenarioXml` | XML version strictement `4`: snapshot topologique JSON, chemin, source Excel, carte, horloge, référence/guides, listbox, groupes et triangles. Les chemins de source/carte sont absolus; l'absence de l'Excel est dégradée mais un XML incomplet est refusé. |
 | `exports/*.xlsx`, `exports/*.pdf`, `exports/TopoXML/*.xml` | export chemin, vue, `export_topo_dump_xml` | sorties générées; aucun import de ces exports n'est identifié. |
 
-La fonction `saveScenarioXml` documente des champs `view` dans sa description mais l'écriture visible porte principalement snapshot/source/map/clock/listbox/groups/triangles/words; le chargeur tolère donc l'absence de `view`. C'est **établi par le code**, et mérite vérification lors d'une évolution de format.
+La fonction `saveScenarioXml` documente des champs `view` dans sa description mais l'écriture visible porte principalement snapshot/source/map/clock/listbox/groups/triangles; le chargeur tolère donc l'absence de `view`. C'est **établi par le code**, et mérite vérification lors d'une évolution de format.
 
 ## 20. Gestion de l'état et synchronisation de l'interface
 
-L'état central n'est pas unique. Il comprend au minimum `self.df`, `self._last_drawn`, `self.groups`, `self.scenarios`, scénario actif, `ScenarioAssemblage.topoWorld`, `TopologyWorld.topologyChemins`, configuration, objet carte, `BalisesManager`, dictionnaire, associations `_tri_words` et de nombreuses variables Tk. Les méthodes `_capture/_apply_view_state`, `_capture/_apply_map_state`, `_set_active_scenario`, `_sync_group_elements_pose_to_core` et `_syncBalisesToWorld` sont les ponts à suivre avant toute modification transversale.
+L'état central n'est pas unique. Il comprend au minimum `self.df`, `self._last_drawn`, `self.groups`, `self.scenarios`, scénario actif, `ScenarioAssemblage.topoWorld`, `TopologyWorld.topologyChemins`, configuration, objet carte, `BalisesManager`, dictionnaire et de nombreuses variables Tk. Les méthodes `_capture/_apply_view_state`, `_capture/_apply_map_state`, `_set_active_scenario`, `_sync_group_elements_pose_to_core` et `_syncBalisesToWorld` sont les ponts à suivre avant toute modification transversale.
 
 Le déchiffreur communique ses résultats via une `queue.Queue` protégée et le UI la vide dans `after`; pause/stop sont des `threading.Event`. **Risque établi :** `_on_start_decryptage` est appelé dans le worker mais lit des objets de fenêtre/variables Tk et peut appeler `messagebox` sur des validations. Le moteur pur est sans Tk, mais la frontière de thread UI/métier n'est pas totalement étanche.
 
@@ -392,7 +392,6 @@ Cette matrice décrit l'état observé, sans proposer de le refondre. **Établi 
 | Compas | état runtime viewer (`_clock_state`, position/ancrage, `_clock_ref_azimuth_deg`) | overlay canvas ; une partie des références dans `ScenarioAssemblage.clockRef*` | interactions compas, `_set_active_scenario`, XML | le commentaire de `ScenarioAssemblage` désigne le viewer comme seule référence runtime ; le périmètre exact de persistance par scénario est partiellement distribué | à confirmer |
 | Guides | `ScenarioAssemblage.clockAzimuthTraits` | traits canvas et menus contextuels | `_ctx_trace_clock_azimuth`, restauration XML, `_draw_clock_azimuth_traits_layer` | valides seulement si leurs IDs de groupe/nœud/edge existent encore | établi |
 | Dictionnaire | `self.dico : DictionnaireEnigmes` chargé depuis `data/livre.txt` | grille `tksheet`, filtres, patterns et candidats de moteur | `_init_dictionary`, mixin dictionnaire, dialogue décryptage | le panneau est une vue ; ses filtres UI ne changent pas le texte source observé | établi |
-| Associations mot/triangle | `self._tri_words` | annotations/tooltip de triangle et XML `<words>` | callback du mixin dictionnaire, save/load XML, redessin | clé par `tri_id` ; relation non intégrée au Core topologique | établi |
 | Paramètres de décryptage | variables du dialogue et `DecryptorConfig` construit au démarrage | `appConfig` des patterns/choix, instance `DecryptorEngine` | persistance locale du dialogue, construction de config puis worker | le worker lit les variables Tk directement ; instance de moteur/config est un snapshot partiel de fait | établi |
 | Résultats de décryptage | liste locale `win._solutions` du dialogue ; retour de `runAbs/runRel` | `Listbox` de solutions, événements `EventQueue` | `_poll_event_queue`, `_refresh_solutions_list` | résultats non rattachés au scénario ni sauvegardés dans XML | établi |
 | Configuration persistée | `viewer.appConfig`, lue/écrite par `assembleur_io.loadAppConfig/saveAppConfig` | variables Tk, derniers chemins, réglages carte/simulation/décryptage | démarrage, toggles et méthodes `setAppConfigValue` | écriture JSON directe et valeurs de chemins absolus ; les états XML ne sont pas la même source | établi |
@@ -543,7 +542,7 @@ Les fiches suivantes sont **établies par le code** dans les versions actuelles 
 - Définition et responsabilité : sérialise le scénario actif au format XML v4, dont un snapshot physique JSON de la topologie.
 - Appelants principaux : `TriangleViewerManual.save_scenario_xml`, lui-même appelé par `_scenario_save_dialog`.
 - Fonctions ou services appelés : `_get_active_scenario`, `_exportPhysicalSnapshot`, `TopologyChemins._saveToXml`, helpers viewer pour points/groupes/carte.
-- État lu/modifié : lit scénario, monde, `last_drawn`, `groups`, `listbox`, `_tri_words`, compas/guides ; écrit le fichier XML.
+- État lu/modifié : lit scénario, monde, `last_drawn`, `groups`, `listbox`, compas/guides ; écrit le fichier XML.
 - Effets de bord et rafraîchissements : crée le dossier parent et écrit le XML UTF-8 ; avertissements best-effort pour listbox/groupes.
 - Exceptions/tests/risques : snapshot invalide, erreur filesystem/XML ; aucun test XML direct trouvé. Risque : l'XML mélange des sources UI et Core, et emploie des chemins absolus.
 

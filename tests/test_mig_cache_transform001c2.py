@@ -31,8 +31,8 @@ def _viewer_with_group():
     world.setElementPose("T02", np.eye(2), np.array((9.0, 4.0)), mirrored=True)
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer.canvas_objects = CanvasObjectsCollection([
-        {"id": 1, "topoElementId": "T01", "mirrored": False, "pts": {}},
-        {"id": 2, "topoElementId": "T02", "mirrored": True, "pts": {}},
+        {"id": 1, "topoElementId": "T01", "pts": {}},
+        {"id": 2, "topoElementId": "T02", "pts": {}},
     ])
     viewer._last_drawn = viewer.canvas_objects.entries
     viewer.scenarios = [SimpleNamespace(topoWorld=world, source_type="manual")]
@@ -81,9 +81,6 @@ def test_manual_orient_north_commits_core_once_and_overwrites_divergent_cache():
     calls = []
     original_rotate = world.rotate_group
     world.rotate_group = lambda *args: (calls.append(args), original_rotate(*args))[1]
-    viewer._sync_group_elements_pose_to_core = lambda *_args: (_ for _ in ()).throw(
-        AssertionError("legacy reverse sync forbidden")
-    )
     projected = []
     original_project = viewer._project_core_group_to_last_drawn
     viewer._project_core_group_to_last_drawn = lambda w, gid: (projected.append(gid), original_project(w, gid))[1]
@@ -110,26 +107,34 @@ def test_manual_orient_north_commits_core_once_and_overwrites_divergent_cache():
     assert not np.allclose(points_after["O"], cache_before["O"])
 
 
-def test_auto_orient_north_keeps_auto_geom_pipeline_without_core_rotation():
+def test_auto_orient_north_commits_a_core_first_global_rotation():
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
-    viewer._last_drawn = [{
-        "id": 1,
-        "topoElementId": "T01",
-        "pts": {"O": np.array((0.0, 0.0)), "B": np.array((1.0, 0.0)), "L": np.array((1.0, 0.0))},
-    }]
     world = TopologyWorld()
-    viewer.scenarios = [SimpleNamespace(topoWorld=world, source_type="auto")]
+    group_id = world.add_element_as_new_group(_element("T01"))
+    viewer.canvas_objects = CanvasObjectsCollection([
+        {"id": 1, "topoElementId": "T01", "pts": {}},
+    ])
+    viewer._last_drawn = viewer.canvas_objects.entries
+    viewer.scenarios = [SimpleNamespace(
+        topoWorld=world, source_type="auto", last_drawn=viewer._last_drawn,
+    )]
     viewer.active_scenario_index = 0
-    viewer.auto_geom_state = {"thetaDeg": 0.0}
-    viewer._autoRebuildWorldGeometry = lambda **_kwargs: None
-    viewer._autoSyncAllTopoPoses = lambda: None
+    viewer.auto_geom_state = {"ox": 0.0, "oy": 0.0, "thetaDeg": 0.0}
+    world.setElementPose(
+        "T01",
+        np.array(((0.0, -1.0), (1.0, 0.0))),
+        np.zeros(2),
+        mirrored=False,
+    )
+    viewer._project_core_group_to_last_drawn(world, group_id)
     viewer._redraw_from = lambda _entries: None
+    viewer._simulationPersistCurrentAutoPlacement = lambda **_kwargs: None
     viewer.status = SimpleNamespace(config=lambda **_kwargs: None)
     viewer._ctx_target_idx = 0
-    world.rotate_group = lambda *_args: (_ for _ in ()).throw(
-        AssertionError("AUTO must not call rotate_group")
-    )
 
     viewer._ctx_orient_OL_north()
 
-    np.testing.assert_allclose(viewer.auto_geom_state["thetaDeg"], 90.0)
+    np.testing.assert_allclose(viewer.auto_geom_state["thetaDeg"], -90.0)
+    vector = viewer._last_drawn[0]["pts"]["L"] - viewer._last_drawn[0]["pts"]["O"]
+    assert abs(float(vector[0])) < 1e-10
+    assert float(vector[1]) > 0.0

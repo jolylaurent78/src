@@ -32,9 +32,9 @@ def _viewer_with_group():
     world.setElementPose("T02", np.eye(2), np.array((8.0, -3.0)), mirrored=False)
     world.setElementPose("T03", np.eye(2), np.array((30.0, 40.0)), mirrored=False)
     entries = [
-        {"id": 1, "topoElementId": "T01", "mirrored": True, "pts": {"O": (-99, -99)}},
-        {"id": 2, "topoElementId": "T02", "mirrored": False, "pts": {"O": (-98, -98)}},
-        {"id": 3, "topoElementId": "T03", "mirrored": False, "pts": {"O": (-97, -97)}},
+        {"id": 1, "topoElementId": "T01", "pts": {"O": (-99, -99)}},
+        {"id": 2, "topoElementId": "T02", "pts": {"O": (-98, -98)}},
+        {"id": 3, "topoElementId": "T03", "pts": {"O": (-97, -97)}},
     ]
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer.canvas_objects = CanvasObjectsCollection(entries)
@@ -88,9 +88,6 @@ def test_manual_move_preview_does_not_modify_core():
         return original_move_group(*args)
 
     world.move_group = record_move
-    viewer._sync_group_elements_pose_to_core = lambda *_args: (_ for _ in ()).throw(
-        AssertionError("reverse sync forbidden during preview")
-    )
 
     for event in (SimpleNamespace(x=1.0, y=2.0), SimpleNamespace(x=3.0, y=5.0)):
         viewer._on_canvas_left_move(event)
@@ -113,9 +110,6 @@ def test_manual_move_commits_one_total_delta_on_release():
     calls = []
     original_move_group = world.move_group
     world.move_group = lambda *args: (calls.append(args), original_move_group(*args))[1]
-    viewer._sync_group_elements_pose_to_core = lambda *_args: (_ for _ in ()).throw(
-        AssertionError("reverse sync forbidden for a free move")
-    )
 
     for event in (SimpleNamespace(x=12.0, y=-1.0), SimpleNamespace(x=16.0, y=3.0)):
         viewer._on_canvas_left_move(event)
@@ -161,9 +155,6 @@ def test_escape_restores_core_projection_without_committing_preview():
     discard_calls = []
     discard = viewer._discard_manual_move_preview
     viewer._discard_manual_move_preview = lambda: (discard_calls.append(True), discard())[1]
-    viewer._sync_group_elements_pose_to_core = lambda *_args: (_ for _ in ()).throw(
-        AssertionError("reverse sync forbidden during ESC")
-    )
     original_move_group = world.move_group
     world.move_group = lambda *_args: (_ for _ in ()).throw(
         AssertionError("core move forbidden during ESC")
@@ -232,9 +223,6 @@ def test_legacy_snap_does_not_also_commit_a_core_translation():
     world.apply_attachments = lambda _attachments: "G-final"
     world.commitTopoTransaction = lambda: None
     rigid_transform_calls = []
-    viewer._sync_group_elements_pose_to_core = lambda *_args: (_ for _ in ()).throw(
-        AssertionError("legacy reverse sync forbidden after Core-first snap")
-    )
     world.apply_group_rigid_transform = lambda *args: rigid_transform_calls.append(args)
     projected_group_ids = []
     viewer._project_core_group_to_last_drawn = lambda _world, core_group_id: projected_group_ids.append(core_group_id)

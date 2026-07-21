@@ -36,9 +36,9 @@ def _viewer_with_group():
     world.setElementPose("T03", np.eye(2), np.array((30.0, 40.0)), mirrored=False)
 
     entries = [
-        {"id": 1, "topoElementId": "T01", "mirrored": True, "pts": {"O": (-99, -99)}},
-        {"id": 2, "topoElementId": "T02", "mirrored": False, "pts": {"O": (-98, -98)}},
-        {"id": 3, "topoElementId": "T03", "mirrored": False, "pts": {"O": (-97, -97)}},
+        {"id": 1, "topoElementId": "T01", "pts": {"O": (-99, -99)}},
+        {"id": 2, "topoElementId": "T02", "pts": {"O": (-98, -98)}},
+        {"id": 3, "topoElementId": "T03", "pts": {"O": (-97, -97)}},
     ]
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer.canvas_objects = CanvasObjectsCollection(entries)
@@ -65,7 +65,7 @@ def test_project_core_element_rebuilds_pts_from_vertex_types_and_local_to_world(
     for vertex_type in ("O", "B", "L"):
         np.testing.assert_allclose(entry["pts"][vertex_type], expected[vertex_type])
     # La projection ne réécrit pas ce flag de cache.
-    assert entry["mirrored"] is True
+    assert "mirrored" not in entry
 
 
 def test_project_core_group_updates_only_its_members():
@@ -99,9 +99,6 @@ def test_manual_move_updates_core_then_projects_without_reverse_sync():
         return original_move_group(core_group_id, dx, dy)
 
     world.move_group = record_move
-    viewer._sync_group_elements_pose_to_core = lambda *_args, **_kwargs: (
-        (_ for _ in ()).throw(AssertionError("reverse sync interdit"))
-    )
 
     for dx, dy in ((1.0, 2.0), (3.0, -1.0), (-2.0, 4.0)):
         viewer._move_group_world(group_id, dx, dy, move_member_entries=[])
@@ -146,9 +143,6 @@ def test_free_move_release_does_not_trigger_reverse_sync():
     viewer._reset_assist = lambda: None
     viewer._redraw_from = lambda _entries: None
     viewer._screen_to_world = lambda x, y: (float(x), float(y))
-    viewer._sync_group_elements_pose_to_core = lambda *_args, **_kwargs: (
-        (_ for _ in ()).throw(AssertionError("reverse sync interdit au relâchement libre"))
-    )
 
     viewer._on_canvas_left_up(SimpleNamespace(x=0.0, y=0.0))
 

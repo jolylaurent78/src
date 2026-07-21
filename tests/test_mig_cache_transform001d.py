@@ -27,8 +27,8 @@ def _viewer_with_group():
     world.setElementPose("T02", np.eye(2), np.array((7.0, -1.0)), mirrored=True)
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer.canvas_objects = CanvasObjectsCollection([
-        {"id": 1, "topoElementId": "T01", "mirrored": False, "pts": {}},
-        {"id": 2, "topoElementId": "T02", "mirrored": False, "pts": {}},
+        {"id": 1, "topoElementId": "T01", "pts": {}},
+        {"id": 2, "topoElementId": "T02", "pts": {}},
     ])
     viewer._last_drawn = viewer.canvas_objects.entries
     viewer.scenarios = [SimpleNamespace(topoWorld=world, source_type="manual")]
@@ -42,15 +42,11 @@ def _viewer_with_group():
 
 def test_manual_flip_uses_core_once_and_preserves_cache_mirrored_field():
     viewer, world, group_id, _first, _second = _viewer_with_group()
-    cache_mirrored_before = [entry["mirrored"] for entry in viewer._last_drawn]
     points_before = viewer._get_core_triangle_world_points(world, "T01")
     centroid_before = viewer._get_core_group_world_centroid(world, group_id)
     calls = []
     original_flip = world.flip_group
     world.flip_group = lambda *args: (calls.append(args), original_flip(*args))[1]
-    viewer._sync_group_elements_pose_to_core = lambda *_args: (_ for _ in ()).throw(
-        AssertionError("legacy reverse sync forbidden for flip")
-    )
     viewer._ctx_target_idx = 0
 
     viewer._ctx_flip_selected()
@@ -60,7 +56,7 @@ def test_manual_flip_uses_core_once_and_preserves_cache_mirrored_field():
     assert committed_group == group_id
     np.testing.assert_allclose(pivot, centroid_before)
     np.testing.assert_allclose(axis, points_before["L"] - points_before["O"])
-    assert [entry["mirrored"] for entry in viewer._last_drawn] == cache_mirrored_before
+    assert all("mirrored" not in entry for entry in viewer._last_drawn)
     assert world.getElementPose("T01")[2] is True
     assert world.getElementPose("T02")[2] is False
     assert viewer._get_core_element_mirrored("T01") is True
@@ -89,10 +85,10 @@ def test_double_manual_flip_returns_exact_core_geometry():
 
 def test_core_mirrored_state_is_used_even_when_cache_disagrees():
     viewer, world, _group_id, _first, _second = _viewer_with_group()
-    viewer._last_drawn[0]["mirrored"] = False
     world.setElementPose("T01", *world.getElementPose("T01")[:2], mirrored=True)
 
     assert viewer._get_core_element_mirrored("T01") is True
+    assert "mirrored" not in viewer._last_drawn[0]
 
 
 def test_auto_flip_remains_disabled_without_core_change():

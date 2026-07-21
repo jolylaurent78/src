@@ -134,7 +134,7 @@ Conclusion : il existe des briques de conversion et de rendu, mais pas encore un
 - topoElementId est écrit après création d'un TopologyElement, à la lecture XML et à la projection automatique.
 - topoGroupId est dérivé à la lecture XML et dans la projection automatique ; il n'est pas autoritaire.
 - _pick_poly et _pick_pts sont écrits par le cache de picking et dépendent de la vue écran.
-- les mots ne sont pas un champ de last_drawn : ils sont dans _tri_words, indexés par id catalogue.
+- les annotations textuelles historiques ne sont pas un champ de last_drawn ; elles ont été supprimées du runtime.
 
 Le mouvement, la rotation et le flip sont les principaux obstacles : ils modifient directement le cache, puis demandent au Core de copier la pose calculée.
 
@@ -217,7 +217,7 @@ Les poses Core sont persistées dans topoSnapshot ; le rebuild sera donc stable 
 | id catalogue | Non universellement garanti dans le Core | fort : mots, listbox, XML et dictionnaire l'utilisent |
 | labels UI exacts | partiellement dans vertex_labels | moyen : conventions O/B/L et fallbacks |
 | ordre des sommets O/B/L | dépend de l'index 0/1/2 actuel | fort : projection fausse si convention non universelle |
-| état des mots | hors Core dans _tri_words | faible : conserver store UI séparé |
+| annotations textuelles historiques | supprimées du runtime | sans objet |
 | état de sélection/drag | hors Core | faible : doit être invalidé après rebuild |
 | caches écran | hors Core | faible : recalculer |
 | géométrie locale auto | aujourd'hui last_drawn_local | fort : auto_geom_state doit être absorbé par des poses Core ou rester explicitement un transform de vue |
@@ -315,4 +315,3 @@ et non :
 Canvas pts
 → fit de pose
 → Core.
-

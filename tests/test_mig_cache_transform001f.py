@@ -63,9 +63,6 @@ def test_split_post_layout_moves_core_then_reprojects_without_reverse_sync():
 
     world.move_group = record_move
     viewer._project_core_group_to_last_drawn = record_project
-    viewer._sync_group_elements_pose_to_core = lambda *_args, **_kwargs: (_ for _ in ()).throw(
-        AssertionError("reverse UI-to-Core sync is forbidden after split layout")
-    )
 
     viewer._applyDegrouperResultToTk({
         "mainGroupId": main_group_id,

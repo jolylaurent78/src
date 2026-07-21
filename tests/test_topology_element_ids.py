@@ -10,6 +10,9 @@ import src.assembleur_sim as assembleur_sim
 
 from src.assembleur_core import (
     ScenarioAssemblage,
+    ScenarioTriangleSet,
+    TriangleCatalog,
+    TriangleModel,
     TopologyElement,
     TopologyWorld,
 )
@@ -37,6 +40,20 @@ def _element(*, element_id=None, tri_rank=1):
         edge_lengths_km=[3.0, 5.0, 4.0],
         meta={"triRank": tri_rank},
     )
+
+
+def _catalog_for_manual_placement() -> TriangleCatalog:
+    return TriangleCatalog([
+        TriangleModel(
+            model_id=f"model-{rank:02d}",
+            rank=rank,
+            vertex_labels=("Bourges", f"B{rank}", f"L{rank}"),
+            vertex_types=("O", "B", "L"),
+            edge_lengths_km=(3.0, 5.0, 4.0),
+            orient="CCW",
+        )
+        for rank in range(1, 33)
+    ])
 
 
 def test_world_allocates_monotone_element_ids_without_reuse_after_removal(tmp_path):
@@ -168,12 +185,16 @@ def test_auto_scenarios_keep_an_independent_ordered_element_history_per_branch()
     )
     for scenario in scenarios:
         assert scenario.groups == {}
-        assert all("group_id" not in entry for entry in scenario.last_drawn)
-        assert len({entry["topoGroupId"] for entry in scenario.last_drawn}) == 1
         assert all(
-            entry["topoGroupId"] == str(
-                scenario.topoWorld.get_group_of_element(entry["topoElementId"])
-            )
+            not {"group_id", "orient", "topoGroupId", "mirrored"}.intersection(entry)
+            for entry in scenario.last_drawn
+        )
+        assert len({
+            str(scenario.topoWorld.get_group_of_element(entry["topoElementId"]))
+            for entry in scenario.last_drawn
+        }) == 1
+        assert all(
+            scenario.topoWorld.get_group_of_element(entry["topoElementId"])
             for entry in scenario.last_drawn
         )
     for scenario in scenarios:
@@ -220,8 +241,14 @@ def test_auto_two_triangle_scenario_exposes_legacy_projection_dicts():
     assert scenarios[0].groups == {}
     for entry in scenarios[0].last_drawn:
         assert isinstance(entry, dict)
-        assert {"labels", "pts", "id", "mirrored", "topoElementId", "topoGroupId"} <= entry.keys()
+        assert {"pts", "id", "topoElementId"} <= entry.keys()
+        assert not {"labels", "orient", "topoGroupId", "mirrored", "group_id"}.intersection(entry)
         assert set(entry["pts"]) == {"O", "B", "L"}
+        assert tuple(scenarios[0].topoWorld.elements[entry["topoElementId"]].vertex_labels) == (
+            "Bourges",
+            f"B{entry['id']}",
+            f"L{entry['id']}",
+        )
 
 
 def test_simulator_exposes_no_legacy_group_projection_helpers():
@@ -281,17 +308,13 @@ def test_placed_triangles_preserves_entry_format_and_clones_branch_data():
     assert placed.findByTriangleId(99) is None
     assert placed.toLegacyList() == [
         {
-            "labels": None,
             "pts": {"O": [0.0, 0.0]},
             "id": 1,
-            "mirrored": False,
             "topoElementId": "T01",
         },
         {
-            "labels": None,
             "pts": {"O": [1.0, 0.0]},
             "id": 2,
-            "mirrored": False,
             "topoElementId": "T02",
         },
     ]
@@ -310,10 +333,8 @@ def test_placed_triangle_ignores_obsolete_chain_keys_on_import_and_export():
     })
 
     assert triangle.toLegacyDict() == {
-        "labels": None,
         "pts": {"O": [0.0, 0.0]},
         "id": 1,
-        "mirrored": False,
     }
 
 
@@ -336,7 +357,8 @@ def test_placed_triangle_ignores_legacy_group_id_on_import_and_export():
         placedTriangles=PlacedTriangles([triangle]),
     )
     assert "group_id" not in last_drawn[0]
-    assert last_drawn[0]["topoGroupId"] == str(world.get_group_of_element("T01"))
+    assert not {"orient", "topoGroupId", "mirrored"}.intersection(last_drawn[0])
+    assert world.get_group_of_element(last_drawn[0]["topoElementId"])
 
 
 def test_placed_triangle_ignores_legacy_topology_group_id_on_import_and_export():
@@ -350,7 +372,7 @@ def test_placed_triangle_ignores_legacy_topology_group_id_on_import_and_export()
     assert "topoGroupId" not in triangle.toLegacyDict()
 
 
-def test_last_drawn_topology_group_id_is_projected_from_current_core(monkeypatch):
+def test_last_drawn_resolves_its_group_from_current_core(monkeypatch):
     world = TopologyWorld()
     world.add_element_as_new_group(_element(element_id="T01"))
     placed = PlacedTriangles([
@@ -365,7 +387,8 @@ def test_last_drawn_topology_group_id_is_projected_from_current_core(monkeypatch
     )
 
     assert "group_id" not in last_drawn[0]
-    assert last_drawn[0]["topoGroupId"] == "G-PROJECTED"
+    assert "topoGroupId" not in last_drawn[0]
+    assert world.get_group_of_element(last_drawn[0]["topoElementId"]) == "G-PROJECTED"
 
 
 def test_auto_edgechoice_receives_explicit_projection_entries():
@@ -423,28 +446,26 @@ def test_manual_placement_keeps_catalog_id_separate_from_core_instance_id():
             pass
 
     world = TopologyWorld()
+    catalog = _catalog_for_manual_placement()
+    world.set_scenario_triangle_set(ScenarioTriangleSet.from_catalog(catalog))
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer._last_drawn = []
     viewer.canvas_objects = CanvasObjectsCollection(viewer._last_drawn)
     viewer._last_drawn = viewer.canvas_objects.entries
     viewer.groups = {}
     viewer._next_group_id = 1
-    viewer._placed_ids = set()
     viewer._get_active_scenario = lambda: type("Scenario", (), {"topoWorld": world})()
     viewer._redraw_from = lambda _entries: None
     viewer._reset_assist = lambda: None
-    viewer._reinsert_triangle_to_list = lambda _entry: None
     viewer._update_triangle_listbox_colors = lambda: None
+    viewer._rebuild_triangle_listbox_from_core = lambda: None
     viewer.status = _Status()
     viewer.listbox = _Listbox()
-    viewer.df = pd.DataFrame([
-        {"len_OB": 3.0, "len_OL": 4.0, "len_BL": 5.0, "orient": "N", "B": "B1", "L": "L1"},
-        {"len_OB": 3.0, "len_OL": 4.0, "len_BL": 5.0, "orient": "S", "B": "B2", "L": "L2"},
-    ])
-
     def place(tri_id):
+        model = catalog.get_by_rank(tri_id)
         viewer._drag = {
-            "triangle": {"id": tri_id, "labels": ("O", "B", "L")},
+            "triangle": {"id": tri_id, "model": model},
+            "triangle_model": model,
             "world_pts": {"O": (0.0, 0.0), "B": (3.0, 0.0), "L": (0.0, 4.0)},
         }
         viewer._place_dragged_triangle()
@@ -456,8 +477,9 @@ def test_manual_placement_keeps_catalog_id_separate_from_core_instance_id():
     assert all("group_id" not in entry for entry in viewer._last_drawn)
     assert viewer.groups == {}
     for entry in viewer._last_drawn:
-        core_group_id = entry["topoGroupId"]
+        core_group_id = world.get_group_of_element(entry["topoElementId"])
         assert world.getGroupElementIds(core_group_id) == [entry["topoElementId"]]
+        assert not {"orient", "topoGroupId", "mirrored"}.intersection(entry)
 
     assert world.elements["T01"].name == "Triangle 01"
     assert world.elements["T02"].name == "Triangle 02"
@@ -481,42 +503,48 @@ def test_manual_placement_projects_core_pose_without_creating_a_ui_group():
             pass
 
     world = TopologyWorld()
+    catalog = _catalog_for_manual_placement()
+    world.set_scenario_triangle_set(ScenarioTriangleSet.from_catalog(catalog))
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer.canvas_objects = CanvasObjectsCollection()
     viewer._last_drawn = viewer.canvas_objects.entries
     scenario = SimpleNamespace(topoWorld=world, last_drawn=viewer._last_drawn)
     viewer._get_active_scenario = lambda: scenario
-    viewer._placed_ids = set()
     viewer._redraw_from = lambda _entries: None
     viewer._update_triangle_listbox_colors = lambda: None
+    viewer._rebuild_triangle_listbox_from_core = lambda: None
     viewer.status = _Status()
     viewer.listbox = _Listbox()
-    viewer.df = pd.DataFrame([
-        {"len_OB": 3.0, "len_OL": 4.0, "len_BL": 5.0, "orient": "N", "B": "B1", "L": "L1"},
-    ])
     world_pts = {"O": (10.0, 20.0), "B": (13.0, 20.0), "L": (10.0, 24.0)}
+    model = catalog.get_by_rank(1)
     viewer._drag = {
-        "triangle": {"id": 1, "labels": ("O", "B", "L")},
+        "triangle": {"id": 1, "model": model},
+        "triangle_model": model,
         "world_pts": world_pts,
     }
     viewer._place_dragged_triangle()
 
     entry = viewer._last_drawn[0]
-    assert {"topoElementId", "topoGroupId"} <= entry.keys()
-    assert "group_id" not in entry
+    assert "topoElementId" in entry
+    assert not {"labels", "group_id", "orient", "topoGroupId", "mirrored"}.intersection(entry)
     assert entry["pts"] is not world_pts
     element_id = entry["topoElementId"]
-    assert world.getGroupElementIds(entry["topoGroupId"]) == [element_id]
+    assert world.getGroupElementIds(world.get_group_of_element(element_id)) == [element_id]
 
     element = world.elements[element_id]
     rotation, translation, mirrored = world.getElementPose(element_id)
     np.testing.assert_allclose(rotation, np.eye(2))
     np.testing.assert_allclose(translation, world_pts["O"])
     assert mirrored is False
+    assert viewer._get_core_vertex_labels(entry) == ("Bourges", "B1", "L1")
+    assert viewer._build_triangle_display_label(entry) == "T1"
     for vertex_index, vertex_name in enumerate(("O", "B", "L")):
         actual = world.elementLocalToWorld(element_id, element.vertex_local_xy[vertex_index])
         np.testing.assert_allclose(actual, world_pts[vertex_name], atol=1e-9)
         np.testing.assert_allclose(entry["pts"][vertex_name], actual, atol=1e-9)
+
+    world.setElementPose(element_id, rotation, translation, mirrored=True)
+    assert viewer._build_triangle_display_label(entry) == "T1S"
 
 
 def test_core_resolves_vertex_nodes_without_exposing_id_construction_to_ui():

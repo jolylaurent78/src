@@ -27,8 +27,8 @@ def _viewer_with_group():
     world.setElementPose("T02", np.eye(2), np.array((0.0, 3.0)), mirrored=False)
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer.canvas_objects = CanvasObjectsCollection([
-        {"id": 1, "topoElementId": "T01", "mirrored": True, "pts": {}},
-        {"id": 2, "topoElementId": "T02", "mirrored": False, "pts": {}},
+        {"id": 1, "topoElementId": "T01", "pts": {}},
+        {"id": 2, "topoElementId": "T02", "pts": {}},
     ])
     viewer._last_drawn = viewer.canvas_objects.entries
     viewer.scenarios = [SimpleNamespace(topoWorld=world, source_type="manual")]
@@ -66,9 +66,6 @@ def test_manual_rotate_preview_does_not_write_core_and_uses_snapshot():
     calls = []
     original_rotate = world.rotate_group
     world.rotate_group = lambda *args: (calls.append(args), original_rotate(*args))[1]
-    viewer._sync_group_elements_pose_to_core = lambda *_args: (_ for _ in ()).throw(
-        AssertionError("reverse sync forbidden during rotate preview")
-    )
 
     viewer._on_canvas_motion_update_drag(SimpleNamespace(x=0.0, y=-1.0))
     viewer._on_canvas_motion_update_drag(SimpleNamespace(x=0.0, y=-1.0))
@@ -89,9 +86,6 @@ def test_manual_rotate_commit_recomputes_click_angle_once_and_projects_core():
     calls = []
     original_rotate = world.rotate_group
     world.rotate_group = lambda *args: (calls.append(args), original_rotate(*args))[1]
-    viewer._sync_group_elements_pose_to_core = lambda *_args: (_ for _ in ()).throw(
-        AssertionError("reverse sync forbidden for rotate commit")
-    )
     viewer._clock_arc_active = viewer._clock_trace_active = False
     viewer._clock_measure_active = viewer._clock_setref_active = False
     viewer._bg_calib_active = False
@@ -137,9 +131,6 @@ def test_manual_rotate_escape_discards_preview_without_core_write():
     viewer._clock_setref_active = False
     viewer.status = SimpleNamespace(config=lambda **_kwargs: None)
     viewer._clear_nearest_line = viewer._clear_edge_highlights = lambda: None
-    viewer._sync_group_elements_pose_to_core = lambda *_args: (_ for _ in ()).throw(
-        AssertionError("reverse sync forbidden during rotate discard")
-    )
     world.rotate_group = lambda *_args: (_ for _ in ()).throw(
         AssertionError("rotate forbidden during discard")
     )
@@ -150,7 +141,7 @@ def test_manual_rotate_escape_discards_preview_without_core_write():
     np.testing.assert_allclose(viewer._last_drawn[1]["pts"]["O"], second.localToWorld(second.vertex_local_xy[0]))
 
 
-def test_automatic_rotate_motion_keeps_existing_auto_path():
+def test_automatic_rotate_motion_is_preview_only():
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer._drag = None
     viewer._clock_trace_active = False
@@ -160,18 +151,24 @@ def test_automatic_rotate_motion_keeps_existing_auto_path():
     viewer._ensure_pick_cache = lambda: None
     viewer.offset = np.array((0.0, 0.0))
     viewer.zoom = 1.0
-    viewer._last_drawn = []
-    viewer.auto_geom_state = {"thetaDeg": 10.0}
+    viewer.canvas_objects = CanvasObjectsCollection([
+        {"id": 1, "topoElementId": "T01", "pts": {
+            "O": np.array((1.0, 0.0)), "B": np.array((2.0, 0.0)), "L": np.array((1.0, 1.0)),
+        }},
+    ])
+    viewer._last_drawn = viewer.canvas_objects.entries
+    viewer.auto_geom_state = {"ox": 0.0, "oy": 0.0, "thetaDeg": 10.0}
     viewer._sel = {
         "mode": "rotate_group", "auto_geom": True, "pivot": np.array((0.0, 0.0)),
-        "start_angle": 0.0, "auto_theta0": 10.0,
+        "start_angle": 0.0,
+        "auto_preview_initial_pts": viewer._capture_active_auto_preview_pts(),
     }
     calls = []
-    viewer._autoRebuildWorldGeometryScenario = lambda _scen: calls.append("rebuild")
-    viewer._autoSyncAllTopoPoses = lambda: calls.append("sync")
     viewer._redraw_from = lambda _entries: calls.append("redraw")
+    viewer._invalidate_pick_cache = lambda: None
 
     viewer._on_canvas_motion_update_drag(SimpleNamespace(x=0.0, y=-1.0))
 
-    np.testing.assert_allclose(viewer.auto_geom_state["thetaDeg"], 100.0)
-    assert calls == ["rebuild", "sync", "redraw"]
+    np.testing.assert_allclose(viewer.auto_geom_state["thetaDeg"], 10.0)
+    np.testing.assert_allclose(viewer._last_drawn[0]["pts"]["O"], (0.0, 1.0), atol=1e-12)
+    assert calls == ["redraw"]

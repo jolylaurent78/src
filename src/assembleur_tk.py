@@ -21,8 +21,8 @@ from PIL import Image
 # === Modules externalisés (découpage maintenable) ===
 from src.assembleur_core import (
     _build_local_triangle,
-    ScenarioAssemblage,
-    TopologyWorld, TopologyElement, TopologyNodeType, TopologyCheminTriplet
+    ScenarioAssemblage, TriangleCatalog, ScenarioTriangleSet,
+    TopologyWorld, TopologyNodeType, TopologyCheminTriplet
 )
 
 from src.assembleur_sim import (
@@ -417,7 +417,6 @@ class TriangleViewerManual(
         self._ctx_compass_idx_clear_traits: int | None = None
         self.ctxGroupId = None         # contexte chemin: groupId Core canonique (clic droit)
         self.ctxStartNodeId = None     # contexte chemin: startNodeId DSU canonique (clic droit)
-        self._placed_ids = set()       # ids déjà posés dans le scénario actif
         self._nearest_line_id = None   # trait d'aide "sommet le plus proche"
         self._edge_highlight_ids = []  # surlignage des 2 arêtes (mobile/cible)
         self._edge_choice = None       # (i_mob, key_mob, edge_m, i_tgt, key_tgt, edge_t)
@@ -432,8 +431,6 @@ class TriangleViewerManual(
         #   t["_pick_pts"]  : dict {'O':(x,y), 'B':(x,y), 'L':(x,y)}
 
         # Association triangle -> mot du dictionnaire: { tri_id: {"word": str, "row": int, "col": int} }
-        self._tri_words: Dict[int, Dict[str, int | str]] = {}
-
         # distance écran supplémentaire pour l'ancrage du tooltip (px)
         self._tooltip_cushion_px = 14
 
@@ -576,6 +573,7 @@ class TriangleViewerManual(
         self._bg_startup_scheduled = False
 
         self.df = None
+        self.triangle_catalog: TriangleCatalog | None = None
         self.canvas_objects = CanvasObjectsCollection()
         self._last_drawn = self.canvas_objects.entries
 
@@ -677,8 +675,17 @@ class TriangleViewerManual(
 
     def _bind_canvas_objects(self, entries) -> None:
         """Attache la collection structurelle aux entrees du scenario actif."""
+        for entry in entries or ():
+            self._strip_core_duplicates_from_last_drawn_entry(entry)
         self.canvas_objects = CanvasObjectsCollection(entries)
         self._last_drawn = self.canvas_objects.entries
+
+    @staticmethod
+    def _strip_core_duplicates_from_last_drawn_entry(entry: Dict) -> None:
+        """Retire les anciennes copies Core d'une entree de projection."""
+        if isinstance(entry, dict):
+            for key in ("orient", "topoGroupId", "mirrored", "group_id", "labels"):
+                entry.pop(key, None)
 
     def _get_active_core_group_id_for_entry(self, entry: Dict) -> Optional[str]:
         """Résout le ``core_group_id`` canonique d'une entrée projetée."""
@@ -834,6 +841,70 @@ class TriangleViewerManual(
         _rotation, _translation, mirrored = world.getElementPose(key)
         return bool(mirrored)
 
+    def _get_core_element_from_last_drawn_entry(
+        self,
+        entry: Dict,
+        world: TopologyWorld | None = None,
+    ):
+        """Resout une entree projetee vers son element Core.
+
+        Les informations de groupe, orientation et miroir sont lues depuis le
+        Core via ``topoElementId`` ; elles ne sont pas du cache graphique.
+        """
+        if world is None:
+            scen = self._get_active_scenario()
+            world = getattr(scen, "topoWorld", None) if scen is not None else None
+        element_id = str((entry or {}).get("topoElementId", "") or "").strip()
+        if world is None or not element_id:
+            return None
+        return world.elements.get(element_id)
+
+    def _get_core_vertex_labels(
+        self,
+        entry: Dict,
+        world: TopologyWorld | None = None,
+    ) -> tuple[str, str, str]:
+        """Lit les trois libelles de sommets depuis l'element Core associe."""
+        element = self._get_core_element_from_last_drawn_entry(entry, world)
+        element_id = str((entry or {}).get("topoElementId", "") or "").strip()
+        if element is None:
+            raise KeyError(
+                f"[MIG-CACHE-CLEANUP-002] element Core absent: {element_id!r}"
+            )
+        labels = tuple(str(label) for label in (element.vertex_labels or ()))
+        if len(labels) != 3:
+            raise ValueError(
+                "[MIG-CACHE-CLEANUP-002] vertex_labels invalides "
+                f"element={element_id!r}: {labels!r}"
+            )
+        return labels
+
+    def _build_triangle_display_label(
+        self,
+        entry: Dict,
+        world: TopologyWorld | None = None,
+    ) -> str:
+        """Construit le label UX depuis ``triRank`` et la pose Core.
+
+        ``entry["id"]`` reste une compatibilite de projection mais ne participe
+        jamais au texte rouge affiche sur le Canvas ou dans le PDF.
+        """
+        element = self._get_core_element_from_last_drawn_entry(entry, world)
+        element_id = str((entry or {}).get("topoElementId", "") or "").strip()
+        if not element_id:
+            raise ValueError("[MIG-UX-LABEL-001] topoElementId absent")
+        if element is None:
+            raise KeyError(
+                f"[MIG-UX-LABEL-001] element Core absent: {element_id!r}"
+            )
+        tri_rank = (getattr(element, "meta", {}) or {}).get("triRank")
+        if tri_rank is None or str(tri_rank).strip() == "":
+            raise ValueError(
+                f"[MIG-UX-LABEL-001] triRank absent element={element_id!r}"
+            )
+        _rotation, _translation, mirrored = element.get_pose()
+        return "T" + str(tri_rank) + ("S" if bool(mirrored) else "")
+
     def _project_core_element_to_last_drawn(
         self,
         world: TopologyWorld,
@@ -854,6 +925,7 @@ class TriangleViewerManual(
                 f"[MIG-CACHE-TRANSFORM-001] projection absente pour topoElementId={key!r}"
             )
 
+        self._strip_core_duplicates_from_last_drawn_entry(entry)
         entry["pts"] = self._get_core_triangle_world_points(world, key)
         MIG_GEO_LOGGER.debug(
             "[MIG-CACHE-TRANSFORM-001] projection element=%s", key
@@ -903,6 +975,7 @@ class TriangleViewerManual(
                     "[MIG-CACHE-TRANSFORM-001H] projection absente "
                     f"pour topoElementId={element_id!r}"
                 )
+            self._strip_core_duplicates_from_last_drawn_entry(entry)
             entry["pts"] = self._get_core_triangle_world_points(world, str(element_id))
             projected.append(entry)
         return tuple(projected)
@@ -975,7 +1048,11 @@ class TriangleViewerManual(
         world = scen.topoWorld
         out_name = "TopoDump.xml"
         out_path = os.path.join(self.topo_xml_dir, out_name)
-        world.export_topo_dump_xml(out_path, orientation="cw")
+        world.export_topo_dump_xml(
+            out_path,
+            orientation="cw",
+            catalog=self.triangle_catalog,
+        )
         if self._geo_orient_debug_enabled():
             self._append_geo_orient_debug_to_topodump(out_path, world)
         self.status.config(text=f"TopoDump exporté : {out_name}")
@@ -1030,7 +1107,7 @@ class TriangleViewerManual(
 
             for entry in self._last_drawn:
                 topo_element_id = str((entry or {}).get("topoElementId", "") or "").strip()
-                element = world.elements.get(topo_element_id)
+                element = self._get_core_element_from_last_drawn_entry(entry, world)
                 core_group_id = "<absent>"
                 if element is not None:
                     try:
@@ -1041,7 +1118,6 @@ class TriangleViewerManual(
                 triangle_el = ET.SubElement(debug_el, "Triangle", {
                     "triangleId": str((entry or {}).get("id", "<absent>")),
                     "topoElementId": topo_element_id or "<absent>",
-                    "topoGroupId": str((entry or {}).get("topoGroupId", "<absent>")),
                     "coreGroupId": core_group_id,
                 })
 
@@ -1074,10 +1150,8 @@ class TriangleViewerManual(
 
                 pts = (entry or {}).get("pts") or {}
                 last_el = ET.SubElement(triangle_el, "LastDrawn", {
-                    "orient": str((entry or {}).get("orient", "<absent>")),
-                    "mirrored": str((entry or {}).get("mirrored", "<absent>")),
                     "topoElementId": topo_element_id or "<absent>",
-                    "topoGroupId": str((entry or {}).get("topoGroupId", "<absent>")),
+                    "coreGroupId": core_group_id,
                 })
                 world_el = ET.SubElement(last_el, "Points")
                 for name in ("O", "B", "L"):
@@ -1093,7 +1167,7 @@ class TriangleViewerManual(
                 })
                 ET.SubElement(triangle_el, "XML", {
                     "topoElementId": topo_element_id or "<absent>",
-                    "mirrored": "1" if bool((entry or {}).get("mirrored", False)) else "0",
+                    "mirrored": "1" if core_attrs["mirrored"] == "True" else "0",
                 })
 
                 MIG_GEO_LOGGER.debug(
@@ -1102,7 +1176,7 @@ class TriangleViewerManual(
                         "====================================================",
                         f"Triangle : {topo_element_id or '<absent>'}",
                         f"TopoElementId : {topo_element_id or '<absent>'}",
-                        f"TopoGroupId   : {(entry or {}).get('topoGroupId', '<absent>')}",
+                        f"TopoGroupId   : {core_group_id}",
                         "====================================================",
                         "CATALOGUE",
                         f"orient catalogue : {catalog_orient}",
@@ -1115,10 +1189,10 @@ class TriangleViewerManual(
                         f"vertex_local_xy L : {self._geo_orient_point_text(local_points.get('L'))}",
                         f"vertex_labels   : {str(tuple(labels)) if labels is not None else '<absent>'}",
                         "LAST_DRAWN",
-                        f"orient          : {(entry or {}).get('orient', '<absent>')}",
-                        f"mirrored        : {(entry or {}).get('mirrored', '<absent>')}",
+                        f"orient Core     : {catalog_orient}",
+                        f"mirrored Core   : {core_attrs['mirrored']}",
                         f"topoElementId   : {topo_element_id or '<absent>'}",
-                        f"topoGroupId     : {(entry or {}).get('topoGroupId', '<absent>')}",
+                        f"topoGroupId     : {core_group_id}",
                         f"pts O : {self._geo_orient_point_text(pts.get('O'))}",
                         f"pts B : {self._geo_orient_point_text(pts.get('B'))}",
                         f"pts L : {self._geo_orient_point_text(pts.get('L'))}",
@@ -1126,7 +1200,7 @@ class TriangleViewerManual(
                         f"Orientation monde  : {world_orientation} (cross={world_cross})",
                         "XML",
                         f"topoElementId : {topo_element_id or '<absent>'}",
-                        f"mirrored      : {'1' if bool((entry or {}).get('mirrored', False)) else '0'}",
+                        f"mirrored      : {'1' if core_attrs['mirrored'] == 'True' else '0'}",
                     )),
                 )
 
@@ -1244,43 +1318,22 @@ class TriangleViewerManual(
         self.autoLoadBalisesAtStartup()
 
     def _simulation_get_tri_ids_first_n(self, n: int) -> List[int]:
-        """Retourne les IDs logiques des n premiers triangles (ordre de la listbox)."""
-        ids: List[int] = []
-        if not hasattr(self, "listbox"):
-            return ids
-        max_n = int(self.listbox.size())
-        n2 = min(int(n), max_n)
-        for i in range(n2):
-            s = str(self.listbox.get(i))
-            m = re.match(r"\s*(\d+)\.", s)
-            if m:
-                ids.append(int(m.group(1)))
-        return ids
+        """Retourne les rangs catalogue du scénario, dans leur ordre métier."""
+        scen = self._get_active_scenario()
+        world = getattr(scen, "topoWorld", None) if scen is not None else None
+        ranks = world.scenario_triangle_set.ranks() if world is not None else ()
+        return list(ranks[:max(0, int(n))])
 
     def _simulation_get_tri_ids_by_order(self, n: int, order: str = "normal") -> List[int]:
         """Retourne les IDs logiques des triangles selon l'ordre choisi:
         - normal : n premiers (début de listbox)
         - inverse : n derniers en partant du dernier (ex: 32,31,30,...)
         """
-        ids: List[int] = []
-        if not hasattr(self, "listbox"):
-            return ids
-
-        max_n = int(self.listbox.size())
-        n2 = min(int(n), max_n)
-
+        ranks = self._simulation_get_tri_ids_first_n(32)
+        n2 = min(max(0, int(n)), len(ranks))
         if str(order).lower() in ("inverse", "reverse"):
-            # prendre les n derniers, en commençant par le dernier (max_n-1)
-            for k in range(n2):
-                i = (max_n - 1) - k
-                s = str(self.listbox.get(i))
-                m = re.match(r"\s*(\d+)\.", s)
-                if m:
-                    ids.append(int(m.group(1)))
-            return ids
-
-        # normal
-        return self._simulation_get_tri_ids_first_n(n)
+            return list(reversed(ranks[-n2:]))
+        return ranks[:n2]
 
     def _simulation_clear_auto_scenarios(self):
         """Supprime tous les scénarios 'auto' (conserve les manuels)."""
@@ -1352,7 +1405,7 @@ class TriangleViewerManual(
 
     def _simulation_assemble_dialog(self):
         """Ouvre la boîte de dialogue 'Assembler…' et lance l'algo choisi."""
-        if self.df is None:
+        if self.triangle_catalog is None:
             messagebox.showwarning("Assembler", "Charge d'abord un fichier Triangle.")
             return
         if not hasattr(self, "listbox"):
@@ -1455,6 +1508,7 @@ class TriangleViewerManual(
             scen.tri_ids = scen.tri_ids or list(tri_ids)
             scen.first_triangle_id = int(scen.tri_ids[0]) if scen.tri_ids else None
             scen.traversal_direction = "reverse" if str(order).lower() in ("reverse", "inverse") else "forward"
+            self._attach_catalog_to_world(scen.topoWorld)
             if not scen.name:
                 scen.name = f"Auto #{count_auto + k + 1}"
             self.scenarios.append(scen)
@@ -4274,24 +4328,57 @@ class TriangleViewerManual(
         """
         if not hasattr(self, "listbox"):
             return
+        scen = self._get_active_scenario()
+        world = getattr(scen, "topoWorld", None) if scen is not None else None
+        triangle_set = getattr(world, "scenario_triangle_set", None)
+        if world is None or triangle_set is None or self.triangle_catalog is None:
+            return
+
         lb = self.listbox
-        size = lb.size()
+        for idx, rank in enumerate(triangle_set.ranks()):
+            if idx >= lb.size():
+                break
+            lb.itemconfig(idx, fg="gray50" if world.is_triangle_rank_used(rank) else "black")
 
-        for idx in range(size):
-            txt = lb.get(idx)
+    def _attach_catalog_to_world(self, world: TopologyWorld | None) -> None:
+        """Associe au scenario actif la selection complete du catalogue V1."""
+        if world is None or self.triangle_catalog is None:
+            return
+        world.set_scenario_triangle_set(ScenarioTriangleSet.from_catalog(self.triangle_catalog))
 
-            tri_id = None
-            m = re.match(r"\s*(\d+)\.", str(txt))
-            if m:
-                tri_id = int(m.group(1))
+    def _rebuild_triangle_listbox_from_core(self) -> None:
+        """Projette la selection du scenario dans la listbox, sans lire ``last_drawn``."""
+        if not hasattr(self, "listbox"):
+            return
+        scen = self._get_active_scenario()
+        world = getattr(scen, "topoWorld", None) if scen is not None else None
+        triangle_set = getattr(world, "scenario_triangle_set", None)
+        if world is None or triangle_set is None or self.triangle_catalog is None:
+            return
 
-            if tri_id is not None and tri_id in self._placed_ids:
-                # Triangle déjà posé dans le scénario → grisé
-                lb.itemconfig(idx, fg="gray50")
+        self.listbox.delete(0, tk.END)
+        for rank in triangle_set.ranks():
+            model = self.triangle_catalog.get_by_model_id(
+                triangle_set.get_model_id_for_rank(rank)
+            )
+            self.listbox.insert(
+                tk.END,
+                f"{model.rank:02d}. B:{model.vertex_labels[1]}  L:{model.vertex_labels[2]}",
+            )
+        self._update_triangle_listbox_colors()
 
-            else:
-                # Triangle disponible
-                lb.itemconfig(idx, fg="black")
+    def _get_triangle_model_from_listbox_index(self, idx: int):
+        scen = self._get_active_scenario()
+        world = getattr(scen, "topoWorld", None) if scen is not None else None
+        triangle_set = getattr(world, "scenario_triangle_set", None)
+        ranks = triangle_set.ranks() if triangle_set is not None else ()
+        if not 0 <= int(idx) < len(ranks):
+            raise IndexError(f"TriangleCatalog: index listbox invalide: {idx}")
+        if self.triangle_catalog is None:
+            raise RuntimeError("TriangleCatalog: catalogue global absent")
+        return self.triangle_catalog.get_by_model_id(
+            triangle_set.get_model_id_for_rank(ranks[int(idx)])
+        )
 
     def _on_scenario_select(self, event=None):
         """Callback quand l'utilisateur sélectionne un scénario (target) dans la Treeview."""
@@ -4666,6 +4753,8 @@ class TriangleViewerManual(
 
         scen = self.scenarios[index]
         self.active_scenario_index = index
+        if not scen.topoWorld.scenario_triangle_set.ranks():
+            self._attach_catalog_to_world(scen.topoWorld)
 
         # Rattacher les structures géométriques du scénario courant
         self._bind_canvas_objects(scen.last_drawn)
@@ -4686,10 +4775,7 @@ class TriangleViewerManual(
         else:
             self._apply_view_state(getattr(scen, "view_state", None))
 
-        # Recalcule la liste des triangles déjà utilisés pour ce scénario
-        self._placed_ids = {int(triangle_id) for triangle_id in self.canvas_objects.triangle_ids()}
-
-        self._update_triangle_listbox_colors()
+        self._rebuild_triangle_listbox_from_core()
 
         # Invalider le cache de pick et redessiner
         self._invalidate_pick_cache()
@@ -4736,6 +4822,7 @@ class TriangleViewerManual(
             algo_id=None,
             tri_ids=[],
         )
+        self._attach_catalog_to_world(scen.topoWorld)
         # Scénario vide : nouvelles structures indépendantes
         scen.last_drawn = []
 
@@ -4930,11 +5017,6 @@ class TriangleViewerManual(
         self._ctx_idx_bl0 = None
 
         # Séparateur et zone dynamique pour les actions "mot"
-        self._ctx_menu.add_separator()
-        self._ctx_idx_words_start = self._ctx_menu.index("end")  # point d'ancrage
-        # entrées placeholders (seront remplacées dynamiquement)
-        self._ctx_menu.add_command(label="Ajouter …", state="disabled")
-        self._ctx_menu.add_command(label="Effacer …", state="disabled")
         self._ctx_refresh_menu_runtime_indexes()
 
         # Export TopoDump (manuel, snapshot volontaire) et toggle diagnostic.
@@ -5706,7 +5788,9 @@ class TriangleViewerManual(
 
     def load_excel(self, path: str):
         (df_canon, path_norm) = self.triangleFiles.loadExcel(path)
+        catalog = TriangleCatalog.from_dataframe(df_canon)
         self.df = df_canon
+        self.triangle_catalog = catalog
         self.excel_path = path_norm
         self.triangleFiles.setLastPaths(lastTriangleExcel=path_norm)
         self.triangle_file.set(os.path.basename(path_norm))
@@ -5714,9 +5798,9 @@ class TriangleViewerManual(
         # MAJ du menu fichiers si un nouveau fichier arrive dans data
         self._rebuild_triangle_file_list_menu()
 
-        self.listbox.delete(0, tk.END)
-        for _, r in self.df.iterrows():
-            self.listbox.insert(tk.END, f"{int(r['id']):02d}. B:{r['B']}  L:{r['L']}")
+        for scenario in self.scenarios:
+            self._attach_catalog_to_world(scenario.topoWorld)
+        self._rebuild_triangle_listbox_from_core()
         self.status.config(text=f"{len(self.df)} triangles chargés depuis {path_norm}")
 
         # IMPORTANT :
@@ -5725,54 +5809,26 @@ class TriangleViewerManual(
         # - pas de reset des groups
         # - pas de reset du topoWorld
         #
-        # On recalcule seulement la liste des triangles déjà utilisés
-        self._placed_ids = {int(triangle_id) for triangle_id in self.canvas_objects.triangle_ids()}
-
-        self._update_triangle_listbox_colors()
         self._redraw_from(self._last_drawn)
 
     # ---------- Mise en page simple (aperçu brut) ----------
 
     def _triangle_from_index(self, idx):
-        """Construit un triangle 'local' depuis l’élément sélectionné de la listbox.
-        IMPORTANT: on parse l'ID affiché (NN.) au lieu d'utiliser df.iloc[idx],
-        car la listbox peut avoir des éléments retirés → indices décalés.
-        """
-        if self.df is None or self.df.empty:
-            raise RuntimeError("Pas de données — ouvre d'abord l’Excel.")
-        # Récupérer le texte de la listbox et extraire l'id (NN. ...)
-        lb_txt = ""
-        if 0 <= idx < self.listbox.size():
-            lb_txt = self.listbox.get(idx)
-
-        tri_id = None
-        m = re.match(r"\s*(\d+)\.", str(lb_txt))
-        if m:
-            tri_id = int(m.group(1))
-            row = self.df[self.df["id"] == tri_id]
-            if not row.empty:
-                r = row.iloc[0]
-            else:
-                # secours si pas trouvé (ne devrait pas arriver)
-                r = self.df.iloc[min(max(idx, 0), len(self.df)-1)]
-                tri_id = int(r["id"])
-        else:
-            # si le libellé n'est pas conforme, on retombe sur l'index
-            r = self.df.iloc[min(max(idx, 0), len(self.df)-1)]
-            tri_id = int(r["id"])
-
-        P = _build_local_triangle(float(r["len_OB"]), float(r["len_OL"]), float(r["len_BL"]))
-        # Normalisation de l’orientation
-        ori = str(r.get("orient", "CCW")).upper()
+        """Construit l'aperçu local depuis le modèle du scénario actif."""
+        model = self._get_triangle_model_from_listbox_index(idx)
+        len_OB, len_BL, len_OL = model.edge_lengths_km
+        P = _build_local_triangle(len_OB, len_OL, len_BL)
+        ori = model.orient
 
         if ori == "CW":
             P = {"O": np.array([P["O"][0], -P["O"][1]]),
                  "B": np.array([P["B"][0], -P["B"][1]]),
                  "L": np.array([P["L"][0], -P["L"][1]])}
         return {
-            "labels": ("Bourges", str(r["B"]), str(r["L"])),
+            "model": model,
+            "labels": model.vertex_labels,
             "pts": P,
-            "id": tri_id,
+            "id": model.rank,
             "mirrored": (ori == "CW"),   # reflet initial si orientation horaire
         }
 
@@ -5786,11 +5842,8 @@ class TriangleViewerManual(
         return abs(self._ang_wrap(a - b))
 
     def _refresh_listbox_from_df(self):
-        """Recharge la listbox des triangles depuis self.df (sans filtrage)."""
-        self.listbox.delete(0, tk.END)
-        if self.df is not None and not self.df.empty:
-            for _, r in self.df.iterrows():
-                self.listbox.insert(tk.END, f"{int(r['id']):02d}. B:{r['B']}  L:{r['L']}")
+        """Compatibilité : la listbox est désormais projetée depuis le Core."""
+        self._rebuild_triangle_listbox_from_core()
 
     def clear_canvas(self):
         """Efface l'affichage après confirmation, et remet à jour la liste des triangles."""
@@ -5809,13 +5862,7 @@ class TriangleViewerManual(
         self._clear_edge_highlights()
         self._edge_choice = None
         self._edge_highlights = None
-        # Reconstruire la listbox à partir de la DF courante
-        if hasattr(self, "triangle_df") and self.triangle_df is not None:
-            self._refresh_listbox_from_df()
-        # Après effacement, plus aucun triangle n'est considéré comme "déjà utilisé"
-        # → on peut à nouveau les sélectionner pour un drag & drop.
-        self._placed_ids.clear()
-        self._update_triangle_listbox_colors()
+        self._rebuild_triangle_listbox_from_core()
 
         self.status.config(text="Affichage effacé")
         self._hide_tooltip()
@@ -6107,15 +6154,13 @@ class TriangleViewerManual(
         # 1) Triangles (toujours dessinés si layer actif) : on coupe juste les arêtes internes.
         if self.show_triangles_layer is None or self.show_triangles_layer.get():
             for i, t in enumerate(placed):
-                labels = t["labels"]
+                labels = self._get_core_vertex_labels(t)
                 P = t["pts"]
-                tri_id = t.get("id")
                 fill = "#ffd6d6" if i in self._comparison_diff_indices else None
                 self._draw_triangle_screen(
                     P,
                     labels=[f"O:{labels[0]}", f"B:{labels[1]}", f"L:{labels[2]}"],
-                    tri_id=tri_id,
-                    tri_mirrored=self._get_core_element_mirrored(t.get("topoElementId")),
+                    tri_label=self._build_triangle_display_label(t),
                     fill=fill,
                     diff_outline=bool(fill),
                     drawEdges=(not onlyContours),
@@ -6305,7 +6350,7 @@ class TriangleViewerManual(
 
     def _draw_triangle_screen(self, P,
                               outline="black", width=2, labels=None, inset=0.35,
-                              tri_id=None, tri_mirrored=False, fill=None, diff_outline=False,
+                              tri_label=None, fill=None, diff_outline=False,
                               drawEdges=True):
         """
         P : dict {'O','B','L'} en coordonnées monde (np.array 2D)
@@ -6383,29 +6428,16 @@ class TriangleViewerManual(
                 self.canvas.create_text(sx, sy, text=display, anchor="center", font=("Arial", 8), tags="tri_label")
 
         # 5) numéro du triangle (toujours affiché après les labels, en avant-plan)
-        if tri_id is not None:
+        if tri_label is not None:
             sx, sy = self._world_to_screen((cx, cy))
-            num_txt = f"{tri_id}{'S' if tri_mirrored else ''}"
-            # Bloc ID + mot recentré verticalement autour de sy, avec un écart réduit
-            gap = 8  # écart vertical (px) entre ID et mot
-            id_y = sy - (gap // 2)
-            word_y = sy + (gap - gap // 2)
-
+            num_txt = str(tri_label)
             self.canvas.create_text(
-                sx, id_y, text=num_txt,
+                sx, sy, text=num_txt,
                 anchor="center", font=("Arial", 10, "bold"),
                 fill="red", tags="tri_num"
             )
             self.canvas.tag_raise("tri_num")
 
-            # 5b) si un mot est associé à ce triangle, l’afficher sous l’ID (italique)
-            winfo = self._tri_words.get(int(tri_id))
-            if winfo and isinstance(winfo.get("word"), str) and winfo["word"].strip():
-                self.canvas.create_text(
-                    sx, word_y, text=winfo["word"],
-                    anchor="n", font=("Arial", 9, "italic"),
-                    fill="#222", tags="tri_word"
-                )
 
     # --- helpers: mode déconnexion (CTRL) + curseur ---
 
@@ -6615,8 +6647,8 @@ class TriangleViewerManual(
         tri = self._triangle_from_index(idx)
         tid = int(tri.get("id"))
 
-        placed = self._placed_ids or set()
-        if tid is not None and tid in placed:
+        world = self._get_active_scenario().topoWorld
+        if tid is not None and world.is_triangle_rank_used(tid):
             # Triangle déjà posé : on annule la sélection visuelle
             self._in_triangle_select_guard = True
             self.listbox.selection_clear(0, tk.END)
@@ -6639,8 +6671,8 @@ class TriangleViewerManual(
         Démarre un drag & drop depuis la listbox,
         sauf si le triangle est déjà utilisé dans le scénario courant.
         """
-        # Pas de DF → rien à faire
-        if self.df is None or self.df.empty:
+        # Sans catalogue rattache au scénario, aucun drag n'est possible.
+        if not self._get_active_scenario().topoWorld.scenario_triangle_set.ranks():
             return
 
         # Index de la ligne cliquée dans la listbox
@@ -6657,7 +6689,7 @@ class TriangleViewerManual(
 
         tri_id = tri.get("id")
         # Si le triangle est déjà posé dans ce scénario, on bloque le drag
-        if tri_id is not None and int(tri_id) in self._placed_ids:
+        if tri_id is not None and self._get_active_scenario().topoWorld.is_triangle_rank_used(int(tri_id)):
             self.status.config(text=f"Triangle {tri_id} déjà utilisé dans ce scénario.")
             self._drag = None
             return
@@ -6669,6 +6701,7 @@ class TriangleViewerManual(
         self._drag = {
             "from": "list",
             "triangle": tri,
+            "triangle_model": tri["model"],
             "list_index": i,
             "start_screen": start_screen,
             "mirrored": tri.get("mirrored", False),
@@ -7201,46 +7234,17 @@ class TriangleViewerManual(
         Pw = self._drag["world_pts"]
         scen = self._get_active_scenario()
         world = scen.topoWorld
-
-        tri_rank = tri.get("id", None)
-        # tri_rank attendu : 1..32 (rang importé)
-        if tri_rank is None:
-            raise ValueError("Topology: triRank absent pour le triangle place")
-        tri_rank_i = int(tri_rank)
-        if (tri_rank_i - 1 < 0) or (tri_rank_i - 1 >= len(self.df)):
-            raise ValueError(f"Topology: triRank hors df: {tri_rank_i} (len(df)={len(self.df)})")
+        model = self._drag.get("triangle_model") or tri.get("model")
+        if model is None:
+            raise ValueError("TriangleCatalog: modèle absent du drag")
+        if not world.scenario_triangle_set.contains_rank(model.rank):
+            raise ValueError(f"ScenarioTriangleSet: rang hors sélection: {model.rank}")
+        if world.is_triangle_rank_used(model.rank):
+            raise ValueError(f"TriangleCatalog: triangle déjà utilisé: {model.rank}")
 
         world.beginTopoTransaction()
         try:
-            # ------------------------------------------------------------
-            # Intrinsèque : on prend les longueurs + sens (orient) depuis self.df
-            # (et non depuis les coords monde Pw).
-            # Colonnes attendues dans df : len_OB, len_OL, len_BL, orient, B, L
-            # O est fixé à "Bourges" dans ton modèle actuel (voir _triangle_from_index()).
-            # ------------------------------------------------------------
-
-            row = self.df.iloc[tri_rank_i - 1]
-            len_OB = float(row["len_OB"])
-            len_OL = float(row["len_OL"])
-            len_BL = float(row["len_BL"])
-            orient = str(row.get("orient", "")).strip().upper()
-
-            # labels/types : O/B/L dans l’ordre topo.
-            # (convention projet actuelle : O="Bourges", B=row["B"], L=row["L"])
-            v_labels = ["Bourges", str(row["B"]), str(row["L"])]
-            v_types = [TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE]
-
-            # Longueurs d’arêtes dans l’ordre du cycle O->B, B->L, L->O
-            edge_lengths_km = [len_OB, len_BL, len_OL]
-
-            # element (coordonnées locales canonisées par le core)
-            el = TopologyElement(
-                name=f"Triangle {tri_rank_i:02d}",
-                vertex_labels=v_labels,
-                vertex_types=v_types,
-                edge_lengths_km=edge_lengths_km,
-                meta={"orient": orient, "triRank": tri_rank_i},
-            )
+            el = model.build_topology_element()
 
             # Ajouter au core (nouveau groupe singleton)
             core_gid = world.add_element_as_new_group(el)
@@ -7264,12 +7268,8 @@ class TriangleViewerManual(
         # La projection est volontairement créée sans ``pts`` : ceux-ci ne
         # peuvent provenir que du Core via _project_core_element_to_last_drawn.
         self.canvas_objects.add({
-            "labels": tri["labels"],
-            "id": tri.get("id"),
-            "orient": orient,
-            "mirrored": False,
+            "id": model.rank,
             "topoElementId": str(element_id),
-            "topoGroupId": str(core_gid),
         })
         self._project_core_element_to_last_drawn(world, str(element_id))
         self.canvas_objects.dump(APP_LOGGER, "placement manuel")
@@ -7278,10 +7278,7 @@ class TriangleViewerManual(
         self._redraw_from(self._last_drawn)
         self.status.config(text=f"Triangle déposé → Groupe Core {core_gid} créé.")
 
-        # On ne supprime plus l'entrée de la listbox : on marque le triangle comme utilisé
-        if tri.get("id") is not None:
-            self._placed_ids.add(int(tri["id"]))
-            self._update_triangle_listbox_colors()
+        self._rebuild_triangle_listbox_from_core()
 
         # Après le dépôt, on désélectionne le triangle dans la listbox
         # pour ne pas laisser un item actif alors qu'il est déjà utilisé
@@ -7493,43 +7490,6 @@ class TriangleViewerManual(
                 return ("center", i, None)
         return (None, None, None)
 
-    # ---------- Gestion liste déroulante : retrait / réinsertion ----------
-    def _reinsert_triangle_to_list(self, tri):
-        """Réinsère un triangle supprimé du canvas dans la listbox, trié par id."""
-        tri_id = tri.get("id")
-        if tri_id is None:
-            return
-        # Construire le libellé comme au chargement
-        labels = tri.get("labels", ("", "", ""))
-        b_val = labels[1] if len(labels) > 1 else ""
-        l_val = labels[2] if len(labels) > 2 else ""
-        entry = f"{int(tri_id):02d}. B:{b_val}  L:{l_val}"
-
-        # Éviter les doublons si déjà présent
-        for idx in range(self.listbox.size()):
-            existing = self.listbox.get(idx)
-            # on parse l'id au début (2 chiffres)
-            ex_id = int(str(existing)[:2])
-            if ex_id == int(tri_id):
-                break
-
-        else:
-            # Trouver la position triée par id
-            insert_at = self.listbox.size()
-            for idx in range(self.listbox.size()):
-                ex = self.listbox.get(idx)
-                ex_id = int(str(ex)[:2])
-                if int(tri_id) < ex_id:
-                    insert_at = idx
-                    break
-
-            self.listbox.insert(insert_at, entry)
-        # Dé-marquer l'id comme posé
-        if tri_id in self._placed_ids:
-            self._placed_ids.discard(int(tri_id))
-        # Mettre à jour la couleur des entrées (ce triangle redevient disponible)
-        self._update_triangle_listbox_colors()
-
     def _ctx_find_menu_index_by_label(self, label: str) -> Optional[int]:
         menu = getattr(self, "_ctx_menu", None)
         if menu is None:
@@ -7552,23 +7512,10 @@ class TriangleViewerManual(
         if menu is None:
             self._ctx_idx_ol0 = None
             self._ctx_idx_bl0 = None
-            self._ctx_idx_words_start = 0
             return
 
         self._ctx_idx_ol0 = self._ctx_find_menu_index_by_label("OL=0°")
         self._ctx_idx_bl0 = self._ctx_find_menu_index_by_label("BL=0°")
-
-        end = menu.index("end")
-        if end is None:
-            self._ctx_idx_words_start = 0
-            return
-
-        sep_idx = None
-        for i in range(int(end), -1, -1):
-            if menu.type(i) == "separator":
-                sep_idx = int(i)
-                break
-        self._ctx_idx_words_start = int(sep_idx) if sep_idx is not None else max(0, int(end) - 2)
 
     def _ctx_update_degrouper_menu_entry(self) -> None:
         menu = getattr(self, "_ctx_menu", None)
@@ -7638,7 +7585,6 @@ class TriangleViewerManual(
                 self._ctx_menu.entryconfig(self._ctx_idx_bl0, state=tk.NORMAL)
 
             # (ré)construire la section "mot" du menu selon le triangle visé + selection dico
-            self._rebuild_ctx_word_entries()
             self._ctx_menu.tk_popup(event.x_root, event.y_root)
             self._ctx_menu.grab_release()
 
@@ -8884,13 +8830,12 @@ class TriangleViewerManual(
                 return
 
         # 0) La collection conserve le remappage structurel old tid -> new tid.
-        removal = self.canvas_objects.remove_many(removed_tids)
-        for entry in removal.removed_entries:
-            self._reinsert_triangle_to_list(entry)
+        self.canvas_objects.remove_many(removed_tids)
 
         # 2bis) TOPO : supprimer les éléments Core + purge des attaches + rebuild
         if world is not None and removed_element_ids:
             world.removeElementsAndRebuild(list(removed_element_ids))
+        self._rebuild_triangle_listbox_from_core()
 
         # 4) Fin : purge sélection/assist et redraw
         self._sel = None
@@ -10676,17 +10621,15 @@ class TriangleViewerManual(
 
             if self.show_triangles_layer is None or self.show_triangles_layer.get():
                 for i, t in enumerate(self._last_drawn or []):
-                    labels = t.get("labels")
+                    labels = self._get_core_vertex_labels(t)
                     P = t.get("pts")
-                    if not labels or not P:
+                    if not P:
                         continue
-                    tri_id = t.get("id")
                     fill = "#ffd6d6" if i in self._comparison_diff_indices else None
                     self._draw_triangle_screen(
                         P,
                         labels=[f"O:{labels[0]}", f"B:{labels[1]}", f"L:{labels[2]}"],
-                        tri_id=tri_id,
-                        tri_mirrored=self._get_core_element_mirrored(t.get("topoElementId")),
+                        tri_label=self._build_triangle_display_label(t),
                         fill=fill,
                         diff_outline=bool(fill),
                         drawEdges=(not onlyContours),

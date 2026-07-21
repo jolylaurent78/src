@@ -47,7 +47,6 @@ class _Viewer:
         self._clock_cx = 0.0
         self._clock_cy = 0.0
         self._clock_state = {"hour": 0, "minute": 0, "label": ""}
-        self._tri_words = {}
         self.listbox = _Listbox()
         self.canvas = _Canvas()
         self.df = None
@@ -108,7 +107,6 @@ def _world_with_t28():
 def _entry():
     return {
         "id": 28,
-        "mirrored": False,
         "topoElementId": "T28",
         "pts": {
             "O": np.array([0.0, 0.0]),
@@ -134,6 +132,8 @@ def test_xml_core_first_load_legacy_id_then_round_trip(tmp_path):
     groups = ET.SubElement(root, "groups")
     ET.SubElement(groups, "group", {"id": "99"})
     ET.SubElement(groups[-1], "node", {"tid": "not-an-index", "edge_in": "INVALID"})
+    words = ET.SubElement(root, "words")
+    ET.SubElement(words, "w", {"tri_id": "28", "row": "1", "col": "2", "text": "obsolete"})
     legacy = tmp_path / "legacy-v4.xml"
     tree.write(legacy, encoding="utf-8", xml_declaration=True)
 
@@ -144,6 +144,8 @@ def test_xml_core_first_load_legacy_id_then_round_trip(tmp_path):
     assert loaded._last_drawn[0]["topoElementId"] == "T28"
     assert loaded._last_drawn[0]["topoElementId"] in loaded._get_active_scenario().topoWorld.elements
     assert "group_id" not in loaded._last_drawn[0]
+    assert not {"labels", "orient", "topoGroupId", "mirrored"}.intersection(loaded._last_drawn[0])
+    assert tuple(loaded._get_active_scenario().topoWorld.elements["T28"].vertex_labels) == ("O", "B", "L")
     assert not hasattr(loaded, "groups")
 
     saved = tmp_path / "round-trip.xml"
@@ -153,6 +155,7 @@ def test_xml_core_first_load_legacy_id_then_round_trip(tmp_path):
     saved_triangle = saved_root.find("./triangles/triangle")
     assert saved_triangle.get("topoElementId") == "T28"
     assert saved_root.find("groups") is None
+    assert saved_root.find("words") is None
     assert saved_triangle.get("group") is None
     assert "edge_in" not in saved_text
     assert "edge_out" not in saved_text
@@ -160,6 +163,26 @@ def test_xml_core_first_load_legacy_id_then_round_trip(tmp_path):
     reloaded = _Viewer(TopologyWorld(), [])
     loadScenarioXml(reloaded, str(saved))
     assert reloaded._last_drawn[0]["topoElementId"] == "T28"
+
+
+def test_xml_mirrored_round_trip_uses_core_without_cache_duplication(tmp_path):
+    world = _world_with_t28()
+    world.setElementPose("T28", np.eye(2), np.zeros(2), mirrored=True)
+    viewer = _Viewer(world, [_entry()])
+
+    path = tmp_path / "mirrored.xml"
+    saveScenarioXml(viewer, str(path))
+
+    triangle = ET.parse(path).getroot().find("./triangles/triangle")
+    assert triangle is not None
+    assert triangle.get("mirrored") == "1"
+    assert "mirrored" not in viewer._last_drawn[0]
+
+    reloaded = _Viewer(TopologyWorld(), [])
+    loadScenarioXml(reloaded, str(path))
+    reloaded_world = reloaded._get_active_scenario().topoWorld
+    assert reloaded_world.getElementPose("T28")[2] is True
+    assert "mirrored" not in reloaded._last_drawn[0]
 
 
 def test_xml_core_first_loads_repository_v4_scenario_without_ui_groups(tmp_path):
@@ -195,8 +218,6 @@ def test_f11_geo_orient_dump_contains_core_and_projection_diagnostics(tmp_path):
     world = _world_with_t28()
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     entry = _entry()
-    entry["orient"] = "CW"
-    entry["topoGroupId"] = str(world.get_group_of_element("T28"))
     viewer._last_drawn = [entry]
 
     dump = tmp_path / "TopoDump.xml"
@@ -208,7 +229,7 @@ def test_f11_geo_orient_dump_contains_core_and_projection_diagnostics(tmp_path):
     assert triangle.get("topoElementId") == "T28"
     assert triangle.find("Catalogue").get("orient") == "<absent>"
     assert triangle.find("Core/VertexLocalXY/Point[@vertex='O']") is not None
-    assert triangle.find("LastDrawn").get("orient") == "CW"
+    assert triangle.find("LastDrawn").get("coreGroupId") == str(world.get_group_of_element("T28"))
     assert triangle.find("GeometricOrientation").get("world") in {"CW", "CCW"}
     assert triangle.find("XML").get("mirrored") == "0"
 

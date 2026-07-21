@@ -57,10 +57,8 @@ class PlacedTriangle:
 
     def toLegacyDict(self) -> Dict:
         entry = {
-            "labels": self.labels,
             "pts": self.points,
             "id": self.triangleId,
-            "mirrored": self.mirrored,
         }
         if self.topologyElementId is not None:
             entry["topoElementId"] = self.topologyElementId
@@ -151,13 +149,11 @@ def buildLegacyLastDrawnFromTopology(
             raise ValueError(
                 f"buildLegacyLastDrawnFromTopology: élément Core introuvable: {element_id}"
             )
-        core_group_id = topologyWorld.get_group_of_element(element_id)
-        if core_group_id is None:
+        if topologyWorld.get_group_of_element(element_id) is None:
             raise ValueError(
                 f"buildLegacyLastDrawnFromTopology: groupe Core absent pour {element_id}"
             )
         entry = triangle.toLegacyDict()
-        entry["topoGroupId"] = str(core_group_id)
         last_drawn.append(entry)
     return last_drawn
 

@@ -7,9 +7,8 @@ Ce module est généré pour découper assembleur_tk.py.
 from __future__ import annotations
 import os
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk
 from tksheet import Sheet
-from typing import Optional, Tuple
 
 from src.DictionnaireEnigmes import DictionnaireEnigmes, DicoScope, _normalizeWordLocal
 
@@ -698,85 +697,6 @@ class TriangleViewerDictionaryMixin:
         refMode = getattr(self, "_dico_ref_mode", None)
         bg = "#BFDFFF" if refMode != "target" else "#FFCCCC"
         self.dicoSheet.highlight_cells(int(r0), int(c0), fg="#9A9A9A", bg=bg)
-
-    # ---------- DICO : lecture de la sélection courante ----------
-
-    def _get_selected_dico_word(self) -> Optional[Tuple[str, int, int]]:
-        """
-        Retourne (word, row, col) depuis la sélection de tksheet, ou None si rien.
-        """
-        if not getattr(self, "dicoSheet", None):
-            return None
-        sel = self.dicoSheet.get_selected_cells()
-        r = c = None
-        if sel:
-            r, c = next(iter(sel))
-        word = str(self.dicoSheet.get_cell_data(r, c)).strip()
-
-        if not word:
-            return None
-        return (word, r, c)
-
-    # ---------- Contexte : actions mot <-> triangle ----------
-
-    def _ctx_add_or_replace_word(self):
-        """Ajoute/remplace le mot sélectionné du dico sur le triangle ciblé."""
-        if self._ctx_target_idx is None or not (0 <= self._ctx_target_idx < len(self._last_drawn)):
-            return
-        tri = self._last_drawn[self._ctx_target_idx]
-        tri_id = int(tri.get("id"))
-        sel = self._get_selected_dico_word()
-        if not sel:
-            messagebox.showinfo("Association mot", "Aucun mot sélectionné dans le dictionnaire.")
-            return
-        word, row, col = sel
-        self._tri_words[tri_id] = {"word": word, "row": row, "col": col}
-        self._redraw_from(self._last_drawn)
-
-    def _ctx_clear_word(self):
-        """Efface l'association de mot du triangle ciblé, si présente."""
-        if self._ctx_target_idx is None or not (0 <= self._ctx_target_idx < len(self._last_drawn)):
-            return
-        tri = self._last_drawn[self._ctx_target_idx]
-        tri_id = int(tri.get("id"))
-        if tri_id in self._tri_words:
-            del self._tri_words[tri_id]
-            self._redraw_from(self._last_drawn)
-
-    def _rebuild_ctx_word_entries(self):
-        """Reconstruit la partie 'mot' du menu contextuel en fonction du triangle visé + sélection dico."""
-        # Nettoyer les deux entrées dynamiques existantes
-        # On supprime depuis la fin pour conserver l'index d'ancrage
-        end = self._ctx_menu.index("end")
-        while end > self._ctx_idx_words_start:
-            self._ctx_menu.delete(end)
-            end = self._ctx_menu.index("end")
-
-        # Recréer deux entrées selon contexte
-        label_add = "Ajouter…"
-        cmd_add = None
-        sel = self._get_selected_dico_word()
-        if sel:
-            label_add = f"Ajouter « {sel[0]} »"
-            cmd_add = self._ctx_add_or_replace_word
-        # Triangle ciblé ?
-        has_target = (self._ctx_target_idx is not None) and (0 <= self._ctx_target_idx < len(self._last_drawn))
-        exists = False
-        label_del = "Effacer…"
-        if has_target:
-            tri = self._last_drawn[self._ctx_target_idx]
-            tri_id = int(tri.get("id"))
-            if tri_id in self._tri_words:
-                exists = True
-                cur_word = self._tri_words[tri_id]["word"]
-                # si on a aussi une sélection, on préfère le verbe "Remplacer"
-                if sel:
-                    label_add = f"Remplacer par « {sel[0]} »"
-                label_del = f"Effacer « {cur_word} »"
-        # Ajouter les entrées (activées/désactivées selon contexte)
-        self._ctx_menu.add_command(label=label_add, command=cmd_add, state=("normal" if cmd_add and has_target else "disabled"))
-        self._ctx_menu.add_command(label=label_del, command=(self._ctx_clear_word if exists else None),
-                                   state=("normal" if exists else "disabled"))
 
     def _simulation_cancel_dictionary_filter(self):
         """Annule le filtrage visuel du dictionnaire (styles)."""

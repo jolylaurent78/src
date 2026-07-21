@@ -6,6 +6,7 @@ import math
 import datetime as _dt
 from typing import Optional, List, Dict
 import re
+import hashlib
 
 import numpy as np
 from dataclasses import dataclass
@@ -51,6 +52,170 @@ def _build_local_triangle(OB: float, OL: float, BL: float) -> dict:
         "B": np.array([float(OB), 0.0], dtype=float),
         "L": np.array([float(x),  float(y)], dtype=float),
     }
+
+
+@dataclass(frozen=True)
+class TriangleModel:
+    """Definition immuable d'un triangle du catalogue global."""
+
+    model_id: str
+    rank: int
+    vertex_labels: tuple[str, str, str]
+    vertex_types: tuple[str, str, str]
+    edge_lengths_km: tuple[float, float, float]
+    orient: str
+
+    def build_topology_element(self) -> "TopologyElement":
+        """Instancie un element physique sans dupliquer le catalogue."""
+        return TopologyElement(
+            name=f"Triangle {self.rank:02d}",
+            vertex_labels=list(self.vertex_labels),
+            vertex_types=list(self.vertex_types),
+            edge_lengths_km=list(self.edge_lengths_km),
+            meta={
+                "orient": self.orient,
+                "triRank": self.rank,
+                "modelId": self.model_id,
+            },
+        )
+
+
+class TriangleCatalog:
+    """Catalogue global, strict et independant des scenarios."""
+
+    EXPECTED_RANKS = frozenset(range(1, 33))
+
+    def __init__(self, models: List[TriangleModel]):
+        models = list(models)
+        if len(models) != 32:
+            raise ValueError(
+                f"TriangleCatalog: 32 modeles attendus, obtenu={len(models)}"
+            )
+        by_rank: dict[int, TriangleModel] = {}
+        by_model_id: dict[str, TriangleModel] = {}
+        for model in models:
+            if not isinstance(model, TriangleModel):
+                raise TypeError("TriangleCatalog: TriangleModel attendu")
+            rank = int(model.rank)
+            model_id = str(model.model_id).strip()
+            if rank in by_rank:
+                raise ValueError(f"TriangleCatalog: rank duplique: {rank}")
+            if not model_id or model_id in by_model_id:
+                raise ValueError(f"TriangleCatalog: model_id invalide ou duplique: {model_id!r}")
+            by_rank[rank] = model
+            by_model_id[model_id] = model
+        if frozenset(by_rank) != self.EXPECTED_RANKS:
+            missing = sorted(self.EXPECTED_RANKS - frozenset(by_rank))
+            unexpected = sorted(frozenset(by_rank) - self.EXPECTED_RANKS)
+            raise ValueError(
+                "TriangleCatalog: ranks 1..32 attendus "
+                f"(manquants={missing}, inattendus={unexpected})"
+            )
+        self._by_rank = by_rank
+        self._by_model_id = by_model_id
+
+    @classmethod
+    def from_dataframe(cls, dataframe) -> "TriangleCatalog":
+        """Construit le catalogue V1 depuis le DataFrame Excel canonique."""
+        if dataframe is None:
+            raise ValueError("TriangleCatalog: DataFrame absent")
+        required = {"id", "B", "L", "len_OB", "len_OL", "len_BL", "orient"}
+        columns = set(getattr(dataframe, "columns", ()))
+        missing = sorted(required - columns)
+        if missing:
+            raise ValueError(f"TriangleCatalog: colonnes manquantes: {missing}")
+        records = list(dataframe.to_dict("records"))
+        models: list[TriangleModel] = []
+        for record in records:
+            try:
+                rank = int(record["id"])
+                orient = str(record["orient"]).strip().upper()
+                if orient not in {"CW", "CCW"}:
+                    raise ValueError(f"orient invalide: {orient!r}")
+                # L'identite du modele est derivee de sa definition, jamais
+                # de son rang metier. V1 n'a pas encore de variantes, mais
+                # le contrat reste valable lorsqu'elles apparaitront.
+                definition = "|".join((
+                    str(record["B"]),
+                    str(record["L"]),
+                    f"{float(record['len_OB']):.12g}",
+                    f"{float(record['len_OL']):.12g}",
+                    f"{float(record['len_BL']):.12g}",
+                    orient,
+                ))
+                model_id = "model-" + hashlib.sha256(
+                    definition.encode("utf-8")
+                ).hexdigest()[:16]
+                models.append(TriangleModel(
+                    model_id=model_id,
+                    rank=rank,
+                    vertex_labels=("Bourges", str(record["B"]), str(record["L"])),
+                    vertex_types=("O", "B", "L"),
+                    edge_lengths_km=(
+                        float(record["len_OB"]),
+                        float(record["len_BL"]),
+                        float(record["len_OL"]),
+                    ),
+                    orient=orient,
+                ))
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"TriangleCatalog: ligne invalide: {record!r}") from exc
+        return cls(models)
+
+    def get_by_rank(self, rank: int) -> TriangleModel:
+        try:
+            return self._by_rank[int(rank)]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise KeyError(f"TriangleCatalog: rank absent: {rank!r}") from exc
+
+    def get_by_model_id(self, model_id: str) -> TriangleModel:
+        key = str(model_id).strip()
+        try:
+            return self._by_model_id[key]
+        except KeyError as exc:
+            raise KeyError(f"TriangleCatalog: model_id absent: {key!r}") from exc
+
+    def ranks(self) -> tuple[int, ...]:
+        return tuple(sorted(self._by_rank))
+
+    def models(self) -> tuple[TriangleModel, ...]:
+        """Modeles connus, ordonnes pour un dump de diagnostic stable."""
+        return tuple(self._by_rank[rank] for rank in self.ranks())
+
+
+class ScenarioTriangleSet:
+    """Selection de scenario : uniquement le mapping ``rank -> model_id``."""
+
+    def __init__(self, model_id_by_rank: Optional[Dict[int, str]] = None):
+        self._model_id_by_rank = {
+            int(rank): str(model_id)
+            for rank, model_id in (model_id_by_rank or {}).items()
+        }
+
+    @classmethod
+    def from_catalog(cls, catalog: TriangleCatalog) -> "ScenarioTriangleSet":
+        """Construit la selection V1 sans conserver de reference au catalogue."""
+        if not isinstance(catalog, TriangleCatalog):
+            raise TypeError("ScenarioTriangleSet: TriangleCatalog attendu")
+        return cls({rank: catalog.get_by_rank(rank).model_id for rank in catalog.ranks()})
+
+    def clone(self) -> "ScenarioTriangleSet":
+        return ScenarioTriangleSet(self._model_id_by_rank)
+
+    def ranks(self) -> tuple[int, ...]:
+        return tuple(sorted(self._model_id_by_rank))
+
+    def contains_rank(self, rank: int) -> bool:
+        return int(rank) in self._model_id_by_rank
+
+    def get_model_id_for_rank(self, rank: int) -> str:
+        normalized_rank = int(rank)
+        if normalized_rank not in self._model_id_by_rank:
+            raise KeyError(f"ScenarioTriangleSet: rank absent: {normalized_rank!r}")
+        return self._model_id_by_rank[normalized_rank]
+
+    def items(self) -> tuple[tuple[int, str], ...]:
+        return tuple((rank, self._model_id_by_rank[rank]) for rank in self.ranks())
 
 
 class ScenarioAssemblage:
@@ -484,6 +649,33 @@ class TopologyElement:
         self.pose.T = np.array(T, float)
         if mirrored is not None:
             self.pose.mirrored = bool(mirrored)
+
+    @property
+    def triangle_rank(self) -> int | None:
+        """Rang catalogue officiel de l'element, quand il represente un triangle."""
+        value = self.meta.get("triRank")
+        if value is None:
+            return None
+        try:
+            rank = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"TopologyElement({self.element_id}): triangle_rank invalide: {value!r}"
+            ) from exc
+        if rank <= 0:
+            raise ValueError(
+                f"TopologyElement({self.element_id}): triangle_rank invalide: {rank!r}"
+            )
+        return rank
+
+    @property
+    def model_id(self) -> str | None:
+        """Identite du TriangleModel source, lorsqu'elle est connue."""
+        value = self.meta.get("modelId")
+        if value is None:
+            return None
+        model_id = str(value).strip()
+        return model_id or None
 
     def localToWorld(self, p_local: np.ndarray | tuple[float, float]) -> np.ndarray:
         return self.pose.local_to_world(np.array(p_local, dtype=float))
@@ -1624,6 +1816,28 @@ class TopologyWorld:
         self.topologyChemins = TopologyChemins(self)
 
         self.balisesWorld: dict[str, tuple[float, float]] = {}
+        self.scenario_triangle_set = ScenarioTriangleSet()
+
+    def set_scenario_triangle_set(self, triangle_set: ScenarioTriangleSet) -> None:
+        if not isinstance(triangle_set, ScenarioTriangleSet):
+            raise TypeError("TopologyWorld: ScenarioTriangleSet attendu")
+        self.scenario_triangle_set = triangle_set
+
+    def get_used_triangle_ranks(self) -> frozenset[int]:
+        return frozenset(
+            element.triangle_rank
+            for element in self.elements.values()
+            if element.triangle_rank is not None
+        )
+
+    def is_triangle_rank_used(self, rank: int) -> bool:
+        return int(rank) in self.get_used_triangle_ranks()
+
+    def get_available_triangle_ranks(self) -> tuple[int, ...]:
+        return tuple(
+            rank for rank in self.scenario_triangle_set.ranks()
+            if not self.is_triangle_rank_used(rank)
+        )
 
     # ------------------------------------------------------------------
     # Topologie conceptuelle (MVP)
@@ -4264,6 +4478,7 @@ class TopologyWorld:
         snapshot = self._exportPhysicalSnapshot()
         target = TopologyWorld()
         target._importPhysicalSnapshot(snapshot)
+        target.set_scenario_triangle_set(self.scenario_triangle_set.clone())
         return target
 
     # ------------------------------------------------------------------
@@ -4620,13 +4835,46 @@ class TopologyWorld:
                 "angleDeg": self._format_chemin_angle(t.angleDeg),
             })
 
-    def export_topo_dump_xml(self, path: str, orientation: str = "cw") -> str:
+    def export_topo_dump_xml(
+        self,
+        path: str,
+        orientation: str = "cw",
+        catalog: TriangleCatalog | None = None,
+    ) -> str:
+        """Exporte un snapshot de debug fidele de l'architecture interne.
+
+        Le TopoDump n'est pas un format de persistance metier : il peut evoluer
+        librement avec le Core. Le catalogue global est donc fourni
+        explicitement pour le diagnostic et n'est jamais stocke par le monde.
+        """
         self.assertNoPhysicalSplitPoints()
         root = _ET.Element("TopoDump", {
-            "version": "4.3",
+            "version": "5.0",
             "units": "km",
             "tFrame": "world",
         })
+
+        catalog_el = _ET.SubElement(root, "Catalog", {
+            "available": "1" if catalog is not None else "0",
+        })
+        if catalog is not None:
+            for model in catalog.models():
+                _ET.SubElement(catalog_el, "Model", {
+                    "modelId": str(model.model_id),
+                    "rank": str(model.rank),
+                    "orient": str(model.orient),
+                    "labels": "|".join(model.vertex_labels),
+                    "edgeLengthsKm": ",".join(
+                        f"{float(length):.12g}" for length in model.edge_lengths_km
+                    ),
+                })
+
+        selection_el = _ET.SubElement(root, "ScenarioTriangleSet")
+        for rank, model_id in self.scenario_triangle_set.items():
+            _ET.SubElement(selection_el, "Selection", {
+                "rank": str(rank),
+                "modelId": str(model_id),
+            })
 
         groups_el = _ET.SubElement(root, "Groups")
         for gid in sorted(self.groups.keys()):
@@ -4724,6 +4972,16 @@ class TopologyWorld:
                 "name": el.name,
                 "n": str(el.n_vertices()),
                 "group": str(gid),
+                "modelId": str(
+                    el.model_id
+                    or (
+                        self.scenario_triangle_set.get_model_id_for_rank(el.triangle_rank)
+                        if el.triangle_rank is not None
+                        and self.scenario_triangle_set.contains_rank(el.triangle_rank)
+                        else ""
+                    )
+                ),
+                "triangleRank": "" if el.triangle_rank is None else str(el.triangle_rank),
             })
 
             # --- Pose monde (par élément) ---
