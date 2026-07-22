@@ -55,6 +55,7 @@ def _viewer_with_auto_scenarios():
     viewer._bg_resizing = None
     viewer._pan_anchor = None
     viewer._edge_choice = None
+    viewer._group_drag_snap_candidate = None
     viewer._ctrl_down = False
     viewer._clear_edge_highlights = lambda: None
     viewer._clear_nearest_line = lambda: None

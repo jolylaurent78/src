@@ -34,6 +34,8 @@ def _viewer_with_group():
     viewer.scenarios = [SimpleNamespace(topoWorld=world, source_type="manual")]
     viewer.active_scenario_index = 0
     viewer._is_active_auto_scenario = lambda: False
+    viewer._group_drag_snap_candidate = None
+    viewer.canvas = SimpleNamespace(delete=lambda _tag: None)
     viewer._project_core_group_to_last_drawn(world, group_id)
     return viewer, world, group_id, first, second
 

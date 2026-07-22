@@ -69,7 +69,7 @@ def getManualProjectionElementIds(topologyWorld: TopologyWorld) -> list[str]:
     element_ids: list[str] = []
     for core_group_id in topologyWorld.getLiveGroupIds():
         element_ids.extend(
-            str(element_id)
+            element_id
             for element_id in topologyWorld.getGroupElementIds(core_group_id)
         )
     _validate_element_ids(topologyWorld, element_ids, require_complete=True)
@@ -84,7 +84,7 @@ def buildLastDrawnFromTopology(
     """Construit une nouvelle projection indépendante exclusivement depuis le Core."""
     normalized_ids = _validate_element_ids(
         topologyWorld,
-        list(elementIds) if elementIds is not None else [],
+        elementIds if elementIds is not None else [],
         require_complete=True,
     )
     return [

@@ -1266,7 +1266,7 @@ class TopologyChemins:
     @staticmethod
     def _buildTriplets(pathNodesOrdered: list[str]) -> list[TopologyCheminTriplet]:
         """Construit les triplets combinatoires (pas de 2, couverture complete)."""
-        L = [str(n) for n in list(pathNodesOrdered)]
+        L = pathNodesOrdered
         n = len(L)
         if n < 3:
             raise ValueError("[Chemins] calculerTriplets: pathNodesOrdered < 3")
@@ -2622,8 +2622,8 @@ class TopologyWorld:
             Return a unit direction vector for edgeId, oriented so it starts from refNodeId.
             refNodeId MUST be one of the edge endpoints in the ring (concept node id).
             """
-            a = str(self.find_node(edge.v_start.node_id))
-            b = str(self.find_node(edge.v_end.node_id))
+            a = self.find_node(edge.v_start.node_id)
+            b = self.find_node(edge.v_end.node_id)
 
             if a not in indexRing or b not in indexRing:
                 return None
@@ -2656,10 +2656,10 @@ class TopologyWorld:
 
             eA = self.get_edge(att.feature_a.element_id, att.feature_a.index)
             eB = self.get_edge(att.feature_b.element_id, att.feature_b.index)
-            a0 = self.find_node(str(eA.v_start.node_id))
-            a1 = self.find_node(str(eA.v_end.node_id))
-            b0 = self.find_node(str(eB.v_start.node_id))
-            b1 = self.find_node(str(eB.v_end.node_id))
+            a0 = self.find_node(eA.v_start.node_id)
+            a1 = self.find_node(eA.v_end.node_id)
+            b0 = self.find_node(eB.v_start.node_id)
+            b1 = self.find_node(eB.v_end.node_id)
 
             mapping = str(att.params.get("mapping", "") or "").strip().lower()
             if mapping not in ("direct", "reverse"):
@@ -2697,8 +2697,8 @@ class TopologyWorld:
                 return None
             vA = self.get_vertex(att_vv.feature_a.element_id, att_vv.feature_a.index)
             vB = self.get_vertex(att_vv.feature_b.element_id, att_vv.feature_b.index)
-            nA = self.find_node(str(vA.node_id))
-            nB = self.find_node(str(vB.node_id))
+            nA = self.find_node(vA.node_id)
+            nB = self.find_node(vB.node_id)
             if nA in indexMob and nB in indexDest:
                 J0 = {"mobType": "node", "mobId": str(nA), "destType": "node", "destId": str(nB)}
             elif nB in indexMob and nA in indexDest:
@@ -2740,7 +2740,7 @@ class TopologyWorld:
             edge_dir_mob = _edge_dir_from_ring(edge=edge, ptsRing=ptsMob, indexRing=indexMob, refNodeId=str(J0["mobId"]))
             edge_dir_dest = _edge_dir_from_ring(edge=edge, ptsRing=ptsDest, indexRing=indexDest, refNodeId=str(J0["destId"]))
 
-            v_node = self.find_node(str(self.get_vertex(v_ref.element_id, v_ref.index).node_id))
+            v_node = self.find_node(self.get_vertex(v_ref.element_id, v_ref.index).node_id)
             if edge_dir_mob is not None and ref_node in indexMob:
                 J1 = {"mobType": "edge", "mobId": edge.edge_id(), "mobPt": p_world, "mobDir": edge_dir_mob,
                       "destType": "node", "destId": str(v_node)}
@@ -3327,7 +3327,7 @@ class TopologyWorld:
     def getAnchorForGroup(self, group_id: str) -> TopologyGroupAnchor | None:
         canonical_group_id = str(self.find_group(str(group_id)))
         for anchor in self.groupAnchors.values():
-            if str(anchor.group_id) == canonical_group_id:
+            if anchor.group_id == canonical_group_id:
                 return anchor
         return None
 
@@ -3340,7 +3340,7 @@ class TopologyWorld:
         """Canonise les références d'ancres et retire celles dont le groupe a disparu."""
         live_group_ids = set(self.getLiveGroupIds())
         for anchor_id, anchor in list(self.groupAnchors.items()):
-            canonical_group_id = str(self.find_group(anchor.group_id))
+            canonical_group_id = self.find_group(anchor.group_id)
             if canonical_group_id not in live_group_ids:
                 self.groupAnchors.pop(anchor_id, None)
                 continue
@@ -3435,7 +3435,7 @@ class TopologyWorld:
         if element.element_id is None:
             element.element_id = self.new_element_id()
         else:
-            element_id = str(element.element_id).strip()
+            element_id = element.element_id.strip()
             explicit_sequence = self.parse_element_sequence_from_id(element_id)
             if explicit_sequence is None:
                 raise ValueError(f"TopologyWorld: elementId invalide: {element.element_id}")
@@ -3486,7 +3486,7 @@ class TopologyWorld:
         index = int(vertex_index)
         if index < 0 or index >= len(element.vertexes):
             raise IndexError(f"TopologyWorld: vertex_index invalide pour {key}: {vertex_index}")
-        return str(element.vertexes[index].node_id)
+        return element.vertexes[index].node_id
 
     def get_element_vertex_node_id_by_type(self, element_id: str, node_type: str) -> str:
         """Retourne le node physique du sommet ayant le type metier demande."""
@@ -3511,7 +3511,7 @@ class TopologyWorld:
         index = int(edge_index)
         if index < 0 or index >= len(element.edges):
             raise IndexError(f"TopologyWorld: edge_index invalide pour {key}: {edge_index}")
-        return str(element.edges[index].edge_id())
+        return element.edges[index].edge_id()
 
     def get_group_of_element(self, element_id: str) -> str:
         gid0 = self.element_to_group.get(str(element_id))
@@ -3716,7 +3716,7 @@ class TopologyWorld:
                 R2_raw = A2
 
             R2 = self._closest_rotation(R2_raw)
-            self.setElementPose(str(eid), R=R2, T=T2, mirrored=mirrored2)
+            self.setElementPose(eid, R=R2, T=T2, mirrored=mirrored2)
 
     def flipGroup(self, group_id: str, axisPoint: np.ndarray, axisDir: np.ndarray) -> None:
         """Alias historique de :meth:`flip_group`.
@@ -3864,7 +3864,7 @@ class TopologyWorld:
                 raise ValueError(
                     f"[P2][Attachment] expected VertexRef for {side} got={f.feature_type} id={attachment.attachment_id}"
                 )
-            element = self.elements.get(str(f.element_id))
+            element = self.elements.get(f.element_id)
             if element is None:
                 raise ValueError(
                     f"[P2][Attachment] unknown element elementId={f.element_id} in feature{side} id={attachment.attachment_id}"
@@ -3884,7 +3884,7 @@ class TopologyWorld:
                 )
             eid = f.element_id
             attid = attachment.attachment_id
-            element = self.elements.get(str(eid))
+            element = self.elements.get(eid)
             if element is None:
                 raise ValueError(
                     f"[P2][Attachment] unknown element elementId={eid} in feature{side} id={attid}"
@@ -3920,7 +3920,7 @@ class TopologyWorld:
             raise ValueError(f"[P2][Attachment] vertex-edge missing t id={attachment.attachment_id}")
         try:
             t_val = float(attachment.params.get("t"))
-        except Exception:
+        except (TypeError, ValueError):
             raise ValueError(
                 f"[P2][Attachment] vertex-edge t not float (t={attachment.params.get('t')}) id={attachment.attachment_id}"
             )
@@ -4754,7 +4754,7 @@ class TopologyWorld:
 
     def getPhysicalNodesForConceptNode(self, node_id: str) -> list[str]:
         cn = self.find_node(str(node_id))
-        return list(self.node_members(cn))
+        return self.node_members(cn)
 
     def getNodeTypeAtomic(self, node_id: str) -> str:
         return str(self._node_type[str(node_id)])
@@ -4890,7 +4890,7 @@ class TopologyWorld:
                     try:
                         t0 = float(occ.get("t0", None))
                         t1 = float(occ.get("t1", None))
-                    except Exception:
+                    except (TypeError, ValueError):
                         errors.append(
                             f"[C2][{edge_id}] occ#{k} t0/t1 not float t0={occ.get('t0')} t1={occ.get('t1')}"
                         )

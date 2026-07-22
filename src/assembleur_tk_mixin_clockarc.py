@@ -29,8 +29,8 @@ class TriangleViewerClockArcMixin:
                 self._clock_arc_clear_last()
             self._clock_apply_auto_ref_sync()
             return
-        nodeDsu = str(hit["nodeId"])
-        topoGroupId = str(hit["groupId"])
+        nodeDsu = hit["nodeId"]
+        topoGroupId = hit["groupId"]
 
         # On trouve son Vertex
         ref = world.getElementVertexFromAnyNodeId(hit["nodeId"], groupId=hit["groupId"])
@@ -101,9 +101,9 @@ class TriangleViewerClockArcMixin:
         scen = self._get_active_scenario()
         world = scen.topoWorld
 
-        nodeId = str(snap_tgt["nodeId"])
+        nodeId = snap_tgt["nodeId"]
         gid = world.getGroupIdFromConceptNode(nodeId)
-        node = str(snap_tgt["nodeDsu"])
+        node = snap_tgt["nodeDsu"]
 
         if (prevNodeDsu is None) ^ (nextNodeDsu is None):
             raise RuntimeError("[ClockArc] prevNodeDsu and nextNodeDsu must be provided together")
@@ -115,8 +115,8 @@ class TriangleViewerClockArcMixin:
                 raise RuntimeError(f"[ClockArc] Boundary neighbors not found for node '{node}' in group '{gid}'")
         else:
             # Mode imposé (TreeView triplet)
-            prevNode = str(prevNodeDsu)
-            nextNode = str(nextNodeDsu)
+            prevNode = prevNodeDsu
+            nextNode = nextNodeDsu
 
         # coords monde (concept)
         v_world = np.array(world.getConceptNodeWorldXY(node, gid), dtype=float)

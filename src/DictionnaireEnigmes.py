@@ -33,8 +33,7 @@ def _normalizeWordLocal(w: str) -> str:
     # Suppression des diacritiques (accents)
     s = "".join(c for c in s if unicodedata.category(c) != "Mn")
     # Majuscules
-    s = s.upper()
-    return s
+    return s.upper()
 
 
 class LigneCirculaire:
@@ -324,8 +323,7 @@ class DictionnaireEnigmes:
 
     def getExtendedColumns(self, plageMax=None) -> list[int]:
         p = self.getPlageMax() if plageMax is None else int(plageMax)
-        cols = list(range(-p, 0)) + list(range(1, p+1))
-        return cols
+        return list(range(-p, 0)) + list(range(1, p+1))
 
     def getRowLabelsAbs(self) -> list[int]:
         """

@@ -98,7 +98,7 @@ def build_topology_prefix_steps(world, tri_ids, upto_index: int):
     """
     if world is None:
         return None
-    ordered_ids = [str(triangle_id) for triangle_id in list(tri_ids or [])]
+    ordered_ids = [str(triangle_id) for triangle_id in (tri_ids or [])]
     if upto_index < 0:
         return None
     if upto_index == 0:

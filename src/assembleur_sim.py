@@ -1250,7 +1250,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
 
         # Pour chaque bifurcation survivante, on étiquette UNIQUEMENT le "start" du sous-arbre droit :
         #   #startR = #startL + (triEvenId)
-        for n in list(kept):
+        for n in kept:
             ch = _keptChildren(n)
             if n.branchTriId is None:
                 continue
@@ -1285,11 +1285,10 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             scen.topoScenarioId = topoScenarioId
             scen.orderedElementIds = list(state.orderedElementIds)
 
-            last_drawn = buildLastDrawnFromTopology(
+            scen.last_drawn = buildLastDrawnFromTopology(
                 topologyWorld=topoWorld_leaf,
                 elementIds=state.orderedElementIds,
             )
-            scen.last_drawn = last_drawn
 
             out.append(scen)
 

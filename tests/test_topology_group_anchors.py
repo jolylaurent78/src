@@ -174,3 +174,12 @@ def test_apply_group_rigid_transform_allowed_after_anchor_removal() -> None:
 
     _rotation, translation, _mirrored = world.getElementPose("T01")
     assert translation == pytest.approx((3.0, -2.0))
+
+
+def test_group_anchor_is_removed_when_its_group_is_deleted() -> None:
+    world, first_group, _second_group = _world_with_two_groups()
+    anchor = world.createGroupAnchor(first_group, "BAL-Bourges", _node_id(world))
+
+    world.removeElementsAndRebuild(["T01"])
+
+    assert anchor.anchor_id not in world.groupAnchors
