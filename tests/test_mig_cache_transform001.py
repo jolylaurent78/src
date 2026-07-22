@@ -139,7 +139,7 @@ def test_free_move_release_does_not_trigger_reverse_sync():
     viewer._bg_moving = None
     viewer._pan_anchor = None
     viewer._drag = None
-    viewer.auto_geom_state = None
+    viewer.auto_rotation_state = None
     viewer._clear_edge_highlights = lambda: None
     viewer._reset_assist = lambda: None
     viewer._redraw_from = lambda _entries: None
@@ -148,16 +148,3 @@ def test_free_move_release_does_not_trigger_reverse_sync():
     viewer._on_canvas_left_up(SimpleNamespace(x=0.0, y=0.0))
 
     assert viewer._sel is None
-
-
-def test_automatic_move_commit_uses_the_shared_core_first_path():
-    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
-    viewer.auto_geom_state = {"ox": 10.0, "oy": -4.0, "thetaDeg": 0.0}
-    viewer.scenarios = []
-    viewer._is_active_auto_scenario = lambda: True
-    viewer._get_active_scenario = lambda: SimpleNamespace(source_type="auto")
-
-    viewer._move_group_world("G-AUTO", 2.5, -3.0)
-
-    assert viewer.auto_geom_state["ox"] == 12.5
-    assert viewer.auto_geom_state["oy"] == -7.0

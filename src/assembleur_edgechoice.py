@@ -101,8 +101,8 @@ class EdgeChoiceEpts:
         edge_code_to_index = {"OB": 0, "BL": 1, "LO": 2}
         vkey_to_index = {"O": 0, "B": 1, "L": 2}
         incident_edges = {
-            str(elementIdSrc): str(self.src_edge).upper(),
-            str(elementIdDst): str(self.dst_edge).upper(),
+            elementIdSrc: self.src_edge.upper(),
+            elementIdDst: self.dst_edge.upper(),
         }
 
         kind = str(self.kind or "").strip().lower()
@@ -112,8 +112,8 @@ class EdgeChoiceEpts:
         atts: list[TopologyAttachment] = []
 
         if kind == "edge-edge":
-            em = edge_code_to_index[str(self.src_edge).upper()]
-            et = edge_code_to_index[str(self.dst_edge).upper()]
+            em = edge_code_to_index[self.src_edge.upper()]
+            et = edge_code_to_index[self.dst_edge.upper()]
             if (self.src_vkey_at_mA == self.dst_vkey_at_tA) and (self.src_vkey_at_mB == self.dst_vkey_at_tB):
                 mapping = "direct"
             elif (self.src_vkey_at_mA == self.dst_vkey_at_tB) and (self.src_vkey_at_mB == self.dst_vkey_at_tA):
@@ -148,8 +148,8 @@ class EdgeChoiceEpts:
         vmA = vkey_to_index[self.src_vkey_at_mA]
         vtA = vkey_to_index[self.dst_vkey_at_tA]
         vtB = vkey_to_index[self.dst_vkey_at_tB]
-        et_dst = edge_code_to_index[str(self.dst_edge).upper()]
-        et_src = edge_code_to_index[str(self.src_edge).upper()]
+        et_dst = edge_code_to_index[self.dst_edge.upper()]
+        et_src = edge_code_to_index[self.src_edge.upper()]
 
         if t_raw < 0.0:
             if debug:
@@ -256,7 +256,7 @@ def _edge_labels_for(owner_tid: int, edge_code: str, last_drawn):
         return None
     la = labels[ia] if ia < len(labels) else ""
     lb = labels[ib] if ib < len(labels) else ""
-    return (str(la).strip(), str(lb).strip())
+    return (la.strip(), lb.strip())
 
 
 def _find_owner_edge_for_segment(group_tids, A, B, eps_world, last_drawn):
@@ -408,10 +408,9 @@ def buildEdgeChoiceEptsFromBest(
 
     # On récupère le noeud équivalent dans le bon référentiel de triangle
     def getEquivalentNodeInElement(world, nodeIdSrc: str, elementId: str) -> str | None:
-        elementId = str(elementId)
         for nid in world.node_members(nodeIdSrc):
-            eid, _vidx = world._parseElementAndVertexIndexFromNodeId(nid)
-            if str(eid) == elementId:
+            eid, _ = world._parseElementAndVertexIndexFromNodeId(nid)
+            if eid == elementId:
                 return nid
         return None
     mAId = getEquivalentNodeInElement(world, mATmpId, elementIdSrc)
@@ -597,8 +596,8 @@ def buildEdgeChoiceEptsForAutoChain(
     el_src = world.elements[elementIdSrc]
     el_dst = world.elements[elementIdDst]
 
-    i_src = edge_code_to_index[str(src_edge).upper()]
-    i_dst = edge_code_to_index[str(dst_edge).upper()]
+    i_src = edge_code_to_index[src_edge.upper()]
+    i_dst = edge_code_to_index[dst_edge.upper()]
 
     L_src = float(el_src.edge_lengths_km[i_src])
     L_dst = float(el_dst.edge_lengths_km[i_dst])
@@ -622,15 +621,15 @@ def buildEdgeChoiceEptsForAutoChain(
 
     meta = {
         "kind": kind,
-        "src_edge": str(src_edge),
-        "dst_edge": str(dst_edge),
-        "src_owner_tid": int(src_owner_tid),
-        "dst_owner_tid": int(dst_owner_tid),
-        "src_vkey_at_mA": str(src_vkey),
-        "src_vkey_at_mB": str(mB_v),
-        "dst_vkey_at_tA": str(dst_vkey),
-        "dst_vkey_at_tB": str(tB_v),
-        "tRaw": float(t_raw),
+        "src_edge": src_edge,
+        "dst_edge": dst_edge,
+        "src_owner_tid": src_owner_tid,
+        "dst_owner_tid": dst_owner_tid,
+        "src_vkey_at_mA": src_vkey,
+        "src_vkey_at_mB": mB_v,
+        "dst_vkey_at_tA": dst_vkey,
+        "dst_vkey_at_tB": tB_v,
+        "tRaw": t_raw,
     }
 
     return (epts, meta) if debug else (epts, meta)

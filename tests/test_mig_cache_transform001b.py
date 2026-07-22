@@ -74,7 +74,7 @@ def _prepare_manual_move(viewer, world, group_id, start=(0.0, 0.0)):
     viewer._bg_moving = None
     viewer._clock_dragging = False
     viewer._pan_anchor = None
-    viewer.auto_geom_state = None
+    viewer.auto_rotation_state = None
 
 
 def test_manual_move_preview_does_not_modify_core():

@@ -28,6 +28,40 @@ from src.assembleur_projection import buildLastDrawnFromTopology
 EPS_WORLD = 1e-6
 
 
+@dataclass(frozen=True)
+class InitialTriangleOrientation:
+    """Stratégie d'orientation du premier triangle d'une simulation.
+
+    Cette valeur ne transporte aucune référence UI : le moteur reçoit soit la
+    convention historique d'une arête au Nord, soit un angle Core à atteindre.
+    """
+    mode: str
+    edge: Optional[str] = None
+    reference_element_id: Optional[str] = None
+    reference_tri_rank: Optional[int] = None
+    target_theta_rad: Optional[float] = None
+
+    @classmethod
+    def edge_north(cls, edge: str) -> "InitialTriangleOrientation":
+        normalized_edge = edge.upper().strip()
+        if normalized_edge not in ("OL", "BL"):
+            raise ValueError(f"InitialTriangleOrientation: arête invalide {edge!r}")
+        return cls(mode="edge_north", edge=normalized_edge)
+
+    @classmethod
+    def reference(
+        cls, element_id: str, tri_rank: int, theta_rad: float
+    ) -> "InitialTriangleOrientation":
+        if not element_id:
+            raise ValueError("InitialTriangleOrientation: element de référence absent")
+        return cls(
+            mode="reference",
+            reference_element_id=element_id,
+            reference_tri_rank=int(tri_rank),
+            target_theta_rad=float(theta_rad),
+        )
+
+
 @dataclass(eq=False)
 class _BranchNode:
     parent: Optional["_BranchNode"]
@@ -376,7 +410,7 @@ def createTopoQuadrilateral(
         world.add_element_as_new_group(el)
         if not el.element_id:
             raise RuntimeError("createTopoQuadrilateral: le Core n'a pas attribue d'elementId")
-        return str(el.element_id)
+        return el.element_id
 
     world.beginTopoTransaction()
     try:
@@ -458,7 +492,7 @@ def createTopoQuadrilateral(
     # --- 7) Groupe topo résultant (odd/even doivent maintenant être dans le même groupe) ---
     topoGroupId = world.get_group_of_element(elementIdOdd)
 
-    return (str(topoGroupId), str(elementIdOdd), str(elementIdEven), str(src_edge), str(dst_edge))
+    return (topoGroupId, elementIdOdd, elementIdEven, src_edge, dst_edge)
 
 
 def setElementPoseFromWorldPts(
@@ -468,7 +502,7 @@ def setElementPoseFromWorldPts(
     mirrored: bool = False,
 ) -> None:
     eps = 1e-12
-    if world is None or str(elementId) not in world.elements:
+    if world is None or elementId not in world.elements:
         raise ValueError(f"setElementPoseFromWorldPts: elementId inconnu: {elementId}")
     if not isinstance(Pw, dict):
         raise ValueError("setElementPoseFromWorldPts: Pw invalide")
@@ -476,7 +510,7 @@ def setElementPoseFromWorldPts(
         if k not in Pw:
             raise ValueError("setElementPoseFromWorldPts: Pw incomplet")
 
-    el = world.elements[str(elementId)]
+    el = world.elements[elementId]
     pO = np.array(el.vertex_local_xy.get(0, (0.0, 0.0)), dtype=float)
     pB = np.array(el.vertex_local_xy.get(1, (0.0, 0.0)), dtype=float)
     pL = np.array(el.vertex_local_xy.get(2, (0.0, 0.0)), dtype=float)
@@ -509,7 +543,7 @@ def setElementPoseFromWorldPts(
         R = (Vt.T @ U.T)
     T = Y.mean(axis=0) - (R @ X.mean(axis=0))
 
-    world.setElementPose(str(elementId), R=R, T=T, mirrored=bool(mirrored))
+    world.setElementPose(elementId, R=R, T=T, mirrored=bool(mirrored))
 
 
 class AlgoQuadrisParPaires(AlgorithmeAssemblage):
@@ -552,7 +586,20 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
         # ---- 1) Orientation : OL ou BL au Nord (+Y) pour le 1er triangle
         P1 = {k: np.array(t1["pts"][k], dtype=float) for k in ("O", "B", "L")}
 
-        edge = str(getattr(engine, "firstTriangleEdge", "OL") or "OL").upper().strip()
+        initial_orientation = getattr(engine, "initialTriangleOrientation", None)
+        if initial_orientation is None:
+            initial_orientation = InitialTriangleOrientation.edge_north(
+                str(getattr(engine, "firstTriangleEdge", "OL") or "OL")
+            )
+        if initial_orientation.mode not in ("edge_north", "reference"):
+            raise ValueError(
+                f"Simulation: mode d'orientation initiale invalide {initial_orientation.mode!r}"
+            )
+        edge = (
+            initial_orientation.edge
+            if initial_orientation.mode == "edge_north"
+            else "OL"
+        )
         src = "B" if edge == "BL" else "O"
 
         vOL = P1["L"] - P1[src]
@@ -612,7 +659,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             entry: PlacedTriangle,
             element_id: str,
         ) -> str:
-            elem_id = str(element_id or "").strip()
+            elem_id = (element_id or "").strip()
             if not elem_id:
                 raise ValueError("Simulation: topoElementId Core absent")
             entry.topologyElementId = elem_id
@@ -656,7 +703,44 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 entryEven=entryEven,
             )
 
-            return topoGroupId, [str(elementIdOdd), str(elementIdEven)]
+            return topoGroupId, [elementIdOdd, elementIdEven]
+
+        def _apply_reference_initial_orientation(
+            world: TopologyWorld,
+            ordered_element_ids: list[str],
+            placed_triangles: PlacedTriangles,
+        ) -> None:
+            if initial_orientation.mode != "reference":
+                return
+            first_element_id = ordered_element_ids[0]
+            first_group_id = world.get_group_of_element(first_element_id)
+            first_l_node_id = world.get_element_vertex_node_id_by_type(
+                first_element_id, "L"
+            )
+            pivot_world = np.asarray(
+                world.getConceptNodeWorldXY(first_l_node_id, first_group_id), dtype=float
+            )
+            R_current, _T_current, mirrored_current = world.getElementPose(first_element_id)
+            current_theta = math.atan2(float(R_current[1, 0]), float(R_current[0, 0]))
+            target_theta = initial_orientation.target_theta_rad
+            if target_theta is None:
+                raise RuntimeError("Simulation: angle de référence absent")
+            dtheta = math.atan2(
+                math.sin(float(target_theta) - current_theta),
+                math.cos(float(target_theta) - current_theta),
+            )
+            world.rotate_group(first_group_id, pivot_world, dtheta)
+            _R_final, _T_final, mirrored_final = world.getElementPose(first_element_id)
+            if mirrored_final != mirrored_current:
+                raise RuntimeError("Simulation: l'orientation de référence a modifié mirrored")
+            projected_by_element_id = {
+                entry["topoElementId"]: entry["pts"]
+                for entry in buildLastDrawnFromTopology(
+                    topologyWorld=world, elementIds=ordered_element_ids
+                )
+            }
+            for placed_triangle in placed_triangles:
+                placed_triangle.points = projected_by_element_id[placed_triangle.topologyElementId]
 
         def _orient2d(a, b, c) -> float:
             return (b[0]-a[0])*(c[1]-a[1]) - (b[1]-a[1])*(c[0]-a[0])
@@ -774,6 +858,9 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                     P1_world=P1,
                     P2_world=P2,
                     base_placed_triangles=placed_triangles,
+                )
+                _apply_reference_initial_orientation(
+                    topoWorld_scen, ordered_element_ids, placed_triangles
                 )
                 scen.topoWorld = topoWorld_scen
                 scen.orderedElementIds = list(ordered_element_ids)
@@ -893,6 +980,14 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             base_placed_triangles=base_placed_triangles,
         )
 
+        if initial_orientation.mode == "reference":
+            _apply_reference_initial_orientation(
+                topoWorld0, base_ordered_element_ids, base_placed_triangles
+            )
+            poly_occ0 = _group_shape_from_nodes(
+                [{"tid": 0}, {"tid": 1}], base_placed_triangles.toLegacyList()
+            )
+
         rootNode = _BranchNode(parent=None, children=[], branchTriId=None)
 
         # État de recherche : liste de branches (scénarios partiels)
@@ -977,8 +1072,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                     )
                     ordered_element_ids_base = [
                         *ordered_element_ids_prev,
-                        str(element_id_odd),
-                        str(element_id_even),
+                        element_id_odd,
+                        element_id_even,
                     ]
                     mobile_base_entry = placed_triangles_base.findByTopologyElementId(element_id_odd)
                     if mobile_base_entry is None:
@@ -1144,7 +1239,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                     if _elem_id and _tri_id and _pts_local is not None:
                                         _ensure_element_from_local(
                                             world=topo_new,
-                                            element_id=str(_elem_id),
+                                            element_id=_elem_id,
                                             tri_id=int(_tri_id),
                                             pts_local={k: np.array(_pts_local[k], dtype=float) for k in ("O", "B", "L")},
                                             labels=_info.get("labels"),
@@ -1154,7 +1249,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                         # Pose from world points in simulation uses non-mirrored fit.
                                         setElementPoseFromWorldPts(
                                             topo_new,
-                                            str(_elem_id),
+                                            _elem_id,
                                             _info.get("pts_world"),
                                             mirrored=False,
                                         )
@@ -1308,6 +1403,7 @@ class MoteurSimulationAssemblage:
     def __init__(self, viewer: "TriangleViewerManual"):
         self.viewer = viewer
         self.firstTriangleEdge = "OL"
+        self.initialTriangleOrientation: InitialTriangleOrientation | None = None
         # --- DEBUG (instrumentation minimaliste, sans console spam) ---
         # Rempli par les algos si un run() échoue et retourne [].
         self.debug_last: Dict | None = None
@@ -1360,7 +1456,7 @@ class MoteurSimulationAssemblage:
             }
 
         return {
-            "labels": ("Bourges", str(r["B"]), str(r["L"])),  # (O,B,L) labels
+            "labels": ("Bourges", r["B"], r["L"]),  # (O,B,L) labels
             "id": int(tri_id),
             "mirrored": False,
             "orient": ori,

@@ -159,7 +159,7 @@ def test_automatic_rotate_motion_is_preview_only():
         }},
     ])
     viewer._last_drawn = viewer.canvas_objects.entries
-    viewer.auto_geom_state = {"ox": 0.0, "oy": 0.0, "thetaDeg": 10.0}
+    viewer.auto_rotation_state = {"thetaDeg": 10.0}
     viewer._sel = {
         "mode": "rotate_group", "auto_geom": True, "pivot": np.array((0.0, 0.0)),
         "start_angle": 0.0,
@@ -171,6 +171,6 @@ def test_automatic_rotate_motion_is_preview_only():
 
     viewer._on_canvas_motion_update_drag(SimpleNamespace(x=0.0, y=-1.0))
 
-    np.testing.assert_allclose(viewer.auto_geom_state["thetaDeg"], 10.0)
+    np.testing.assert_allclose(viewer.auto_rotation_state["thetaDeg"], 10.0)
     np.testing.assert_allclose(viewer._last_drawn[0]["pts"]["O"], (0.0, 1.0), atol=1e-12)
     assert calls == ["redraw"]

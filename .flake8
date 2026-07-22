@@ -1,3 +1,11 @@
 [flake8]
 max-line-length = 140
 extend-ignore = E203,W503,E741
+exclude =
+    .git,
+    __pycache__,
+    .venv,
+    venv,
+    .vscode,
+    .mypy_cache,
+    .pytest_cache

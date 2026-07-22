@@ -124,7 +124,7 @@ class TriangleViewerBackgroundMapMixin:
         self.canvas.configure(cursor="crosshair")
 
     def _bg_calibrate_cancel(self):
-        if not getattr(self, "_bg_calib_active", False):
+        if not self._bg_calib_active:
             return
         self._bg_calib_active = False
         self._bg_calib_points_cfg = None
@@ -135,13 +135,13 @@ class TriangleViewerBackgroundMapMixin:
 
     def _bg_calibrate_handle_click(self, event):
         """Enregistre un clic de calibration (en coordonnées monde)."""
-        if not getattr(self, "_bg_calib_active", False):
+        if not self._bg_calib_active:
             return "continue"
 
         # Pendant la calibration, on veut pouvoir pan/zoom pour viser précisément.
         # On valide donc un point UNIQUEMENT sur CTRL+clic.
         # Sans CTRL, le clic gauche redevient un "pan start".
-        if not getattr(self, "_ctrl_down", False):
+        if not self._ctrl_down:
             self._on_pan_start(event)
             return "break"
 

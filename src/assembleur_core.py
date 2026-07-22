@@ -97,7 +97,7 @@ class TriangleCatalog:
             if not isinstance(model, TriangleModel):
                 raise TypeError("TriangleCatalog: TriangleModel attendu")
             rank = int(model.rank)
-            model_id = str(model.model_id).strip()
+            model_id = model.model_id.strip()
             if rank in by_rank:
                 raise ValueError(f"TriangleCatalog: rank duplique: {rank}")
             if not model_id or model_id in by_model_id:
@@ -188,7 +188,7 @@ class ScenarioTriangleSet:
 
     def __init__(self, model_id_by_rank: Optional[Dict[int, str]] = None):
         self._model_id_by_rank = {
-            int(rank): str(model_id)
+            int(rank): model_id
             for rank, model_id in (model_id_by_rank or {}).items()
         }
 
@@ -247,7 +247,7 @@ class ScenarioAssemblage:
             (int(self.tri_ids[0]) if self.tri_ids else None)
         )
         self.traversal_direction: Optional[str] = (
-            str(traversal_direction).lower() if traversal_direction else None
+            traversal_direction.lower() if traversal_direction else None
         )
         # Chronologie de construction des éléments du scénario automatique.
         # Cette information ne décrit ni la topologie ni la projection graphique.
@@ -369,9 +369,9 @@ class TopologyFeatureRef:
     - Utilisée comme brique de base pour les attachments et l’export TopoDump.
     """
     def __init__(self, feature_type: str, element_id: str, index: int, t: float | None = None):
-        self.feature_type = str(feature_type)
-        self.element_id = str(element_id)
-        self.index = int(index)
+        self.feature_type = feature_type
+        self.element_id = element_id
+        self.index = index
         self.t = float(t) if t is not None else None
 
     def to_string(self) -> str:
@@ -400,12 +400,12 @@ class TopologyAttachment:
     def __init__(self, attachment_id: str | None, kind: str,
                  feature_a: TopologyFeatureRef, feature_b: TopologyFeatureRef,
                  params: dict | None = None, source: str = "manual"):
-        self.attachment_id = None if attachment_id is None else str(attachment_id)
-        self.kind = str(kind)
+        self.attachment_id = None if attachment_id is None else attachment_id
+        self.kind = kind
         self.feature_a = feature_a
         self.feature_b = feature_b
-        self.params = dict(params) if params is not None else {}
-        self.source = str(source)
+        self.params = params if params is not None else {}
+        self.source = source
 
 
 class TopologyVertex:
@@ -424,11 +424,11 @@ class TopologyVertex:
     - Les unions (DSU) opèrent au niveau TopologyWorld via node_id (atomique) -> node canonique.
     """
     def __init__(self, element_id: str, vertex_index: int, label: str, node_id: str, node_type: str):
-        self.element_id = str(element_id)
+        self.element_id = element_id
         self.vertex_index = int(vertex_index)
-        self.label = str(label)
-        self.node_id = str(node_id)
-        self.node_type = str(node_type)
+        self.label = label
+        self.node_id = node_id
+        self.node_type = node_type
 
 
 class TopologyCoverageInterval:
@@ -470,8 +470,8 @@ class TopologyEdge:
     """
     def __init__(self, element_id: str, edge_index: int, v_start: TopologyVertex, v_end: TopologyVertex,
                  edge_length_km: float):
-        self.element_id = str(element_id)
-        self.edge_index = int(edge_index)
+        self.element_id = element_id
+        self.edge_index = edge_index
         self.v_start = v_start
         self.v_end = v_end
         self.edge_length_km = float(edge_length_km)
@@ -598,8 +598,8 @@ class TopologyElement:
                  element_id: str | None = None):
         # L'identifiant d'instance est attribue par TopologyWorld lors de
         # l'insertion normale. Les imports/restaurations peuvent le fournir.
-        self.element_id = None if element_id is None else str(element_id)
-        self.name = str(name)
+        self.element_id = None if element_id is None else element_id
+        self.name = name
         self.meta = dict(meta) if meta is not None else {}
 
         if len(vertex_labels) < 3:
@@ -609,9 +609,9 @@ class TopologyElement:
         if len(edge_lengths_km) != len(vertex_labels):
             raise ValueError("TopologyElement: edge_lengths_km doit avoir la même taille que les sommets")
 
-        self.vertex_labels = [str(x) for x in vertex_labels]
-        self.vertex_types = [str(x) for x in vertex_types]
-        self.edge_lengths_km = [float(x) for x in edge_lengths_km]
+        self.vertex_labels = [x for x in vertex_labels]
+        self.vertex_types = [x for x in vertex_types]
+        self.edge_lengths_km = [x for x in edge_lengths_km]
 
         self.intrinsic_sides_km: dict[str, float] = dict(intrinsic_sides_km) if intrinsic_sides_km is not None else {}
 
@@ -675,7 +675,7 @@ class TopologyElement:
         value = self.meta.get("modelId")
         if value is None:
             return None
-        model_id = str(value).strip()
+        model_id = value.strip()
         return model_id or None
 
     def localToWorld(self, p_local: np.ndarray | tuple[float, float]) -> np.ndarray:
@@ -730,7 +730,7 @@ class TopologyElement:
 
         # Convention import historique : si orient == "CW", miroir par rapport à l'axe X local.
         # (équivalent à P["L"][1] *= -1 dans l'ancien code Tk)
-        orient = str(self.meta.get("orient", "")).strip().upper()
+        orient = self.meta.get("orient", "").strip().upper()
         if orient == "CW":
             P["L"][1] = -float(P["L"][1])
 
@@ -760,7 +760,7 @@ class TopologyGroup:
     - Structure légère : l’objectif est d’avoir un conteneur stable pour l’export TopoDump.
     """
     def __init__(self, group_id: str):
-        self.group_id = str(group_id)
+        self.group_id = group_id
         self.element_ids: list[str] = []
         self.attachment_ids: list[str] = []
 
@@ -888,7 +888,7 @@ class TopologyBoundaries:
            Si l’orientation mesurée ne correspond pas à celle demandée, inverse le cycle.
         """
         orient = TopologyChemins._normalizeOrientation(orientation)
-        gid = world.find_group(str(gid))
+        gid = world.find_group(gid)
         c = world.ensureConceptGeom(gid)
 
         neighbors: dict[str, set[str]] = {}
@@ -1112,9 +1112,9 @@ class TopologyCheminTriplet:
 
     def __init__(self, nodeA: str, nodeO: str, nodeB: str) -> None:
         """Construit un triplet combinatoire avec geometrie invalide par defaut."""
-        self.nodeA = str(nodeA)
-        self.nodeO = str(nodeO)
-        self.nodeB = str(nodeB)
+        self.nodeA = nodeA
+        self.nodeO = nodeO
+        self.nodeB = nodeB
         if len({self.nodeA, self.nodeO, self.nodeB}) != 3:
             raise ValueError("[Chemins] triplet invalide: nodes non distincts")
 
@@ -1139,9 +1139,9 @@ class TopologyCheminTriplet:
             axe 0° = (O -> beaconId)
         """
         # Balise de référence utilisée par le Core pour définir l'axe 0°
-        gid = str(groupId)
+        gid = groupId
         orient = TopologyChemins._normalizeOrientation(orientationUser)
-        beacon_id = str(beaconId or "").strip()
+        beacon_id = beaconId.strip()
         if not beacon_id:
             raise ValueError("[Chemins][Triplet] beacon_id invalide (vide)")
         if not world.hasBeacon(beacon_id):
@@ -1156,8 +1156,8 @@ class TopologyCheminTriplet:
         xR, yR = world.getBeaconWorldXY(beacon_id)
 
         # Axe de référence = O -> R
-        dxOR = float(xR - xO)
-        dyOR = float(yR - yO)
+        dxOR = xR - xO
+        dyOR = yR - yO
         azAxis = world.azimutDegFromDxDy(dxOR, dyOR)
 
         # NOTE (debug / cohérence avec ton point 4) :
@@ -1254,7 +1254,7 @@ class TopologyChemins:
 
         # Invariant spec: filtrage dans l'ordre snapshot, puis inversion eventuelle.
         filtered = [
-            str(borderSnapshotNodes[i])
+            borderSnapshotNodes[i]
             for i in range(len(borderSnapshotNodes))
             if bool(selectionMask[i])
         ]
@@ -1309,11 +1309,11 @@ class TopologyChemins:
             raise RuntimeError("[Chemins] invariant brise: selectionMask doit etre booleen")
         if len(self.pathNodesOrdered) < 3:
             raise RuntimeError("[Chemins] invariant brise: pathNodesOrdered trop court")
-        boundary_orientation = self._world.getBoundaryOrientation(str(self.groupId))
+        boundary_orientation = self._world.getBoundaryOrientation(self.groupId)
         expected_path = self._buildPathNodesOrdered(
             self.borderSnapshotNodes,
             self.selectionMask,
-            str(self.orientationUser),
+            self.orientationUser,
             boundary_orientation,
         )
         if self.pathNodesOrdered != expected_path:
@@ -1335,8 +1335,8 @@ class TopologyChemins:
     def creerDepuisGroupe(self, groupId: str, startNodeId: str, orientationUser: str, beaconId: str) -> None:
         """Cree un chemin depuis un groupe + start node + orientation utilisateur."""
         orient = self._normalizeOrientation(orientationUser)
-        gid = self._world.find_group(str(groupId))
-        start = self._world.find_node(str(startNodeId))
+        gid = self._world.find_group(groupId)
+        start = self._world.find_node(startNodeId)
 
         self._world.computeBoundary(gid)
         cycle = self._world.getBoundaryCycle(gid, start)
@@ -1344,7 +1344,7 @@ class TopologyChemins:
             raise ValueError("[Chemins] boundary invalide: moins de 3 nodes")
 
         # Construction en local puis commit final: aucun rollback try/except requis.
-        snapshotLocal = [str(n) for n in cycle]
+        snapshotLocal = list(cycle)
         maskLocal = [True] * len(snapshotLocal)
         boundary_orientation = self._world.getBoundaryOrientation(gid)
         pathLocal = self._buildPathNodesOrdered(snapshotLocal, maskLocal, orient, boundary_orientation)
@@ -1374,13 +1374,13 @@ class TopologyChemins:
 
         # Snapshot immuable en edition: seul le mask et le sens utilisateur changent.
         snapshotLocal = list(self.borderSnapshotNodes)
-        boundary_orientation = self._world.getBoundaryOrientation(str(self.groupId))
+        boundary_orientation = self._world.getBoundaryOrientation(self.groupId)
         pathLocal = self._buildPathNodesOrdered(snapshotLocal, mask, orient, boundary_orientation)
         if len(pathLocal) < 3:
             raise ValueError("[Chemins] edition invalide: moins de 3 nodes selectionnes")
         tripletsLocal = self._buildTriplets(pathLocal)
         for t in tripletsLocal:
-            t.calculerGeometrie(self._world, str(self.groupId), orient, beaconId)
+            t.calculerGeometrie(self._world, self.groupId, orient, beaconId)
 
         self.orientationUser = orient
         self.selectionMask = mask
@@ -1391,11 +1391,11 @@ class TopologyChemins:
     def calculerPathNodesOrdered(self) -> None:
         """Recalcule pathNodesOrdered depuis snapshot/mask/orientationUser."""
         self._requireDefined()
-        boundary_orientation = self._world.getBoundaryOrientation(str(self.groupId))
+        boundary_orientation = self._world.getBoundaryOrientation(self.groupId)
         self.pathNodesOrdered = self._buildPathNodesOrdered(
             self.borderSnapshotNodes,
             self.selectionMask,
-            str(self.orientationUser),
+            self.orientationUser,
             boundary_orientation,
         )
 
@@ -1407,9 +1407,11 @@ class TopologyChemins:
     def calculerGeometrieTriplets(self, beaconId: str) -> None:
         """Met a jour la geometrie de tous les triplets sans changer la combinatoire."""
         self._requireDefined()
-        gid = str(self.groupId)
+        assert self.groupId is not None
+        assert self.orientationUser is not None
+        gid = self.groupId
         for t in self.triplets:
-            t.calculerGeometrie(self._world, gid, str(self.orientationUser), beaconId)
+            t.calculerGeometrie(self._world, gid, self.orientationUser, beaconId)
 
     def exportXlsx(self, filePath: str, columns: list[dict], scenarioName: str) -> None:
         """
@@ -1425,7 +1427,7 @@ class TopologyChemins:
         """
         self._requireDefined()
 
-        target_path = str(filePath).strip()
+        target_path = filePath.strip()
         if not target_path:
             raise ValueError("[CheminsExportXlsx] filePath vide")
         if not target_path.lower().endswith(".xlsx"):
@@ -1476,7 +1478,7 @@ class TopologyChemins:
                 raise ValueError(f"[CheminsExportXlsx] key inconnue: {key}")
 
             expected = value_specs_by_key[key]
-            expected_kind = str(expected["kind"])
+            expected_kind = expected["kind"]
             if kind != expected_kind:
                 raise ValueError(
                     f"[CheminsExportXlsx] kind incoherent pour {key}: attendu={expected_kind}, recu={kind}"
@@ -1486,7 +1488,7 @@ class TopologyChemins:
                 "key": key,
                 "label": label,
                 "kind": kind,
-                "attr": str(expected["attr"]),
+                "attr": expected["attr"],
             })
 
         _ = str(scenarioName or "")
@@ -1497,7 +1499,7 @@ class TopologyChemins:
         bold_font = Font(bold=True)
 
         for col_idx, col in enumerate(resolved_columns, start=1):
-            header_cell = ws.cell(row=1, column=col_idx, value=str(col["label"]))
+            header_cell = ws.cell(row=1, column=col_idx, value=col["label"])
             header_cell.font = bold_font
 
         for row_idx, t in enumerate(self.triplets, start=2):
@@ -1546,13 +1548,13 @@ class TopologyChemins:
 
         self._assertDefinedInvariants()
 
-        chemins_el.set("groupId", str(self.groupId))
-        chemins_el.set("startNodeId", str(self.startNodeId))
-        chemins_el.set("orientationUser", str(self.orientationUser))
+        chemins_el.set("groupId", self.groupId)
+        chemins_el.set("startNodeId", self.startNodeId)
+        chemins_el.set("orientationUser", self.orientationUser)
 
         border_el = _ET.SubElement(chemins_el, "borderSnapshot")
         for nid in self.borderSnapshotNodes:
-            _ET.SubElement(border_el, "n", {"id": str(nid)})
+            _ET.SubElement(border_el, "n", {"id": nid})
 
         mask_el = _ET.SubElement(chemins_el, "selectionMask")
         for selected in self.selectionMask:
@@ -1560,7 +1562,7 @@ class TopologyChemins:
 
         path_el = _ET.SubElement(chemins_el, "pathNodesOrdered")
         for nid in self.pathNodesOrdered:
-            _ET.SubElement(path_el, "n", {"id": str(nid)})
+            _ET.SubElement(path_el, "n", {"id": nid})
 
         triplets_el = _ET.SubElement(chemins_el, "triplets")
         for t in self.triplets:
@@ -1569,9 +1571,9 @@ class TopologyChemins:
                     f"[CheminsSave] triplet sans geometrie valide: ({t.nodeA},{t.nodeO},{t.nodeB})"
                 )
             _ET.SubElement(triplets_el, "t", {
-                "a": str(t.nodeA),
-                "o": str(t.nodeO),
-                "b": str(t.nodeB),
+                "a": t.nodeA,
+                "o": t.nodeO,
+                "b": t.nodeB,
                 "azOA": self._world._format_chemin_angle(t.azOA),
                 "azOB": self._world._format_chemin_angle(t.azOB),
                 "distOA_km": self._world._format_chemin_distance(t.distOA_km),
@@ -1686,10 +1688,10 @@ class TopologyChemins:
 
         oldSnapshot = list(self.borderSnapshotNodes)
         oldMask = [bool(v) for v in list(self.selectionMask)]
-        oldStart = str(self.startNodeId)
-        oldOrient = self._normalizeOrientation(str(self.orientationUser))
+        oldStart = self.startNodeId
+        oldOrient = self._normalizeOrientation(self.orientationUser)
 
-        gid = str(self.groupId)
+        gid = self.groupId
         self._world.computeBoundary(gid)
         try:
             newCycle = self._world.getBoundaryCycle(gid, oldStart)
@@ -1697,8 +1699,8 @@ class TopologyChemins:
             raise ValueError("[Chemins] recalcul invalide: startNodeId absent du nouveau contour") from e
         if len(newCycle) < 3:
             raise ValueError("[Chemins] recalcul invalide: boundary < 3 nodes")
-        oldStartCanon = str(self._world.find_node(oldStart))
-        newCycleCanon = {str(self._world.find_node(str(n))) for n in newCycle}
+        oldStartCanon = self._world.find_node(oldStart)
+        newCycleCanon = {self._world.find_node(str(n)) for n in newCycle}
         if oldStartCanon not in newCycleCanon:
             raise ValueError("[Chemins] recalcul invalide: startNodeId absent du nouveau contour")
 
@@ -1708,11 +1710,11 @@ class TopologyChemins:
         oldMaskFalseByCanonicalNode: set[str] = set()
         for i, nodeId in enumerate(oldSnapshot):
             if not bool(oldMask[i]):
-                oldMaskFalseByCanonicalNode.add(str(self._world.find_node(str(nodeId))))
+                oldMaskFalseByCanonicalNode.add(self._world.find_node(str(nodeId)))
 
         newMask: list[bool] = []
         for nodeId in newSnapshot:
-            canonNodeId = str(self._world.find_node(str(nodeId)))
+            canonNodeId = self._world.find_node(nodeId)
             newMask.append(canonNodeId not in oldMaskFalseByCanonicalNode)
 
         if sum(1 for v in newMask if bool(v)) < 3:
@@ -1765,7 +1767,8 @@ class TopologyChemins:
     def getTripletSegmentsWorld(self, i: int) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float]]:
         """Retourne les segments monde (O->A) et (O->B) du triplet i."""
         self._requireDefined()
-        gid = str(self.groupId)
+        assert self.groupId is not None
+        gid = self.groupId
         t = self.getTripletAt(i)
         xA, yA = self._world.getConceptNodeWorldXY(t.nodeA, gid)
         xO, yO = self._world.getConceptNodeWorldXY(t.nodeO, gid)
@@ -1873,7 +1876,7 @@ class TopologyWorld:
                 c.graphValid = False
                 c.geomValid = False
             return
-        gid = self.find_group(str(group_id))
+        gid = self.find_group(group_id)
         c = self._concept_by_gid.get(gid)
         if c is not None:
             c.graphValid = False
@@ -1885,7 +1888,7 @@ class TopologyWorld:
             for c in self._concept_by_gid.values():
                 c.geomValid = False
             return
-        gid = self.find_group(str(group_id))
+        gid = self.find_group(group_id)
         c = self._concept_by_gid.get(gid)
         if c is not None:
             c.geomValid = False
@@ -1906,22 +1909,22 @@ class TopologyWorld:
         self._topoTxTouchedGroups.clear()
 
     def _markTopoTouched(self, group_id: str) -> None:
-        gid = self.find_group(str(group_id))
+        gid = self.find_group(group_id)
         if self._topoTxDepth > 0:
             self._topoTxTouchedGroups.add(gid)
             return
 
     def recomputeConceptAndBoundary(self, group_id: str) -> None:
-        gid = self.find_group(str(group_id))
+        gid = self.find_group(group_id)
         self.invalidateConceptGraph(gid)
         self.ensureConceptGeom(gid)
         self.computeBoundary(gid)
 
     def toConceptNodeId(self, node_id: str) -> str:
-        return self.find_node(str(node_id))
+        return self.find_node(node_id)
 
     def _concept_cache(self, group_id: str) -> ConceptGroupCache:
-        gid = self.find_group(str(group_id))
+        gid = self.find_group(group_id)
         c = self._concept_by_gid.get(gid)
         if c is None:
             c = ConceptGroupCache()
@@ -1929,21 +1932,21 @@ class TopologyWorld:
         return c
 
     def _requireConceptCache(self, group_id: str) -> ConceptGroupCache:
-        gid = self.find_group(str(group_id))
+        gid = self.find_group(group_id)
         c = self._concept_cache(gid)
         if not c.graphValid:
             raise ValueError(f"[ConceptCache] not computed (gid={gid})")
         return c
 
     def ensureConceptGraph(self, group_id: str) -> ConceptGroupCache:
-        gid = self.find_group(str(group_id))
+        gid = self.find_group(group_id)
         c = self._concept_cache(gid)
         if not c.graphValid:
             self._buildConceptCacheForGroup(gid)
         return c
 
     def ensureConceptGeom(self, group_id: str) -> ConceptGroupCache:
-        gid = self.find_group(str(group_id))
+        gid = self.find_group(group_id)
         c = self.ensureConceptGraph(gid)
         if not c.geomValid:
             self._refreshConceptGeom(gid)
@@ -1951,29 +1954,29 @@ class TopologyWorld:
 
     @staticmethod
     def _element_id_from_atomic_node_id(node_id: str) -> str | None:
-        s = str(node_id)
+        s = node_id
         if ":N" not in s:
             return None
         return s.rsplit(":N", 1)[0]
 
     def _infer_group_for_node(self, node_id: str) -> str | None:
-        cn = self.find_node(str(node_id))
+        cn = self.find_node(node_id)
         mem = self.node_members(cn)
         if not mem:
             return None
         eid = self._element_id_from_atomic_node_id(mem[0])
         if not eid:
             return None
-        return self.element_to_group.get(str(eid))
+        return self.element_to_group.get(eid)
 
     def _iter_group_elements(self, group_id: str) -> list["TopologyElement"]:
-        gid = self.find_group(str(group_id))
+        gid = self.find_group(group_id)
         g = self.groups.get(gid)
         if g is None:
             return []
         out: list[TopologyElement] = []
         for eid in g.element_ids:
-            el = self.elements.get(str(eid))
+            el = self.elements.get(eid)
             if el is not None:
                 out.append(el)
         return out
@@ -1989,19 +1992,19 @@ class TopologyWorld:
     def buildDerivedSplitPointsForPhysEdge(self, element_id: str, edge_index: int,
                                            eps_t: float = 1e-9) -> list[dict]:
         edge = self.get_edge(element_id, edge_index)
-        edge_start = str(edge.v_start.node_id)
-        edge_end = str(edge.v_end.node_id)
+        edge_start = edge.v_start.node_id
+        edge_end = edge.v_end.node_id
         if edge_start == edge_end:
             raise ValueError(f"[DP][{edge.edge_id()}] edge endpoints are identical")
-        start_cn = self.find_node(str(edge.v_start.node_id))
-        end_cn = self.find_node(str(edge.v_end.node_id))
+        start_cn = self.find_node(edge.v_start.node_id)
+        end_cn = self.find_node(edge.v_end.node_id)
         dp: list[dict] = [
             {"t": 0.0, "nodeCanon": start_cn, "source": "endpoint"},
             {"t": 1.0, "nodeCanon": end_cn, "source": "endpoint"},
         ]
 
         for att in self.attachments.values():
-            if str(att.kind) != "vertex-edge":
+            if att.kind != "vertex-edge":
                 continue
             if att.feature_a.feature_type == TopologyFeatureType.VERTEX and att.feature_b.feature_type == TopologyFeatureType.EDGE:
                 vRef, eRef = att.feature_a, att.feature_b
@@ -2052,7 +2055,7 @@ class TopologyWorld:
             t_prev = float(merged[-1]["t"])
             t_cur = float(sp["t"])
             if abs(t_cur - t_prev) <= eps_t:
-                if str(sp["nodeCanon"]) != str(merged[-1]["nodeCanon"]):
+                if sp["nodeCanon"] != merged[-1]["nodeCanon"]:
                     raise ValueError(
                         f"[DP][{edge.edge_id()}] conflicting splitpoints at t={t_cur} "
                         f"nodeA={merged[-1]['nodeCanon']} nodeB={sp['nodeCanon']}"
@@ -2070,8 +2073,8 @@ class TopologyWorld:
                                            eps_t: float = 1e-9) -> list[dict]:
         edge = self.get_edge(element_id, edge_index)
         dp = self.buildDerivedSplitPointsForPhysEdge(element_id, edge_index, eps_t=eps_t)
-        from_node_id = str(edge.v_start.node_id)
-        to_node_id = str(edge.v_end.node_id)
+        from_node_id = edge.v_start.node_id
+        to_node_id = edge.v_end.node_id
         if from_node_id == to_node_id:
             raise ValueError(f"[C1][{edge.edge_id()}] from/to are identical")
         occs: list[dict] = []
@@ -2081,8 +2084,8 @@ class TopologyWorld:
             if t1 <= t0 + eps_t:
                 raise ValueError(f"[C1][{edge.edge_id()}] null segment in DP t0={t0} t1={t1}")
             occs.append({
-                "elementId": str(edge.element_id),
-                "edgeId": str(edge.edge_id()),
+                "elementId": edge.element_id,
+                "edgeId": edge.edge_id(),
                 "fromNodeId": from_node_id,
                 "toNodeId": to_node_id,
                 "t0": t0,
@@ -2091,7 +2094,7 @@ class TopologyWorld:
         return occs
 
     def _buildConceptCacheForGroup(self, group_id: str) -> None:
-        gid = self.find_group(str(group_id))
+        gid = self.find_group(group_id)
         c = self._concept_cache(gid)
 
         nodes: dict[str, ConceptNodeInfo] = {}
@@ -2102,25 +2105,25 @@ class TopologyWorld:
         for el in self._iter_group_elements(gid):
             for edge in getattr(el, "edges", []):
                 dp = self.buildDerivedSplitPointsForPhysEdge(el.element_id, edge.edge_index, eps_t=eps_t)
-                from_node_id = str(edge.v_start.node_id)
-                to_node_id = str(edge.v_end.node_id)
+                from_node_id = edge.v_start.node_id
+                to_node_id = edge.v_end.node_id
 
                 # nodes : occurrences locales (pour refresh geom)
                 for sp in dp:
-                    cn = str(sp["nodeCanon"])
+                    cn = sp["nodeCanon"]
                     info = nodes.get(cn)
                     if info is None:
                         info = ConceptNodeInfo(concept_id=cn, members=set(self.node_members(cn)))
                         nodes[cn] = info
                     p_local = self._localPointOnEdge(el, edge, float(sp["t"]))
                     node_occ.setdefault(cn, []).append(
-                        (str(el.element_id), (float(p_local[0]), float(p_local[1])))
+                        (el.element_id, (float(p_local[0]), float(p_local[1])))
                     )
 
                 # edges : segments consecutifs canonises
                 for i in range(len(dp) - 1):
-                    n0 = str(dp[i]["nodeCanon"])
-                    n1 = str(dp[i + 1]["nodeCanon"])
+                    n0 = dp[i]["nodeCanon"]
+                    n1 = dp[i + 1]["nodeCanon"]
                     t0 = float(dp[i]["t"])
                     t1 = float(dp[i + 1]["t"])
                     if n0 == n1:
@@ -2131,8 +2134,8 @@ class TopologyWorld:
                         ce = ConceptEdgeInfo(a=k[0], b=k[1], occurrences=[])
                         edges[k] = ce
                     ce.occurrences.append({
-                        "elementId": str(el.element_id),
-                        "edgeId": str(edge.edge_id()),
+                        "elementId": el.element_id,
+                        "edgeId": edge.edge_id(),
                         "fromNodeId": from_node_id,
                         "toNodeId": to_node_id,
                         "t0": float(t0),
@@ -2146,13 +2149,13 @@ class TopologyWorld:
         self._refreshConceptGeom(gid)
 
     def buildConceptCacheIfNeeded(self, group_id: str) -> None:
-        gid = self.find_group(str(group_id))
+        gid = self.find_group(group_id)
         c = self._concept_cache(gid)
         if not c.graphValid:
             self._buildConceptCacheForGroup(gid)
 
     def _refreshConceptGeom(self, group_id: str) -> None:
-        gid = self.find_group(str(group_id))
+        gid = self.find_group(group_id)
         c = self._concept_cache(gid)
         for info in c.nodes.values():
             info.sumx = 0.0
@@ -2163,7 +2166,7 @@ class TopologyWorld:
             if info is None:
                 continue
             for element_id, local_xy in occs:
-                el = self.elements.get(str(element_id))
+                el = self.elements.get(element_id)
                 if el is None:
                     raise ValueError(f"[ConceptGeom] unknown elementId={element_id} for cid={cid}")
                 p_world = el.localToWorld(np.array(local_xy, dtype=float))
@@ -2180,7 +2183,7 @@ class TopologyWorld:
         gid = group_id if group_id is not None else self._infer_group_for_node(node_id)
         if gid is None:
             return (0.0, 0.0)
-        cn = self.find_node(str(node_id))
+        cn = self.find_node(node_id)
         c = self.ensureConceptGeom(gid)
         info = c.nodes.get(cn)
         if info is None:
@@ -2211,7 +2214,7 @@ class TopologyWorld:
         gid = group_id if group_id is not None else self._infer_group_for_node(node_id)
         if gid is None:
             return []
-        cn = self.find_node(str(node_id))
+        cn = self.find_node(node_id)
         p0 = self.getConceptNodeWorldXY(cn, gid)
         c = self.ensureConceptGeom(gid)
         out: list[dict] = []
@@ -2223,10 +2226,10 @@ class TopologyWorld:
             dx = float(p1[0] - p0[0])
             dy = float(p1[1] - p0[1])
             out.append({
-                "otherNodeId": str(other),
+                "otherNodeId": other,
                 "azDeg": self.azimutDegFromDxDy(dx, dy),
             })
-        out.sort(key=lambda r: (float(r.get("azDeg", 0.0)), str(r.get("otherNodeId", ""))))
+        out.sort(key=lambda r: (float(r.get("azDeg", 0.0)), r.get("otherNodeId", "")))
         return out
 
     def computeBoundary(self, group_id: str) -> None:
@@ -2259,7 +2262,7 @@ class TopologyWorld:
         4) Recopie dans le cache du groupe:
            - `boundaryCycle`, `boundaryEdges`, `boundaryIndex`, `boundaryOrientation`.
         """
-        gid = self.find_group(str(group_id))
+        gid = self.find_group(group_id)
         c = self.ensureConceptGeom(gid)
         c.boundaries.compute(self, gid, orientation=self._topoTxOrientation)
         c.boundaryCycle = c.boundaries.cycle
@@ -2274,7 +2277,7 @@ class TopologyWorld:
         structure mutable et n'a pas à connaître son invalidation. Un alias
         DSU n'est pas un identifiant acceptable pour ce contrat public.
         """
-        gid = str(core_group_id or "")
+        gid = core_group_id or ""
         if not gid or gid not in self.groups:
             raise ValueError(f"[Boundary] unknown canonical group: {gid or '(empty)'}")
 
@@ -2291,43 +2294,37 @@ class TopologyWorld:
             self.computeBoundary(gid)
 
     def getBoundaryCycle(self, group_id: str, startNodeId: str) -> list[str]:
-        gid = str(group_id)
-        self.ensureBoundary(gid)
-        c = self._concept_cache(gid)
-        start = str(startNodeId)
+        self.ensureBoundary(group_id)
+        c = self._concept_cache(group_id)
+        start = startNodeId
         if start not in c.boundaryIndex:
             raise ValueError(f"[Boundary] node not in contour: {start}")
         idx = c.boundaryIndex[start]
         return list(c.boundaryCycle[idx:] + c.boundaryCycle[:idx])
 
     def getBoundaryOrientation(self, group_id: str) -> str:
-        gid = str(group_id)
-        self.ensureBoundary(gid)
-        c = self._concept_cache(gid)
-        return str(c.boundaryOrientation)
+        self.ensureBoundary(group_id)
+        c = self._concept_cache(group_id)
+        return c.boundaryOrientation
 
     def getBoundaryNeighbors(self, group_id: str, nodeId: str) -> tuple[str, str]:
-        gid = str(group_id)
-        self.ensureBoundary(gid)
-        c = self._concept_cache(gid)
-        node = str(nodeId)
-        if node not in c.boundaryIndex:
-            raise ValueError(f"[Boundary] node not in contour: {node}")
-        idx = c.boundaryIndex[node]
+        self.ensureBoundary(group_id)
+        c = self._concept_cache(group_id)
+        if nodeId not in c.boundaryIndex:
+            raise ValueError(f"[Boundary] node not in contour: {nodeId}")
+        idx = c.boundaryIndex[nodeId]
         prev_node = c.boundaryCycle[idx - 1]
         next_node = c.boundaryCycle[(idx + 1) % len(c.boundaryCycle)]
         return (prev_node, next_node)
 
     def isBoundaryEdge(self, group_id: str, a: str, b: str) -> bool:
-        gid = str(group_id)
-        self.ensureBoundary(gid)
-        c = self._concept_cache(gid)
-        return (str(a), str(b)) in c.boundaryEdges or (str(b), str(a)) in c.boundaryEdges
+        self.ensureBoundary(group_id)
+        c = self._concept_cache(group_id)
+        return (a, b) in c.boundaryEdges or (b, a) in c.boundaryEdges
 
     def getBoundarySegments(self, group_id: str) -> list[BoundarySegment]:
-        gid = str(group_id)
-        self.ensureBoundary(gid)
-        c = self._concept_cache(gid)
+        self.ensureBoundary(group_id)
+        c = self._concept_cache(group_id)
         if not c.edges:
             raise ValueError("[Boundary] concept edges missing")
 
@@ -2337,8 +2334,8 @@ class TopologyWorld:
 
         segments: list[BoundarySegment] = []
         for i in range(len(cycle)):
-            ca = str(cycle[i])
-            cb = str(cycle[(i + 1) % len(cycle)])
+            ca = cycle[i]
+            cb = cycle[(i + 1) % len(cycle)]
             k = (ca, cb) if ca < cb else (cb, ca)
             ce = c.edges.get(k)
             if ce is None:
@@ -2356,12 +2353,12 @@ class TopologyWorld:
             if "fromNodeId" not in occ or "toNodeId" not in occ:
                 raise ValueError(f"[Boundary] missing fromNodeId/toNodeId for {ca}-{cb}")
 
-            element_id = str(occ["elementId"])
-            edge_id = str(occ["edgeId"])
+            element_id = occ["elementId"]
+            edge_id = occ["edgeId"]
             t0 = float(occ["t0"])
             t1 = float(occ["t1"])
-            from_node_id = str(occ["fromNodeId"])
-            to_node_id = str(occ["toNodeId"])
+            from_node_id = occ["fromNodeId"]
+            to_node_id = occ["toNodeId"]
             if from_node_id == to_node_id:
                 raise ValueError(f"[Boundary] from/to identical for {edge_id}")
 
@@ -2379,7 +2376,7 @@ class TopologyWorld:
                 raise ValueError(f"[Boundary] edgeId does not match elementId: {edge_id}")
 
             edge = self.get_edge(element_id, edge_index)
-            if str(edge.v_start.node_id) != from_node_id or str(edge.v_end.node_id) != to_node_id:
+            if edge.v_start.node_id != from_node_id or edge.v_end.node_id != to_node_id:
                 raise ValueError(f"[Boundary] occurrence from/to mismatch for {edge_id}")
 
             eps_t = float(getattr(self, "concept_split_epsilon_t", 1e-6))
@@ -2388,7 +2385,7 @@ class TopologyWorld:
             def _concept_at_t(t_val: float) -> str:
                 for sp in dp:
                     if abs(float(sp["t"]) - t_val) <= eps_t:
-                        return str(sp["nodeCanon"])
+                        return sp["nodeCanon"]
                 raise ValueError(f"[Boundary] missing split point at t={t_val} for {edge_id}")
 
             n0 = _concept_at_t(t0)
@@ -2430,13 +2427,12 @@ class TopologyWorld:
         valeurs reconstruites par ``getBoundarySegments`` : aucun cache mutable
         n'est exposé à l'appelant.
         """
-        gid = str(core_group_id)
-        self.ensureBoundary(gid)
-        node_id = self.find_node(str(concept_node_id))
+        self.ensureBoundary(core_group_id)
+        node_id = self.find_node(concept_node_id)
         return [
             segment
-            for segment in self.getBoundarySegments(gid)
-            if str(segment.conceptA) == node_id or str(segment.conceptB) == node_id
+            for segment in self.getBoundarySegments(core_group_id)
+            if (segment.conceptA == node_id) or (segment.conceptB == node_id)
         ]
 
     def _build_ring_from_boundary_cycle(
@@ -2483,7 +2479,7 @@ class TopologyWorld:
            - pas de doublons consécutifs (distance <= eps_world) le long du cycle.
         5) Construit `index` (nodeId → position) et rejette si collisions.
         """
-        gid = self.find_group(str(group_id))
+        gid = self.find_group(group_id)
         c = self._concept_cache(gid)
         if not c.boundaryCycle:
             raise ValueError("[Boundary] not computed")
@@ -2498,16 +2494,16 @@ class TopologyWorld:
         ring_pts: list[np.ndarray] = []
         ring_nodes: list[str] = []
         for cn in cycle:
-            occs = c.nodeOccurrencesByCid.get(str(cn))
+            occs = c.nodeOccurrencesByCid.get(cn)
             if not occs:
                 return None
             element_id, local_xy = occs[0]
-            el = self.elements.get(str(element_id))
+            el = self.elements.get(element_id)
             if el is None:
                 return None
             p_world = el.localToWorld(np.array(local_xy, dtype=float))
             ring_pts.append(np.array([float(p_world[0]), float(p_world[1])], dtype=float))
-            ring_nodes.append(str(cn))
+            ring_nodes.append(cn)
 
         if len(ring_pts) < 3:
             return None
@@ -2519,7 +2515,7 @@ class TopologyWorld:
             if (dx * dx + dy * dy) <= float(eps_world) * float(eps_world):
                 return None
 
-        index = {str(n): i for i, n in enumerate(ring_nodes)}
+        index = {n: i for i, n in enumerate(ring_nodes)}
         if len(index) != len(ring_nodes):
             return None
         return (ring_pts, ring_nodes, index)
@@ -2606,9 +2602,9 @@ class TopologyWorld:
             return None
 
         def _edge_t_from_params(edge: TopologyEdge, t_val: float, edge_from: str) -> float | None:
-            if edge_from == str(edge.v_start.node_id):
+            if edge_from == edge.v_start.node_id:
                 return float(t_val)
-            if edge_from == str(edge.v_end.node_id):
+            if edge_from == edge.v_end.node_id:
                 return 1.0 - float(t_val)
             return None
 
@@ -2647,7 +2643,7 @@ class TopologyWorld:
             return None
 
         # Cas A: edge-edge (1 attachment)
-        if len(atts) == 1 and str(atts[0].kind) == "edge-edge":
+        if len(atts) == 1 and atts[0].kind == "edge-edge":
             att = atts[0]
             if att.feature_a is None or att.feature_b is None:
                 return None
@@ -2677,17 +2673,17 @@ class TopologyWorld:
             if mapping == "reverse":
                 dest0, dest1 = dest1, dest0
 
-            J0 = {"mobType": "node", "mobId": str(mob0), "destType": "node", "destId": str(dest0)}
-            J1 = {"mobType": "node", "mobId": str(mob1), "destType": "node", "destId": str(dest1)}
+            J0 = {"mobType": "node", "mobId": mob0, "destType": "node", "destId": dest0}
+            J1 = {"mobType": "node", "mobId": mob1, "destType": "node", "destId": dest1}
 
         # Cas B: vertex-edge (2 attachments)
         elif len(atts) == 2:
             att_vv = None
             att_ve = None
             for att in atts:
-                if str(att.kind) == "vertex-vertex":
+                if att.kind == "vertex-vertex":
                     att_vv = att
-                elif str(att.kind) == "vertex-edge":
+                elif att.kind == "vertex-edge":
                     att_ve = att
             if att_vv is None or att_ve is None:
                 return None
@@ -2700,9 +2696,9 @@ class TopologyWorld:
             nA = self.find_node(vA.node_id)
             nB = self.find_node(vB.node_id)
             if nA in indexMob and nB in indexDest:
-                J0 = {"mobType": "node", "mobId": str(nA), "destType": "node", "destId": str(nB)}
+                J0 = {"mobType": "node", "mobId": nA, "destType": "node", "destId": nB}
             elif nB in indexMob and nA in indexDest:
-                J0 = {"mobType": "node", "mobId": str(nB), "destType": "node", "destId": str(nA)}
+                J0 = {"mobType": "node", "mobId": nB, "destType": "node", "destId": nA}
             else:
                 return None
 
@@ -2721,31 +2717,31 @@ class TopologyWorld:
             edge = self.get_edge(e_ref.element_id, e_ref.index)
             t_raw = att_ve.params.get("t", None)
             edge_from = att_ve.params.get("edgeFrom", None)
-            if t_raw is None or edge_from is None or str(edge_from).strip() == "":
+            if t_raw is None or edge_from is None or edge_from.strip() == "":
                 return None
             t_val = float(t_raw)
 
-            t_edge = _edge_t_from_params(edge, t_val, str(edge_from))
+            t_edge = _edge_t_from_params(edge, t_val, edge_from)
             if t_edge is None:
                 return None
 
-            el = self.elements.get(str(e_ref.element_id))
+            el = self.elements.get(e_ref.element_id)
             if el is None:
                 return None
             p_local = self._localPointOnEdge(el, edge, float(t_edge))
             p_world = el.localToWorld(p_local)
 
-            ref_node = self.find_node(str(edge.v_start.node_id)) if t_edge <= 0.5 else self.find_node(str(edge.v_end.node_id))
+            ref_node = self.find_node(edge.v_start.node_id) if t_edge <= 0.5 else self.find_node(edge.v_end.node_id)
             # on trouve les vecteurs edge_mob et edge_dest avec une référence coté J0
-            edge_dir_mob = _edge_dir_from_ring(edge=edge, ptsRing=ptsMob, indexRing=indexMob, refNodeId=str(J0["mobId"]))
-            edge_dir_dest = _edge_dir_from_ring(edge=edge, ptsRing=ptsDest, indexRing=indexDest, refNodeId=str(J0["destId"]))
+            edge_dir_mob = _edge_dir_from_ring(edge=edge, ptsRing=ptsMob, indexRing=indexMob, refNodeId=J0["mobId"])
+            edge_dir_dest = _edge_dir_from_ring(edge=edge, ptsRing=ptsDest, indexRing=indexDest, refNodeId=J0["destId"])
 
             v_node = self.find_node(self.get_vertex(v_ref.element_id, v_ref.index).node_id)
             if edge_dir_mob is not None and ref_node in indexMob:
                 J1 = {"mobType": "edge", "mobId": edge.edge_id(), "mobPt": p_world, "mobDir": edge_dir_mob,
-                      "destType": "node", "destId": str(v_node)}
+                      "destType": "node", "destId": v_node}
             elif edge_dir_dest is not None and ref_node in indexDest:
-                J1 = {"mobType": "node", "mobId": str(v_node),
+                J1 = {"mobType": "node", "mobId": v_node,
                       "destType": "edge", "destId": edge.edge_id(), "destPt": p_world, "destDir": edge_dir_dest}
             else:
                 return None
@@ -2900,7 +2896,7 @@ class TopologyWorld:
         """
         def _dbg(msg: str) -> None:
             if debug:
-                print(str(msg))
+                print(msg)
 
         def _fmt_feature(f) -> str:
             if f is None:
@@ -2910,7 +2906,7 @@ class TopologyWorld:
         def _fmt_atts(att_list: list[TopologyAttachment]) -> str:
             out = []
             for a in att_list:
-                kind = str(getattr(a, "kind", ""))
+                kind = getattr(a, "kind", "")
                 fa = _fmt_feature(getattr(a, "feature_a", None))
                 fb = _fmt_feature(getattr(a, "feature_b", None))
                 params = getattr(a, "params", {}) or {}
@@ -2927,8 +2923,8 @@ class TopologyWorld:
 
         group_mob_id = groupMob if isinstance(groupMob, str) else groupMob.group_id
         group_dest_id = groupDest if isinstance(groupDest, str) else groupDest.group_id
-        gid_mob = self.find_group(str(group_mob_id))
-        gid_dest = self.find_group(str(group_dest_id))
+        gid_mob = self.find_group(group_mob_id)
+        gid_dest = self.find_group(group_dest_id)
         if not gid_mob or not gid_dest or gid_mob == gid_dest:
             return True
 
@@ -3036,7 +3032,7 @@ class TopologyWorld:
         gid = group_id if group_id is not None else self._infer_group_for_node(node_id)
         if gid is None:
             return []
-        cn = self.find_node(str(node_id))
+        cn = self.find_node(node_id)
         c = self.ensureConceptGraph(gid)
         out: list[dict] = []
         for (a, b), ce in c.edges.items():
@@ -3053,19 +3049,17 @@ class TopologyWorld:
 
     @staticmethod
     def _format_concept_edge_id(node_a: str, node_b: str) -> str:
-        a = str(node_a)
-        b = str(node_b)
-        if a <= b:
-            return f"{a}|{b}"
-        return f"{b}|{a}"
+        if node_a <= node_b:
+            return f"{node_a}|{node_b}"
+        return f"{node_b}|{node_a}"
 
     @staticmethod
     def _parse_concept_edge_id(edge_id: str) -> tuple[str, str]:
-        parts = str(edge_id).split("|")
+        parts = (edge_id).split("|")
         if len(parts) != 2:
             raise ValueError(f"invalid concept edge id: {edge_id!r}")
-        a = str(parts[0])
-        b = str(parts[1])
+        a = parts[0]
+        b = parts[1]
         if not a or not b:
             raise ValueError(f"invalid concept edge id: {edge_id!r}")
         if a <= b:
@@ -3074,8 +3068,8 @@ class TopologyWorld:
 
     def getIncidentEdgeIds(self, groupId: str, nodeId: str) -> list[str]:
         """Retourne les IDs des arêtes conceptuelles incidentes à nodeId dans groupId."""
-        gid = self.find_group(str(groupId))
-        cn = self.find_node(str(nodeId))
+        gid = self.find_group(groupId)
+        cn = self.find_node(nodeId)
         c = self.ensureConceptGraph(gid)
         out: list[str] = []
         for (a, b), _ce in c.edges.items():
@@ -3088,18 +3082,18 @@ class TopologyWorld:
 
         Précondition: nodeId est une extrémité de edgeId.
         """
-        gid = self.find_group(str(groupId))
-        a, b = self._parse_concept_edge_id(str(edgeId))
+        gid = self.find_group(groupId)
+        a, b = self._parse_concept_edge_id(edgeId)
         c = self.ensureConceptGraph(gid)
         key = (a, b) if a <= b else (b, a)
         if key not in c.edges:
             raise ValueError(f"edge not found in group {gid}: {edgeId!r}")
 
-        cn = self.find_node(str(nodeId))
+        cn = self.find_node(nodeId)
         if cn == a:
-            return str(b)
+            return b
         if cn == b:
-            return str(a)
+            return a
         raise ValueError(f"node {nodeId!r} is not an endpoint of edge {edgeId!r}")
 
     def getConceptNeighborNodes(self, node_id: str, group_id: str | None = None) -> list[str]:
@@ -3123,11 +3117,11 @@ class TopologyWorld:
 
     def getConceptNodeType(self, node_id: str) -> str:
         """Type conceptuel: 'M' si mélange de types, sinon type unique."""
-        cn = self.find_node(str(node_id))
+        cn = self.find_node(node_id)
         mem = self.node_members(cn)
         if not mem:
-            return str(self.node_type(cn))
-        types = {str(self.node_type(m)) for m in mem}
+            return self.node_type(cn)
+        types = {self.node_type(m) for m in mem}
         return "M" if len(types) > 1 else next(iter(types))
 
     # --- IDs helpers ---
@@ -3136,14 +3130,14 @@ class TopologyWorld:
         return f"T{int(tri_rank_1based):02d}"
 
     def format_edge_id(self, element_id: str, edge_index: int) -> str:
-        return f"{str(element_id)}:E{int(edge_index)}"
+        return f"{element_id}:E{int(edge_index)}"
 
     def format_node_id(self, element_id: str, vertex_index: int) -> str:
-        return f"{str(element_id)}:N{int(vertex_index)}"
+        return f"{element_id}:N{int(vertex_index)}"
 
     @staticmethod
     def parse_tri_rank_from_element_id(element_id: str) -> int | None:
-        s = str(element_id or "").strip()
+        s = (element_id or "").strip()
         m = re.fullmatch(r"T(\d+)", s) or re.search(r":T(\d+)$", s)
         if not m:
             return None
@@ -3152,7 +3146,7 @@ class TopologyWorld:
     @staticmethod
     def parse_element_sequence_from_id(element_id: str) -> int | None:
         """Extrait la sequence d'un identifiant d'instance explicite ``T<n>``."""
-        match = re.fullmatch(r"T(\d+)", str(element_id or "").strip())
+        match = re.fullmatch(r"T(\d+)", (element_id or "").strip())
         return int(match.group(1)) if match else None
 
     # Azimut (C7) – Référence unique
@@ -3197,16 +3191,14 @@ class TopologyWorld:
 
     # --- DSU nodes ---
     def create_node_atomic(self, node_id: str, node_type: str) -> str:
-        node_id = str(node_id)
         self._created_counter_nodes += 1
         self._node_parent[node_id] = node_id
-        self._node_type[node_id] = str(node_type)
+        self._node_type[node_id] = node_type
         self._node_members[node_id] = [node_id]
         self._node_created_order[node_id] = self._created_counter_nodes
         return node_id
 
     def find_node(self, node_id: str) -> str:
-        node_id = str(node_id)
         parent = self._node_parent.get(node_id, node_id)
         if parent != node_id:
             self._node_parent[node_id] = self.find_node(parent)
@@ -3262,20 +3254,19 @@ class TopologyWorld:
                     self.groups[gidc].element_ids.append(eid)
 
     def find_group(self, group_id: str) -> str:
-        group_id = str(group_id)
         parent = self._group_parent.get(group_id, group_id)
         if parent != group_id:
             self._group_parent[group_id] = self.find_group(parent)
         return self._group_parent.get(group_id, group_id)
 
     def _require_live_group_id(self, group_id: str) -> str:
-        canonical_group_id = str(self.find_group(str(group_id)))
+        canonical_group_id = self.find_group(group_id)
         if canonical_group_id not in self.getLiveGroupIds():
             raise ValueError(f"TopologyWorld: groupe inexistant: {group_id!r}")
         return canonical_group_id
 
     def _require_beacon_id(self, beacon_id: str) -> str:
-        beacon_id = str(beacon_id or "").strip()
+        beacon_id = (beacon_id or "").strip()
         if not beacon_id:
             raise ValueError("TopologyWorld: beacon_id vide")
         if self._beacon_catalog is None or not self._beacon_catalog.contains(beacon_id):
@@ -3283,7 +3274,7 @@ class TopologyWorld:
         return beacon_id
 
     def _require_anchor_node_id(self, group_id: str, node_id: str) -> str:
-        node_id = str(node_id or "").strip()
+        node_id = (node_id or "").strip()
         if node_id not in self._node_parent:
             raise ValueError(f"TopologyWorld: nœud d'ancrage inexistant: {node_id!r}")
         node_group_id = self.getGroupIdFromConceptNode(node_id)
@@ -3316,16 +3307,16 @@ class TopologyWorld:
         return anchor
 
     def removeGroupAnchor(self, anchor_id: str) -> TopologyGroupAnchor:
-        key = str(anchor_id or "").strip()
+        key = (anchor_id or "").strip()
         if key not in self.groupAnchors:
             raise KeyError(key)
         return self.groupAnchors.pop(key)
 
     def getGroupAnchor(self, anchor_id: str) -> TopologyGroupAnchor:
-        return self.groupAnchors[str(anchor_id or "").strip()]
+        return self.groupAnchors[(anchor_id or "").strip()]
 
     def getAnchorForGroup(self, group_id: str) -> TopologyGroupAnchor | None:
-        canonical_group_id = str(self.find_group(str(group_id)))
+        canonical_group_id = self.find_group(group_id)
         for anchor in self.groupAnchors.values():
             if anchor.group_id == canonical_group_id:
                 return anchor
@@ -3404,7 +3395,7 @@ class TopologyWorld:
         par le monde : leur nettoyage relève d'un chantier Core distinct.
         """
         canonical_ids = {
-            str(self.find_group(str(group_id)))
+            self.find_group(group_id)
             for group_id in list(self.groups.keys())
         }
         return sorted(
@@ -3415,7 +3406,7 @@ class TopologyWorld:
 
     def hasLiveGroup(self, core_group_id: str) -> bool:
         """Indique si un ID canonique désigne un groupe exploitable enregistré."""
-        key = str(core_group_id or "")
+        key = (core_group_id or "")
         return bool(key) and key in self.groups and self.find_group(key) == key
 
     def getGroupElementIds(self, core_group_id: str) -> list[str]:
@@ -3424,7 +3415,7 @@ class TopologyWorld:
         Le contrat public impose un ``core_group_id`` déjà canonique ; le
         registre ``groups`` et les alias DSU restent internes au Core.
         """
-        key = str(core_group_id or "")
+        key = (core_group_id or "")
         if not self.hasLiveGroup(key):
             return []
         return list(self.groups[key].element_ids)
@@ -3468,10 +3459,10 @@ class TopologyWorld:
         return gid
 
     def get_edge(self, element_id: str, edge_index: int) -> TopologyEdge:
-        return self.elements[str(element_id)].edges[int(edge_index)]
+        return self.elements[element_id].edges[int(edge_index)]
 
     def get_vertex(self, element_id: str, vertex_index: int) -> TopologyVertex:
-        return self.elements[str(element_id)].vertexes[int(vertex_index)]
+        return self.elements[element_id].vertexes[int(vertex_index)]
 
     def get_element_vertex_node_id(self, element_id: str, vertex_index: int) -> str:
         """Retourne le node physique porte par un sommet de l'element.
@@ -3479,7 +3470,7 @@ class TopologyWorld:
         Cette API evite aux couches externes de connaitre la convention de
         construction des IDs de nodes physiques.
         """
-        key = str(element_id or "").strip()
+        key = (element_id or "").strip()
         element = self.elements.get(key)
         if element is None:
             raise KeyError(f"TopologyWorld: element inconnu: {element_id}")
@@ -3490,21 +3481,21 @@ class TopologyWorld:
 
     def get_element_vertex_node_id_by_type(self, element_id: str, node_type: str) -> str:
         """Retourne le node physique du sommet ayant le type metier demande."""
-        key = str(element_id or "").strip()
+        key = (element_id or "").strip()
         element = self.elements.get(key)
         if element is None:
             raise KeyError(f"TopologyWorld: element inconnu: {element_id}")
-        wanted = str(node_type)
+        wanted = node_type
         matches = [vertex.node_id for vertex in element.vertexes if vertex.node_type == wanted]
         if len(matches) != 1:
             raise ValueError(
                 f"TopologyWorld: sommet de type {wanted!r} ambigu ou absent pour {key}"
             )
-        return str(matches[0])
+        return matches[0]
 
     def get_element_edge_id(self, element_id: str, edge_index: int) -> str:
         """Retourne l'ID physique porte par une arete de l'element."""
-        key = str(element_id or "").strip()
+        key = (element_id or "").strip()
         element = self.elements.get(key)
         if element is None:
             raise KeyError(f"TopologyWorld: element inconnu: {element_id}")
@@ -3514,7 +3505,7 @@ class TopologyWorld:
         return element.edges[index].edge_id()
 
     def get_group_of_element(self, element_id: str) -> str:
-        gid0 = self.element_to_group.get(str(element_id))
+        gid0 = self.element_to_group.get(element_id)
         if gid0 is None:
             raise ValueError(f"Element sans groupe: {element_id}")
         return self.find_group(gid0)
@@ -3530,24 +3521,24 @@ class TopologyWorld:
         groupId = self.get_group_of_element(triangleId)
         if not groupId:
             raise ValueError(f"Aucun groupe trouvé pour triangle {triangleId} depuis nodeId {nodeId}")
-        return str(groupId)
+        return groupId
 
     # --- API pose par élément (session) ---
     def getElementPose(self, element_id: str) -> tuple[np.ndarray, np.ndarray, bool]:
         """Retourne (R, T, mirrored) pour un élément."""
-        el = self.elements.get(str(element_id))
+        el = self.elements.get(element_id)
         if el is None:
             raise ValueError(f"Element inconnu: {element_id}")
         return el.get_pose()
 
     def setElementPose(self, element_id: str, R: np.ndarray, T: np.ndarray, mirrored: bool | None = None) -> None:
         """Assigne la pose d'un élément (R,T,j'ai )."""
-        el = self.elements.get(str(element_id))
+        el = self.elements.get(element_id)
         if el is None:
             raise ValueError(f"Element inconnu: {element_id}")
         el.set_pose(R=R, T=T, mirrored=mirrored)
         # pose change -> positions monde changent -> géométrie conceptuelle invalide
-        self.invalidateConceptGeom(self.element_to_group.get(str(element_id)))
+        self.invalidateConceptGeom(self.element_to_group.get(element_id))
 
     def _require_live_group_element_ids(self, core_group_id: str) -> list[str]:
         """Retourne les éléments d'un groupe canonique ou échoue explicitement.
@@ -3555,7 +3546,7 @@ class TopologyWorld:
         Les APIs de transformation ne résolvent pas les alias DSU : leur contrat
         externe est volontairement un ``core_group_id`` déjà canonique.
         """
-        key = str(core_group_id or "")
+        key = (core_group_id or "")
         if not self.hasLiveGroup(key):
             raise ValueError(f"Groupe Core canonique inconnu: {core_group_id!r}")
         return self.getGroupElementIds(key)
@@ -3567,6 +3558,35 @@ class TopologyWorld:
                 f"TopologyWorld: {operation} interdit pour le groupe ancré "
                 f"{core_group_id!r} (ancre {anchor.anchor_id})"
             )
+
+    def _require_anchored_rotation_pivot(
+        self,
+        core_group_id: str,
+        center_world: np.ndarray,
+    ) -> TopologyGroupAnchor | None:
+        """Valide le pivot et la géométrie d'une rotation de groupe ancré."""
+        anchor = self.getAnchorForGroup(core_group_id)
+        if anchor is None:
+            return None
+
+        beacon_world = np.asarray(
+            self.getBeaconWorldXY(anchor.beacon_id), dtype=float
+        )
+        if not np.allclose(center_world, beacon_world, rtol=0.0, atol=1e-9):
+            raise ValueError(
+                f"TopologyWorld: ROTATE interdit pour le groupe ancré "
+                f"{core_group_id!r} hors du pivot de l'ancre {anchor.anchor_id}"
+            )
+        anchor_node_world = np.asarray(
+            self.getConceptNodeWorldXY(anchor.node_id, core_group_id), dtype=float
+        )
+        if not np.allclose(anchor_node_world, beacon_world, rtol=0.0, atol=1e-9):
+            raise RuntimeError(
+                f"TopologyWorld: invariant géométrique rompu pour l'ancre "
+                f"{anchor.anchor_id}: le nœud {anchor.node_id!r} n'est pas "
+                "superposé à sa balise"
+            )
+        return anchor
 
     def _translate_group_poses(self, core_group_id: str, delta: np.ndarray) -> None:
         for element_id in self._require_live_group_element_ids(core_group_id):
@@ -3605,16 +3625,29 @@ class TopologyWorld:
         jour.
         """
         center = self._world_vector(center_world, name="center_world")
-        self._reject_transform_of_anchored_group(core_group_id, "ROTATE")
+        element_ids = self._require_live_group_element_ids(core_group_id)
+        anchor = self._require_anchored_rotation_pivot(core_group_id, center)
         angle = float(angle_rad)
         if not np.isfinite(angle):
             raise ValueError("angle_rad doit être fini")
         c, s = float(np.cos(angle)), float(np.sin(angle))
         Q = np.array([[c, -s], [s, c]], dtype=float)
-        for element_id in self._require_live_group_element_ids(core_group_id):
+        for element_id in element_ids:
             R, T, mirrored = self.getElementPose(element_id)
             T2 = Q @ (np.asarray(T, dtype=float) - center) + center
             self.setElementPose(element_id, R=Q @ np.asarray(R, dtype=float), T=T2, mirrored=mirrored)
+        if anchor is not None:
+            beacon_world = np.asarray(
+                self.getBeaconWorldXY(anchor.beacon_id), dtype=float
+            )
+            anchor_node_world = np.asarray(
+                self.getConceptNodeWorldXY(anchor.node_id, core_group_id), dtype=float
+            )
+            if not np.allclose(anchor_node_world, beacon_world, rtol=0.0, atol=1e-9):
+                raise RuntimeError(
+                    f"TopologyWorld: invariant géométrique rompu après rotation "
+                    f"pour l'ancre {anchor.anchor_id}"
+                )
 
     def apply_group_rigid_transform(self, core_group_id: str, R, T) -> None:
         """Applique ``P' = R @ P + T`` à toutes les poses d'un groupe Core.
@@ -3692,7 +3725,7 @@ class TopologyWorld:
         M = TopologyElementPose2D.mirror_matrix()
 
         for eid in element_ids:
-            el = self.elements.get(str(eid))
+            el = self.elements.get(eid)
             if el is None:
                 continue
             R, T, mirrored = el.get_pose()
@@ -3725,13 +3758,13 @@ class TopologyWorld:
         consommateurs existants. La nouvelle API publique Core attend un ID de
         groupe canonique et s'appelle ``flip_group``.
         """
-        gid = self.find_group(str(group_id))
+        gid = self.find_group(group_id)
         if gid not in self.groups:
             return
         self.flip_group(gid, axisPoint, axisDir)
 
     def elementLocalToWorld(self, element_id: str, p_local: np.ndarray | tuple[float, float]) -> np.ndarray:
-        el = self.elements.get(str(element_id))
+        el = self.elements.get(element_id)
         if el is None:
             raise ValueError(f"Element inconnu: {element_id}")
         return el.localToWorld(p_local)
@@ -3743,7 +3776,7 @@ class TopologyWorld:
         - si mirrored==False : retourne (R,T) tel quel
         - si mirrored==True  : retourne (R@M, T) (det négatif)
         """
-        R, T, mirrored = self.getElementPose(str(element_id))
+        R, T, mirrored = self.getElementPose(element_id)
         if mirrored:
             R = np.array(R, float) @ TopologyElementPose2D.mirror_matrix()
         return TopologyPose2D(R=R, T=T)
@@ -3783,11 +3816,11 @@ class TopologyWorld:
         - "reverse" : start_m -> end_t    et end_m -> start_t
         """
         # On ignore group_id_* (compat API), tout est porté par les poses d'éléments.
-        e_m = self.get_edge(str(element_id_m), int(edge_index_m))
-        e_t = self.get_edge(str(element_id_t), int(edge_index_t))
+        e_m = self.get_edge(element_id_m, edge_index_m)
+        e_t = self.get_edge(str(element_id_t), edge_index_t)
 
-        el_m = self.elements[str(element_id_m)]
-        el_t = self.elements[str(element_id_t)]
+        el_m = self.elements[element_id_m]
+        el_t = self.elements[element_id_t]
 
         def _v_local(el: TopologyElement, vidx: int) -> np.ndarray:
             xy = el.vertex_local_xy.get(int(vidx))
@@ -3804,12 +3837,12 @@ class TopologyWorld:
         # Endpoints WORLD (cible) via pose élément
         p0t = _v_local(el_t, e_t.v_start.vertex_index)
         p1t = _v_local(el_t, e_t.v_end.vertex_index)
-        w0t = self.elementLocalToWorld(str(element_id_t), p0t)
-        w1t = self.elementLocalToWorld(str(element_id_t), p1t)
+        w0t = self.elementLocalToWorld(element_id_t, p0t)
+        w1t = self.elementLocalToWorld(element_id_t, p1t)
 
-        if str(mapping).lower() == "direct":
+        if mapping.lower() == "direct":
             W0, W1 = w0t, w1t
-        elif str(mapping).lower() == "reverse":
+        elif mapping.lower() == "reverse":
             W0, W1 = w1t, w0t
         else:
             raise ValueError(f"compute_pose_edge_to_edge: mapping invalide: {mapping}")
@@ -3839,10 +3872,10 @@ class TopologyWorld:
         gid_last: str | None = None
         for att in list(attachments or []):
             # Si ID vide OU collision => on régénère ici.
-            if (att.attachment_id is None) or (str(att.attachment_id) in self.attachments):
+            if (att.attachment_id is None) or (att.attachment_id in self.attachments):
                 att.attachment_id = self.new_attachment_id()
             gid_last = self.apply_attachment(att)
-        return str(gid_last) if gid_last is not None else ""
+        return gid_last if gid_last is not None else ""
 
     def _edge_endpoints_atomic_nodes(self, edge: TopologyEdge) -> tuple[str, str]:
         return (edge.v_start.node_id, edge.v_end.node_id)
@@ -3934,12 +3967,11 @@ class TopologyWorld:
             t_val = 1.0
         attachment.params["t"] = t_val
         edge_from = attachment.params.get("edgeFrom", None)
-        if edge_from is None or str(edge_from).strip() == "":
+        if edge_from is None or edge_from.strip() == "":
             raise ValueError(f"[P2][Attachment] vertex-edge missing edgeFrom id={attachment.attachment_id}")
-        edge_from = str(edge_from)
         e = self.get_edge(attachment.feature_b.element_id, attachment.feature_b.index)
-        s = str(e.v_start.node_id)
-        t = str(e.v_end.node_id)
+        s = e.v_start.node_id
+        t = e.v_end.node_id
         if edge_from != s and edge_from != t:
             raise ValueError(
                 f"[P2][Attachment] vertex-edge edgeFrom not on edge (edgeFrom={edge_from}) id={attachment.attachment_id}"
@@ -3955,8 +3987,8 @@ class TopologyWorld:
         gA = self.get_group_of_element(attachment.feature_a.element_id)
         gB = self.get_group_of_element(attachment.feature_b.element_id)
         gC = self.union_groups(gA, gB) if gA != gB else gA
+        kind = attachment.kind
 
-        kind = str(attachment.kind)
         if kind == "vertex-vertex":
             vA = self.get_vertex(attachment.feature_a.element_id, attachment.feature_a.index)
             vB = self.get_vertex(attachment.feature_b.element_id, attachment.feature_b.index)
@@ -3979,15 +4011,15 @@ class TopologyWorld:
             if t is None:
                 raise ValueError("vertex-edge: parametre t manquant")
             edge_from = attachment.params.get("edgeFrom", None)
-            if edge_from is None or str(edge_from).strip() == "":
+            if edge_from is None or (edge_from).strip() == "":
                 raise ValueError("vertex-edge: parametre edgeFrom manquant")
 
             v = self.get_vertex(vRef.element_id, vRef.index)
             e = self.get_edge(eRef.element_id, eRef.index)
-            edge_from = str(edge_from)
-            if edge_from == str(e.v_start.node_id):
+
+            if edge_from == e.v_start.node_id:
                 t_val = float(t)
-            elif edge_from == str(e.v_end.node_id):
+            elif edge_from == e.v_end.node_id:
                 t_val = 1.0 - float(t)
             else:
                 raise ValueError(f"vertex-edge: edgeFrom incoherent (edgeFrom={edge_from})")
@@ -4001,7 +4033,7 @@ class TopologyWorld:
             eA = self.get_edge(attachment.feature_a.element_id, attachment.feature_a.index)
             eB = self.get_edge(attachment.feature_b.element_id, attachment.feature_b.index)
 
-            mapping = str(attachment.params.get("mapping", "direct"))
+            mapping = attachment.params.get("mapping", "direct")
             a0, a1 = self._edge_endpoints_atomic_nodes(eA)
             b0, b1 = self._edge_endpoints_atomic_nodes(eB)
 
@@ -4031,7 +4063,8 @@ class TopologyWorld:
         gB = self.get_group_of_element(attachment.feature_b.element_id)
         gC = self.union_groups(gA, gB) if gA != gB else gA
 
-        kind = str(attachment.kind)
+        kind = attachment.kind
+
         if kind == "vertex-vertex":
             vA = self.get_vertex(attachment.feature_a.element_id, attachment.feature_a.index)
             vB = self.get_vertex(attachment.feature_b.element_id, attachment.feature_b.index)
@@ -4052,9 +4085,9 @@ class TopologyWorld:
             edge_from = attachment.params.get("edgeFrom", None)
             if edge_from is None:
                 raise ValueError("Snapshot invalide : edgeFrom non porte par l'arete referencee")
-            edge_from = str(edge_from)
-            s = str(e.v_start.node_id)
-            tnode = str(e.v_end.node_id)
+
+            s = e.v_start.node_id
+            tnode = e.v_end.node_id
             if edge_from != s and edge_from != tnode:
                 raise ValueError("Snapshot invalide : edgeFrom non porte par l'arete referencee")
 
@@ -4075,7 +4108,7 @@ class TopologyWorld:
         elif kind == "edge-edge":
             eA = self.get_edge(attachment.feature_a.element_id, attachment.feature_a.index)
             eB = self.get_edge(attachment.feature_b.element_id, attachment.feature_b.index)
-            mapping = str(attachment.params.get("mapping", "direct"))
+            mapping = attachment.params.get("mapping", "direct")
             a0, a1 = self._edge_endpoints_atomic_nodes(eA)
             b0, b1 = self._edge_endpoints_atomic_nodes(eB)
             if mapping == "direct":
@@ -4140,23 +4173,23 @@ class TopologyWorld:
         if int(getattr(self, "_topoTxDepth", 0)) > 0:
             raise ValueError("TopologyWorld.removeElementsAndRebuild: transaction ouverte")
 
-        removed: set[str] = {str(e).strip() for e in (elementIds or []) if str(e).strip()}
+        removed: set[str] = {e.strip() for e in (elementIds or []) if e.strip()}
         if not removed:
             return
 
         # Snapshot des groupes concernés (pour invalider / nettoyer des sous-systèmes, ex: chemins)
         removedGroups: set[str] = set()
         for eid in list(removed):
-            gid0 = self.element_to_group.get(str(eid))
+            gid0 = self.element_to_group.get(eid)
             if gid0 is not None:
-                removedGroups.add(str(self.find_group(str(gid0))))
+                removedGroups.add(self.find_group(gid0))
 
         # 1) Filtrer les attachments conservés (avant de modifier self.attachments)
         keptAttachments: list[TopologyAttachment] = []
         for att in list(getattr(self, "attachments", {}).values()):
             try:
-                a_eid = str(att.feature_a.element_id)
-                b_eid = str(att.feature_b.element_id)
+                a_eid = att.feature_a.element_id
+                b_eid = att.feature_b.element_id
             except Exception as e:
                 raise ValueError("TopologyWorld.removeElementsAndRebuild: attachment corrompu (feature)") from e
             if a_eid in removed or b_eid in removed:
@@ -4165,14 +4198,14 @@ class TopologyWorld:
 
         # 2) Supprimer les éléments + noeuds atomiques
         for eid in list(removed):
-            el = self.elements.get(str(eid))
+            el = self.elements.get(eid)
             if el is None:
                 # Suppression idempotente : si l'élément n'existe déjà plus, on continue.
                 continue
 
             # Noeuds atomiques de l'élément
             for v in list(getattr(el, "vertexes", []) or []):
-                nid = str(getattr(v, "node_id", ""))
+                nid = v.node_id
                 if not nid:
                     continue
                 # DSU nodes / metadata
@@ -4186,26 +4219,26 @@ class TopologyWorld:
                     self._node_created_order.pop(nid, None)
 
             # Retirer l'élément du mapping element->group
-            gid0 = self.element_to_group.pop(str(eid), None)
+            gid0 = self.element_to_group.pop(eid, None)
             if gid0 is not None:
-                gidc = str(self.find_group(str(gid0)))
+                gidc = self.find_group(gid0)
                 g = self.groups.get(gidc)
-                if g is not None and str(eid) in list(getattr(g, "element_ids", []) or []):
-                    g.element_ids = [x for x in list(g.element_ids) if str(x) != str(eid)]
+                if g is not None and eid in list(getattr(g, "element_ids", []) or []):
+                    g.element_ids = [x for x in list(g.element_ids) if x != eid]
 
             # Retirer l'élément
-            self.elements.pop(str(eid), None)
+            self.elements.pop(eid, None)
 
         # 3) Purger les groupes vides / orphelins
-        usedRaw = {str(g) for g in (self.element_to_group.values() or [])}
-        usedCanon = {str(self.find_group(g)) for g in list(usedRaw)} if usedRaw else set()
+        usedRaw = {g for g in (self.element_to_group.values() or [])}
+        usedCanon = {self.find_group(g) for g in list(usedRaw)} if usedRaw else set()
 
         for gid in list(self.groups.keys()):
-            if str(self.find_group(str(gid))) not in usedCanon:
+            if self.find_group(gid) not in usedCanon:
                 self.groups.pop(gid, None)
 
         for gid in list(self._group_parent.keys()):
-            if str(self.find_group(str(gid))) not in usedCanon:
+            if self.find_group(gid) not in usedCanon:
                 self._group_parent.pop(gid, None)
                 self._group_members.pop(gid, None)
                 self._group_created_order.pop(gid, None)
@@ -4218,22 +4251,22 @@ class TopologyWorld:
         # 5) Chemins : si le chemin courant porte sur un groupe supprimé, on le supprime.
         tc = getattr(self, "topologyChemins", None)
         if tc is not None and bool(getattr(tc, "isDefined", False)):
-            gidChemin = str(getattr(tc, "groupId", "") or "")
-            if gidChemin and str(self.find_group(gidChemin)) in removedGroups:
+            gidChemin = tc.groupId
+            if gidChemin and self.find_group(gidChemin) in removedGroups:
                 tc.supprimerChemin()
 
         # 6) Invalidation conceptuelle des groupes touchés
         for gid in (usedCanon | removedGroups):
             if gid:
-                self.invalidateConceptGraph(str(gid))
+                self.invalidateConceptGraph(gid)
 
     # ------------------------------------------------------------------
     # Dégrouper par nœud (suppression d'attachments + rebuild complet)
     # ------------------------------------------------------------------
 
     def _degrouperAttachmentElementPair(self, att: TopologyAttachment) -> tuple[str, str]:
-        eA = str(getattr(att.feature_a, "element_id", "") or "")
-        eB = str(getattr(att.feature_b, "element_id", "") or "")
+        eA = getattr(att.feature_a, "element_id", "") or ""
+        eB = getattr(att.feature_b, "element_id", "") or ""
         if not eA or not eB:
             raise ValueError(f"[degrouper] attachment sans elementId (aid={att.attachment_id})")
         return (eA, eB)
@@ -4248,21 +4281,21 @@ class TopologyWorld:
         return out
 
     def _degrouperIsVertexFeatureOnNode(self, f: TopologyFeatureRef, nodeId: str) -> bool:
-        if str(f.feature_type) != TopologyFeatureType.VERTEX:
+        if f.feature_type != TopologyFeatureType.VERTEX:
             raise ValueError(f"[degrouper] feature attendue vertex, reçu={f.feature_type}")
-        v = self.get_vertex(str(f.element_id), int(f.index))
-        return str(self.find_node(str(v.node_id))) == str(nodeId)
+        v = self.get_vertex(f.element_id, f.index)
+        return self.find_node(v.node_id) == nodeId
 
     def _degrouperIsEdgeFeatureOnNode(self, f: TopologyFeatureRef, nodeId: str) -> bool:
-        if str(f.feature_type) != TopologyFeatureType.EDGE:
+        if f.feature_type != TopologyFeatureType.EDGE:
             raise ValueError(f"[degrouper] feature attendue edge, reçu={f.feature_type}")
-        e = self.get_edge(str(f.element_id), int(f.index))
-        a = str(self.find_node(str(e.v_start.node_id)))
-        b = str(self.find_node(str(e.v_end.node_id)))
-        return (a == str(nodeId)) or (b == str(nodeId))
+        e = self.get_edge(f.element_id, int(f.index))
+        a = self.find_node(e.v_start.node_id)
+        b = self.find_node(str(e.v_end.node_id))
+        return (a == nodeId) or (b == nodeId)
 
     def _degrouperIsVertexVertexIncident(self, att: TopologyAttachment, nodeId: str) -> bool:
-        if str(att.kind) != "vertex-vertex":
+        if att.kind != "vertex-vertex":
             return False
         return (
             self._degrouperIsVertexFeatureOnNode(att.feature_a, nodeId)
@@ -4270,7 +4303,7 @@ class TopologyWorld:
         )
 
     def _degrouperIsEdgeEdgeIncident(self, att: TopologyAttachment, nodeId: str) -> bool:
-        if str(att.kind) != "edge-edge":
+        if att.kind != "edge-edge":
             return False
         return (
             self._degrouperIsEdgeFeatureOnNode(att.feature_a, nodeId)
@@ -4278,30 +4311,30 @@ class TopologyWorld:
         )
 
     def _degrouperVertexEdgeTrianglePair(self, att: TopologyAttachment) -> tuple[str, str]:
-        if str(att.kind) != "vertex-edge":
+        if att.kind != "vertex-edge":
             raise ValueError(f"[degrouper] kind inattendu pour vertex-edge pair: {att.kind}")
 
         a = att.feature_a
         b = att.feature_b
-        ta = str(a.feature_type)
-        tb = str(b.feature_type)
+        ta = a.feature_type
+        tb = b.feature_type
 
         if ta == TopologyFeatureType.VERTEX and tb == TopologyFeatureType.EDGE:
-            return (str(a.element_id), str(b.element_id))
+            return (a.element_id, b.element_id)
         if ta == TopologyFeatureType.EDGE and tb == TopologyFeatureType.VERTEX:
-            return (str(b.element_id), str(a.element_id))
+            return (b.element_id, a.element_id)
 
         raise ValueError(f"[degrouper] vertex-edge invalide (aid={att.attachment_id})")
 
     def canDegrouperAtNode(self, groupId: str, nodeId: str) -> bool:
-        gid = self.find_group(str(groupId))
-        nid = self.find_node(str(nodeId))
+        gid = self.find_group(groupId)
+        nid = self.find_node(nodeId)
         self.rebuildGroupElementLists()
         g = self.groups.get(gid)
         if g is None:
             return False
 
-        elementIds = {str(eid) for eid in list(getattr(g, "element_ids", []) or [])}
+        elementIds = {eid for eid in list(getattr(g, "element_ids", []) or [])}
         if not elementIds:
             return False
 
@@ -4337,15 +4370,15 @@ class TopologyWorld:
         if int(getattr(self, "_topoTxDepth", 0)) > 0:
             raise ValueError("TopologyWorld.degrouperAtNode: transaction ouverte")
 
-        gid = self.find_group(str(groupId))
-        nid = self.find_node(str(nodeId))
+        gid = self.find_group(groupId)
+        nid = self.find_node(nodeId)
         assert gid in self.groups, f"[degrouper] groupe introuvable: {groupId}"
 
         # A) Entrées du groupe source
         self.rebuildGroupElementLists()
         g = self.groups.get(gid)
         assert g is not None, f"[degrouper] groupe canonique introuvable: {gid}"
-        sourceElementIds = sorted({str(eid) for eid in list(getattr(g, "element_ids", []) or [])})
+        sourceElementIds = sorted({eid for eid in list(getattr(g, "element_ids", []) or [])})
         sourceSet = set(sourceElementIds)
         assert sourceSet, f"[degrouper] groupe vide: {gid}"
 
@@ -4364,7 +4397,7 @@ class TopologyWorld:
 
         toRemove: set[str] = set()
         for att in (vvIncident + eeIncident):
-            aid = str(getattr(att, "attachment_id", "") or "")
+            aid = getattr(att, "attachment_id", "") or ""
             assert aid, "[degrouper] attachment sans id"
             toRemove.add(aid)
 
@@ -4376,16 +4409,16 @@ class TopologyWorld:
 
         if vvTrianglePairsOriented:
             for att in groupAttachments:
-                if str(att.kind) != "vertex-edge":
+                if att.kind != "vertex-edge":
                     continue
                 tv, te = self._degrouperVertexEdgeTrianglePair(att)
                 if (tv, te) in vvTrianglePairsOriented:
-                    aid = str(getattr(att, "attachment_id", "") or "")
+                    aid = getattr(att, "attachment_id", "") or ""
                     assert aid, "[degrouper] attachment sans id"
                     toRemove.add(aid)
 
         allAttachmentsSorted = [self.attachments[aid] for aid in sorted(self.attachments.keys())]
-        keptAttachments = [att for att in allAttachmentsSorted if str(att.attachment_id) not in toRemove]
+        keptAttachments = [att for att in allAttachmentsSorted if att.attachment_id not in toRemove]
 
         # C) Rebuild conceptuel intermédiaire
         self.rebuild_from_attachments(keptAttachments)
@@ -4424,17 +4457,17 @@ class TopologyWorld:
         mainGroupId = gid
         mainComponent = components[0]
         for eid in mainComponent:
-            self.element_to_group[str(eid)] = mainGroupId
+            self.element_to_group[eid] = mainGroupId
 
         newGroupIds: list[str] = []
         movedElementIdsByGroup: dict[str, list[str]] = {}
         for comp in components[1:]:
             newGid = self.createAtomicGroup()
             newGroupIds.append(newGid)
-            moved = sorted({str(eid) for eid in comp})
+            moved = sorted({eid for eid in comp})
             movedElementIdsByGroup[newGid] = moved
             for eid in moved:
-                self.element_to_group[str(eid)] = newGid
+                self.element_to_group[eid] = newGid
 
         self.rebuild_from_attachments(keptAttachments)
         self.rebuildGroupElementLists()
@@ -4445,33 +4478,33 @@ class TopologyWorld:
 
         # Invariant: aucune attache ne relie 2 groupes différents.
         for att in self.attachments.values():
-            gA = self.get_group_of_element(str(att.feature_a.element_id))
-            gB = self.get_group_of_element(str(att.feature_b.element_id))
+            gA = self.get_group_of_element(att.feature_a.element_id)
+            gB = self.get_group_of_element(att.feature_b.element_id)
             assert gA == gB, (
                 f"[degrouper] attachment inter-groupes interdit: aid={att.attachment_id} gA={gA} gB={gB}"
             )
 
         # F) Recompute concept + contour
         for rid in allResultGroupIds:
-            ridc = self.find_group(str(rid))
-            assert ridc == str(rid), f"[degrouper] groupId canonique inattendu: req={rid} got={ridc}"
+            ridc = self.find_group(rid)
+            assert ridc == rid, f"[degrouper] groupId canonique inattendu: req={rid} got={ridc}"
             self.recomputeConceptAndBoundary(rid)
             boundary = self.getBoundarySegments(rid)
             assert len(boundary) >= 3, f"[degrouper] contour invalide pour {rid}"
 
         # G) Chemins: casser si le groupe touché portait le chemin
-        tc = getattr(self, "topologyChemins", None)
+        tc = self.topologyChemins
         if tc is not None and bool(getattr(tc, "isDefined", False)):
-            tcGroupId = str(getattr(tc, "groupId", "") or "")
+            tcGroupId = tc.groupId
             if tcGroupId and self.find_group(tcGroupId) == mainGroupId:
                 tc.supprimerChemin()
 
         # H) Retour normatif
         return {
-            "mainGroupId": str(mainGroupId),
-            "newGroupIds": [str(x) for x in newGroupIds],
-            "movedElementIdsByGroup": {str(k): [str(eid) for eid in v] for k, v in movedElementIdsByGroup.items()},
-            "allResultGroupIds": [str(x) for x in allResultGroupIds],
+            "mainGroupId": mainGroupId,
+            "newGroupIds": [x for x in newGroupIds],
+            "movedElementIdsByGroup": {k: [eid for eid in v] for k, v in movedElementIdsByGroup.items()},
+            "allResultGroupIds": [x for x in allResultGroupIds],
         }
 
     # ------------------------------------------------------------------
@@ -4486,8 +4519,8 @@ class TopologyWorld:
             el = self.elements[eid]
             R, T, mirrored = el.get_pose()
             elements_payload.append({
-                "element_id": str(el.element_id),
-                "name": str(el.name),
+                "element_id": el.element_id,
+                "name": el.name,
                 "vertex_labels": list(el.vertex_labels),
                 "vertex_types": list(el.vertex_types),
                 "edge_lengths_km": [float(x) for x in el.edge_lengths_km],
@@ -4506,22 +4539,22 @@ class TopologyWorld:
         attachments_payload: list[dict] = []
         for att in self.attachments.values():
             attachments_payload.append({
-                "attachment_id": str(att.attachment_id),
-                "kind": str(att.kind),
+                "attachment_id": att.attachment_id,
+                "kind": att.kind,
                 "feature_a": {
-                    "feature_type": str(att.feature_a.feature_type),
-                    "element_id": str(att.feature_a.element_id),
+                    "feature_type": att.feature_a.feature_type,
+                    "element_id": att.feature_a.element_id,
                     "index": int(att.feature_a.index),
                     "t": None if att.feature_a.t is None else float(att.feature_a.t),
                 },
                 "feature_b": {
-                    "feature_type": str(att.feature_b.feature_type),
-                    "element_id": str(att.feature_b.element_id),
+                    "feature_type": att.feature_b.feature_type,
+                    "element_id": att.feature_b.element_id,
                     "index": int(att.feature_b.index),
                     "t": None if att.feature_b.t is None else float(att.feature_b.t),
                 },
                 "params": dict(att.params) if att.params is not None else {},
-                "source": str(att.source),
+                "source": att.source,
             })
 
         config_payload = {
@@ -4533,10 +4566,10 @@ class TopologyWorld:
 
         anchors_payload = [
             {
-                "anchor_id": str(anchor.anchor_id),
-                "group_id": str(anchor.group_id),
-                "beacon_id": str(anchor.beacon_id),
-                "node_id": str(anchor.node_id),
+                "anchor_id": anchor.anchor_id,
+                "group_id": anchor.group_id,
+                "beacon_id": anchor.beacon_id,
+                "node_id": anchor.node_id,
             }
             for anchor in sorted(self.groupAnchors.values(), key=lambda item: item.anchor_id)
         ]
@@ -4563,7 +4596,7 @@ class TopologyWorld:
 
             elements_payload = list(snapshot.get("elements", []) or [])
             for el in elements_payload:
-                eid = str(el.get("element_id"))
+                eid = el.get("element_id")
                 raw_vxy = el.get("vertex_local_xy", {}) or {}
                 vertex_local_xy = {}
                 for k, v in dict(raw_vxy).items():
@@ -4571,7 +4604,7 @@ class TopologyWorld:
                     vertex_local_xy[kk] = (float(v[0]), float(v[1]))
                 clone = TopologyElement(
                     element_id=eid,
-                    name=str(el.get("name", "")),
+                    name=el.get("name", ""),
                     vertex_labels=list(el.get("vertex_labels", [])),
                     vertex_types=list(el.get("vertex_types", [])),
                     edge_lengths_km=list(el.get("edge_lengths_km", [])),
@@ -4608,15 +4641,15 @@ class TopologyWorld:
                     t=fb.get("t", None),
                 )
                 attachment = TopologyAttachment(
-                    attachment_id=str(att.get("attachment_id")),
-                    kind=str(att.get("kind")),
+                    attachment_id=att.get("attachment_id"),
+                    kind=att.get("kind"),
                     feature_a=feature_a,
                     feature_b=feature_b,
                     params=dict(att.get("params", {}) or {}),
-                    source=str(att.get("source", "manual")),
+                    source=att.get("source", "manual"),
                 )
                 self.loadAttachment(attachment)
-                m = re.search(r"(?:^A|:A)(\d+)$", str(attachment.attachment_id))
+                m = re.search(r"(?:^A|:A)(\d+)$", attachment.attachment_id)
                 if m:
                     max_att_num = max(max_att_num, int(m.group(1)))
 
@@ -4632,10 +4665,10 @@ class TopologyWorld:
             self.groupAnchors = {}
             max_anchor_num = 0
             for payload in anchors_payload:
-                anchor_id = str(payload.get("anchor_id", "") or "").strip()
-                group_id = str(payload.get("group_id", "") or "").strip()
-                beacon_id = str(payload.get("beacon_id", "") or "").strip()
-                node_id = str(payload.get("node_id", "") or "").strip()
+                anchor_id = (payload.get("anchor_id", "") or "").strip()
+                group_id = (payload.get("group_id", "") or "").strip()
+                beacon_id = (payload.get("beacon_id", "") or "").strip()
+                node_id = (payload.get("node_id", "") or "").strip()
                 if not anchor_id or not re.fullmatch(r"AN\d{3,}", anchor_id):
                     raise ValueError(f"TopologyWorld: anchor_id invalide: {anchor_id!r}")
                 if anchor_id in self.groupAnchors:
@@ -4680,7 +4713,7 @@ class TopologyWorld:
         if node_id is None:
             return None
 
-        m = re.fullmatch(r"(T\d+):N(\d+)", str(node_id))
+        m = re.fullmatch(r"(T\d+):N(\d+)", node_id)
         if not m:
             return None
 
@@ -4692,9 +4725,9 @@ class TopologyWorld:
         """Retourne le label métier (ville) d'un node atomique.
         Fallback: 'N0', 'N1', ...
         """
-        parsed = self._parseElementAndVertexIndexFromNodeId(str(node_id))
+        parsed = self._parseElementAndVertexIndexFromNodeId(node_id)
         if parsed is None:
-            return str(node_id)
+            return node_id
 
         element_id, vidx = parsed
         el = self.elements.get(element_id)
@@ -4703,9 +4736,9 @@ class TopologyWorld:
 
         # v4.3 : labels portés par TopologyVertex / vertex_labels
         if hasattr(el, "vertexes") and el.vertexes and 0 <= vidx < len(el.vertexes):
-            return str(el.vertexes[vidx].label)
+            return el.vertexes[vidx].label
         if hasattr(el, "vertex_labels") and 0 <= vidx < len(el.vertex_labels):
-            return str(el.vertex_labels[vidx])
+            return el.vertex_labels[vidx]
 
         return f"N{vidx}"
 
@@ -4718,25 +4751,24 @@ class TopologyWorld:
         """Label métier d'un node (canonique ou atomique).
         - si node_id est canonique (DSU), agrège les labels de ses membres.
         """
-        nid = str(node_id)
-        if nid not in self._node_parent:
-            return self.getAtomicNodeLabel(nid)
-        c = self.find_node(nid)
+        if node_id not in self._node_parent:
+            return self.getAtomicNodeLabel(node_id)
+        c = self.find_node(node_id)
         uniq = sorted({self.getAtomicNodeLabel(m) for m in self.node_members(c)})
         if len(uniq) == 0:
-            return self.getAtomicNodeLabel(nid)
+            return self.getAtomicNodeLabel(node_id)
         if len(uniq) == 1:
             return uniq[0]
-        return "|".join([str(x) for x in uniq])
+        return "|".join([x for x in uniq])
 
     def getConceptNodeLabel(self, node_id: str) -> str:
         """Label métier d'un concept node (DSU canonique)."""
-        return self.getNodeLabel(self.find_node(str(node_id)))
+        return self.getNodeLabel(self.find_node(node_id))
 
     def getPhysicalNodeName(self, node_id: str) -> str:
         node_type = self.getNodeTypeAtomic(node_id)
-        label = self.getAtomicNodeLabel(str(node_id))
-        tri = self._parseTriangleIdFromNodeId(str(node_id))
+        label = self.getAtomicNodeLabel(node_id)
+        tri = self._parseTriangleIdFromNodeId(node_id)
         return f"{node_type}:{label}({tri})"
 
     def getConceptNodeName(self, node_id: str) -> str:
@@ -4746,18 +4778,18 @@ class TopologyWorld:
         Ne choisit pas une vue physique et ne retourne pas d'ID.
         Ne modifie pas la topologie ni les caches.
         """
-        cn = self.find_node(str(node_id))
+        cn = self.find_node(node_id)
         member_ids = list(self.node_members(cn))
         node_type = self.computeConceptNodeTypeOptionB(member_ids)
         label = self.getNodeLabel(cn)
         return f"{node_type}:{label}"
 
     def getPhysicalNodesForConceptNode(self, node_id: str) -> list[str]:
-        cn = self.find_node(str(node_id))
+        cn = self.find_node(node_id)
         return self.node_members(cn)
 
     def getNodeTypeAtomic(self, node_id: str) -> str:
-        return str(self._node_type[str(node_id)])
+        return self._node_type[node_id]
 
     def resolvePhysicalNodeIdDeterministic(self, nodeId: str) -> str | None:
         """Retourne un nodeId physique 'Txx:Nn' depuis un nodeId (DSU canon ou déjà physique).
@@ -4765,17 +4797,15 @@ class TopologyWorld:
         if nodeId is None:
             return None
 
-        s = str(nodeId)
-
         # déjà physique ?
-        if self._parseElementAndVertexIndexFromNodeId(s) is not None:
-            return s
+        if self._parseElementAndVertexIndexFromNodeId(nodeId) is not None:
+            return nodeId
 
-        canon = str(self.find_node(s))
+        canon = self.find_node(nodeId)
         phys = self.getPhysicalNodesForConceptNode(canon) or []   # retourne node_members(canon)
         if not phys:
             return None
-        return sorted(str(p) for p in phys)[0]
+        return sorted(p for p in phys)[0]
 
     def getElementVertexFromAnyNodeId(self, nodeId: str, groupId: str | None = None) -> dict | None:
         """Retourne une ref exploitable par Tk:
@@ -4792,18 +4822,18 @@ class TopologyWorld:
         elementId, vertexIndex = parsed
 
         # vkey = type atomique ("O","B","L") du noeud physique
-        vkey = str(self.getNodeTypeAtomic(physId))
-        gid = str(groupId) if groupId is not None else str(self._infer_group_for_node(physId))
+        vkey = self.getNodeTypeAtomic(physId)
+        gid = groupId if groupId is not None else self._infer_group_for_node(physId)
 
         canon = str(self.find_node(physId))
         wbest = self.getConceptNodeWorldXY(canon, gid)
 
         return {
             "nodeCanon": canon,
-            "nodePhys": str(physId),
-            "elementId": str(elementId),
+            "nodePhys": physId,
+            "elementId": elementId,
             "vertexIndex": int(vertexIndex),
-            "vkey": str(vkey),
+            "vkey": vkey,
             "wbest": (float(wbest[0]), float(wbest[1])),
         }
 
@@ -4826,7 +4856,7 @@ class TopologyWorld:
         if node_id is None:
             return "T??"
 
-        m = re.fullmatch(r"(T\d+):N\d+", str(node_id))
+        m = re.fullmatch(r"(T\d+):N\d+", node_id)
         if not m:
             return "T??"
         return m.group(1)
@@ -4853,12 +4883,12 @@ class TopologyWorld:
         try:
             self.assertNoPhysicalSplitPoints()
         except RuntimeError as exc:
-            errors.append(str(exc))
+            errors.append(exc)
         for aid in sorted(self.attachments.keys()):
             try:
                 self._validate_attachment_p2(self.attachments[aid])
             except ValueError as exc:
-                errors.append(str(exc))
+                errors.append(exc)
         eps_t = float(getattr(self, "concept_split_epsilon_t", 1e-9))
         for el in self.elements.values():
             for edge in el.edges:
@@ -4866,7 +4896,7 @@ class TopologyWorld:
                     if c.t0 >= c.t1:
                         errors.append(f"Edge {edge.edge_id()}: coverage dégénéré [{c.t0},{c.t1}]")
 
-                gid = self.element_to_group.get(str(el.element_id))
+                gid = self.element_to_group.get(el.element_id)
                 if gid is None:
                     continue
                 try:
@@ -4874,12 +4904,12 @@ class TopologyWorld:
                 except ValueError as exc:
                     errors.append(str(exc))
                     continue
-                edge_id = str(edge.edge_id())
+                edge_id = edge.edge_id()
                 occs = [
                     occ for ce in ccache.edges.values()
                     for occ in ce.occurrences
-                    if str(occ.get("elementId")) == str(el.element_id)
-                    and str(occ.get("edgeId")) == edge_id
+                    if occ.get("elementId") == el.element_id
+                    and occ.get("edgeId") == edge_id
                 ]
                 if not occs:
                     errors.append(f"[C2][{edge_id}] no concept occurrences (no coverage)")
@@ -4988,13 +5018,13 @@ class TopologyWorld:
         if len(tc.selectionMask) != len(tc.borderSnapshotNodes):
             raise RuntimeError("[CheminsDump] borderSnapshot/selectionMask tailles differentes")
 
-        chemins_el.set("groupId", str(tc.groupId))
-        chemins_el.set("startNodeId", str(tc.startNodeId))
+        chemins_el.set("groupId", tc.groupId)
+        chemins_el.set("startNodeId", tc.startNodeId)
         chemins_el.set("orientationUser", orient)
 
         border_el = _ET.SubElement(chemins_el, "borderSnapshot")
         for nid in tc.borderSnapshotNodes:
-            _ET.SubElement(border_el, "node", {"id": str(nid)})
+            _ET.SubElement(border_el, "node", {"id": nid})
 
         mask_el = _ET.SubElement(chemins_el, "selectionMask")
         for selected in tc.selectionMask:
@@ -5002,7 +5032,7 @@ class TopologyWorld:
 
         path_el = _ET.SubElement(chemins_el, "pathNodesOrdered")
         for nid in tc.pathNodesOrdered:
-            _ET.SubElement(path_el, "node", {"id": str(nid)})
+            _ET.SubElement(path_el, "node", {"id": nid})
 
         triplets_el = _ET.SubElement(chemins_el, "triplets")
         for t in tc.triplets:
@@ -5011,9 +5041,9 @@ class TopologyWorld:
                     f"[CheminsDump] triplet sans geometrie valide: ({t.nodeA},{t.nodeO},{t.nodeB})"
                 )
             _ET.SubElement(triplets_el, "triplet", {
-                "A": str(t.nodeA),
-                "O": str(t.nodeO),
-                "B": str(t.nodeB),
+                "A": t.nodeA,
+                "O": t.nodeO,
+                "B": t.nodeB,
                 "azOA": self._format_chemin_angle(t.azOA),
                 "azOB": self._format_chemin_angle(t.azOB),
                 "distOA_km": self._format_chemin_distance(t.distOA_km),
@@ -5046,9 +5076,9 @@ class TopologyWorld:
         if catalog is not None:
             for model in catalog.models():
                 _ET.SubElement(catalog_el, "Model", {
-                    "modelId": str(model.model_id),
+                    "modelId": model.model_id,
                     "rank": str(model.rank),
-                    "orient": str(model.orient),
+                    "orient": model.orient,
                     "labels": "|".join(model.vertex_labels),
                     "edgeLengthsKm": ",".join(
                         f"{float(length):.12g}" for length in model.edge_lengths_km
@@ -5079,10 +5109,10 @@ class TopologyWorld:
         anchors_el = _ET.SubElement(root, "GroupAnchors")
         for anchor in sorted(self.groupAnchors.values(), key=lambda item: item.anchor_id):
             _ET.SubElement(anchors_el, "GroupAnchor", {
-                "id": str(anchor.anchor_id),
-                "group": str(anchor.group_id),
-                "beacon": str(anchor.beacon_id),
-                "node": str(anchor.node_id),
+                "id": anchor.anchor_id,
+                "group": anchor.group_id,
+                "beacon": anchor.beacon_id,
+                "node": anchor.node_id,
             })
 
         nodes_el = _ET.SubElement(root, "Nodes")
@@ -5104,25 +5134,25 @@ class TopologyWorld:
                 continue
             ccache = self.ensureConceptGeom(gid)
 
-            cm = _ET.SubElement(cm_all, "ConceptModel", {"version": "1.0", "group": str(gid)})
+            cm = _ET.SubElement(cm_all, "ConceptModel", {"version": "1.0", "group": gid})
             cns = _ET.SubElement(cm, "ConceptNodes")
             for cid in sorted(ccache.nodes.keys()):
                 xy = ccache.nodes[cid].world_xy()
                 member_ids = sorted(self.node_members(cid))
                 concept_type = self.computeConceptNodeTypeOptionB(member_ids)
                 cn_el = _ET.SubElement(cns, "ConceptNode", {
-                    "id": str(cid),
-                    "type": str(concept_type),
+                    "id": cid,
+                    "type": concept_type,
                     "x": f"{float(xy[0]):.6f}",
                     "y": f"{float(xy[1]):.6f}",
                 })
                 mem_el = _ET.SubElement(cn_el, "Members")
                 for mid in member_ids:
                     _ET.SubElement(mem_el, "M", {
-                        "id": str(mid),
-                        "type": str(self.getNodeTypeAtomic(mid)),
+                        "id": mid,
+                        "type": self.getNodeTypeAtomic(mid),
                         "tri": str(self._parseTriangleIdFromNodeId(str(mid))),
-                        "label": str(self.getAtomicNodeLabel(str(mid))),
+                        "label": self.getAtomicNodeLabel(str(mid)),
                     })
 
             ces = _ET.SubElement(cm, "ConceptEdges")
@@ -5134,26 +5164,26 @@ class TopologyWorld:
                 dist = float(math.hypot(dx, dy))
                 az = self.azimutDegFromDxDy(dx, dy)
                 ce_el = _ET.SubElement(ces, "ConceptEdge", {
-                    "a": str(a),
-                    "b": str(b),
+                    "a": a,
+                    "b": b,
                     "distanceKm": f"{dist:.6f}",
                     "azimutDeg": f"{az:.6f}",
                 })
                 occ_el = _ET.SubElement(ce_el, "Occurrences")
                 for occ in ccache.edges[(a, b)].occurrences:
                     _ET.SubElement(occ_el, "O", {
-                        "element": str(occ.get("elementId", "")),
-                        "edge": str(occ.get("edgeId", "")),
-                        "from": str(occ.get("fromNodeId", "")),
-                        "to": str(occ.get("toNodeId", "")),
+                        "element": occ.get("elementId", ""),
+                        "edge": occ.get("edgeId", ""),
+                        "from": occ.get("fromNodeId", ""),
+                        "to": occ.get("toNodeId", ""),
                         "t0": f"{float(occ.get('t0', 0.0)):.6f}",
                         "t1": f"{float(occ.get('t1', 0.0)):.6f}",
                     })
             if ccache.boundaryCycle:
-                bnd = _ET.SubElement(cm, "Boundary", {"orientation": str(ccache.boundaryOrientation)})
+                bnd = _ET.SubElement(cm, "Boundary", {"orientation": ccache.boundaryOrientation})
                 cycle_el = _ET.SubElement(bnd, "Cycle")
                 for nid in ccache.boundaryCycle:
-                    _ET.SubElement(cycle_el, "N", {"id": str(nid)})
+                    _ET.SubElement(cycle_el, "N", {"id": nid})
 
         self._dump_chemins_to_xml(root)
 
@@ -5166,7 +5196,7 @@ class TopologyWorld:
                 "id": el.element_id,
                 "name": el.name,
                 "n": str(el.n_vertices()),
-                "group": str(gid),
+                "group": gid,
                 "modelId": str(
                     el.model_id
                     or (
@@ -5307,7 +5337,7 @@ class TopologyWorld:
         p = np.array(pWorld, dtype=float)
 
         def _hit_for_gid(gid_in: str) -> dict | None:
-            gid = self.find_group(str(gid_in))
+            gid = self.find_group(gid_in)
 
             # boundary + géométrie conceptuelle requises
             self.computeBoundary(gid)  # no-op si déjà calculé/caché
@@ -5322,8 +5352,8 @@ class TopologyWorld:
 
             best = None  # (dist, proj, t, a, b)
             for s in segs:
-                a = str(s.conceptA)
-                b = str(s.conceptB)
+                a = s.conceptA
+                b = s.conceptB
 
                 pa = np.array(self.getConceptNodeWorldXY(a, gid), dtype=float)
                 pb = np.array(self.getConceptNodeWorldXY(b, gid), dtype=float)
@@ -5345,24 +5375,24 @@ class TopologyWorld:
             node = a if da <= db else b
 
             return {
-                "groupId": str(gid),
-                "nodeId": str(node),
+                "groupId": gid,
+                "nodeId": node,
                 "distKm": float(min(da, db)),
                 "ptOnBoundary": (float(proj[0]), float(proj[1])),
-                "segment": (str(a), str(b)),
+                "segment": (a, b),
                 "t": float(t),
             }
 
         # ---- mode 1 groupe (compat) ----
         if groupId is not None:
-            return _hit_for_gid(str(groupId))
+            return _hit_for_gid(groupId)
 
         # ---- mode scan global ----
         bestHit = None  # (distKm, hit_dict)
         seen = set()
 
         for gid0 in list(self.groups.keys()):
-            gid = str(self.find_group(str(gid0)))
+            gid = self.find_group(gid0)
             if gid in seen:
                 continue
             seen.add(gid)

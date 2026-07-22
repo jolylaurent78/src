@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from src.assembleur_balises import Beacon, BeaconCatalog
-from src.assembleur_core import TopologyElement, TopologyWorld
+from src.assembleur_core import ScenarioAssemblage, TopologyElement, TopologyWorld
 from src.assembleur_tk import TriangleViewerManual
 from src.canvas_objects_collection import CanvasObjectsCollection
 
@@ -28,6 +28,61 @@ def _element(element_id="T01"):
     )
 
 
+def _viewer_for_orientation_reference(world, catalog):
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.beacon_catalog = catalog
+    return viewer
+
+
+def test_orientation_reference_requires_an_anchor_on_l_and_uses_lowest_rank():
+    catalog = _catalog()
+    world = TopologyWorld(beacon_catalog=catalog)
+    first = _element("T01")
+    first.meta["triRank"] = 7
+    second = _element("T02")
+    second.meta["triRank"] = 3
+    group_first = world.add_element_as_new_group(first)
+    group_second = world.add_element_as_new_group(second)
+    anchor_o = world.createGroupAnchor(
+        group_first, "BAL-1", world.get_element_vertex_node_id_by_type("T01", "O")
+    )
+    anchor_l = world.createGroupAnchor(
+        group_second, "BAL-1", world.get_element_vertex_node_id_by_type("T02", "L")
+    )
+    assert anchor_o is not None and anchor_l is not None
+    theta = np.pi / 3.0
+    world.setElementPose(
+        "T02",
+        np.array(((np.cos(theta), -np.sin(theta)), (np.sin(theta), np.cos(theta)))),
+        np.zeros(2),
+    )
+
+    reference = _viewer_for_orientation_reference(world, catalog)._find_orientation_reference_for_beacon(
+        world, "BAL-1"
+    )
+
+    assert reference is not None
+    assert reference.element_id == "T02"
+    assert reference.tri_rank == 3
+    assert reference.theta_rad == pytest.approx(theta)
+
+
+def test_orientation_reference_rejects_duplicate_minimum_rank():
+    catalog = _catalog()
+    world = TopologyWorld(beacon_catalog=catalog)
+    for element_id in ("T01", "T02"):
+        element = _element(element_id)
+        element.meta["triRank"] = 5
+        group_id = world.add_element_as_new_group(element)
+        world.createGroupAnchor(
+            group_id, "BAL-1", world.get_element_vertex_node_id_by_type(element_id, "L")
+        )
+
+    viewer = _viewer_for_orientation_reference(world, catalog)
+    with pytest.raises(RuntimeError, match="ambiguë"):
+        viewer._find_orientation_reference_for_beacon(world, "BAL-1")
+
+
 def _viewer_with_one_group():
     catalog = _catalog()
     world = TopologyWorld(beacon_catalog=catalog)
@@ -45,6 +100,7 @@ def _viewer_with_one_group():
     viewer._edge_choice = None
     viewer._edge_highlights = None
     viewer._group_drag_snap_candidate = None
+    viewer.show_balises_layer = SimpleNamespace(get=lambda: True)
     viewer._nearest_line_id = None
     viewer._edge_highlight_ids = []
     viewer._update_assist_line_to_world = lambda *_args, **_kwargs: None
@@ -140,6 +196,23 @@ def test_non_raccordable_vertex_is_eliminated_in_favor_of_beacon():
     )
 
     assert candidate["type"] == "beacon"
+
+
+def test_hidden_beacon_layer_skips_beacon_lookup_during_group_drag():
+    viewer, _world, group_id = _viewer_with_one_group()
+    viewer.show_balises_layer = SimpleNamespace(get=lambda: False)
+    viewer._find_nearest_beacon_candidate = lambda _world: pytest.fail(
+        "la recherche de balise ne doit pas être exécutée"
+    )
+    viewer._update_nearest_line = lambda *_args, **_kwargs: None
+    viewer._update_edge_highlights = lambda *_args, **_kwargs: None
+    mobile_world = np.asarray(viewer._last_drawn[0]["pts"]["O"], dtype=float)
+
+    candidate = viewer._update_group_drag_snap_assist(
+        mobile_world, 0, "O", group_id
+    )
+
+    assert candidate is None
 
 
 def test_nearest_beacon_is_selected_without_capture_radius():
@@ -243,7 +316,7 @@ def test_beacon_ring_is_cleared_when_vertex_candidate_becomes_winner():
     viewer._update_group_drag_snap_assist(mobile_world, 0, "O", group_id)
 
     assert viewer._group_drag_snap_candidate["type"] == "vertex"
-    assert canvas.deleted[-1] == "group_drag_beacon_target"
+    assert "group_drag_beacon_target" in canvas.deleted
 
 
 def test_beacon_candidate_creates_and_applies_anchor_without_free_move():
@@ -266,7 +339,7 @@ def test_beacon_candidate_creates_and_applies_anchor_without_free_move():
     viewer._bg_resizing = None
     viewer._bg_moving = None
     viewer._pan_anchor = None
-    viewer.auto_geom_state = None
+    viewer.auto_rotation_state = None
     viewer.status = SimpleNamespace(config=lambda **_kwargs: None)
     viewer._is_active_auto_scenario = lambda: False
     viewer._clear_edge_highlights = lambda: None
@@ -285,7 +358,7 @@ def test_beacon_candidate_creates_and_applies_anchor_without_free_move():
     np.testing.assert_allclose(viewer._last_drawn[0]["pts"]["O"], (10.0, 5.0))
 
 
-def test_drag_of_an_anchored_group_is_refused_before_preview_starts():
+def test_drag_of_an_anchored_group_starts_beacon_rotation_from_a_vertex():
     viewer, world, group_id = _viewer_with_one_group()
     node_id = world.get_element_vertex_node_id_by_type("T01", "O")
     world.createGroupAnchor(group_id, "BAL-1", node_id)
@@ -312,7 +385,181 @@ def test_drag_of_an_anchored_group_is_refused_before_preview_starts():
     viewer.status = SimpleNamespace(config=lambda **_kwargs: None)
 
     assert viewer._on_canvas_left_down(SimpleNamespace(x=0.0, y=0.0)) == "break"
+    assert viewer._sel["mode"] == "rotate_group_anchor_drag"
+    assert viewer._sel["core_group_id"] == group_id
+    assert viewer._sel["anchor_id"] == world.getAnchorForGroup(group_id).anchor_id
+    np.testing.assert_allclose(viewer._sel["pivot_world"], (10.0, 5.0))
+
+
+def test_anchor_rotation_preview_is_transactional_and_commit_keeps_anchor():
+    viewer, world, group_id = _viewer_with_one_group()
+    node_id = world.get_element_vertex_node_id_by_type("T01", "O")
+    anchor = world.createGroupAnchor(group_id, "BAL-1", node_id)
+    world.applyGroupAnchor(anchor.anchor_id)
+    viewer._project_core_group_to_last_drawn(world, group_id)
+    viewer._screen_to_world = lambda x, y: (float(x), float(y))
+    viewer.status = SimpleNamespace(config=lambda **_kwargs: None)
+    viewer._redraw_from = lambda _entries: None
+    viewer._reset_assist = lambda: None
+    viewer._clock_dragging = False
+    viewer._bg_moving = None
+    viewer._bg_resizing = None
+    viewer._drag = None
+    viewer._begin_anchored_group_rotation_drag(
+        world, group_id, anchor, SimpleNamespace(x=11.0, y=5.0)
+    )
+    poses_before = {
+        element_id: world.getElementPose(element_id)
+        for element_id in world.getGroupElementIds(group_id)
+    }
+
+    viewer._on_canvas_left_move(SimpleNamespace(x=10.0, y=6.0))
+
+    for element_id, expected_pose in poses_before.items():
+        actual_pose = world.getElementPose(element_id)
+        np.testing.assert_allclose(actual_pose[0], expected_pose[0])
+        np.testing.assert_allclose(actual_pose[1], expected_pose[1])
+        assert actual_pose[2] is expected_pose[2]
+
+    calls = []
+    original_rotate = world.rotate_group
+    world.rotate_group = lambda *args: (calls.append(args), original_rotate(*args))[1]
+    viewer._pan_anchor = None
+
+    viewer._on_canvas_left_up(SimpleNamespace(x=10.0, y=6.0))
+
+    assert len(calls) == 1
+    assert calls[0][0] == group_id
+    np.testing.assert_allclose(calls[0][1], (10.0, 5.0))
+    assert calls[0][2] == pytest.approx(np.pi / 2.0)
+    assert world.getAnchorForGroup(group_id) is anchor
+    assert world.getConceptNodeWorldXY(node_id, group_id) == pytest.approx((10.0, 5.0))
+
+
+def test_escape_discards_anchor_rotation_preview_without_core_mutation():
+    viewer, world, group_id = _viewer_with_one_group()
+    node_id = world.get_element_vertex_node_id_by_type("T01", "O")
+    anchor = world.createGroupAnchor(group_id, "BAL-1", node_id)
+    world.applyGroupAnchor(anchor.anchor_id)
+    viewer._project_core_group_to_last_drawn(world, group_id)
+    viewer._screen_to_world = lambda x, y: (float(x), float(y))
+    viewer.status = SimpleNamespace(config=lambda **_kwargs: None)
+    viewer._redraw_from = lambda _entries: None
+    viewer._reset_assist = lambda: None
+    viewer._begin_anchored_group_rotation_drag(
+        world, group_id, anchor, SimpleNamespace(x=11.0, y=5.0)
+    )
+    initial_pts = viewer._capture_move_preview_initial_pts(world, group_id)
+    viewer._clock_dragging = False
+    viewer._bg_moving = None
+    viewer._bg_resizing = None
+    viewer._drag = None
+    viewer._on_canvas_left_move(SimpleNamespace(x=10.0, y=6.0))
+    viewer._clock_trace_active = False
+    viewer._clock_arc_active = False
+    viewer._clock_measure_active = False
+    viewer._clock_setref_active = False
+    viewer._bg_calib_active = False
+    viewer._is_active_auto_scenario = lambda: False
+    world.rotate_group = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("rotation forbidden while discarding preview")
+    )
+
+    assert viewer._on_escape_key(SimpleNamespace()) == "break"
+
     assert viewer._sel is None
+    assert world.getAnchorForGroup(group_id) is anchor
+    np.testing.assert_allclose(viewer._last_drawn[0]["pts"]["O"], initial_pts["T01"]["O"])
+
+
+@pytest.mark.parametrize(
+    ("orient_method", "from_key"),
+    [
+        ("_ctx_orient_OL_north", "O"),
+        ("_ctx_orient_BL_north", "B"),
+    ],
+)
+def test_anchored_orient_north_rotates_around_the_beacon(orient_method, from_key):
+    viewer, world, group_id = _viewer_with_one_group()
+    node_id = world.get_element_vertex_node_id_by_type("T01", "O")
+    anchor = world.createGroupAnchor(group_id, "BAL-1", node_id)
+    world.applyGroupAnchor(anchor.anchor_id)
+    viewer._project_core_group_to_last_drawn(world, group_id)
+    viewer._redraw_from = lambda _entries: None
+    viewer._invalidate_pick_cache = lambda: None
+    viewer.status = SimpleNamespace(config=lambda **_kwargs: None)
+    viewer._ctx_target_element_id = "T01"
+    move_calls = []
+    original_move = world.move_group
+    world.move_group = lambda *args: (move_calls.append(args), original_move(*args))[1]
+
+    getattr(viewer, orient_method)()
+
+    points = viewer._get_core_triangle_world_points(world, "T01")
+    vector = points["L"] - points[from_key]
+    assert abs(float(vector[0])) < 1e-10
+    assert float(vector[1]) > 0.0
+    assert move_calls == []
+    assert world.getAnchorForGroup(group_id) is anchor
+    assert world.getConceptNodeWorldXY(node_id, group_id) == pytest.approx((10.0, 5.0))
+
+
+def test_anchor_rotation_menu_state_keeps_orient_commands_available():
+    viewer, world, group_id = _viewer_with_one_group()
+    states = {}
+    labels = {"Pivoter": 0, "Inverser": 1, "OL=0°": 2, "BL=0°": 3}
+    viewer._ctx_menu = SimpleNamespace(
+        entryconfig=lambda idx, **kwargs: states.__setitem__(idx, kwargs["state"])
+    )
+    viewer._ctx_find_menu_index_by_label = labels.get
+    viewer._ctx_target_element_id = "T01"
+
+    viewer._ctx_update_anchor_rotation_menu_state()
+
+    assert states == {0: "normal", 1: "normal", 2: "normal", 3: "normal"}
+
+    anchor = world.createGroupAnchor(
+        group_id, "BAL-1", world.get_element_vertex_node_id_by_type("T01", "O")
+    )
+    viewer._ctx_update_anchor_rotation_menu_state()
+
+    assert states == {0: "disabled", 1: "disabled", 2: "normal", 3: "normal"}
+    assert world.getAnchorForGroup(group_id) is anchor
+
+
+def test_auto_scenario_is_anchored_from_its_first_ordered_element_l_node():
+    viewer, world, group_id = _viewer_with_one_group()
+    scenario = ScenarioAssemblage(name="Auto", source_type="auto")
+    scenario.topoWorld = world
+    scenario.orderedElementIds = ["T01"]
+    viewer.scenarios = [scenario]
+    viewer.active_scenario_index = 0
+    viewer.triangle_catalog = None
+
+    viewer._anchor_auto_scenario_to_beacon(scenario, "BAL-1")
+
+    anchor = world.getAnchorForGroup(group_id)
+    expected_node_id = world.get_element_vertex_node_id_by_type("T01", "L")
+    assert anchor is not None
+    assert anchor.beacon_id == "BAL-1"
+    assert anchor.node_id == expected_node_id
+    assert world.getConceptNodeWorldXY(expected_node_id, group_id) == pytest.approx(
+        (10.0, 5.0)
+    )
+
+
+def test_auto_anchor_rejects_a_final_scenario_with_multiple_groups():
+    viewer, world, _group_id = _viewer_with_one_group()
+    second_group_id = world.add_element_as_new_group(_element("T02"))
+    scenario = ScenarioAssemblage(name="Auto", source_type="auto")
+    scenario.topoWorld = world
+    scenario.orderedElementIds = ["T01", "T02"]
+    viewer.triangle_catalog = None
+
+    with pytest.raises(RuntimeError, match="plusieurs groupes finaux"):
+        viewer._anchor_auto_scenario_to_beacon(scenario, "BAL-1")
+
+    assert world.getAnchorForGroup(second_group_id) is None
 
 
 def _prepare_escape_from_assisted_manual_move(viewer, world, group_id):

@@ -9,6 +9,7 @@ import re
 import copy
 import traceback
 import threading
+from dataclasses import dataclass
 from typing import Optional, List, Dict, Tuple
 
 from tkinter import filedialog, messagebox, simpledialog, colorchooser
@@ -28,6 +29,7 @@ from src.assembleur_core import (
 from src.assembleur_sim import (
     MoteurSimulationAssemblage,
     ALGOS,
+    InitialTriangleOrientation,
 )
 
 from src.assembleur_decryptor import (
@@ -79,6 +81,15 @@ def createDecryptor(decryptorId: str) -> DecryptorBase:
     return cls()
 
 
+@dataclass(frozen=True)
+class AutoOrientationReference:
+    """Référence Core proposée par le viewer au dialogue de simulation."""
+    beacon_id: str
+    element_id: str
+    tri_rank: int
+    theta_rad: float
+
+
 class DialogSimulationAssembler(tk.Toplevel):
     """Boîte de dialogue 'Simulation > Assembler…'"""
 
@@ -90,17 +101,28 @@ class DialogSimulationAssembler(tk.Toplevel):
         default_algo_id: str,
         default_n: int,
         default_order: str = "forward",
+        beacon_items: List[Tuple[str, str]] | None = None,
+        orientation_reference_by_beacon: Dict[str, "AutoOrientationReference | None"] | None = None,
+        default_beacon_id: str = "",
         default_first_edge: str = "OL",
-        last_run_available_by_order: Optional[Dict[str, bool]] = None,
     ):
         super().__init__(parent)
-        self._last_run_available_by_order = dict(last_run_available_by_order or {})
+        self._beacon_items = list(beacon_items or ())
+        if not self._beacon_items:
+            raise ValueError("Simulation: une balise d'ancrage est obligatoire")
+        self._beacon_id_by_display = {
+            display_label: beacon_id
+            for beacon_id, display_label in self._beacon_items
+        }
+        if len(self._beacon_id_by_display) != len(self._beacon_items):
+            raise ValueError("Simulation: libellés de balises dupliqués")
+        self._orientation_reference_by_beacon = dict(orientation_reference_by_beacon or {})
         self.title("Assembler (simulation)")
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
 
-        self.result = None  # (algo_id, n, order, first_edge)
+        self.result = None  # (algo_id, n, order, beacon_id, InitialTriangleOrientation)
 
         # Imports locaux (évite d'imposer ttk partout)
         from tkinter import ttk
@@ -153,40 +175,48 @@ class DialogSimulationAssembler(tk.Toplevel):
         ttk.Radiobutton(order_frm, text="Normal", value="forward", variable=self.order_var).grid(row=0, column=0, padx=(0, 10))
         ttk.Radiobutton(order_frm, text="Inverse", value="reverse", variable=self.order_var).grid(row=0, column=1)
 
-        # --- Placement du 1er triangle ---
+        # --- Balise d'ancrage ---
+        beacon_labels = [display_label for _beacon_id, display_label in self._beacon_items]
+        beacon_index = next(
+            (
+                index for index, (beacon_id, _label) in enumerate(self._beacon_items)
+                if beacon_id == default_beacon_id
+            ),
+            0,
+        )
+        self.beacon_var = tk.StringVar(value=beacon_labels[beacon_index])
+        ttk.Label(frm, text="Balise d’ancrage :").grid(
+            row=4, column=0, sticky="w", pady=(8, 0)
+        )
+        self.beacon_combo = ttk.Combobox(
+            frm,
+            textvariable=self.beacon_var,
+            state="readonly",
+            values=beacon_labels,
+            width=32,
+        )
+        self.beacon_combo.current(beacon_index)
+        self.beacon_combo.grid(row=4, column=1, sticky="e", pady=(8, 0))
+
+        # --- Orientation initiale ---
         d_edge = str(default_first_edge or "OL").upper().strip()
         if d_edge not in ("OL", "BL"):
             d_edge = "OL"
-        self.first_edge_var = tk.StringVar(value=d_edge)  # "OL" | "BL"
-        ttk.Label(frm, text="Placement 1er triangle :").grid(row=4, column=0, sticky="w", pady=(8, 0))
+        self.first_edge_var = tk.StringVar(value=d_edge)  # "OL" | "BL" | référence
+        ttk.Label(frm, text="Orientation initiale :").grid(row=5, column=0, sticky="w", pady=(8, 0))
         self.first_edge_combo = ttk.Combobox(
             frm,
             textvariable=self.first_edge_var,
             state="readonly",
-            values=["OL = 0°", "BL = 0°"],
+            values=[],
             width=12
         )
-        self.first_edge_combo.current(1 if d_edge == "BL" else 0)
-        self.first_edge_combo.grid(row=4, column=1, sticky="e", pady=(8, 0))
-
-        def _updateFirstEdgeComboValues(*_args):
-            # Base options
-            vals = ["OL = 0°", "BL = 0°"]
-            ordv = str(self.order_var.get() or "").strip().lower()
-            if self._last_run_available_by_order.get(ordv, False):
-                vals.append("Même dernier run")
-            cur = str(self.first_edge_combo.get() or "").strip()
-            self.first_edge_combo.configure(values=vals)
-            # Si la sélection courante n'existe plus (ex: switch d'ordre), fallback sur OL
-            if cur and cur not in vals:
-                self.first_edge_combo.current(0)
-
-        self._updateFirstEdgeComboValues = _updateFirstEdgeComboValues
-        self.order_var.trace_add("write", self._updateFirstEdgeComboValues)
-        self._updateFirstEdgeComboValues()
+        self.first_edge_combo.grid(row=5, column=1, sticky="e", pady=(8, 0))
+        self.beacon_combo.bind("<<ComboboxSelected>>", self._on_beacon_changed)
+        self._rebuild_initial_orientation_choices(prefer_reference=True)
 
         btns = ttk.Frame(frm)
-        btns.grid(row=5, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        btns.grid(row=6, column=0, columnspan=2, sticky="e", pady=(10, 0))
         ttk.Button(btns, text="Annuler", command=self._on_cancel).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(btns, text="OK", command=self._on_ok).grid(row=0, column=1)
 
@@ -206,6 +236,34 @@ class DialogSimulationAssembler(tk.Toplevel):
     def _on_cancel(self):
         self.result = None
         self.destroy()
+
+    def _selected_beacon_id(self) -> str:
+        beacon_id = self._beacon_id_by_display.get(self.beacon_var.get())
+        if beacon_id is None:
+            raise RuntimeError("Simulation: balise sélectionnée introuvable")
+        return beacon_id
+
+    def _rebuild_initial_orientation_choices(self, prefer_reference: bool) -> None:
+        previous = self.first_edge_var.get()
+        reference = self._orientation_reference_by_beacon.get(self._selected_beacon_id())
+        values = ["BL = 0°", "OL = 0°"]
+        reference_label = None
+        if reference is not None:
+            reference_label = f"Comme T{reference.tri_rank}"
+            values.insert(0, reference_label)
+        self.first_edge_combo.configure(values=values)
+        if previous.startswith("Comme T"):
+            selected = reference_label or "OL = 0°"
+        elif prefer_reference and reference_label is not None:
+            selected = reference_label
+        elif "BL" in previous:
+            selected = "BL = 0°"
+        else:
+            selected = "OL = 0°"
+        self.first_edge_var.set(selected)
+
+    def _on_beacon_changed(self, _event=None) -> None:
+        self._rebuild_initial_orientation_choices(prefer_reference=False)
 
     def _on_ok(self):
         raw = str(self.algo_combo.get() or "")
@@ -227,13 +285,24 @@ class DialogSimulationAssembler(tk.Toplevel):
             self.var_nb_triangles.set(n)
 
         order = str(self.order_var.get() or "forward")
+        beacon_id = self._beacon_id_by_display.get(self.beacon_var.get())
+        if beacon_id is None:
+            messagebox.showerror("Assembler", "Sélectionne une balise d'ancrage.")
+            return
+        reference = self._orientation_reference_by_beacon.get(beacon_id)
         first_raw = str(self.first_edge_var.get() or "OL")
-        if "Même" in first_raw or "même" in first_raw:
-            first_edge = "__LASTRUN__"
+        if first_raw.startswith("Comme T"):
+            if reference is None:
+                raise RuntimeError("Simulation: référence d'orientation absente")
+            initial_orientation = InitialTriangleOrientation.reference(
+                reference.element_id, reference.tri_rank, reference.theta_rad
+            )
         else:
-            first_edge = "BL" if "BL" in first_raw else "OL"
+            initial_orientation = InitialTriangleOrientation.edge_north(
+                "BL" if "BL" in first_raw else "OL"
+            )
 
-        self.result = (algo_id, int(n), order, first_edge)
+        self.result = (algo_id, int(n), order, beacon_id, initial_orientation)
 
         self.destroy()
 
@@ -518,9 +587,8 @@ class TriangleViewerManual(
         self.auto_map_state: dict | None = None
         self.auto_view_state: dict | None = None
 
-        # état géométrique global pour scénarios automatiques (transform commun)
-        # P_world = (ox,oy) + R(thetaDeg) * P_local
-        self.auto_geom_state: dict | None = None  # {'ox':float,'oy':float,'thetaDeg':float}
+        # Rotation collective supplémentaire des scénarios automatiques ancrés.
+        self.auto_rotation_state: dict | None = None  # {'thetaDeg': float}
 
         # Scénario de référence (pour comparaison des auto)
         self.ref_scenario_token: Optional[int] = None  # id(scen)
@@ -575,6 +643,9 @@ class TriangleViewerManual(
         self._simulation_last_first_edge = str(self.getAppConfigValue("simLastFirstEdge", "OL") or "OL").strip().upper()
         if self._simulation_last_first_edge not in ("OL", "BL"):
             self._simulation_last_first_edge = "OL"
+        self._simulation_last_beacon_id = str(
+            self.getAppConfigValue("simLastBeaconId", "") or ""
+        ).strip()
 
         # Fond SVG : au démarrage le canvas n'a pas toujours une taille valide.
         # On déclenche donc un redessin différé (au 1er <Configure>) après rechargement.
@@ -700,46 +771,35 @@ class TriangleViewerManual(
     def _get_active_core_group_id_for_entry(self, entry: Dict) -> Optional[str]:
         """Résout le ``core_group_id`` canonique d'une entrée projetée."""
         scen = self._get_active_scenario()
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
-        element_id = str((entry or {}).get("topoElementId", "") or "").strip()
-        if world is None or not element_id:
+        world = scen.topoWorld
+        element_id = entry["topoElementId"]
+        if not element_id:
             return None
-        try:
-            core_gid = world.get_group_of_element(element_id)
-            return core_gid if core_gid else None
-        except Exception as exc:
-            MIG_GEO_LOGGER.debug("Groupe Core illisible pour element=%s: %s", element_id, exc)
-            return None
+
+        core_gid = world.get_group_of_element(element_id)
+        return core_gid if core_gid else None
 
     def _get_core_group_id_for_triangle_index(self, tri_index: int) -> Optional[str]:
         """Resout un triangle projete vers son groupe Core canonique."""
         if not (0 <= int(tri_index) < len(self._last_drawn)):
             return None
         scen = self._get_active_scenario()
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
-        if world is None:
-            return None
+        world = scen.topoWorld
         topo_element_id = str(self._last_drawn[int(tri_index)].get("topoElementId", "") or "").strip()
         if not topo_element_id:
             return None
-        try:
-            core_group_id = world.get_group_of_element(topo_element_id)
-            return None if not core_group_id else core_group_id
-        except Exception as exc:
-            MIG_GEO_LOGGER.debug("Groupe Core triangle=%s: %s", tri_index, exc)
-            return None
+
+        core_group_id = world.get_group_of_element(topo_element_id)
+        return None if not core_group_id else core_group_id
 
     def _get_projected_elements_for_core_group(self, core_group_id: str) -> Tuple[Dict, ...]:
         """Retourne la projection des membres du groupe Core canonique."""
         scen = self._get_active_scenario()
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
-        if world is None or not core_group_id:
+        world = scen.topoWorld
+        if not core_group_id:
             return ()
-        try:
-            element_ids = world.getGroupElementIds(core_group_id)
-        except Exception as exc:
-            MIG_GEO_LOGGER.debug("Groupe Core illisible %r: %s", core_group_id, exc)
-            return ()
+
+        element_ids = world.getGroupElementIds(core_group_id)
         return self.canvas_objects.get_many_by_topology_ids(element_ids)
 
     def get_last_drawn_entries_for_core_group(self, core_group_id: str) -> List[Dict]:
@@ -750,15 +810,10 @@ class TriangleViewerManual(
         signaler sans interrompre le comportement existant.
         """
         scen = self._get_active_scenario()
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
-        key = str(core_group_id or "").strip()
-        if world is None or not key:
+        world = scen.topoWorld
+        if world is None or not core_group_id:
             return []
-        try:
-            element_ids = world.getGroupElementIds(key)
-        except Exception as exc:
-            MIG_GEO_LOGGER.debug("Groupe Core illisible %r: %s", key, exc)
-            return []
+        element_ids = world.getGroupElementIds(core_group_id)
         return list(self.canvas_objects.get_many_by_topology_ids(element_ids))
 
     def _get_core_triangle_world_points(
@@ -775,15 +830,12 @@ class TriangleViewerManual(
         core_group_id: str,
     ) -> np.ndarray:
         """Retourne le barycentre monde de tous les sommets d'un groupe Core."""
-        if world is None:
-            raise RuntimeError("[MIG-CACHE-TRANSFORM-001D] TopologyWorld absent")
-        key = str(core_group_id or "").strip()
-        if not key:
+        if not core_group_id:
             raise ValueError("[MIG-CACHE-TRANSFORM-001D] groupe Core absent")
-        element_ids = tuple(world.getGroupElementIds(key))
+        element_ids = tuple(world.getGroupElementIds(core_group_id))
         if not element_ids:
             raise ValueError(
-                f"[MIG-CACHE-TRANSFORM-001D] groupe Core vide ou introuvable: {key!r}"
+                f"[MIG-CACHE-TRANSFORM-001D] groupe Core vide ou introuvable: {core_group_id!r}"
             )
         points = [
             point
@@ -798,11 +850,10 @@ class TriangleViewerManual(
     def _get_core_element_mirrored(self, element_id: str) -> bool:
         """Lit l'état miroir d'affichage dans la pose Core, jamais dans le cache."""
         scen = self._get_active_scenario()
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
-        key = str(element_id or "").strip()
-        if world is None or not key:
+        world = scen.topoWorld
+        if not element_id:
             return False
-        _rotation, _translation, mirrored = world.getElementPose(key)
+        _, _, mirrored = world.getElementPose(element_id)
         return bool(mirrored)
 
     def _get_core_element_from_last_drawn_entry(
@@ -817,9 +868,9 @@ class TriangleViewerManual(
         """
         if world is None:
             scen = self._get_active_scenario()
-            world = getattr(scen, "topoWorld", None) if scen is not None else None
-        element_id = str((entry or {}).get("topoElementId", "") or "").strip()
-        if world is None or not element_id:
+            world = scen.topoWorld
+        element_id = entry["topoElementId"]
+        if not element_id:
             return None
         return world.elements.get(element_id)
 
@@ -830,7 +881,7 @@ class TriangleViewerManual(
     ) -> tuple[str, str, str]:
         """Lit les trois libelles de sommets depuis l'element Core associe."""
         element = self._get_core_element_from_last_drawn_entry(entry, world)
-        element_id = str((entry or {}).get("topoElementId", "") or "").strip()
+        element_id = entry["topoElementId"]
         if element is None:
             raise KeyError(
                 f"[MIG-CACHE-CLEANUP-002] element Core absent: {element_id!r}"
@@ -853,7 +904,7 @@ class TriangleViewerManual(
         Le rang n'est jamais dupliqué dans la projection : il reste lu dans le Core.
         """
         element = self._get_core_element_from_last_drawn_entry(entry, world)
-        element_id = str((entry or {}).get("topoElementId", "") or "").strip()
+        element_id = entry["topoElementId"]
         if not element_id:
             raise ValueError("[MIG-UX-LABEL-001] topoElementId absent")
         if element is None:
@@ -879,20 +930,14 @@ class TriangleViewerManual(
         locales et la pose restent l'autorité du Core ; aucune synchronisation
         inverse ne doit être déclenchée depuis ce chemin.
         """
-        key = str(element_id or "").strip()
-        if world is None:
-            raise RuntimeError("[MIG-CACHE-TRANSFORM-001] TopologyWorld absent")
-        entry = self.canvas_objects.get_by_topology_id(key)
+        entry = self.canvas_objects.get_by_topology_id(element_id)
         if entry is None:
             raise KeyError(
-                f"[MIG-CACHE-TRANSFORM-001] projection absente pour topoElementId={key!r}"
+                f"[MIG-CACHE-TRANSFORM-001] projection absente pour topoElementId={element_id!r}"
             )
 
         self._strip_core_duplicates_from_last_drawn_entry(entry)
-        entry["pts"] = self._get_core_triangle_world_points(world, key)
-        MIG_GEO_LOGGER.debug(
-            "[MIG-CACHE-TRANSFORM-001] projection element=%s", key
-        )
+        entry["pts"] = self._get_core_triangle_world_points(world, element_id)
         return entry
 
     def _project_core_group_to_last_drawn(
@@ -901,15 +946,10 @@ class TriangleViewerManual(
         core_group_id: str,
     ) -> Tuple[Dict, ...]:
         """Projette les membres déterminés exclusivement par le groupe Core."""
-        key = str(core_group_id or "").strip()
-        if world is None or not key:
+        element_ids = world.getGroupElementIds(core_group_id)
+        if not element_ids and not world.hasLiveGroup(core_group_id):
             raise ValueError(
-                "[MIG-CACHE-TRANSFORM-001] groupe Core ou monde absent"
-            )
-        element_ids = world.getGroupElementIds(key)
-        if not element_ids and not world.hasLiveGroup(key):
-            raise ValueError(
-                f"[MIG-CACHE-TRANSFORM-001] groupe Core invalide: {key!r}"
+                f"[MIG-CACHE-TRANSFORM-001] groupe Core invalide: {core_group_id!r}"
             )
         return tuple(
             self._project_core_element_to_last_drawn(world, element_id)
@@ -923,8 +963,6 @@ class TriangleViewerManual(
         collection: CanvasObjectsCollection,
     ) -> Tuple[Dict, ...]:
         """Projette un groupe Core dans la collection Canvas explicitement fournie."""
-        if world is None or collection is None:
-            raise ValueError("[MIG-CACHE-TRANSFORM-001H] monde ou collection absent")
         element_ids = tuple(world.getGroupElementIds(core_group_id))
         if not element_ids and not world.hasLiveGroup(core_group_id):
             raise ValueError(
@@ -945,13 +983,9 @@ class TriangleViewerManual(
 
     def _build_scenario_projection_from_core(self, scen: ScenarioAssemblage) -> list[dict]:
         """Construit une projection neuve sans lire le cache du scénario."""
-        if scen is None:
-            raise ValueError("[MIG-CACHE-REBUILD-003] scénario absent")
-        world = getattr(scen, "topoWorld", None)
-        if world is None:
-            raise RuntimeError("[MIG-CACHE-REBUILD-003] TopologyWorld absent")
-        if getattr(scen, "source_type", "manual") == "auto":
-            element_ids = list(getattr(scen, "orderedElementIds", None) or ())
+        world = scen.topoWorld
+        if scen.source_type == "auto":
+            element_ids = scen.orderedElementIds
         else:
             element_ids = getManualProjectionElementIds(world)
         return buildLastDrawnFromTopology(
@@ -962,9 +996,7 @@ class TriangleViewerManual(
     def _rebuild_active_projection_from_core(self) -> None:
         """Remplace le cache actif par une projection entièrement issue du Core."""
         scen = self._get_active_scenario()
-        if scen is None:
-            raise RuntimeError("[MIG-CACHE-REBUILD-003] scénario actif absent")
-        world = getattr(scen, "topoWorld", None)
+        world = scen.topoWorld
         previous_count = len(getattr(scen, "last_drawn", None) or ())
         projection = self._build_scenario_projection_from_core(scen)
         self._bind_canvas_objects(projection)
@@ -973,8 +1005,8 @@ class TriangleViewerManual(
         MIG_GEO_LOGGER.debug(
             "Projection rebuilt from Core scenario=%s source_type=%s "
             "groups=%s elements=%s previous_cache_entries=%s rebuilt_entries=%s",
-            getattr(scen, "name", "<sans nom>"),
-            getattr(scen, "source_type", "manual"),
+            scen.name,
+            scen.source_type,
             len(world.getLiveGroupIds()),
             len(world.elements),
             previous_count,
@@ -983,7 +1015,7 @@ class TriangleViewerManual(
 
     def _project_auto_scenario_from_core(self, scen: ScenarioAssemblage) -> None:
         """Régénère le cache AUTO depuis son monde et son ordre Core explicite."""
-        if scen is None or getattr(scen, "source_type", "manual") != "auto":
+        if scen.source_type != "auto":
             return
         if scen is self._get_active_scenario():
             self._rebuild_active_projection_from_core()
@@ -997,36 +1029,29 @@ class TriangleViewerManual(
         for scen in self.scenarios or ():
             self._project_auto_scenario_from_core(scen)
 
-    def _apply_rigid_transform_to_all_auto_scenarios(
-        self,
-        R: np.ndarray,
-        T: np.ndarray,
-    ) -> None:
-        """Applique une unique transformation rigide à tous les Core AUTO."""
-        rotation = np.asarray(R, dtype=float)
-        translation = np.asarray(T, dtype=float)
-        if rotation.shape != (2, 2) or translation.shape != (2,):
-            raise ValueError("[MIG-CACHE-TRANSFORM-001H] transformation rigide invalide")
+    def _rotate_all_auto_scenarios_around_anchors(self, dtheta: float) -> None:
+        """Tourne chaque scénario AUTO autour du pivot imposé par son ancre."""
         for scen in self.scenarios or ():
-            if getattr(scen, "source_type", "manual") != "auto":
+            if scen.source_type != "auto":
                 continue
-            world = getattr(scen, "topoWorld", None)
-            if world is None:
-                raise RuntimeError("[MIG-CACHE-TRANSFORM-001H] TopologyWorld AUTO absent")
-            for core_group_id in world.getLiveGroupIds():
-                world.apply_group_rigid_transform(
-                    core_group_id, rotation, translation
-                )
+            world = scen.topoWorld
+            ordered_element_ids = scen.orderedElementIds
+            core_group_id = world.get_group_of_element(ordered_element_ids[0])
+            if core_group_id is None:
+                raise RuntimeError("Simulation AUTO: groupe final absent")
+            anchor = world.getAnchorForGroup(core_group_id)
+            if anchor is None:
+                raise RuntimeError("Simulation AUTO: ancre de groupe absente")
+            pivot_world = np.asarray(
+                world.getBeaconWorldXY(anchor.beacon_id), dtype=float
+            )
+            world.rotate_group(core_group_id, pivot_world, dtheta)
+            self._project_auto_scenario_from_core(scen)
 
-    @staticmethod
-    def _rigid_transform_between_auto_states(state0: dict, state1: dict) -> Tuple[np.ndarray, np.ndarray]:
-        """Construit la transformation monde qui fait passer d'un repère AUTO à un autre."""
-        origin0 = np.array((float(state0["ox"]), float(state0["oy"])), dtype=float)
-        origin1 = np.array((float(state1["ox"]), float(state1["oy"])), dtype=float)
-        delta_angle = math.radians(float(state1["thetaDeg"]) - float(state0["thetaDeg"]))
-        c, s = math.cos(delta_angle), math.sin(delta_angle)
-        rotation = np.array(((c, -s), (s, c)), dtype=float)
-        return rotation, origin1 - (rotation @ origin0)
+        state = self.auto_rotation_state or {"thetaDeg": 0.0}
+        self.auto_rotation_state = {
+            "thetaDeg": (float(state["thetaDeg"]) + math.degrees(dtheta)) % 360.0
+        }
 
     def _get_active_scenario(self) -> ScenarioAssemblage | None:
         if not self.scenarios:
@@ -1339,7 +1364,7 @@ class TriangleViewerManual(
         removed = len(self.scenarios) - len(kept)
         self.scenarios = kept
         if removed:
-            self.auto_geom_state = None
+            self.auto_rotation_state = None
         if not self.scenarios:
             manual = ScenarioAssemblage(name="Scénario manuel", source_type="manual")
             self._attach_catalog_to_world(manual.topoWorld)
@@ -1348,58 +1373,6 @@ class TriangleViewerManual(
         self._set_active_scenario(self.active_scenario_index)
         self._refresh_scenario_listbox()
         self.status.config(text=f"Scénarios auto supprimés : {removed}")
-
-    # === Simulation : persistance "Même dernier run" (position + rotation auto) ===
-    def _simulationGetMapKey(self) -> str:
-        """Clé de carte (basename) pour la persistance simulation."""
-        p = str(self.getAppConfigValue("bgSvgPath", "") or "").strip()
-        if not p and isinstance(self._bg, dict):
-            p = str(self._bg.get("path", "") or "").strip()
-        return os.path.basename(p) if p else ""
-
-    def _simulationGetLastAutoPlacement(self, map_key: str, order: str) -> Optional[Dict]:
-        data = self.getAppConfigValue("simAutoPlacementByMap", {}) or {}
-        mk = str(map_key or "").strip()
-        ordk = str(order or "").strip().lower()
-        if not mk or ordk not in ("forward", "reverse"):
-            return None
-        per_map = data.get(mk) or {}
-        st = per_map.get(ordk)
-        if isinstance(st, dict) and all(k in st for k in ("ox", "oy", "thetaDeg")):
-            return st
-        return None
-
-    def _simulationSetLastAutoPlacement(self, map_key: str, order: str, state: Dict, save: bool = True):
-        mk = str(map_key or "").strip()
-        ordk = str(order or "").strip().lower()
-        if not mk or ordk not in ("forward", "reverse"):
-            return
-        if not isinstance(state, dict):
-            return
-        st = {
-            "ox": float(state.get("ox", 0.0)),
-            "oy": float(state.get("oy", 0.0)),
-            "thetaDeg": float(state.get("thetaDeg", 0.0)),
-        }
-        data = self.getAppConfigValue("simAutoPlacementByMap", {}) or {}
-        if not isinstance(data, dict):
-            data = {}
-        per_map = data.get(mk)
-        if not isinstance(per_map, dict):
-            per_map = {}
-        per_map[ordk] = st
-        data[mk] = per_map
-        self.setAppConfigValue("simAutoPlacementByMap", data)
-        if save:
-            self.saveAppConfig()
-
-    def _simulationPersistCurrentAutoPlacement(self, order: Optional[str] = None, save: bool = True):
-        """Persiste le repère global auto courant (ox/oy/thetaDeg) pour (carte, ordre)."""
-        if self.auto_geom_state is None:
-            return
-        ordk = str(order or self._simulation_last_order or "forward").strip().lower()
-        mk = self._simulationGetMapKey()
-        self._simulationSetLastAutoPlacement(mk, ordk, self.auto_geom_state, save=save)
 
     def _simulation_assemble_dialog(self):
         """Ouvre la boîte de dialogue 'Assembler…' et lance l'algo choisi."""
@@ -1423,12 +1396,31 @@ class TriangleViewerManual(
         default_n = min(int(default_n), n_max)
         if default_n < 2:
             default_n = 2
-
-        map_key = self._simulationGetMapKey()
-        last_run_available_by_order = {
-            "forward": self._simulationGetLastAutoPlacement(map_key, "forward") is not None,
-            "reverse": self._simulationGetLastAutoPlacement(map_key, "reverse") is not None,
+        beacon_items = [
+            (beacon.beacon_id, f"{beacon.name} ({beacon.beacon_id})")
+            for beacon in self.beacon_catalog.iter_beacons()
+        ]
+        if not beacon_items:
+            messagebox.showwarning(
+                "Assembler", "Impossible de lancer la simulation :\naucune balise disponible."
+            )
+            return
+        beacon_ids = {beacon_id for beacon_id, _label in beacon_items}
+        active_scenario = self._get_active_scenario()
+        active_world = active_scenario.topoWorld if active_scenario is not None else None
+        orientation_reference_by_beacon = {
+            beacon_id: (
+                self._find_orientation_reference_for_beacon(active_world, beacon_id)
+                if active_world is not None
+                else None
+            )
+            for beacon_id in beacon_ids
         }
+        default_beacon_id = (
+            self._simulation_last_beacon_id
+            if self._simulation_last_beacon_id in beacon_ids
+            else beacon_items[0][0]
+        )
 
         dlg = DialogSimulationAssembler(
             self,
@@ -1437,27 +1429,26 @@ class TriangleViewerManual(
             default_algo_id=default_algo_id,
             default_n=default_n,
             default_order=default_order,
+            beacon_items=beacon_items,
+            orientation_reference_by_beacon=orientation_reference_by_beacon,
+            default_beacon_id=default_beacon_id,
             default_first_edge=default_first_edge,
-            last_run_available_by_order=last_run_available_by_order,
         )
         self.wait_window(dlg)
         if not getattr(dlg, "result", None):
             return
 
-        algo_id, n, order, first_edge = dlg.result
-        use_last_run = (str(first_edge or "") == "__LASTRUN__")
-        # Si "Même dernier run" : on conserve le dernier edge connu (global) pour lancer l'algo
-        first_edge_for_engine = self._simulation_last_first_edge if use_last_run else str(first_edge or "OL").upper().strip()
-        if first_edge_for_engine not in ("OL", "BL"):
+        algo_id, n, order, beacon_id, initial_orientation = dlg.result
+        if initial_orientation.mode == "edge_north":
+            first_edge_for_engine = initial_orientation.edge
+        else:
             first_edge_for_engine = "OL"
 
         self._simulation_last_order = order
         self._simulation_last_algo_id = algo_id
         self._simulation_last_n = int(n)
 
-        # On ne remplace pas simLastFirstEdge si on a choisi "Même dernier run"
-        if not use_last_run:
-            self._simulation_last_first_edge = str(first_edge_for_engine or "OL").upper().strip()
+        self._simulation_last_first_edge = str(first_edge_for_engine or "OL").upper().strip()
         if self._simulation_last_first_edge not in ("OL", "BL"):
             self._simulation_last_first_edge = "OL"
 
@@ -1466,6 +1457,8 @@ class TriangleViewerManual(
         self.setAppConfigValue("simLastN", int(self._simulation_last_n or 0))
         self.setAppConfigValue("simLastOrder", str(self._simulation_last_order or "forward"))
         self.setAppConfigValue("simLastFirstEdge", str(self._simulation_last_first_edge or "OL"))
+        self._simulation_last_beacon_id = beacon_id
+        self.setAppConfigValue("simLastBeaconId", beacon_id)
         self.saveAppConfig()
 
         # Par design : on détruit systématiquement les scénarios auto existants
@@ -1485,6 +1478,7 @@ class TriangleViewerManual(
 
         engine = MoteurSimulationAssemblage(self)
         engine.firstTriangleEdge = str(first_edge_for_engine or "OL").upper()
+        engine.initialTriangleOrientation = initial_orientation
         algo_cls = ALGOS.get(algo_id)
         if algo_cls is None:
             raise ValueError(f"Algo inconnu: {algo_id}")
@@ -1507,35 +1501,12 @@ class TriangleViewerManual(
             scen.first_triangle_id = int(scen.tri_ids[0]) if scen.tri_ids else None
             scen.traversal_direction = "reverse" if str(order).lower() in ("reverse", "inverse") else "forward"
             self._attach_catalog_to_world(scen.topoWorld)
+            self._anchor_auto_scenario_to_beacon(scen, beacon_id)
             if not scen.name:
                 scen.name = f"Auto #{count_auto + k + 1}"
             self.scenarios.append(scen)
 
-        # AUTO: initialiser le repère global depuis le Core, puis projeter.
-        self._autoInitFromGeneratedScenarios(base_idx, order)
-
-        # Persister le repère auto initial (carte, ordre) après génération
-        # (sauf si on a choisi "Même dernier run" : on ne doit pas écraser l’état sauvegardé)
-        if not use_last_run:
-            self._simulationPersistCurrentAutoPlacement(order=order, save=True)
-
-        # Option "Même dernier run" : appliquer la dernière position/rotation sauvegardée (carte, ordre)
-        if use_last_run:
-            map_key = self._simulationGetMapKey()
-            st = self._simulationGetLastAutoPlacement(map_key, order)
-            if isinstance(st, dict):
-                state0 = dict(self.auto_geom_state or {})
-                state1 = {
-                    "ox": float(st.get("ox", 0.0)),
-                    "oy": float(st.get("oy", 0.0)),
-                    "thetaDeg": float(st.get("thetaDeg", 0.0)),
-                }
-                if state0:
-                    rotation, translation = self._rigid_transform_between_auto_states(state0, state1)
-                    self._apply_rigid_transform_to_all_auto_scenarios(rotation, translation)
-                    self._project_all_auto_scenarios_from_core()
-                self.auto_geom_state = state1
-                self._redraw_from(self._last_drawn)
+        self.auto_rotation_state = {"thetaDeg": 0.0}
 
         self._refresh_scenario_listbox()
         self._set_active_scenario(base_idx)
@@ -2907,8 +2878,6 @@ class TriangleViewerManual(
         if scen is None:
             return
         world = scen.topoWorld
-        if world is None:
-            return
         tc = world.topologyChemins
         if not tc.isDefined:
             return
@@ -2952,8 +2921,6 @@ class TriangleViewerManual(
         if scen is None:
             return
         world = scen.topoWorld
-        if world is None:
-            return
         tc = world.topologyChemins
         if not tc.isDefined:
             return
@@ -3967,8 +3934,6 @@ class TriangleViewerManual(
         if scen is None:
             return
         world = scen.topoWorld
-        if world is None:
-            return
         tc = world.topologyChemins
         if not tc.isDefined:
             self.refreshCheminTreeView()
@@ -4304,62 +4269,94 @@ class TriangleViewerManual(
         scen = self._get_active_scenario()
         return bool(scen is not None and getattr(scen, "source_type", "manual") == "auto")
 
-    def _auto_get_anchor_world_from_core(self, scen: ScenarioAssemblage) -> np.ndarray:
-        """Lit l'ancre AUTO (sommet ``L`` du premier ElementID construit) depuis le Core."""
-        if scen is None or getattr(scen, "source_type", "manual") != "auto":
-            raise ValueError("[MIG-GEO-001] scénario AUTO invalide pour l'ancre")
-        world = getattr(scen, "topoWorld", None)
-        if world is None:
-            raise RuntimeError("[MIG-GEO-001] TopologyWorld AUTO absent")
-        ordered_element_ids = tuple(
-            str(element_id or "").strip()
-            for element_id in (getattr(scen, "orderedElementIds", None) or ())
-        )
-        if not ordered_element_ids or not ordered_element_ids[0]:
-            raise ValueError("[MIG-GEO-001] scénario AUTO sans orderedElementIds")
-        anchor_element_id = ordered_element_ids[0]
-        if anchor_element_id not in world.elements:
-            raise KeyError(
-                f"[MIG-GEO-001] élément d'ancrage absent du Core: {anchor_element_id!r}"
-            )
-        points_world = self._get_core_triangle_world_points(world, anchor_element_id)
-        anchor = points_world.get("L")
-        if anchor is None:
-            raise ValueError(
-                f"[MIG-GEO-001] sommet L absent pour l'élément d'ancrage {anchor_element_id!r}"
-            )
-        return np.array(anchor, dtype=float, copy=True)
+    def _find_orientation_reference_for_beacon(
+        self, world: TopologyWorld, beacon_id: str
+    ) -> AutoOrientationReference | None:
+        """Résout le triangle ancré par L de plus petit rang pour une balise.
 
-    def _auto_ensure_geometry_state(self, scen: ScenarioAssemblage) -> None:
-        """Initialise le repère synthétique AUTO depuis le premier élément Core."""
-        if self.auto_geom_state is not None:
-            return
-        anchor = self._auto_get_anchor_world_from_core(scen)
-        self.auto_geom_state = {
-            "ox": float(anchor[0]),
-            "oy": float(anchor[1]),
-            "thetaDeg": 0.0,
-        }
-
-    def _autoInitFromGeneratedScenarios(self, base_idx: int, order: str):
-        """Après génération d'autos, initialise le repère Core puis projette les caches."""
-        if not self.scenarios:
-            return
-        new_auto_scenarios = []
-        for i in range(int(base_idx), len(self.scenarios)):
-            scen = self.scenarios[i]
-            if scen.source_type != "auto":
+        La sélection est intégralement topologique : aucune projection Canvas
+        ni proximité géométrique ne participe à la décision.
+        """
+        candidates: list[AutoOrientationReference] = []
+        for anchor in world.groupAnchors.values():
+            if anchor.beacon_id != beacon_id:
                 continue
-            scen.autoOrder = str(order or "forward")
-            new_auto_scenarios.append(scen)
+            for element_id in world.getGroupElementIds(anchor.group_id):
+                element = world.elements[element_id]
+                node_l = world.get_element_vertex_node_id_by_type(element_id, "L")
+                if node_l != anchor.node_id:
+                    continue
+                tri_rank = element.triangle_rank
+                if tri_rank is None:
+                    raise RuntimeError(
+                        f"Simulation: triRank absent pour le triangle de référence {element_id}"
+                    )
+                R, _T, _mirrored = world.getElementPose(element_id)
+                candidates.append(
+                    AutoOrientationReference(
+                        beacon_id=beacon_id,
+                        element_id=element_id,
+                        tri_rank=tri_rank,
+                        theta_rad=math.atan2(float(R[1, 0]), float(R[0, 0])),
+                    )
+                )
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item.tri_rank)
+        seen_ranks: set[int] = set()
+        for candidate in candidates:
+            if candidate.tri_rank in seen_ranks:
+                raise RuntimeError(
+                    f"Simulation: référence d'orientation ambiguë pour la balise {beacon_id!r}"
+                )
+            seen_ranks.add(candidate.tri_rank)
+        return candidates[0]
 
-        if not new_auto_scenarios:
-            return
-        self._auto_ensure_geometry_state(new_auto_scenarios[0])
-
-        # Les scénarios générés ont déjà leur géométrie dans le Core : le cache
-        # UI est exclusivement projeté depuis leurs TopologyWorld.
-        self._project_all_auto_scenarios_from_core()
+    def _anchor_auto_scenario_to_beacon(
+        self, scen: ScenarioAssemblage, beacon_id: str
+    ) -> None:
+        """Ancre le groupe final AUTO par le sommet L de son premier élément."""
+        if scen is None or scen.source_type != "auto":
+            raise ValueError("Simulation AUTO: scénario invalide pour l'ancrage")
+        world = scen.topoWorld
+        if world is None:
+            raise RuntimeError("Simulation AUTO: TopologyWorld absent")
+        self._attach_catalog_to_world(world)
+        if not self.beacon_catalog.contains(beacon_id):
+            raise ValueError(f"Simulation AUTO: balise inconnue {beacon_id!r}")
+        ordered_element_ids = scen.orderedElementIds
+        if not ordered_element_ids:
+            raise ValueError("Simulation AUTO: orderedElementIds vide")
+        first_element_id = ordered_element_ids[0]
+        if first_element_id not in world.elements:
+            raise KeyError(f"Simulation AUTO: premier élément absent {first_element_id!r}")
+        core_group_id = world.get_group_of_element(first_element_id)
+        if core_group_id is None or not world.hasLiveGroup(core_group_id):
+            raise RuntimeError("Simulation AUTO: groupe final canonique absent")
+        if any(
+            world.get_group_of_element(element_id) != core_group_id
+            for element_id in ordered_element_ids
+        ):
+            raise RuntimeError("Simulation AUTO: plusieurs groupes finaux vivants")
+        concept_node_l = world.get_element_vertex_node_id_by_type(first_element_id, "L")
+        existing_anchor = world.getAnchorForGroup(core_group_id)
+        if existing_anchor is not None:
+            raise RuntimeError("Simulation AUTO: ancre concurrente inattendue")
+        anchor = world.createGroupAnchor(core_group_id, beacon_id, concept_node_l)
+        world.applyGroupAnchor(anchor.anchor_id)
+        beacon_world = np.asarray(world.getBeaconWorldXY(beacon_id), dtype=float)
+        node_world = np.asarray(
+            world.getConceptNodeWorldXY(concept_node_l, core_group_id), dtype=float
+        )
+        final_anchor = world.getAnchorForGroup(core_group_id)
+        if (
+            final_anchor is not anchor
+            or final_anchor.beacon_id != beacon_id
+            or final_anchor.node_id != concept_node_l
+            or not np.allclose(node_world, beacon_world, rtol=0.0, atol=1e-9)
+        ):
+            raise RuntimeError("Simulation AUTO: invariant d'ancrage final rompu")
+        self._project_auto_scenario_from_core(scen)
 
     def _convertActiveAutoToManualSnapshot(self):
         """Convertit le scénario auto actif en un nouveau scénario manuel (snapshot monde), et retourne son index."""
@@ -4367,7 +4364,7 @@ class TriangleViewerManual(
         if scen.source_type != "auto":
             return None
 
-        # Snapshot monde courant (déjà transformé par auto_geom_state)
+        # Snapshot monde courant, y compris son ancre Core.
         def clone_last_drawn_world(last_drawn):
             out = []
             for t in (last_drawn or []):
@@ -6117,9 +6114,7 @@ class TriangleViewerManual(
             )
             self.canvas.tag_raise("tri_num")
 
-
     # --- helpers: mode déconnexion (CTRL) + curseur ---
-
     def _clock_get_pointer_canvas_xy(self) -> Tuple[int, int]:
         if self.canvas is None:
             return (0, 0)
@@ -6665,6 +6660,27 @@ class TriangleViewerManual(
         """Efface uniquement l'anneau de snap balise du drag de groupe."""
         self.canvas.delete("group_drag_beacon_target")
 
+    def _clear_anchor_rotation_pivot_highlight(self):
+        """Efface l'anneau jaune signalant le pivot d'une rotation ancrée."""
+        self.canvas.delete("anchor_rotation_pivot_highlight")
+
+    def _draw_anchor_rotation_pivot_highlight(self, pivot_world) -> None:
+        """Dessine l'anneau jaune du pivot-balise d'une rotation ancrée."""
+        self._clear_anchor_rotation_pivot_highlight()
+        px, py = self._world_to_screen(pivot_world)
+        radius = 12
+        self.canvas.create_oval(
+            px - radius,
+            py - radius,
+            px + radius,
+            py + radius,
+            outline="#FFD700",
+            width=3,
+            fill="",
+            tags="anchor_rotation_pivot_highlight",
+        )
+        self.canvas.tag_raise("anchor_rotation_pivot_highlight")
+
     def _group_drag_update_beacon_target(self, candidate):
         """Affiche le même anneau rouge que le snap compas, sans son état."""
         self._group_drag_clear_beacon_target()
@@ -6716,7 +6732,9 @@ class TriangleViewerManual(
             if self._edge_choice is None:
                 vertex_candidate = None
 
-        beacon_candidate = self._find_nearest_beacon_candidate(v_world)
+        beacon_candidate = None
+        if self.show_balises_layer is None or self.show_balises_layer.get():
+            beacon_candidate = self._find_nearest_beacon_candidate(v_world)
         if beacon_candidate is not None and (
             vertex_candidate is None
             or beacon_candidate["distance2"] < vertex_candidate["distance2"]
@@ -6764,6 +6782,7 @@ class TriangleViewerManual(
         self._edge_choice = None
         self._group_drag_snap_candidate = None
         self._group_drag_clear_beacon_target()
+        self._clear_anchor_rotation_pivot_highlight()
 
     def _draw_temp_edge_world(self, p1, p2, color="#ff7f00", width=3):
         """
@@ -7169,7 +7188,10 @@ class TriangleViewerManual(
 
         if self._sel:
             # rollback rotation de GROUPE
-            if self._sel.get("mode") == "rotate_group":
+            if self._sel.get("mode") in (
+                "rotate_group",
+                "rotate_group_anchor_drag",
+            ):
                 if self._discard_manual_rotate_preview():
                     self._redraw_from(self._last_drawn)
                     self.status.config(text="Rotation de groupe annulée (ESC).")
@@ -7325,10 +7347,10 @@ class TriangleViewerManual(
 
         show_degrouper = False
         scen = self._get_active_scenario()
-        world = scen.topoWorld if scen is not None else None
+        world = scen.topoWorld
         gid = str(getattr(self, "ctxGroupId", "") or "")
         nid = str(getattr(self, "ctxStartNodeId", "") or "")
-        if world is not None and gid and nid:
+        if gid and nid:
             try:
                 show_degrouper = bool(world.canDegrouperAtNode(gid, nid))
             except (ValueError, AssertionError):
@@ -7340,6 +7362,91 @@ class TriangleViewerManual(
             menu.delete(idx)
 
         self._ctx_refresh_menu_runtime_indexes()
+
+    def _ctx_update_beacon_detach_menu_entry(self) -> None:
+        """Affiche l'action de décrochage seulement pour un groupe ancré."""
+        menu = self._ctx_menu
+        label = "Décrocher le groupe de la balise"
+        idx = self._ctx_find_menu_index_by_label(label)
+
+        anchored = False
+        element_id = self._ctx_target_element_id
+        scen = self._get_active_scenario()
+        world = scen.topoWorld
+        if element_id:
+            core_group_id = world.get_group_of_element(element_id)
+            anchored = (
+                core_group_id is not None
+                and world.getAnchorForGroup(core_group_id) is not None
+            )
+
+        if anchored and idx is None:
+            menu.insert_command(1, label=label, command=self._ctx_detach_group_from_beacon)
+        elif not anchored and idx is not None:
+            menu.delete(idx)
+        self._ctx_refresh_menu_runtime_indexes()
+
+    def _ctx_update_anchor_rotation_menu_state(self) -> None:
+        """Applique les états contextuels des rotations pour un groupe ancré."""
+        element_id = self._ctx_target_element_id
+        scen = self._get_active_scenario()
+        world = scen.topoWorld
+        anchored = False
+        if element_id:
+            core_group_id = world.get_group_of_element(element_id)
+            anchored = (
+                core_group_id is not None
+                and world.getAnchorForGroup(core_group_id) is not None
+            )
+        states = {
+            "Pivoter": tk.DISABLED if anchored else tk.NORMAL,
+            "Inverser": tk.DISABLED if anchored else tk.NORMAL,
+            "OL=0°": tk.NORMAL,
+            "BL=0°": tk.NORMAL,
+        }
+        for label, state in states.items():
+            idx = self._ctx_find_menu_index_by_label(label)
+            if idx is not None:
+                self._ctx_menu.entryconfig(idx, state=state)
+
+    def _ctx_detach_group_from_beacon(self) -> None:
+        """Supprime l'ancre active puis décale le groupe depuis le Core."""
+        element_id = self._ctx_target_element_id
+        scen = self._get_active_scenario()
+        world = scen.topoWorld
+        if not element_id:
+            raise RuntimeError("Décrochage: contexte Core absent")
+
+        core_group_id = world.get_group_of_element(element_id)
+        if core_group_id is None:
+            raise RuntimeError("Décrochage: groupe Core introuvable")
+        anchor = world.getAnchorForGroup(core_group_id)
+        if anchor is None:
+            raise RuntimeError("Décrochage: groupe non ancré")
+
+        center_world = self._get_core_group_world_centroid(world, core_group_id)
+        beacon_world = np.asarray(
+            self.beacon_catalog.get_world(anchor.beacon_id), dtype=float
+        )
+        center_x, center_y = self._world_to_screen(center_world)
+        beacon_x, beacon_y = self._world_to_screen(beacon_world)
+        direction = np.array((center_x - beacon_x, center_y - beacon_y), dtype=float)
+        norm = float(np.linalg.norm(direction))
+        if norm <= 1e-9:
+            dx_screen, dy_screen = 0.0, 30.0
+        else:
+            dx_screen, dy_screen = 30.0 * direction / norm
+
+        world.removeGroupAnchor(anchor.anchor_id)
+        self._move_core_group_by_screen_delta(
+            world, core_group_id, float(dx_screen), float(dy_screen)
+        )
+        self._ctx_target_element_id = None
+        self._sel = None
+        self._reset_assist()
+        self._redraw_from(self._last_drawn)
+        self.refreshCheminTreeView()
+        self.status.config(text="Groupe décroché de la balise.")
 
     # ---------- Clic droit / menu contextuel ----------
     def _on_canvas_right_click(self, event):
@@ -7383,13 +7490,8 @@ class TriangleViewerManual(
 
             # "Dégrouper" est conditionnel selon les attachments incident au node cliqué.
             self._ctx_update_degrouper_menu_entry()
-
-            # "OL=0°" et "BL=0°" sont valables aussi sur un groupe :
-            # on oriente tout le groupe en prenant le triangle cliqué comme référence.
-            if hasattr(self, "_ctx_idx_ol0") and self._ctx_idx_ol0 is not None:
-                self._ctx_menu.entryconfig(self._ctx_idx_ol0, state=tk.NORMAL)
-            if hasattr(self, "_ctx_idx_bl0") and self._ctx_idx_bl0 is not None:
-                self._ctx_menu.entryconfig(self._ctx_idx_bl0, state=tk.NORMAL)
+            self._ctx_update_beacon_detach_menu_entry()
+            self._ctx_update_anchor_rotation_menu_state()
 
             # (ré)construire la section "mot" du menu selon le triangle visé + selection dico
             self._ctx_menu.tk_popup(event.x_root, event.y_root)
@@ -7434,8 +7536,6 @@ class TriangleViewerManual(
         sans lecture des structures boundary internes.
         """
         scen = self._get_active_scenario()
-        if scen is None or scen.topoWorld is None:
-            raise RuntimeError("scenario topologique introuvable")
         world = scen.topoWorld
 
         topo_element_id = str(element_id or "").strip()
@@ -7507,8 +7607,6 @@ class TriangleViewerManual(
             return
 
         scen = self._get_active_scenario()
-        if scen is None or scen.topoWorld is None:
-            raise RuntimeError("scenario topologique introuvable")
         world = scen.topoWorld
 
         res = world.degrouperAtNode(core_gid, nodeId)
@@ -7548,6 +7646,22 @@ class TriangleViewerManual(
         wx0, wy0 = self._screen_to_world(0.0, 0.0)
         wx1, wy1 = self._screen_to_world(dxs, dys)
         return np.array([float(wx1 - wx0), float(wy1 - wy0)], dtype=float)
+
+    def _move_core_group_by_screen_delta(
+        self,
+        world: TopologyWorld,
+        core_group_id: str,
+        dx_screen: float,
+        dy_screen: float,
+    ) -> None:
+        """Déplace un groupe Core selon un delta écran, puis le reprojette."""
+        delta_world = self._screen_delta_to_world_delta(dx_screen, dy_screen)
+        world.move_group(
+            core_group_id,
+            float(delta_world[0]),
+            float(delta_world[1]),
+        )
+        self._project_core_group_to_last_drawn(world, core_group_id)
 
     def _applyDegrouperResultToTk(self, res: dict) -> None:
         if not isinstance(res, dict):
@@ -7613,15 +7727,9 @@ class TriangleViewerManual(
                 else:
                     dy_screen = 30.0
 
-                delta_world = self._screen_delta_to_world_delta(
-                    dx_screen, dy_screen
+                self._move_core_group_by_screen_delta(
+                    world, core_gid, dx_screen, dy_screen
                 )
-                world.move_group(
-                    core_gid,
-                    float(delta_world[0]),
-                    float(delta_world[1]),
-                )
-                self._project_core_group_to_last_drawn(world, core_gid)
 
         self._sel = None
         self._reset_assist()
@@ -8662,14 +8770,13 @@ class TriangleViewerManual(
         if not core_group_id:
             return
 
-        # AUTO: pivot = origine globale (0,0) commune ; MANUAL: barycentre groupe
+        # AUTO: pivot imposé par l'ancre ; MANUAL: barycentre groupe.
         auto_geom = self._is_active_auto_scenario()
         if auto_geom:
-            if self.auto_geom_state is None:
-                self._auto_ensure_geometry_state(self._get_active_scenario())
-            if self.auto_geom_state is None:
-                return
-            pivot = (float(self.auto_geom_state.get("ox", 0.0)), float(self.auto_geom_state.get("oy", 0.0)))
+            anchor = world.getAnchorForGroup(core_group_id)
+            if anchor is None:
+                raise RuntimeError("Simulation AUTO: ancre absente pour la rotation")
+            pivot = np.asarray(world.getBeaconWorldXY(anchor.beacon_id), dtype=float)
         else:
             pivot = self._group_centroid(core_group_id)
             if pivot is None:
@@ -8691,7 +8798,7 @@ class TriangleViewerManual(
                 "pivot": np.array(pivot, dtype=float),
                 "start_angle": start_angle,
                 "auto_geom": True,
-                "auto_state0": dict(self.auto_geom_state) if self.auto_geom_state else None,
+                "auto_state0": dict(self.auto_rotation_state or {"thetaDeg": 0.0}),
                 "auto_preview_initial_pts": self._capture_active_auto_preview_pts(),
             }
         else:
@@ -8726,29 +8833,12 @@ class TriangleViewerManual(
             raise ValueError("[MIG-GEO-001] ElementID contextuel invalide")
         # --- CAS AUTO : rotation globale partagée ---
         if scen.source_type == "auto":
-            if self.auto_geom_state is None:
-                self._auto_ensure_geometry_state(scen)
-            if self.auto_geom_state is None:
-                raise RuntimeError("[MIG-CACHE-TRANSFORM-001H] état AUTO absent")
             points_world = self._get_core_triangle_world_points(world, element_id)
             segment = points_world[to_key] - points_world[from_key]
             if float(np.hypot(segment[0], segment[1])) < 1e-12:
                 return
             dtheta = (math.pi / 2.0) - math.atan2(segment[1], segment[0])
-            c, s = math.cos(dtheta), math.sin(dtheta)
-            rotation = np.array(((c, -s), (s, c)), dtype=float)
-            state0 = dict(self.auto_geom_state)
-            pivot = np.array((float(state0["ox"]), float(state0["oy"])), dtype=float)
-            self._apply_rigid_transform_to_all_auto_scenarios(
-                rotation, pivot - (rotation @ pivot)
-            )
-            self.auto_geom_state = {
-                "ox": float(state0["ox"]),
-                "oy": float(state0["oy"]),
-                "thetaDeg": float(state0["thetaDeg"] + math.degrees(dtheta)),
-            }
-            self._project_all_auto_scenarios_from_core()
-            self._simulationPersistCurrentAutoPlacement(save=True)
+            self._rotate_all_auto_scenarios_around_anchors(dtheta)
 
             self._redraw_from(self._last_drawn)
             self.status.config(text=f"Orientation appliquée : AUTO — {status_label} au Nord (0°).")
@@ -8764,10 +8854,6 @@ class TriangleViewerManual(
             raise ValueError(
                 f"[MIG-CACHE-TRANSFORM-001C2] segment dégénéré: {from_key}->{to_key}"
             )
-        pivot = (points_world["O"] + points_world["B"] + points_world["L"]) / 3.0
-        if pivot.shape != (2,) or not np.all(np.isfinite(pivot)):
-            raise ValueError("[MIG-CACHE-TRANSFORM-001C2] pivot monde invalide")
-
         current_angle_deg = math.degrees(math.atan2(dy, dx))
         target_angle_deg = 90.0
         angle_deg = (target_angle_deg - current_angle_deg + 180.0) % 360.0 - 180.0
@@ -8780,7 +8866,19 @@ class TriangleViewerManual(
             raise ValueError(
                 f"[MIG-CACHE-TRANSFORM-001C2] groupe Core introuvable element={element_id!r}"
             )
-        world.rotate_group(str(core_group_id), pivot, angle_rad)
+        anchor = world.getAnchorForGroup(core_group_id)
+        if anchor is None:
+            pivot = (
+                points_world["O"] + points_world["B"] + points_world["L"]
+            ) / 3.0
+        else:
+            pivot = np.asarray(
+                world.getBeaconWorldXY(anchor.beacon_id), dtype=float
+            )
+        if pivot.shape != (2,) or not np.all(np.isfinite(pivot)):
+            raise ValueError("[MIG-CACHE-TRANSFORM-001C2] pivot monde invalide")
+
+        world.rotate_group(core_group_id, pivot, angle_rad)
         final_core_group_id = world.get_group_of_element(element_id)
         if final_core_group_id is None:
             raise ValueError(
@@ -8986,22 +9084,8 @@ class TriangleViewerManual(
 
     def _move_group_world(self, core_group_id: str, dx_w, dy_w, move_member_entries=None):
         """Compatibilité : commit d'une translation, jamais un aperçu manuel."""
-        # AUTO: commit global explicite dans les Core, puis projection des caches.
         if self._is_active_auto_scenario():
-            if self.auto_geom_state is None:
-                self._auto_ensure_geometry_state(self._get_active_scenario())
-            if self.auto_geom_state is None:
-                raise RuntimeError("[MIG-CACHE-TRANSFORM-001H] état AUTO absent")
-            state0 = dict(self.auto_geom_state)
-            delta = np.array((float(dx_w), float(dy_w)), dtype=float)
-            self._apply_rigid_transform_to_all_auto_scenarios(np.eye(2), delta)
-            self.auto_geom_state = {
-                "ox": float(state0["ox"] + delta[0]),
-                "oy": float(state0["oy"] + delta[1]),
-                "thetaDeg": float(state0["thetaDeg"]),
-            }
-            self._project_all_auto_scenarios_from_core()
-            return
+            raise RuntimeError("Simulation AUTO: la translation est interdite pour un groupe ancré")
 
         self._commit_move_group_to_core(core_group_id, dx_w, dy_w)
 
@@ -9249,7 +9333,10 @@ class TriangleViewerManual(
         selection = self._sel if isinstance(getattr(self, "_sel", None), dict) else None
         if (
             selection is None
-            or selection.get("mode") != "rotate_group"
+            or selection.get("mode") not in (
+                "rotate_group",
+                "rotate_group_anchor_drag",
+            )
             or selection.get("auto_geom")
         ):
             return False
@@ -9296,6 +9383,40 @@ class TriangleViewerManual(
                 "[MIG-CACHE-TRANSFORM-001E1-FIX] delta monde du MOVE invalide"
             )
         return np.array(delta, dtype=float, copy=True)
+
+    @staticmethod
+    def _rotation_angle_from_mouse_world(mouse_world, pivot_world) -> float:
+        """Angle souris/pivot, avec direction déterministe au point du pivot."""
+        delta = np.asarray(mouse_world, dtype=float) - np.asarray(pivot_world, dtype=float)
+        if float(np.linalg.norm(delta)) <= 1e-9:
+            return 0.0
+        return math.atan2(float(delta[1]), float(delta[0]))
+
+    def _begin_anchored_group_rotation_drag(self, world, core_group_id, anchor, event):
+        """Démarre la rotation transactionnelle d'un groupe autour de sa balise."""
+        pivot_world = np.asarray(
+            self.beacon_catalog.get_world(anchor.beacon_id), dtype=float
+        )
+        mouse_world = self._screen_to_world(event.x, event.y)
+        self._sel = {
+            "mode": "rotate_group_anchor_drag",
+            "core_group_id": core_group_id,
+            "anchor_id": anchor.anchor_id,
+            "beacon_id": anchor.beacon_id,
+            "pivot_world": pivot_world,
+            "mouse_angle_start": self._rotation_angle_from_mouse_world(
+                mouse_world, pivot_world
+            ),
+            "rotate_preview_initial_pts": self._capture_move_preview_initial_pts(
+                world, core_group_id
+            ),
+            "auto_collective": self._is_active_auto_scenario(),
+        }
+        self._draw_anchor_rotation_pivot_highlight(pivot_world)
+        self.status.config(
+            text=f"Rotation du groupe Core {core_group_id} autour de la balise {anchor.beacon_id}."
+        )
+        return "break"
 
     def _on_canvas_left_down(self, event):
         # Mode compas : arc d'angle (clic pour P1/P2)
@@ -9354,22 +9475,11 @@ class TriangleViewerManual(
         # Validation d'une rotation en cours : le clic gauche sert à COMMIT, pas à re-sélectionner.
         if isinstance(self._sel, dict) and self._sel.get("mode") == "rotate_group":
             if self._sel.get("auto_geom"):
-                state0 = dict(self._sel.get("auto_state0") or {})
                 pivot = np.asarray(self._sel["pivot"], dtype=float)
                 wx, wy = self._screen_to_world(event.x, event.y)
                 current_angle = math.atan2(float(wy - pivot[1]), float(wx - pivot[0]))
                 angle_delta = current_angle - float(self._sel["start_angle"])
-                c, s = math.cos(angle_delta), math.sin(angle_delta)
-                rotation = np.array(((c, -s), (s, c)), dtype=float)
-                translation = pivot - (rotation @ pivot)
-                self._apply_rigid_transform_to_all_auto_scenarios(rotation, translation)
-                self.auto_geom_state = {
-                    "ox": float(state0["ox"]),
-                    "oy": float(state0["oy"]),
-                    "thetaDeg": float(state0["thetaDeg"] + math.degrees(angle_delta)),
-                }
-                self._project_all_auto_scenarios_from_core()
-                self._simulationPersistCurrentAutoPlacement(save=True)
+                self._rotate_all_auto_scenarios_around_anchors(angle_delta)
             else:
                 # MIG-CACHE-TRANSFORM-001C : commit Core unique depuis le
                 # clic de validation, jamais depuis le preview UI.
@@ -9426,9 +9536,11 @@ class TriangleViewerManual(
             is_auto_move = self._is_active_auto_scenario()
             scen = self._get_active_scenario()
             world = getattr(scen, "topoWorld", None) if scen is not None else None
-            if world is not None and world.getAnchorForGroup(str(core_group_id)) is not None:
-                self.status.config(text="DÃ©placement refusÃ© : ce groupe est ancrÃ© sur une balise.")
-                return "break"
+            anchor = world.getAnchorForGroup(core_group_id) if world is not None else None
+            if anchor is not None:
+                return self._begin_anchored_group_rotation_drag(
+                    world, core_group_id, anchor, event
+                )
             preview_initial_pts = (
                 self._capture_move_preview_initial_pts(world, str(core_group_id))
                 if not is_auto_move else {}
@@ -9442,7 +9554,7 @@ class TriangleViewerManual(
             if is_auto_move:
                 self._sel.update({
                     "auto_geom": True,
-                    "auto_state0": dict(self.auto_geom_state or {}),
+                    "auto_state0": dict(self.auto_rotation_state or {"thetaDeg": 0.0}),
                     "auto_move_preview_pts0": self._capture_active_auto_preview_pts(),
                 })
             self.status.config(text=f"Déplacement du groupe Core {core_group_id}.")
@@ -9459,14 +9571,12 @@ class TriangleViewerManual(
                 return
             scen = self._get_active_scenario()
             world = getattr(scen, "topoWorld", None) if scen is not None else None
-            if (
-                world is not None
-                and world.getAnchorForGroup(
-                    str(vertex_move_members["core_group_id"])
-                ) is not None
-            ):
-                self.status.config(text="DÃ©placement refusÃ© : ce groupe est ancrÃ© sur une balise.")
-                return "break"
+            core_group_id = vertex_move_members["core_group_id"]
+            anchor = world.getAnchorForGroup(core_group_id) if world is not None else None
+            if anchor is not None:
+                return self._begin_anchored_group_rotation_drag(
+                    world, core_group_id, anchor, event
+                )
 
             # --- NOUVEAU (CTRL sans lien) : si CTRL est enfoncé mais que le sommet cliqué n'est PAS un lien,
             #                                on déplace le GROUPE entier ancré sur ce sommet, SANS assist.
@@ -9493,7 +9603,7 @@ class TriangleViewerManual(
                 if is_auto_move:
                     self._sel.update({
                         "auto_geom": True,
-                        "auto_state0": dict(self.auto_geom_state or {}),
+                        "auto_state0": dict(self.auto_rotation_state or {"thetaDeg": 0.0}),
                         "auto_move_preview_pts0": self._capture_active_auto_preview_pts(),
                     })
                 # nettoyer toute aide existante
@@ -9529,7 +9639,7 @@ class TriangleViewerManual(
                 if is_auto_move:
                     self._sel.update({
                         "auto_geom": True,
-                        "auto_state0": dict(self.auto_geom_state or {}),
+                        "auto_state0": dict(self.auto_rotation_state or {"thetaDeg": 0.0}),
                         "auto_move_preview_pts0": self._capture_active_auto_preview_pts(),
                     })
                 self.status.config(text=f"Déplacement du groupe Core {move_members['core_group_id']} par sommet {vkey}.")
@@ -9590,6 +9700,25 @@ class TriangleViewerManual(
             return  # le drag liste gère déjà le mouvement
         if not self._sel:
             self._on_pan_move(event)
+            return
+
+        # --- Rotation ancrée : aperçu transactionnel autour de la balise ---
+        if self._sel["mode"] == "rotate_group_anchor_drag":
+            pivot_world = np.asarray(self._sel["pivot_world"], dtype=float)
+            mouse_world = self._screen_to_world(event.x, event.y)
+            current_angle = self._rotation_angle_from_mouse_world(
+                mouse_world, pivot_world
+            )
+            angle_delta = self._normalize_rotation_angle(
+                current_angle - float(self._sel["mouse_angle_start"])
+            )
+            self._preview_rotate_group_from_snapshot(
+                self._sel["rotate_preview_initial_pts"],
+                pivot_world,
+                angle_delta,
+            )
+            self._redraw_from(self._last_drawn)
+            self._draw_anchor_rotation_pivot_highlight(pivot_world)
             return
 
         # --- Déplacement de GROUPE ---
@@ -9780,6 +9909,30 @@ class TriangleViewerManual(
             return
 
         mode = self._sel.get("mode")
+        if mode == "rotate_group_anchor_drag":
+            core_group_id = self._sel.get("core_group_id")
+            pivot_world = np.asarray(self._sel["pivot_world"], dtype=float)
+            scen = self._get_active_scenario()
+            world = getattr(scen, "topoWorld", None) if scen is not None else None
+            if core_group_id is None or world is None:
+                raise RuntimeError(
+                    "[MIG-ANCHOR-007] groupe Core ou monde absent au commit"
+                )
+            mouse_world = self._screen_to_world(event.x, event.y)
+            final_angle_delta = self._normalize_rotation_angle(
+                self._rotation_angle_from_mouse_world(mouse_world, pivot_world)
+                - float(self._sel["mouse_angle_start"])
+            )
+            if self._sel.get("auto_collective"):
+                self._rotate_all_auto_scenarios_around_anchors(final_angle_delta)
+            else:
+                world.rotate_group(core_group_id, pivot_world, final_angle_delta)
+                self._project_core_group_to_last_drawn(world, core_group_id)
+            self._sel = None
+            self._reset_assist()
+            self._redraw_from(self._last_drawn)
+            return
+
         if mode == "move_group":
             # Collage du GROUPE quand on l'a déplacé PAR SOMMET (ancre=vertex)
             # et que l'aide de collage était active (pas en déconnexion).
@@ -9949,18 +10102,9 @@ class TriangleViewerManual(
                 and not core_snap_transform_applied
                 and mobile_core_group_id is not None
             ):
-                state0 = dict(self._sel.get("auto_state0") or {})
-                drag_delta = self._get_move_drag_delta_world(event)
-                self._apply_rigid_transform_to_all_auto_scenarios(
-                    np.eye(2, dtype=float), drag_delta
+                raise RuntimeError(
+                    "Simulation AUTO: translation impossible sans ancre de rotation"
                 )
-                self.auto_geom_state = {
-                    "ox": float(state0["ox"] + drag_delta[0]),
-                    "oy": float(state0["oy"] + drag_delta[1]),
-                    "thetaDeg": float(state0["thetaDeg"]),
-                }
-                self._project_all_auto_scenarios_from_core()
-                self._simulationPersistCurrentAutoPlacement(save=True)
             elif core_snap_transform_applied and mobile_core_group_id is not None:
                 if not mobile_element_id:
                     raise RuntimeError(

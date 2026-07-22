@@ -20,6 +20,7 @@ from src.assembleur_edgechoice import buildEdgeChoiceEptsForAutoChain
 from src.assembleur_sim import (
     AlgoQuadrisParPaires,
     BranchState,
+    InitialTriangleOrientation,
     MoteurSimulationAssemblage,
     PlacedTriangle,
     PlacedTriangles,
@@ -250,6 +251,26 @@ def test_auto_two_triangle_scenario_exposes_core_projection_dicts():
             f"B{element.meta['triRank']}",
             f"L{element.meta['triRank']}",
         )
+
+
+def test_auto_reference_orientation_rotates_the_first_group_without_changing_mirror():
+    viewer = SimpleNamespace(df=pd.DataFrame([
+        {"id": 1, "len_OB": 3.0, "len_OL": 4.0, "len_BL": 5.0, "orient": "CCW", "B": "B1", "L": "L1"},
+        {"id": 2, "len_OB": 3.0, "len_OL": 4.0, "len_BL": 5.0, "orient": "CCW", "B": "B2", "L": "L2"},
+    ]))
+    target_theta = -0.73
+    engine = MoteurSimulationAssemblage(viewer)
+    engine.initialTriangleOrientation = InitialTriangleOrientation.reference(
+        "T99", 99, target_theta
+    )
+
+    scenario = AlgoQuadrisParPaires(engine).run([1, 2])[0]
+    first_element_id = scenario.orderedElementIds[0]
+    R, _T, mirrored = scenario.topoWorld.getElementPose(first_element_id)
+    theta = np.arctan2(R[1, 0], R[0, 0])
+
+    assert theta == pytest.approx(target_theta)
+    assert mirrored is False
 
 
 def test_simulator_exposes_no_legacy_group_projection_helpers():

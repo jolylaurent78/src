@@ -1,4 +1,5 @@
 import xml.etree.ElementTree as ET
+import math
 
 import pytest
 
@@ -174,6 +175,67 @@ def test_apply_group_rigid_transform_allowed_after_anchor_removal() -> None:
 
     _rotation, translation, _mirrored = world.getElementPose("T01")
     assert translation == pytest.approx((3.0, -2.0))
+
+
+def test_anchored_group_rotation_is_allowed_only_around_its_beacon() -> None:
+    world, first_group, _second_group = _world_with_two_groups()
+    node_id = _node_id(world)
+    anchor = world.createGroupAnchor(first_group, "BAL-Bourges", node_id)
+    world.applyGroupAnchor(anchor.anchor_id)
+
+    world.rotate_group(first_group, (10.0, -5.0), math.pi / 2.0)
+
+    assert world.getAnchorForGroup(first_group) is anchor
+    assert world.getConceptNodeWorldXY(node_id, first_group) == pytest.approx(
+        (10.0, -5.0)
+    )
+
+
+def test_free_group_rotation_accepts_an_arbitrary_valid_pivot() -> None:
+    world, first_group, _second_group = _world_with_two_groups()
+    _rotation_before, translation_before, _mirrored_before = world.getElementPose("T01")
+
+    world.rotate_group(first_group, (3.0, -2.0), math.pi / 2.0)
+
+    _rotation_after, translation_after, _mirrored_after = world.getElementPose("T01")
+    assert translation_after != pytest.approx(translation_before)
+
+
+def test_anchored_group_rotation_rejects_wrong_pivot_without_mutating_poses() -> None:
+    world, first_group, _second_group = _world_with_two_groups()
+    anchor = world.createGroupAnchor(first_group, "BAL-Bourges", _node_id(world))
+    world.applyGroupAnchor(anchor.anchor_id)
+    poses_before = {
+        element_id: world.getElementPose(element_id)
+        for element_id in world.getGroupElementIds(first_group)
+    }
+
+    with pytest.raises(ValueError, match="ROTATE interdit"):
+        world.rotate_group(first_group, (0.0, 0.0), math.pi / 2.0)
+
+    for element_id, expected_pose in poses_before.items():
+        actual_pose = world.getElementPose(element_id)
+        assert actual_pose[0] == pytest.approx(expected_pose[0])
+        assert actual_pose[1] == pytest.approx(expected_pose[1])
+        assert actual_pose[2] is expected_pose[2]
+
+
+def test_anchored_group_rotation_rejects_preexisting_anchor_node_mismatch() -> None:
+    world, first_group, _second_group = _world_with_two_groups()
+    anchor = world.createGroupAnchor(first_group, "BAL-Bourges", _node_id(world))
+    poses_before = {
+        element_id: world.getElementPose(element_id)
+        for element_id in world.getGroupElementIds(first_group)
+    }
+
+    with pytest.raises(RuntimeError, match="invariant géométrique rompu"):
+        world.rotate_group(first_group, (10.0, -5.0), math.pi / 2.0)
+
+    for element_id, expected_pose in poses_before.items():
+        actual_pose = world.getElementPose(element_id)
+        assert actual_pose[0] == pytest.approx(expected_pose[0])
+        assert actual_pose[1] == pytest.approx(expected_pose[1])
+        assert actual_pose[2] is expected_pose[2]
 
 
 def test_group_anchor_is_removed_when_its_group_is_deleted() -> None:

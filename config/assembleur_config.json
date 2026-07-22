@@ -7,8 +7,8 @@
   "uiShowOnlyGroupContours": false,
   "simLastAlgoId": "quadris_par_paires",
   "simLastN": 32,
-  "simLastOrder": "reverse",
-  "simLastFirstEdge": "BL",
+  "simLastOrder": "forward",
+  "simLastFirstEdge": "OL",
   "uiAutoFitScenario": false,
   "simAutoPlacementByMap": {
     "899 - Alsace.jpg": {
@@ -61,5 +61,6 @@
     "h": 5282.159467437271,
     "aspect": 0.8128587830080367
   },
-  "uiClockAutoRefSyncEnabled": true
+  "uiClockAutoRefSyncEnabled": true,
+  "simLastBeaconId": "B03"
 }

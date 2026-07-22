@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from src.assembleur_balises import Beacon, BeaconCatalog
 from src.assembleur_core import TopologyElement, TopologyNodeType, TopologyWorld
 from src.assembleur_tk import TriangleViewerManual
 from src.canvas_objects_collection import CanvasObjectsCollection
@@ -109,7 +110,11 @@ def test_manual_orient_north_commits_core_once_and_overwrites_divergent_cache():
 
 def test_auto_orient_north_commits_a_core_first_global_rotation():
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
-    world = TopologyWorld()
+    catalog = BeaconCatalog()
+    catalog._by_id = {
+        "BAL-1": Beacon("BAL-1", "Balise", 0, 0, 0, 0, 10.0, 5.0),
+    }
+    world = TopologyWorld(beacon_catalog=catalog)
     group_id = world.add_element_as_new_group(_element("T01"))
     viewer.canvas_objects = CanvasObjectsCollection([
         {"topoElementId": "T01", "pts": {}},
@@ -118,24 +123,30 @@ def test_auto_orient_north_commits_a_core_first_global_rotation():
     viewer.scenarios = [SimpleNamespace(
         topoWorld=world, source_type="auto", last_drawn=viewer._last_drawn,
         orderedElementIds=["T01"],
+        name="Auto test",
     )]
     viewer.active_scenario_index = 0
-    viewer.auto_geom_state = {"ox": 0.0, "oy": 0.0, "thetaDeg": 0.0}
+    viewer.auto_rotation_state = {"thetaDeg": 0.0}
     world.setElementPose(
         "T01",
         np.array(((0.0, -1.0), (1.0, 0.0))),
         np.zeros(2),
         mirrored=False,
     )
+    anchor = world.createGroupAnchor(
+        group_id,
+        "BAL-1",
+        world.get_element_vertex_node_id_by_type("T01", "L"),
+    )
+    world.applyGroupAnchor(anchor.anchor_id)
     viewer._project_core_group_to_last_drawn(world, group_id)
     viewer._redraw_from = lambda _entries: None
-    viewer._simulationPersistCurrentAutoPlacement = lambda **_kwargs: None
     viewer.status = SimpleNamespace(config=lambda **_kwargs: None)
     viewer._ctx_target_element_id = "T01"
 
     viewer._ctx_orient_OL_north()
 
-    np.testing.assert_allclose(viewer.auto_geom_state["thetaDeg"], -90.0)
+    np.testing.assert_allclose(viewer.auto_rotation_state["thetaDeg"], 270.0)
     vector = viewer._last_drawn[0]["pts"]["L"] - viewer._last_drawn[0]["pts"]["O"]
     assert abs(float(vector[0])) < 1e-10
     assert float(vector[1]) > 0.0
