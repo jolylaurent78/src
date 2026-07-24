@@ -1541,7 +1541,7 @@ class TopologyChemins:
 
     def _saveToXml(self, parent: _ET.Element) -> None:
         chemins_el = _ET.SubElement(parent, "chemins", {
-            "isDefined": "1" if bool(self.isDefined) else "0",
+            "isDefined": "1" if self.isDefined else "0",
         })
         if not self.isDefined:
             return
@@ -2901,15 +2901,15 @@ class TopologyWorld:
         def _fmt_feature(f) -> str:
             if f is None:
                 return "None"
-            return f"{str(getattr(f, 'feature_type', ''))}:{getattr(f, 'element_id', '')}:{getattr(f, 'index', '')}"
+            return f"{f.feature_type}:{f.element_id}:{f.index}"
 
         def _fmt_atts(att_list: list[TopologyAttachment]) -> str:
             out = []
             for a in att_list:
-                kind = getattr(a, "kind", "")
-                fa = _fmt_feature(getattr(a, "feature_a", None))
-                fb = _fmt_feature(getattr(a, "feature_b", None))
-                params = getattr(a, "params", {}) or {}
+                kind = a.kind
+                fa = _fmt_feature(a.feature_a)
+                fb = _fmt_feature(a.feature_b)
+                params = a.params
                 keys = {}
                 for k in ("t", "edgeFrom", "mapping"):
                     if k in params:
@@ -2935,9 +2935,8 @@ class TopologyWorld:
         _dbg(f"[TOPO-OVERLAP][START] mob={gid_mob} dest={gid_dest} atts={_fmt_atts(atts)}")
 
         # --- build rings from boundary cycles ---
-        eps_world = float(getattr(self, "overlap_eps_world", 1e-9))
-        ring_mob = self._build_ring_from_boundary_cycle(gid_mob, eps_world=eps_world)
-        ring_dest = self._build_ring_from_boundary_cycle(gid_dest, eps_world=eps_world)
+        ring_mob = self._build_ring_from_boundary_cycle(gid_mob, eps_world=self.overlap_eps_world)
+        ring_dest = self._build_ring_from_boundary_cycle(gid_dest, eps_world=self.overlap_eps_world)
         if ring_mob is None or ring_dest is None:
             return True
         nodes_mob, pts_mob, index_mob = ring_mob[1], ring_mob[0], ring_mob[2]
@@ -4170,7 +4169,7 @@ class TopologyWorld:
         """
         if not elementIds:
             return
-        if int(getattr(self, "_topoTxDepth", 0)) > 0:
+        if self._topoTxDepth > 0:
             raise ValueError("TopologyWorld.removeElementsAndRebuild: transaction ouverte")
 
         removed: set[str] = {e.strip() for e in (elementIds or []) if e.strip()}
@@ -4249,11 +4248,10 @@ class TopologyWorld:
         self._reconcile_group_anchors()
 
         # 5) Chemins : si le chemin courant porte sur un groupe supprimé, on le supprime.
-        tc = getattr(self, "topologyChemins", None)
-        if tc is not None and bool(getattr(tc, "isDefined", False)):
-            gidChemin = tc.groupId
+        if self.topologyChemins is not None and self.topologyChemins.isDefined:
+            gidChemin = self.topologyChemins.groupId
             if gidChemin and self.find_group(gidChemin) in removedGroups:
-                tc.supprimerChemin()
+                self.topologyChemins.supprimerChemin()
 
         # 6) Invalidation conceptuelle des groupes touchés
         for gid in (usedCanon | removedGroups):
@@ -4265,8 +4263,8 @@ class TopologyWorld:
     # ------------------------------------------------------------------
 
     def _degrouperAttachmentElementPair(self, att: TopologyAttachment) -> tuple[str, str]:
-        eA = getattr(att.feature_a, "element_id", "") or ""
-        eB = getattr(att.feature_b, "element_id", "") or ""
+        eA = att.feature_a.element_id
+        eB = att.feature_b.element_id
         if not eA or not eB:
             raise ValueError(f"[degrouper] attachment sans elementId (aid={att.attachment_id})")
         return (eA, eB)
@@ -4367,7 +4365,7 @@ class TopologyWorld:
         self._reconcile_group_anchors()
 
     def degrouperAtNode(self, groupId: str, nodeId: str) -> dict:
-        if int(getattr(self, "_topoTxDepth", 0)) > 0:
+        if self._topoTxDepth > 0:
             raise ValueError("TopologyWorld.degrouperAtNode: transaction ouverte")
 
         gid = self.find_group(groupId)
@@ -4397,7 +4395,7 @@ class TopologyWorld:
 
         toRemove: set[str] = set()
         for att in (vvIncident + eeIncident):
-            aid = getattr(att, "attachment_id", "") or ""
+            aid = att.attachment_id
             assert aid, "[degrouper] attachment sans id"
             toRemove.add(aid)
 
@@ -4413,7 +4411,7 @@ class TopologyWorld:
                     continue
                 tv, te = self._degrouperVertexEdgeTrianglePair(att)
                 if (tv, te) in vvTrianglePairsOriented:
-                    aid = getattr(att, "attachment_id", "") or ""
+                    aid = att.attachment_id
                     assert aid, "[degrouper] attachment sans id"
                     toRemove.add(aid)
 
@@ -4494,7 +4492,7 @@ class TopologyWorld:
 
         # G) Chemins: casser si le groupe touché portait le chemin
         tc = self.topologyChemins
-        if tc is not None and bool(getattr(tc, "isDefined", False)):
+        if tc is not None and tc.isDefined:
             tcGroupId = tc.groupId
             if tcGroupId and self.find_group(tcGroupId) == mainGroupId:
                 tc.supprimerChemin()
@@ -5006,7 +5004,7 @@ class TopologyWorld:
         """Serialise topologyChemins in a deterministic and diff-friendly XML section."""
         tc = self.topologyChemins
         chemins_el = _ET.SubElement(parent, "chemins", {
-            "isDefined": "1" if bool(tc.isDefined) else "0",
+            "isDefined": "1" if tc.isDefined else "0",
         })
 
         if not tc.isDefined:

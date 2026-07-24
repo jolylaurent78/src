@@ -35,16 +35,16 @@ def listTopoGroups(topoWorld, rebuild: bool = True):
         element_id_set = set(element_ids)
         nb_att = sum(
             1
-            for attachment in getattr(topoWorld, "attachments", {}).values()
-            if str(getattr(attachment.feature_a, "element_id", "")) in element_id_set
-            and str(getattr(attachment.feature_b, "element_id", "")) in element_id_set
+            for attachment in topoWorld.attachments
+            if attachment.feature_a.element_id in element_id_set
+            and attachment.feature_b.element_id in element_id_set
         )
 
         # concept cache (peut être stale si graphValid=False, mais utile)
         try:
             c = topoWorld._concept_cache(gid)
-            nb_nodes = len(getattr(c, "nodes", {}))
-            graph_ok = getattr(c, "graphValid", None)
+            nb_nodes = len(c.nodes)
+            graph_ok = c.graphValid
         except Exception:
             nb_nodes = "?"
             graph_ok = None
@@ -67,7 +67,7 @@ def plotLastDrawn(lastDrawn: List[Dict[str, Any]], showIds: bool = True, ax=None
     """
 
     if ax is None:
-        fig, ax = plt.subplots()
+        _, ax = plt.subplots()
         ax.set_aspect("equal", adjustable="box")
     else:
         ax.set_aspect("equal", adjustable="box")

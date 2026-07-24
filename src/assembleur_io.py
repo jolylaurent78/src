@@ -700,7 +700,8 @@ def loadScenarioXml(viewer, path: str):
     # 5) Core snapshot first; the Canvas projection is rebuilt afterwards.
     from src.assembleur_core import TopologyWorld
 
-    sid = str(getattr(scen, "topoScenarioId", "") or "").strip() or "SCENARIO"
+    # topoScenarioId non défini si on charge au debut
+    sid = getattr(scen, "topoScenarioId", "SCENARIO")
     # Core restored in isolation; the active scenario is replaced only once
     # the physical snapshot has been imported successfully.
     world = TopologyWorld()

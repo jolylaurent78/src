@@ -66,6 +66,7 @@ from src.assembleur_projection import (
     getCoreTriangleWorldPoints,
     getManualProjectionElementIds,
 )
+from src.assembleur_catalogue_window import CatalogueWindow
 
 
 EPS_WORLD = 1e-6
@@ -433,7 +434,6 @@ class DialogCreateTriangleExcel(tk.Toplevel):
 
         self.result = (tri_csv, villes_csv, excel_out)
         self.destroy()
-
 
 # ---------- Application (MANUEL — sans algorithmes) ----------
 class TriangleViewerManual(
@@ -1341,7 +1341,7 @@ class TriangleViewerManual(
     def _simulation_get_tri_ids_first_n(self, n: int) -> List[int]:
         """Retourne les rangs catalogue du scénario, dans leur ordre métier."""
         scen = self._get_active_scenario()
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
+        world = scen.topoWorld
         ranks = world.scenario_triangle_set.ranks() if world is not None else ()
         return list(ranks[:max(0, int(n))])
 
@@ -1540,6 +1540,30 @@ class TriangleViewerManual(
                 command=lambda p=full: self.open_excel(p)
             )
 
+    def open_catalogue_window(self):
+        """Ouvre la fenêtre non modale de gestion du catalogue."""
+        window = getattr(self, "_catalogue_window", None)
+        if window is not None:
+            try:
+                if window.winfo_exists():
+                    window.deiconify()
+                    window.lift()
+                    window.focus_force()
+                    return
+            except tk.TclError:
+                pass
+
+        window = CatalogueWindow(self, maps_dir=self.maps_dir)
+        self._catalogue_window = window
+
+        def _on_close():
+            if not window.request_close():
+                return
+            if getattr(self, "_catalogue_window", None) is window:
+                self._catalogue_window = None
+
+        window.protocol("WM_DELETE_WINDOW", _on_close)
+
     # ---------- Icônes ----------
     def _load_icon(self, filename: str):
         """
@@ -1657,6 +1681,30 @@ class TriangleViewerManual(
         # (pack conditionnel selon l'état initial)
         if not self._ui_triangles_collapsed.get():
             self._ui_triangles_content.pack(fill=tk.BOTH, expand=True)
+
+        # Barre d'outils du catalogue (extensible avec les futures actions).
+        triangles_toolbar = tk.Frame(
+            self._ui_triangles_content, bd=0, highlightthickness=0
+        )
+        triangles_toolbar.pack(anchor="w", padx=6, pady=(0, 2), fill="x")
+        self.icon_catalogue = self._load_icon("book.png")
+        if self.icon_catalogue is not None:
+            catalogue_btn = tk.Button(
+                triangles_toolbar,
+                image=self.icon_catalogue,
+                command=self.open_catalogue_window,
+                relief=tk.FLAT,
+            )
+        else:
+            catalogue_btn = tk.Button(
+                triangles_toolbar,
+                text="C",
+                width=2,
+                command=self.open_catalogue_window,
+                relief=tk.FLAT,
+            )
+        catalogue_btn.pack(side=tk.LEFT, padx=1)
+        self._ui_attach_tooltip(catalogue_btn, "Gestion du catalogue")
 
         lb_frame = tk.Frame(self._ui_triangles_content, bd=0, highlightthickness=0)
         lb_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
@@ -2736,13 +2784,12 @@ class TriangleViewerManual(
         world = scen.topoWorld
         tc = world.topologyChemins
 
-        isDefined = bool(tc.isDefined)
-        self.chemins_edit_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
-        self.chemins_export_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
-        self.chemins_recalc_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
-        self.chemins_engine_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
-        self.chemins_delete_btn.configure(state=(tk.NORMAL if isDefined else tk.DISABLED))
-        if not isDefined:
+        self.chemins_edit_btn.configure(state=(tk.NORMAL if tc.isDefined else tk.DISABLED))
+        self.chemins_export_btn.configure(state=(tk.NORMAL if tc.isDefined else tk.DISABLED))
+        self.chemins_recalc_btn.configure(state=(tk.NORMAL if tc.isDefined else tk.DISABLED))
+        self.chemins_engine_btn.configure(state=(tk.NORMAL if tc.isDefined else tk.DISABLED))
+        self.chemins_delete_btn.configure(state=(tk.NORMAL if tc.isDefined else tk.DISABLED))
+        if not tc.isDefined:
             return
 
         # --- Colonnes dynamiques (UI) ---
@@ -4040,7 +4087,7 @@ class TriangleViewerManual(
         if not hasattr(self, "listbox"):
             return
         scen = self._get_active_scenario()
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
+        world = scen.topoWorld
         triangle_set = getattr(world, "scenario_triangle_set", None)
         if world is None or triangle_set is None or self.triangle_catalog is None:
             return
@@ -4075,9 +4122,9 @@ class TriangleViewerManual(
         if not hasattr(self, "listbox"):
             return
         scen = self._get_active_scenario()
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
-        triangle_set = getattr(world, "scenario_triangle_set", None)
-        if world is None or triangle_set is None or self.triangle_catalog is None:
+        world = scen.topoWorld
+        triangle_set = world.scenario_triangle_set
+        if triangle_set is None or self.triangle_catalog is None:
             return
 
         self.listbox.delete(0, tk.END)
@@ -4093,8 +4140,8 @@ class TriangleViewerManual(
 
     def _get_triangle_model_from_listbox_index(self, idx: int):
         scen = self._get_active_scenario()
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
-        triangle_set = getattr(world, "scenario_triangle_set", None)
+        world = scen.topoWorld
+        triangle_set = world.scenario_triangle_set
         ranks = triangle_set.ranks() if triangle_set is not None else ()
         if not 0 <= int(idx) < len(ranks):
             raise IndexError(f"TriangleCatalog: index listbox invalide: {idx}")
@@ -5919,9 +5966,7 @@ class TriangleViewerManual(
         self.canvas.delete("group_outline")
 
         scen = self._get_active_scenario()
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
-        if world is None:
-            return
+        world = scen.topoWorld
 
         for core_group_id in world.getLiveGroupIds():
             boundary_segments = world.getBoundarySegments(core_group_id)
@@ -6224,9 +6269,8 @@ class TriangleViewerManual(
                                     # La projection doit etre complete avant toute mutation,
                                     # afin de ne jamais appliquer une rotation partielle.
                                     scen = self._get_active_scenario()
-                                    world = getattr(scen, "topoWorld", None) if scen is not None else None
-                                    if world is None:
-                                        raise RuntimeError("CTRL move_group: TopologyWorld actif introuvable.")
+                                    world = scen.topoWorld
+
                                     if not core_group_id:
                                         raise RuntimeError("CTRL move_group: core_group_id absent de la selection.")
                                     try:
@@ -6528,7 +6572,7 @@ class TriangleViewerManual(
             v_world = np.array(P0[vkey], dtype=float) if vkey in ("O", "B", "L") else None
 
             scen = self._get_active_scenario()
-            topoWorld = getattr(scen, "topoWorld", None) if scen is not None else None
+            topoWorld = scen.topoWorld
 
             tooltip_txt = ""
             if v_world is not None and vkey in ("O", "B", "L"):
@@ -7475,7 +7519,7 @@ class TriangleViewerManual(
             entry = self._last_drawn[idx]
             element_id = str(entry.get("topoElementId", "") or "").strip()
             scen = self._get_active_scenario()
-            world = getattr(scen, "topoWorld", None) if scen is not None else None
+            world = scen.topoWorld
             if not element_id or world is None or element_id not in world.elements:
                 self._ctx_target_element_id = None
                 self._ctx_clear_chemin_context()
@@ -7588,7 +7632,7 @@ class TriangleViewerManual(
         boundaryOrientation = world.getBoundaryOrientation(gid)
         orientationUser = str(boundaryOrientation)
 
-        if bool(world.topologyChemins.isDefined):
+        if world.topologyChemins.isDefined:
             if not messagebox.askokcancel("Créer un chemin", "Un chemin existe déjà. Remplacer ?"):
                 return
         world.topologyChemins.creerDepuisGroupe(
@@ -8762,8 +8806,8 @@ class TriangleViewerManual(
         if element_id is None:
             return
         scen = self._get_active_scenario()
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
-        if world is None or element_id not in world.elements:
+        world = scen.topoWorld
+        if element_id not in world.elements:
             return
         # le triangle fait toujours partie d'un groupe : PIVOTER LE GROUPE
         core_group_id = world.get_group_of_element(element_id)
@@ -8828,8 +8872,8 @@ class TriangleViewerManual(
             return
 
         scen = self._get_active_scenario()
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
-        if world is None or element_id not in world.elements:
+        world = scen.topoWorld
+        if element_id not in world.elements:
             raise ValueError("[MIG-GEO-001] ElementID contextuel invalide")
         # --- CAS AUTO : rotation globale partagée ---
         if scen.source_type == "auto":
@@ -8931,11 +8975,7 @@ class TriangleViewerManual(
         triangles consecutifs. Aucun champ ``groups/nodes`` ou ``edge_in/out``
         n'est consulte dans ce chemin fonctionnel.
         """
-        if scen is None:
-            return None
-        world = getattr(scen, "topoWorld", None)
-        if world is None:
-            return None
+        world = scen.topoWorld
         element_ids = [
             str(element_id or "").strip()
             for element_id in (getattr(scen, "orderedElementIds", None) or [])
@@ -9033,9 +9073,8 @@ class TriangleViewerManual(
             self.status.config(text="Inversion désactivée pour les scénarios automatiques.")
             return
         scen = self._get_active_scenario()
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
-        if world is None:
-            raise RuntimeError("[MIG-CACHE-TRANSFORM-001D] TopologyWorld actif absent")
+        world = scen.topoWorld
+
         if element_id not in world.elements:
             raise ValueError("[MIG-CACHE-TRANSFORM-001D] topoElementId absent")
         core_group_id = world.get_group_of_element(element_id)
@@ -9069,18 +9108,10 @@ class TriangleViewerManual(
         if not core_group_id:
             return
         scen = self._get_active_scenario()
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
-        if world is None:
-            raise RuntimeError("[MIG-CACHE-TRANSFORM-001B] TopologyWorld actif absent")
-        try:
-            world.move_group(str(core_group_id), float(dx_w), float(dy_w))
-            self._project_core_group_to_last_drawn(world, str(core_group_id))
-        except Exception:
-            MIG_GEO_LOGGER.exception(
-                "[MIG-CACHE-TRANSFORM-001B] commit translation/projection failed group=%s delta=(%s,%s)",
-                core_group_id, dx_w, dy_w,
-            )
-            raise
+        world = scen.topoWorld
+
+        world.move_group(core_group_id, float(dx_w), float(dy_w))
+        self._project_core_group_to_last_drawn(world, core_group_id)
 
     def _move_group_world(self, core_group_id: str, dx_w, dy_w, move_member_entries=None):
         """Compatibilité : commit d'une translation, jamais un aperçu manuel."""
@@ -9125,22 +9156,16 @@ class TriangleViewerManual(
             return result
 
         scen = self._get_active_scenario()
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
+        world = scen.topoWorld
         element_id = str(self._last_drawn[int(tri_index)].get("topoElementId", "") or "").strip()
-        if world is None or not element_id:
+        if not element_id:
             return result
 
-        try:
-            node_id = world.get_element_vertex_node_id_by_type(element_id, vertex_type)
-            node_canon = world.find_node(node_id)
-            core_group_id = str(world.get_group_of_element(element_id))
-            entries = self.get_last_drawn_entries_for_core_group(core_group_id)
-        except Exception as exc:
-            MIG_GEO_LOGGER.warning(
-                "[MOVE] Résolution Core du sommet impossible Element=%s Vertex=%s Error=%s",
-                element_id, vkey, exc,
-            )
-            return result
+        node_id = world.get_element_vertex_node_id_by_type(element_id, vertex_type)
+        node_canon = world.find_node(node_id)
+        core_group_id = str(world.get_group_of_element(element_id))
+        entries = self.get_last_drawn_entries_for_core_group(core_group_id)
+
 
         result.update({
             "core_group_id": core_group_id,
@@ -9342,8 +9367,8 @@ class TriangleViewerManual(
             return False
         core_group_id = selection.get("core_group_id")
         scen = self._get_active_scenario()
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
-        if core_group_id and world is not None:
+        world = scen.topoWorld
+        if core_group_id:
             self._project_core_group_to_last_drawn(world, str(core_group_id))
         self._sel = None
         MIG_GEO_LOGGER.debug("[MIG-CACHE-TRANSFORM-001C] rotate discard group=%s", core_group_id)
@@ -9360,8 +9385,8 @@ class TriangleViewerManual(
             return False
         core_group_id = selection.get("core_group_id")
         scen = self._get_active_scenario()
-        world = getattr(scen, "topoWorld", None) if scen is not None else None
-        if core_group_id and world is not None:
+        world = scen.topoWorld
+        if core_group_id:
             self._project_core_group_to_last_drawn(world, str(core_group_id))
         self._sel = None
         return True
@@ -9490,8 +9515,8 @@ class TriangleViewerManual(
                 final_angle = math.atan2(float(wy - pivot[1]), float(wx - pivot[0]))
                 angle_total = self._normalize_rotation_angle(final_angle - start_angle)
                 scen = self._get_active_scenario()
-                world = getattr(scen, "topoWorld", None) if scen is not None else None
-                if core_group_id is None or world is None:
+                world = scen.topoWorld
+                if core_group_id is None:
                     raise RuntimeError(
                         "[MIG-CACHE-TRANSFORM-001C] groupe Core ou monde absent au commit"
                     )
@@ -9535,8 +9560,8 @@ class TriangleViewerManual(
                 return
             is_auto_move = self._is_active_auto_scenario()
             scen = self._get_active_scenario()
-            world = getattr(scen, "topoWorld", None) if scen is not None else None
-            anchor = world.getAnchorForGroup(core_group_id) if world is not None else None
+            world = scen.topoWorld
+            anchor = world.getAnchorForGroup(core_group_id)
             if anchor is not None:
                 return self._begin_anchored_group_rotation_drag(
                     world, core_group_id, anchor, event
@@ -9570,9 +9595,9 @@ class TriangleViewerManual(
             if not vertex_move_members["entries"]:
                 return
             scen = self._get_active_scenario()
-            world = getattr(scen, "topoWorld", None) if scen is not None else None
+            world = scen.topoWorld
             core_group_id = vertex_move_members["core_group_id"]
-            anchor = world.getAnchorForGroup(core_group_id) if world is not None else None
+            anchor = world.getAnchorForGroup(core_group_id)
             if anchor is not None:
                 return self._begin_anchored_group_rotation_drag(
                     world, core_group_id, anchor, event
@@ -9585,7 +9610,7 @@ class TriangleViewerManual(
                 move_members = vertex_move_members
                 is_auto_move = self._is_active_auto_scenario()
                 scen = self._get_active_scenario()
-                world = getattr(scen, "topoWorld", None) if scen is not None else None
+                world = scen.topoWorld
                 preview_initial_pts = (
                     self._capture_move_preview_initial_pts(world, str(move_members["core_group_id"]))
                     if not is_auto_move else {}
@@ -9620,7 +9645,7 @@ class TriangleViewerManual(
                 move_members = vertex_move_members
                 is_auto_move = self._is_active_auto_scenario()
                 scen = self._get_active_scenario()
-                world = getattr(scen, "topoWorld", None) if scen is not None else None
+                world = scen.topoWorld
                 preview_initial_pts = (
                     self._capture_move_preview_initial_pts(world, str(move_members["core_group_id"]))
                     if not is_auto_move else {}
@@ -9913,10 +9938,10 @@ class TriangleViewerManual(
             core_group_id = self._sel.get("core_group_id")
             pivot_world = np.asarray(self._sel["pivot_world"], dtype=float)
             scen = self._get_active_scenario()
-            world = getattr(scen, "topoWorld", None) if scen is not None else None
-            if core_group_id is None or world is None:
+            world = scen.topoWorld
+            if core_group_id is None:
                 raise RuntimeError(
-                    "[MIG-ANCHOR-007] groupe Core ou monde absent au commit"
+                    "[MIG-ANCHOR-007] groupe Core absent au commit"
                 )
             mouse_world = self._screen_to_world(event.x, event.y)
             final_angle_delta = self._normalize_rotation_angle(
@@ -9968,11 +9993,11 @@ class TriangleViewerManual(
                 and beacon_candidate.get("type") == "beacon"
             ):
                 scen = self._get_active_scenario()
-                world = getattr(scen, "topoWorld", None) if scen is not None else None
+                world = scen.topoWorld
                 anchor_tid = int(anchor["tid"])
-                if world is None or mobile_core_group_id is None:
+                if mobile_core_group_id is None:
                     raise RuntimeError(
-                        "[MIG-ANCHOR-003] monde ou groupe Core mobile absent"
+                        "[MIG-ANCHOR-003] groupe Core mobile absent"
                     )
                 mobile_entry = self._last_drawn[anchor_tid]
                 mobile_element_id = str(
