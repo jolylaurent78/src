@@ -16,7 +16,7 @@ class TriangleViewerClockArcMixin:
 
     def _clock_update_snap_target(self, sx: float, sy: float):
         """Calcule le sommet de triangle le plus proche du curseur (en écran/canvas) et l'affiche en rouge."""
-        prev = getattr(self, "_clock_snap_target", None)
+        prev = self._clock_snap_target
         world = self._get_active_scenario().topoWorld
         w = self._screen_to_world(sx, sy)
         v_world = np.array([float(w[0]), float(w[1])], dtype=float)
@@ -155,11 +155,11 @@ class TriangleViewerClockArcMixin:
 
     def _clock_arc_is_available(self) -> bool:
         """True si une mesure d'arc persistee est disponible (et affichee tant que le compas reste sur le meme noeud)."""
-        return (getattr(self, '_clock_arc_last_angle_deg', None) is not None) and isinstance(getattr(self, '_clock_arc_last', None), dict)
+        return (self._clock_arc_last_angle_deg is not None) and isinstance(self._clock_arc_last, dict)
 
     def _clock_arc_handle_click(self, sx: int, sy: int):
         """Gestion des clics gauche dans le mode 'arc d'angle'."""
-        if not getattr(self, "_clock_arc_active", False):
+        if not self._clock_arc_active:
             return
 
         # Snap sur noeud (CTRL = pas de snap)
@@ -167,7 +167,7 @@ class TriangleViewerClockArcMixin:
 
         az_abs = float(self._clock_compute_azimuth_deg(sx2, sy2))
 
-        if int(getattr(self, "_clock_arc_step", 0)) == 0:
+        if self._clock_arc_step == 0:
             self._clock_arc_p1 = (int(sx2), int(sy2), float(az_abs))
             self._clock_arc_step = 1
             self.status.config(text="Mesurer un arc d'angle : sélectionne le point P2 (clic gauche), ESC pour annuler. (Snap noeuds, CTRL = désactiver snap)")
@@ -193,18 +193,18 @@ class TriangleViewerClockArcMixin:
 
     def _clock_arc_update_preview(self, sx: int, sy: int):
         """Met à jour le preview (2 rayons + arc + label) pendant la sélection de P2."""
-        if not getattr(self, "_clock_arc_active", False):
+        if not self._clock_arc_active:
             return
-        if int(getattr(self, "_clock_arc_step", 0)) != 1:
+        if self._clock_arc_step != 1:
             return
         if self._clock_arc_p1 is None:
             return
         if not hasattr(self, "canvas") or self.canvas is None:
             return
 
-        cx = float(getattr(self, "_clock_cx", 0.0))
-        cy = float(getattr(self, "_clock_cy", 0.0))
-        R = float(getattr(self, "_clock_R", getattr(self, "_clock_radius", 69)))
+        cx = self._clock_cx
+        cy = self._clock_cy
+        R = self._clock_R
 
         # Snap P2 si activé
         sx2, sy2 = self._clock_apply_optional_snap(int(sx), int(sy), enable_snap=True)
@@ -261,7 +261,7 @@ class TriangleViewerClockArcMixin:
             self.canvas.coords(self._clock_arc_text_id, tx, ty)
 
     def _clock_arc_cancel(self, silent: bool = False):
-        if not getattr(self, "_clock_arc_active", False):
+        if not self._clock_arc_active:
             return
         self._clock_arc_active = False
         self._clock_arc_step = 0
@@ -283,7 +283,7 @@ class TriangleViewerClockArcMixin:
         """Efface la dernière mesure persistée (appelé notamment quand le compas bouge)."""
         # Si le dico était filtré sur la base de cet arc, on doit annuler le filtrage
         # dès que l'arc n'est plus disponible (changement de noeud compas).
-        if bool(getattr(self, "_dico_filter_active", False)) or (getattr(self, "_dico_filter_ref_angle_deg", None) is not None):
+        if bool(self._dico_filter_active) or (self._dico_filter_ref_angle_deg is not None):
             # Réutilise l'action standard de l'app (menu simulation "Annuler filtrage")
             if hasattr(self, "_simulation_cancel_dictionary_filter"):
                 self._simulation_cancel_dictionary_filter()
@@ -299,7 +299,7 @@ class TriangleViewerClockArcMixin:
 
     def _clock_arc_draw_last(self, cx: float, cy: float, R: float):
         """Dessine la dernière mesure persistée (si présente) dans l'overlay."""
-        last = getattr(self, "_clock_arc_last", None)
+        last = self._clock_arc_last
         if not isinstance(last, dict):
             return
         if not getattr(self, "canvas", None):

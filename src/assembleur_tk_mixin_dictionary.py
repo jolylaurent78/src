@@ -215,7 +215,7 @@ class TriangleViewerDictionaryMixin:
             headers=headers,
             row_index=rowIndexDisplay,
             show_row_index=True,
-            height=max(120, getattr(self, "dico_panel_height", 220) - 10),
+            height=max(120, self.dico_panel_height - 10),
             empty_vertical=0,
         )
         # NOTE: on désactive le menu contextuel interne TkSheet ("copy", etc.)

@@ -23,6 +23,21 @@ class GeoMapMarker:
     latitude: float
     longitude: float
     label: str = ""
+    always_show_label: bool = False
+    fill_color: str | None = None
+    outline_color: str | None = None
+    label_color: str | None = None
+    tooltip: str | None = None
+
+
+@dataclass(frozen=True)
+class GeoMapPolyline:
+    """Polyligne géographique générique, sans sémantique métier."""
+
+    points: tuple[tuple[float, float], ...]
+    color: str | None = None
+    width: int = 2
+    closed: bool = False
 
 
 class CalibratedGeoMap:
@@ -137,7 +152,7 @@ class GeoMapView(tk.Frame):
         self._tooltip_marker_id: object | None = None
         self._hover_marker_id: object | None = None
         self._hover_root_position: tuple[int, int] | None = None
-        self._polylines: list[object] = []  # Extension prévue : géométries linéaires.
+        self._polylines: list[GeoMapPolyline] = []
         self._polygons: list[object] = []   # Extension prévue : géométries surfaciques.
         self._overlays: list[object] = []   # Extension prévue : overlays applicatifs.
 
@@ -164,8 +179,8 @@ class GeoMapView(tk.Frame):
         self._markers = list(markers)
         self._request_redraw()
 
-    def set_polylines(self, polylines: Iterable[object]) -> None:
-        """Réserve l'API pour de futures géométries linéaires."""
+    def set_polylines(self, polylines: Iterable[GeoMapPolyline]) -> None:
+        """Définit des polylignes géographiques à dessiner."""
         self._polylines = list(polylines)
         self._request_redraw()
 
@@ -196,6 +211,32 @@ class GeoMapView(tk.Frame):
         width, height = self._canvas_size()
         self._offset_x = width / 2 - x_px * self._view_scale
         self._offset_y = height / 2 - y_px * self._view_scale
+        self._constrain_view_offsets()
+        self._request_redraw()
+
+    def fit_to_bounds(self, coordinates: Iterable[tuple[float, float]], *, margin: float = 0.12) -> None:
+        """Ajuste la vue à des coordonnées (latitude, longitude) avec une marge relative."""
+        if self.map is None:
+            return
+        points = [self.map.geographic_to_pixel(latitude, longitude) for latitude, longitude in coordinates]
+        if not points:
+            return
+        canvas_width, canvas_height = self._canvas_size()
+        margin = min(max(float(margin), 0.0), 0.45)
+        available_width = max(1.0, canvas_width * (1.0 - 2.0 * margin))
+        available_height = max(1.0, canvas_height * (1.0 - 2.0 * margin))
+        min_x, max_x = min(point[0] for point in points), max(point[0] for point in points)
+        min_y, max_y = min(point[1] for point in points), max(point[1] for point in points)
+        bounds_width, bounds_height = max_x - min_x, max_y - min_y
+        if bounds_width < 1.0:
+            bounds_width = max(20.0, self.map.image_size[0] * 0.01)
+        if bounds_height < 1.0:
+            bounds_height = max(20.0, self.map.image_size[1] * 0.01)
+        requested_scale = min(available_width / bounds_width, available_height / bounds_height)
+        self._view_scale = min(max(requested_scale, self._minimum_scale()), max(0.5, self._minimum_scale()))
+        center_x, center_y = (min_x + max_x) / 2, (min_y + max_y) / 2
+        self._offset_x = canvas_width / 2 - center_x * self._view_scale
+        self._offset_y = canvas_height / 2 - center_y * self._view_scale
         self._constrain_view_offsets()
         self._request_redraw()
 
@@ -337,7 +378,10 @@ class GeoMapView(tk.Frame):
         self._tooltip_after_id = None
         marker_id = self._hover_marker_id
         marker = next((item for item in self._markers if item.marker_id == marker_id), None)
-        if marker is None or not marker.label:
+        if marker is None:
+            return
+        tooltip_text = marker.tooltip if marker.tooltip is not None else marker.label
+        if not tooltip_text:
             return
         if self._tooltip is None:
             self._tooltip = tk.Toplevel(self)
@@ -348,7 +392,7 @@ class GeoMapView(tk.Frame):
                 pass
             self._tooltip_label = tk.Label(self._tooltip, relief=tk.SOLID, borderwidth=1, padx=5, pady=2)
             self._tooltip_label.pack()
-        self._tooltip_label.config(text=marker.label)
+        self._tooltip_label.config(text=tooltip_text)
         self._tooltip_marker_id = marker_id
         self._position_tooltip()
         self._tooltip.deiconify()
@@ -401,7 +445,12 @@ class GeoMapView(tk.Frame):
         source_bottom = min(source_height, math.ceil(visible_bottom * source_scale_y))
         if source_right <= source_left or source_bottom <= source_top:
             return
-        crop = self._source_image.crop((source_left, source_top, source_right, source_bottom))
+        # Le viewport initial peut couvrir la carte Michelin entière (ressource interne
+        # déjà validée à son chargement). Pillow contrôle aussi la taille du résultat
+        # de crop et émet alors un DecompressionBombWarning malgré cette provenance sûre.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+            crop = self._source_image.crop((source_left, source_top, source_right, source_bottom))
         crop_map_width = (source_right - source_left) / source_scale_x
         crop_map_height = (source_bottom - source_top) / source_scale_y
         rendered = crop.resize(
@@ -417,6 +466,20 @@ class GeoMapView(tk.Frame):
             image=self._photo,
             anchor="nw",
         )
+        for polyline in self._polylines:
+            screen_points = []
+            for latitude, longitude in polyline.points:
+                x_map, y_map = self.map.geographic_to_pixel(latitude, longitude)
+                screen_points.extend((self._offset_x + x_map * self._view_scale, self._offset_y + y_map * self._view_scale))
+            if len(screen_points) >= 4:
+                if polyline.closed:
+                    screen_points.extend(screen_points[:2])
+                self.canvas.create_line(
+                    *screen_points,
+                    fill=polyline.color if polyline.color is not None else "#2e7d32",
+                    width=polyline.width,
+                    joinstyle=tk.ROUND,
+                )
         for marker in self._markers:
             x_map, y_map = self.map.geographic_to_pixel(marker.latitude, marker.longitude)
             x_screen = self._offset_x + x_map * self._view_scale
@@ -424,9 +487,10 @@ class GeoMapView(tk.Frame):
             self._marker_screen_positions[marker.marker_id] = (x_screen, y_screen)
             selected = marker.marker_id == self._selected_marker_id
             radius = 8 if selected else 6
-            color = "#d52b1e" if selected else "#1565c0"
+            color = marker.fill_color if marker.fill_color is not None else ("#d52b1e" if selected else "#1565c0")
+            outline = marker.outline_color if marker.outline_color is not None else "white"
             self.canvas.create_oval(x_screen - radius, y_screen - radius, x_screen + radius, y_screen + radius,
-                                    fill=color, outline="white", width=2)
-            if selected and marker.label:
+                                    fill=color, outline=outline, width=2)
+            if (selected or marker.always_show_label) and marker.label:
                 self.canvas.create_text(x_screen + 10, y_screen - 10, text=marker.label, anchor="sw",
-                                        fill="#202020", font=("TkDefaultFont", 9, "bold"))
+                                        fill=marker.label_color or "#202020", font=("TkDefaultFont", 9, "bold"))

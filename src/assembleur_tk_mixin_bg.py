@@ -338,7 +338,7 @@ class TriangleViewerBackgroundMapMixin:
     def _bg_load_svg_dialog(self):
         path = filedialog.askopenfilename(
             title="Choisir une carte (SVG/PNG/JPG)",
-            initialdir=getattr(self, "maps_dir", None) or None,
+            initialdir=self.maps_dir,
             filetypes=[
                 ("Cartes", "*.svg *.png *.jpg *.jpeg"),
                 ("SVG", "*.svg"),
@@ -821,7 +821,7 @@ class TriangleViewerBackgroundMapMixin:
         }
 
     def _bg_update_move(self, sx: int, sy: int):
-        if not getattr(self, "_bg_moving", None) or not self._bg:
+        if not self._bg_moving or not self._bg:
             return
         mx, my = self._screen_to_world(sx, sy)
         smx, smy = self._bg_moving["start_mouse"]

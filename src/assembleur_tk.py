@@ -23,7 +23,7 @@ from PIL import Image
 from src.assembleur_core import (
     _build_local_triangle,
     ScenarioAssemblage, TriangleCatalog, ScenarioTriangleSet,
-    TopologyWorld, TopologyNodeType, TopologyCheminTriplet
+    TopologyWorld, TopologyCheminTriplet
 )
 
 from src.assembleur_sim import (
@@ -436,6 +436,8 @@ class DialogCreateTriangleExcel(tk.Toplevel):
         self.destroy()
 
 # ---------- Application (MANUEL — sans algorithmes) ----------
+
+
 class TriangleViewerManual(
     TriangleViewerDictionaryMixin,
     TriangleViewerFrontierGraphMixin,
@@ -9165,7 +9167,6 @@ class TriangleViewerManual(
         node_canon = world.find_node(node_id)
         core_group_id = str(world.get_group_of_element(element_id))
         entries = self.get_last_drawn_entries_for_core_group(core_group_id)
-
 
         result.update({
             "core_group_id": core_group_id,
