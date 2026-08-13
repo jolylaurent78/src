@@ -6,7 +6,9 @@ import pytest
 import src.assembleur_tk as assembleur_tk
 
 from src.assembleur_core import ScenarioAssemblage, TopologyElement, TopologyWorld
+from src.assembleur_catalogue import Catalogue
 from src.assembleur_io import loadScenarioXml, saveScenarioXml
+from src.assembleur_scenario import ScenarioHypothesis
 from src.assembleur_tk import TriangleViewerManual
 from src.canvas_objects_collection import CanvasObjectsCollection
 
@@ -33,24 +35,38 @@ class _Canvas:
         pass
 
 
+def _catalogue_and_hypothesis():
+    catalogue = Catalogue()
+    triangle_ids = []
+    for pair_index in range(16):
+        base = catalogue.add_city(f"Base {pair_index}", 45.0, 2.0)
+        for parity in range(2):
+            rank = pair_index * 2 + parity + 1
+            opening = catalogue.add_city(f"O {rank}", 45.0, 2.0)
+            light = catalogue.add_city(f"L {rank}", 45.0, 2.0)
+            triangle_ids.append(catalogue.add_triangle(
+                f"Note {rank}", opening.city_id, base.city_id, light.city_id
+            ).triangle_id)
+    return catalogue, ScenarioHypothesis(triangle_ids, "TPL-0001")
+
+
 class _Viewer:
     # Intentionally has no groups or _next_group_id attributes.
     def __init__(self, world, entries):
-        scenario = ScenarioAssemblage("XML test")
+        self.catalogue, hypothesis = _catalogue_and_hypothesis()
+        scenario = ScenarioAssemblage("XML test", hypothesis=hypothesis)
         scenario.topoWorld = world
         scenario.topoScenarioId = "SCENARIO"
         self.scenarios = [scenario]
         self.active_scenario_index = 0
         self.canvas_objects = CanvasObjectsCollection(entries)
         self._last_drawn = self.canvas_objects.entries
-        self.excel_path = None
         self._bg = None
         self._clock_cx = 0.0
         self._clock_cy = 0.0
         self._clock_state = {"hour": 0, "minute": 0, "label": ""}
         self.listbox = _Listbox()
         self.canvas = _Canvas()
-        self.df = None
         self.zoom = 1.0
         self.offset = np.array([0.0, 0.0])
         self._clock_ref_azimuth_deg = 0.0
@@ -218,7 +234,7 @@ def test_f11_geo_orient_dump_contains_core_and_projection_diagnostics(tmp_path):
     triangle = ET.parse(dump).getroot().find("./GeoOrientationDebug/Triangle")
     assert triangle is not None
     assert triangle.get("topoElementId") == "T28"
-    assert triangle.find("Catalogue").get("orient") == "<absent>"
+    assert triangle.get("sourceTriangleId") == "<absent>"
     assert triangle.find("Core/VertexLocalXY/Point[@vertex='O']") is not None
     assert triangle.find("LastDrawn").get("coreGroupId") == str(world.get_group_of_element("T28"))
     assert triangle.find("GeometricOrientation").get("world") in {"CW", "CCW"}

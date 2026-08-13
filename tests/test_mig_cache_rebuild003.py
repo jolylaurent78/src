@@ -27,7 +27,6 @@ def _element(element_id: str, rank: int) -> TopologyElement:
             TopologyNodeType.LUMIERE,
         ],
         edge_lengths_km=[3.0, 5.0, 4.0],
-        meta={"triRank": rank},
     )
 
 

@@ -185,7 +185,7 @@ def test_prefix_steps_have_no_link_for_zero_or_one_triangle_and_none_when_missin
 
 def test_viewer_core_prefix_steps_uses_ordered_element_ids_and_attachments_without_groups():
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
-    scenario = ScenarioAssemblage("auto", source_type="auto", tri_ids=[1, 2])
+    scenario = ScenarioAssemblage("auto", source_type="auto")
     scenario.groups = None
     scenario.last_drawn = [
         {"id": 1, "topoElementId": "T01"},
@@ -207,7 +207,7 @@ def test_viewer_core_prefix_steps_uses_ordered_element_ids_and_attachments_witho
 
 def test_prefix_filter_keeps_only_candidates_with_same_ordered_core_path():
     def scenario(name, ordered_element_ids, attachment):
-        item = ScenarioAssemblage(name, source_type="auto", tri_ids=[1, 2])
+        item = ScenarioAssemblage(name, source_type="auto")
         item.groups = None
         item.last_drawn = [
             {"id": 1, "topoElementId": "T01"},
@@ -225,7 +225,7 @@ def test_prefix_filter_keeps_only_candidates_with_same_ordered_core_path():
     active = scenario("active", ["T01", "T02"], shared)
     same_path = scenario("same", ["T01", "T02"], shared)
     different_path = scenario("different", ["T02", "T01"], shared)
-    manual = ScenarioAssemblage("manual", source_type="manual", tri_ids=[])
+    manual = ScenarioAssemblage("manual", source_type="manual")
 
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer.scenarios = [active, same_path, different_path, manual]
@@ -240,7 +240,7 @@ def test_prefix_filter_keeps_only_candidates_with_same_ordered_core_path():
 
 def test_prefix_filter_accepts_the_first_ordered_element_without_attachment_step():
     def scenario(name, ordered_element_ids):
-        item = ScenarioAssemblage(name, source_type="auto", tri_ids=[1, 2])
+        item = ScenarioAssemblage(name, source_type="auto")
         item.orderedElementIds = list(ordered_element_ids)
         item.topoWorld.elements.update({"T01": object(), "T02": object()})
         return item

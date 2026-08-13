@@ -7,8 +7,10 @@ import numpy as np
 import pytest
 
 from src.assembleur_core import ScenarioAssemblage, TopologyElement, TopologyWorld
+from src.assembleur_catalogue import Catalogue
 from src.assembleur_balises import Beacon, BeaconCatalog
 from src.assembleur_io import loadScenarioXml, saveScenarioXml
+from src.assembleur_scenario import ScenarioHypothesis
 from src.assembleur_tk import TriangleViewerManual
 from src.canvas_objects_collection import CanvasObjectsCollection
 
@@ -25,6 +27,21 @@ class _Canvas:
     def focus_set(self): pass
 
 
+def _catalogue_and_hypothesis():
+    catalogue = Catalogue()
+    triangle_ids = []
+    for pair_index in range(16):
+        base = catalogue.add_city(f"Base {pair_index}", 45.0, 2.0)
+        for parity in range(2):
+            rank = pair_index * 2 + parity + 1
+            opening = catalogue.add_city(f"O {rank}", 45.0, 2.0)
+            light = catalogue.add_city(f"L {rank}", 45.0, 2.0)
+            triangle_ids.append(catalogue.add_triangle(
+                f"Note {rank}", opening.city_id, base.city_id, light.city_id
+            ).triangle_id)
+    return catalogue, ScenarioHypothesis(triangle_ids, "TPL-0001")
+
+
 class _Viewer:
     _bind_canvas_objects = TriangleViewerManual._bind_canvas_objects
     _build_scenario_projection_from_core = TriangleViewerManual._build_scenario_projection_from_core
@@ -34,7 +51,10 @@ class _Viewer:
     )
 
     def __init__(self, world, entries, source_type="auto", beacon_catalog=None):
-        scenario = ScenarioAssemblage("XML Core 004", source_type=source_type)
+        self.catalogue, hypothesis = _catalogue_and_hypothesis()
+        scenario = ScenarioAssemblage(
+            "XML Core 004", source_type=source_type, hypothesis=hypothesis
+        )
         scenario.topoWorld = world
         scenario.topoScenarioId = "SCENARIO"
         scenario.orderedElementIds = list(world.elements)
@@ -42,10 +62,10 @@ class _Viewer:
         self.canvas_objects = CanvasObjectsCollection(entries)
         self._last_drawn = self.canvas_objects.entries
         scenario.last_drawn = self._last_drawn
-        self.excel_path, self._bg = None, None
+        self._bg = None
         self._clock_cx, self._clock_cy = 0.0, 0.0
         self._clock_state = {"hour": 0, "minute": 0, "label": ""}
-        self.listbox, self.canvas, self.df = _Listbox(), _Canvas(), None
+        self.listbox, self.canvas = _Listbox(), _Canvas()
         self.zoom, self.offset = 1.0, np.zeros(2)
         self._clock_ref_azimuth_deg = 0.0
         self.beacon_catalog = beacon_catalog
@@ -69,7 +89,6 @@ def _world():
     world.add_element_as_new_group(TopologyElement(
         element_id="T01", name="Triangle 1", vertex_labels=["O", "B", "L"],
         vertex_types=["O", "B", "L"], edge_lengths_km=[3.0, 5.0, 4.0],
-        meta={"triRank": 1},
     ))
     return world
 
@@ -129,7 +148,6 @@ def test_v5_round_trip_preserves_core_poses_and_handles_empty_world(tmp_path):
     second = TopologyElement(
         element_id="T02", name="Triangle 2", vertex_labels=["O", "B", "L"],
         vertex_types=["O", "B", "L"], edge_lengths_km=[6.0, 10.0, 8.0],
-        meta={"triRank": 2},
     )
     world.add_element_as_new_group(second)
     world.setElementPose("T01", np.array([[0.0, -1.0], [1.0, 0.0]]), np.array([2.0, 3.0]), mirrored=True)

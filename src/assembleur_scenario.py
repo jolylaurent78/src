@@ -5,6 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from src.assembleur_catalogue import Catalogue, HypothesisTemplate
+from src.assembleur_core import (
+    TopologyElement,
+    build_topology_element_from_catalogue_triangle,
+)
 
 
 @dataclass
@@ -28,7 +32,7 @@ class ScenarioHypothesis:
                 even = catalogue.get_triangle(ranks[index + 1])
             except KeyError as exc:
                 raise ValueError(
-                    "L'hypothÃ¨se du scÃ©nario rÃ©fÃ©rence un triangle Catalogue absent : "
+                    "L'hypothèse du scénario référence un triangle Catalogue absent : "
                     f"{exc.args[0]}"
                 ) from exc
             if odd.base_city_id != even.base_city_id:
@@ -54,3 +58,23 @@ def create_hypothesis_from_template(catalogue: Catalogue, template: HypothesisTe
 def create_default_scenario_hypothesis(catalogue: Catalogue) -> ScenarioHypothesis:
     """Instancie l'hypothèse du scénario depuis le template Catalogue par défaut."""
     return create_hypothesis_from_template(catalogue, catalogue.require_valid_default_template())
+
+
+def materialize_catalogue_triangle(
+    catalogue: Catalogue,
+    triangle_id: str,
+) -> TopologyElement:
+    """Resolves a Catalogue triangle before passing simple data to the Core."""
+    triangle = catalogue.get_triangle(triangle_id)
+    opening = catalogue.get_city(triangle.opening_city_id)
+    base = catalogue.get_city(triangle.base_city_id)
+    light = catalogue.get_city(triangle.light_city_id)
+    return build_topology_element_from_catalogue_triangle(
+        triangle_id=triangle.triangle_id,
+        opening_name=opening.name,
+        base_name=base.name,
+        light_name=light.name,
+        opening_lambert_xy=catalogue.get_city_lambert(opening.city_id),
+        base_lambert_xy=catalogue.get_city_lambert(base.city_id),
+        light_lambert_xy=catalogue.get_city_lambert(light.city_id),
+    )

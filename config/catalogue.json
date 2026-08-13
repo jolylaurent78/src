@@ -110,7 +110,7 @@
     {
       "cityId": "CITY-0016",
       "name": "3RDV",
-      "latitude": 45.580000000000005,
+      "latitude": 45.53333333333333,
       "longitude": -2.6,
       "archived": false
     },
@@ -651,6 +651,20 @@
       "name": "Mirebeau",
       "latitude": 46.78583333333333,
       "longitude": 0.1825,
+      "archived": false
+    },
+    {
+      "cityId": "CITY-0094",
+      "name": "Grand Ballon",
+      "latitude": 47.90083333333333,
+      "longitude": 7.098055555555555,
+      "archived": false
+    },
+    {
+      "cityId": "CITY-0095",
+      "name": "Frontiere Nord",
+      "latitude": 49.49805555555556,
+      "longitude": 5.930000000000001,
       "archived": false
     }
   ],

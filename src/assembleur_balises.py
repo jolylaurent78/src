@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import csv
 import os
+import re
 from dataclasses import dataclass, replace
 from typing import Iterable
 
-from src.assembleur_io import TriangleFileService
 from src.utils.logging_utils import get_app_logger
 
 
@@ -29,7 +29,7 @@ class BeaconCatalog:
     """Référentiel global immuable côté consommateurs, indexé par ``beacon_id``."""
 
     _EXPECTED_HEADER = ["Id", "Nom", "Latitude", "Longitude"]
-    _DMS_RE = TriangleFileService.DMS_RE
+    _DMS_RE = re.compile(r"^\s*(\d+)\s+(\d+)\s+(\d+)\s+([NSEW])\s*$")
 
     def __init__(self) -> None:
         self._by_id: dict[str, Beacon] = {}

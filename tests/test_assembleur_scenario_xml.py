@@ -53,13 +53,11 @@ class _Viewer:
         self.canvas_objects = CanvasObjectsCollection()
         self._last_drawn = self.canvas_objects.entries
         scenario.last_drawn = self._last_drawn
-        self.excel_path = None
         self._bg = None
         self._clock_cx = self._clock_cy = 0.0
         self._clock_state = {"hour": 0, "minute": 0, "label": ""}
         self.listbox = _Listbox()
         self.canvas = _Canvas()
-        self.df = None
         self.zoom = 1.0
         self.offset = np.zeros(2)
         self._clock_ref_azimuth_deg = 0.0
@@ -155,14 +153,25 @@ def test_round_trip_persists_an_independent_hypothesis_from_xml(tmp_path):
     assert loaded.triangle_ids_by_rank is not original.triangle_ids_by_rank
 
 
-def test_legacy_v5_without_hypothesis_loads_as_none(tmp_path):
-    catalogue, original = _catalogue_with_valid_hypothesis()
-    path = tmp_path / "legacy-v5.xml"
-    saveScenarioXml(_Viewer(catalogue), str(path))
+def test_auto_scenario_persists_its_hypothesis(tmp_path):
+    catalogue, hypothesis = _catalogue_with_valid_hypothesis()
+    viewer = _Viewer(catalogue, hypothesis)
+    viewer._get_active_scenario().source_type = "auto"
+    path = tmp_path / "auto-scenario.xml"
 
-    target = _Viewer(catalogue, original)
-    loadScenarioXml(target, str(path))
-    assert target._get_active_scenario().hypothesis is None
+    saveScenarioXml(viewer, str(path))
+
+    persisted = _load_scenario_hypothesis(ET.parse(path).getroot(), catalogue)
+    assert persisted is not None
+    assert persisted.triangle_ids_by_rank == hypothesis.triangle_ids_by_rank
+    assert persisted is not hypothesis
+
+
+def test_save_rejects_a_scenario_without_hypothesis(tmp_path):
+    catalogue, _original = _catalogue_with_valid_hypothesis()
+
+    with pytest.raises(ValueError, match="ScenarioHypothesis absente"):
+        saveScenarioXml(_Viewer(catalogue), str(tmp_path / "invalid.xml"))
 
 
 def test_hypothesis_without_source_template_id_omits_the_attribute(tmp_path):

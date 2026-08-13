@@ -6,6 +6,7 @@ import pytest
 
 from src.assembleur_balises import Beacon, BeaconCatalog
 from src.assembleur_core import ScenarioAssemblage, TopologyElement, TopologyWorld
+from src.assembleur_scenario import ScenarioHypothesis
 from src.assembleur_tk import TriangleViewerManual
 from src.canvas_objects_collection import CanvasObjectsCollection
 
@@ -18,13 +19,14 @@ def _catalog():
     return catalog
 
 
-def _element(element_id="T01"):
+def _element(element_id="T01", source_triangle_id=None):
     return TopologyElement(
         element_id=element_id,
         name=element_id,
         vertex_labels=["O", "B", "L"],
         vertex_types=["O", "B", "L"],
         edge_lengths_km=[3.0, 4.0, 5.0],
+        source_triangle_id=source_triangle_id,
     )
 
 
@@ -34,13 +36,11 @@ def _viewer_for_orientation_reference(world, catalog):
     return viewer
 
 
-def test_orientation_reference_requires_an_anchor_on_l_and_uses_lowest_rank():
+def test_orientation_reference_resolves_the_rank_from_scenario_hypothesis():
     catalog = _catalog()
     world = TopologyWorld(beacon_catalog=catalog)
-    first = _element("T01")
-    first.meta["triRank"] = 7
-    second = _element("T02")
-    second.meta["triRank"] = 3
+    first = _element("T01", "TRI-Y")
+    second = _element("T02", "TRI-X")
     group_first = world.add_element_as_new_group(first)
     group_second = world.add_element_as_new_group(second)
     anchor_o = world.createGroupAnchor(
@@ -57,9 +57,13 @@ def test_orientation_reference_requires_an_anchor_on_l_and_uses_lowest_rank():
         np.zeros(2),
     )
 
-    reference = _viewer_for_orientation_reference(world, catalog)._find_orientation_reference_for_beacon(
-        world, "BAL-1"
+    scenario = ScenarioAssemblage(
+        "Scenario", hypothesis=ScenarioHypothesis(["TRI-A", "TRI-B", "TRI-X"])
     )
+    scenario.topoWorld = world
+    reference = _viewer_for_orientation_reference(
+        world, catalog
+    )._find_orientation_reference_for_beacon(scenario, "BAL-1")
 
     assert reference is not None
     assert reference.element_id == "T02"
@@ -67,20 +71,63 @@ def test_orientation_reference_requires_an_anchor_on_l_and_uses_lowest_rank():
     assert reference.theta_rad == pytest.approx(theta)
 
 
-def test_orientation_reference_rejects_duplicate_minimum_rank():
+def test_orientation_reference_keeps_the_smallest_hypothesis_rank_among_candidates():
     catalog = _catalog()
     world = TopologyWorld(beacon_catalog=catalog)
-    for element_id in ("T01", "T02"):
-        element = _element(element_id)
-        element.meta["triRank"] = 5
+    for element_id, triangle_id in (("T01", "TRI-8"), ("T02", "TRI-3")):
+        element = _element(element_id, triangle_id)
         group_id = world.add_element_as_new_group(element)
         world.createGroupAnchor(
             group_id, "BAL-1", world.get_element_vertex_node_id_by_type(element_id, "L")
         )
 
-    viewer = _viewer_for_orientation_reference(world, catalog)
-    with pytest.raises(RuntimeError, match="ambiguë"):
-        viewer._find_orientation_reference_for_beacon(world, "BAL-1")
+    scenario = ScenarioAssemblage(
+        "Scenario", hypothesis=ScenarioHypothesis(["TRI-3", "TRI-8"])
+    )
+    scenario.topoWorld = world
+    reference = _viewer_for_orientation_reference(
+        world, catalog
+    )._find_orientation_reference_for_beacon(scenario, "BAL-1")
+
+    assert reference is not None
+    assert reference.element_id == "T02"
+    assert reference.tri_rank == 1
+
+
+def test_orientation_reference_rejects_an_anchored_element_without_source_triangle_id():
+    catalog = _catalog()
+    world = TopologyWorld(beacon_catalog=catalog)
+    group_id = world.add_element_as_new_group(_element("T01"))
+    world.createGroupAnchor(
+        group_id, "BAL-1", world.get_element_vertex_node_id_by_type("T01", "L")
+    )
+    scenario = ScenarioAssemblage(
+        "Scenario", hypothesis=ScenarioHypothesis(["TRI-X"])
+    )
+    scenario.topoWorld = world
+
+    with pytest.raises(ValueError, match="source_triangle_id absent"):
+        _viewer_for_orientation_reference(
+            world, catalog
+        )._find_orientation_reference_for_beacon(scenario, "BAL-1")
+
+
+def test_orientation_reference_rejects_a_triangle_absent_from_hypothesis():
+    catalog = _catalog()
+    world = TopologyWorld(beacon_catalog=catalog)
+    group_id = world.add_element_as_new_group(_element("T01", "TRI-X"))
+    world.createGroupAnchor(
+        group_id, "BAL-1", world.get_element_vertex_node_id_by_type("T01", "L")
+    )
+    scenario = ScenarioAssemblage(
+        "Scenario", hypothesis=ScenarioHypothesis(["TRI-Y"])
+    )
+    scenario.topoWorld = world
+
+    with pytest.raises(ValueError, match="absent de l'hypothèse"):
+        _viewer_for_orientation_reference(
+            world, catalog
+        )._find_orientation_reference_for_beacon(scenario, "BAL-1")
 
 
 def _viewer_with_one_group():
@@ -534,7 +581,6 @@ def test_auto_scenario_is_anchored_from_its_first_ordered_element_l_node():
     scenario.orderedElementIds = ["T01"]
     viewer.scenarios = [scenario]
     viewer.active_scenario_index = 0
-    viewer.triangle_catalog = None
 
     viewer._anchor_auto_scenario_to_beacon(scenario, "BAL-1")
 
@@ -554,7 +600,6 @@ def test_auto_anchor_rejects_a_final_scenario_with_multiple_groups():
     scenario = ScenarioAssemblage(name="Auto", source_type="auto")
     scenario.topoWorld = world
     scenario.orderedElementIds = ["T01", "T02"]
-    viewer.triangle_catalog = None
 
     with pytest.raises(RuntimeError, match="plusieurs groupes finaux"):
         viewer._anchor_auto_scenario_to_beacon(scenario, "BAL-1")

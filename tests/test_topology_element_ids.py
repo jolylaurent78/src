@@ -3,19 +3,16 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import pandas as pd
-
 import numpy as np
 import src.assembleur_sim as assembleur_sim
 
 from src.assembleur_core import (
     ScenarioAssemblage,
-    ScenarioTriangleSet,
-    TriangleCatalog,
-    TriangleModel,
     TopologyElement,
     TopologyWorld,
 )
+from src.assembleur_catalogue import Catalogue
+from src.assembleur_scenario import ScenarioHypothesis
 from src.assembleur_edgechoice import buildEdgeChoiceEptsForAutoChain
 from src.assembleur_sim import (
     AlgoQuadrisParPaires,
@@ -39,22 +36,32 @@ def _element(*, element_id=None, tri_rank=1):
         vertex_labels=["O", "B", "L"],
         vertex_types=["O", "B", "L"],
         edge_lengths_km=[3.0, 5.0, 4.0],
-        meta={"triRank": tri_rank},
     )
 
 
-def _catalog_for_manual_placement() -> TriangleCatalog:
-    return TriangleCatalog([
-        TriangleModel(
-            model_id=f"model-{rank:02d}",
-            rank=rank,
-            vertex_labels=("Bourges", f"B{rank}", f"L{rank}"),
-            vertex_types=("O", "B", "L"),
-            edge_lengths_km=(3.0, 5.0, 4.0),
-            orient="CCW",
-        )
-        for rank in range(1, 33)
-    ])
+def _catalogue_and_auto_hypothesis():
+    catalogue = Catalogue()
+    triangle_ids = []
+    lambert = {}
+    for pair_index in range(16):
+        base = catalogue.add_city(f"Base {pair_index}", 45.0, 2.0)
+        lambert[base.city_id] = (pair_index * 100.0 + 3.0, 0.0)
+        for parity in range(2):
+            rank = pair_index * 2 + parity + 1
+            opening = catalogue.add_city(f"Opening {rank}", 45.0, 2.0)
+            light = catalogue.add_city(f"Light {rank}", 45.0, 2.0)
+            lambert[opening.city_id] = (pair_index * 100.0, 0.0)
+            lambert[light.city_id] = (
+                pair_index * 100.0 + (0.0 if parity == 0 else 3.0),
+                4.0 if parity == 0 else -4.0,
+            )
+            triangle_ids.append(
+                catalogue.add_triangle(
+                    f"Note {rank}", opening.city_id, base.city_id, light.city_id
+                ).triangle_id
+            )
+    catalogue.get_city_lambert = lambda city_id: lambert[city_id]
+    return catalogue, ScenarioHypothesis(triangle_ids, "TPL-0001")
 
 
 def test_world_allocates_monotone_element_ids_without_reuse_after_removal(tmp_path):
@@ -73,8 +80,7 @@ def test_world_allocates_monotone_element_ids_without_reuse_after_removal(tmp_pa
     world.add_element_as_new_group(fourth)
 
     assert (third.element_id, fourth.element_id) == ("T03", "T04")
-    assert third.meta["triRank"] == 1
-    assert fourth.meta["triRank"] == 2
+    assert (third.name, fourth.name) == ("Triangle 01", "Triangle 02")
 
     dump_path = world.export_topo_dump_xml(str(tmp_path / "TopoDump.xml"))
     dump = open(dump_path, encoding="utf-8").read()
@@ -127,8 +133,8 @@ def test_explicit_element_id_must_use_the_topology_instance_format():
 
 def test_simulation_uses_core_ids_instead_of_catalog_triangle_ids():
     world = TopologyWorld()
-    first_entry = PlacedTriangle(triangleId=7, points={})
-    second_entry = PlacedTriangle(triangleId=12, points={})
+    first_entry = PlacedTriangle(triangleId="TRI-0007", points={})
+    second_entry = PlacedTriangle(triangleId="TRI-0012", points={})
     first_pts = {
         "O": np.array((0.0, 0.0)),
         "B": np.array((3.0, 0.0)),
@@ -140,10 +146,25 @@ def test_simulation_uses_core_ids_instead_of_catalog_triangle_ids():
         "L": np.array((3.0, -4.0)),
     }
 
+    def factory(triangle_id):
+        points = first_pts if triangle_id == "TRI-0007" else second_pts
+        return TopologyElement(
+            name=f"Triangle {triangle_id}",
+            vertex_labels=["O", "B", "L"],
+            vertex_types=["O", "B", "L"],
+            edge_lengths_km=[3.0, 5.0, 4.0],
+            vertex_local_xy={
+                0: tuple(points["O"]),
+                1: tuple(points["B"]),
+                2: tuple(points["L"]),
+            },
+            source_triangle_id=triangle_id,
+        )
+
     _group_id, first_id, second_id, _src_edge, _dst_edge = createTopoQuadrilateral(
         world=world,
-        triangleMobFromId=7,
-        triangleMobToId=12,
+        triangleMobFromId="TRI-0007",
+        triangleMobToId="TRI-0012",
         triangleMobFrom={"labels": ("O", "B", "L"), "orient": "N"},
         triangleMobTo={"labels": ("O", "B", "L"), "orient": "N"},
         triangleMobFrom_PtsLocal=first_pts,
@@ -152,31 +173,25 @@ def test_simulation_uses_core_ids_instead_of_catalog_triangle_ids():
         triangleMobToPts=second_pts,
         entryOdd=first_entry,
         entryEven=second_entry,
+        element_factory=factory,
     )
 
     assert (first_id, second_id) == ("T01", "T02")
     assert (first_entry.topologyElementId, second_entry.topologyElementId) == ("T01", "T02")
     assert not hasattr(first_entry, "topologyGroupId")
     assert not hasattr(second_entry, "topologyGroupId")
-    assert world.elements["T01"].meta["triRank"] == 7
-    assert world.elements["T02"].meta["triRank"] == 12
+    assert world.elements["T01"].source_triangle_id == "TRI-0007"
+    assert world.elements["T02"].source_triangle_id == "TRI-0012"
+    assert "triRank" not in world.elements["T01"].meta
+    assert "triRank" not in world.elements["T02"].meta
 
 
 def test_auto_scenarios_keep_an_independent_ordered_element_history_per_branch():
-    viewer = SimpleNamespace(df=pd.DataFrame([
-        {
-            "id": triangle_id,
-            "len_OB": 3.0,
-            "len_OL": 4.0,
-            "len_BL": 5.0,
-            "orient": "CCW",
-            "B": f"B{triangle_id}",
-            "L": f"L{triangle_id}",
-        }
-        for triangle_id in range(1, 5)
-    ]))
-
-    scenarios = AlgoQuadrisParPaires(MoteurSimulationAssemblage(viewer)).run([1, 2, 3, 4])
+    catalogue, hypothesis = _catalogue_and_auto_hypothesis()
+    viewer = SimpleNamespace(catalogue=catalogue)
+    scenarios = AlgoQuadrisParPaires(
+        MoteurSimulationAssemblage(viewer, hypothesis)
+    ).run(hypothesis.triangle_ids_by_rank[:4])
 
     assert len(scenarios) >= 2
     assert all(
@@ -210,31 +225,21 @@ def test_auto_scenarios_keep_an_independent_ordered_element_history_per_branch()
 
 def test_auto_scenarios_reconstruct_connections_from_core_attachments():
     """Les scénarios automatiques restent construits depuis les attachments Core."""
-    viewer = SimpleNamespace(df=pd.DataFrame([
-        {
-            "id": triangle_id,
-            "len_OB": 3.0,
-            "len_OL": 4.0,
-            "len_BL": 5.0,
-            "orient": "CCW",
-            "B": f"B{triangle_id}",
-            "L": f"L{triangle_id}",
-        }
-        for triangle_id in range(1, 5)
-    ]))
-
-    scenarios = AlgoQuadrisParPaires(MoteurSimulationAssemblage(viewer)).run([1, 2, 3, 4])
+    catalogue, hypothesis = _catalogue_and_auto_hypothesis()
+    viewer = SimpleNamespace(catalogue=catalogue)
+    scenarios = AlgoQuadrisParPaires(
+        MoteurSimulationAssemblage(viewer, hypothesis)
+    ).run(hypothesis.triangle_ids_by_rank[:4])
 
     assert len(scenarios) >= 2
 
 
 def test_auto_two_triangle_scenario_exposes_core_projection_dicts():
-    viewer = SimpleNamespace(df=pd.DataFrame([
-        {"id": 1, "len_OB": 3.0, "len_OL": 4.0, "len_BL": 5.0, "orient": "CCW", "B": "B1", "L": "L1"},
-        {"id": 2, "len_OB": 3.0, "len_OL": 4.0, "len_BL": 5.0, "orient": "CCW", "B": "B2", "L": "L2"},
-    ]))
-
-    scenarios = AlgoQuadrisParPaires(MoteurSimulationAssemblage(viewer)).run([1, 2])
+    catalogue, hypothesis = _catalogue_and_auto_hypothesis()
+    viewer = SimpleNamespace(catalogue=catalogue)
+    scenarios = AlgoQuadrisParPaires(
+        MoteurSimulationAssemblage(viewer, hypothesis)
+    ).run(hypothesis.triangle_ids_by_rank[:2])
 
     assert len(scenarios) == 1
     assert len(scenarios[0].last_drawn) == 2
@@ -246,25 +251,20 @@ def test_auto_two_triangle_scenario_exposes_core_projection_dicts():
         assert not {"id", "labels", "orient", "topoGroupId", "mirrored", "group_id"}.intersection(entry)
         assert set(entry["pts"]) == {"O", "B", "L"}
         element = scenarios[0].topoWorld.elements[entry["topoElementId"]]
-        assert tuple(element.vertex_labels) == (
-            "Bourges",
-            f"B{element.meta['triRank']}",
-            f"L{element.meta['triRank']}",
-        )
+        assert element.source_triangle_id in hypothesis.triangle_ids_by_rank
+        assert "triRank" not in element.meta
 
 
 def test_auto_reference_orientation_rotates_the_first_group_without_changing_mirror():
-    viewer = SimpleNamespace(df=pd.DataFrame([
-        {"id": 1, "len_OB": 3.0, "len_OL": 4.0, "len_BL": 5.0, "orient": "CCW", "B": "B1", "L": "L1"},
-        {"id": 2, "len_OB": 3.0, "len_OL": 4.0, "len_BL": 5.0, "orient": "CCW", "B": "B2", "L": "L2"},
-    ]))
+    catalogue, hypothesis = _catalogue_and_auto_hypothesis()
+    viewer = SimpleNamespace(catalogue=catalogue)
     target_theta = -0.73
-    engine = MoteurSimulationAssemblage(viewer)
+    engine = MoteurSimulationAssemblage(viewer, hypothesis)
     engine.initialTriangleOrientation = InitialTriangleOrientation.reference(
         "T99", 99, target_theta
     )
 
-    scenario = AlgoQuadrisParPaires(engine).run([1, 2])[0]
+    scenario = AlgoQuadrisParPaires(engine).run(hypothesis.triangle_ids_by_rank[:2])[0]
     first_element_id = scenario.orderedElementIds[0]
     R, _T, mirrored = scenario.topoWorld.getElementPose(first_element_id)
     theta = np.arctan2(R[1, 0], R[0, 0])
@@ -464,33 +464,34 @@ def test_manual_placement_keeps_catalog_id_separate_from_core_instance_id():
         def selection_clear(self, *_args):
             pass
 
+    catalogue, hypothesis = _catalogue_and_auto_hypothesis()
     world = TopologyWorld()
-    catalog = _catalog_for_manual_placement()
-    world.set_scenario_triangle_set(ScenarioTriangleSet.from_catalog(catalog))
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer._last_drawn = []
     viewer.canvas_objects = CanvasObjectsCollection(viewer._last_drawn)
     viewer._last_drawn = viewer.canvas_objects.entries
     viewer.groups = {}
     viewer._next_group_id = 1
-    viewer._get_active_scenario = lambda: type("Scenario", (), {"topoWorld": world})()
+    scenario = ScenarioAssemblage("Manual", hypothesis=hypothesis)
+    scenario.topoWorld = world
+    viewer.catalogue = catalogue
+    viewer._get_active_scenario = lambda: scenario
     viewer._redraw_from = lambda _entries: None
     viewer._reset_assist = lambda: None
     viewer._update_triangle_listbox_colors = lambda: None
     viewer._rebuild_triangle_listbox_from_core = lambda: None
     viewer.status = _Status()
     viewer.listbox = _Listbox()
-    def place(tri_id):
-        model = catalog.get_by_rank(tri_id)
+    def place(triangle_id):
         viewer._drag = {
-            "triangle": {"id": tri_id, "model": model},
-            "triangle_model": model,
+            "triangle": {"triangle_id": triangle_id},
+            "triangle_id": triangle_id,
             "world_pts": {"O": (0.0, 0.0), "B": (3.0, 0.0), "L": (0.0, 4.0)},
         }
         viewer._place_dragged_triangle()
 
-    place(1)
-    place(2)
+    place(hypothesis.triangle_ids_by_rank[0])
+    place(hypothesis.triangle_ids_by_rank[1])
     assert [entry["topoElementId"] for entry in viewer._last_drawn] == ["T01", "T02"]
     assert all("id" not in entry for entry in viewer._last_drawn)
     assert all("group_id" not in entry for entry in viewer._last_drawn)
@@ -500,10 +501,10 @@ def test_manual_placement_keeps_catalog_id_separate_from_core_instance_id():
         assert world.getGroupElementIds(core_group_id) == [entry["topoElementId"]]
         assert not {"orient", "topoGroupId", "mirrored"}.intersection(entry)
 
-    assert world.elements["T01"].name == "Triangle 01"
-    assert world.elements["T02"].name == "Triangle 02"
-    assert world.elements["T01"].meta["triRank"] == 1
-    assert world.elements["T02"].meta["triRank"] == 2
+    assert world.elements["T01"].source_triangle_id == hypothesis.triangle_ids_by_rank[0]
+    assert world.elements["T02"].source_triangle_id == hypothesis.triangle_ids_by_rank[1]
+    assert "triRank" not in world.elements["T01"].meta
+    assert "triRank" not in world.elements["T02"].meta
     for vertex_key in ("O", "B", "L"):
         assert viewer._resolve_hover_vertex_node_id(
             entry=viewer._last_drawn[0],
@@ -521,24 +522,25 @@ def test_manual_placement_projects_core_pose_without_creating_a_ui_group():
         def selection_clear(self, *_args):
             pass
 
+    catalogue, hypothesis = _catalogue_and_auto_hypothesis()
     world = TopologyWorld()
-    catalog = _catalog_for_manual_placement()
-    world.set_scenario_triangle_set(ScenarioTriangleSet.from_catalog(catalog))
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer.canvas_objects = CanvasObjectsCollection()
     viewer._last_drawn = viewer.canvas_objects.entries
-    scenario = SimpleNamespace(topoWorld=world, last_drawn=viewer._last_drawn)
+    scenario = ScenarioAssemblage("Manual", hypothesis=hypothesis)
+    scenario.topoWorld = world
+    scenario.last_drawn = viewer._last_drawn
+    viewer.catalogue = catalogue
     viewer._get_active_scenario = lambda: scenario
     viewer._redraw_from = lambda _entries: None
     viewer._update_triangle_listbox_colors = lambda: None
     viewer._rebuild_triangle_listbox_from_core = lambda: None
     viewer.status = _Status()
     viewer.listbox = _Listbox()
-    world_pts = {"O": (10.0, 20.0), "B": (13.0, 20.0), "L": (10.0, 24.0)}
-    model = catalog.get_by_rank(1)
+    world_pts = {"O": (10.0, 20.0), "B": (10.003, 20.0), "L": (10.0, 20.004)}
     viewer._drag = {
-        "triangle": {"id": 1, "model": model},
-        "triangle_model": model,
+        "triangle": {"triangle_id": hypothesis.triangle_ids_by_rank[0]},
+        "triangle_id": hypothesis.triangle_ids_by_rank[0],
         "world_pts": world_pts,
     }
     viewer._place_dragged_triangle()
@@ -555,7 +557,7 @@ def test_manual_placement_projects_core_pose_without_creating_a_ui_group():
     np.testing.assert_allclose(rotation, np.eye(2))
     np.testing.assert_allclose(translation, world_pts["O"])
     assert mirrored is False
-    assert viewer._get_core_vertex_labels(entry) == ("Bourges", "B1", "L1")
+    assert viewer._get_core_vertex_labels(entry) == tuple(world.elements[element_id].vertex_labels)
     assert viewer._build_triangle_display_label(entry) == "T1"
     for vertex_index, vertex_name in enumerate(("O", "B", "L")):
         actual = world.elementLocalToWorld(element_id, element.vertex_local_xy[vertex_index])
@@ -574,7 +576,6 @@ def test_core_resolves_vertex_nodes_without_exposing_id_construction_to_ui():
         vertex_labels=["B", "O", "L"],
         vertex_types=["B", "O", "L"],
         edge_lengths_km=[3.0, 5.0, 4.0],
-        meta={"triRank": 1},
     )
     world.add_element_as_new_group(element)
 

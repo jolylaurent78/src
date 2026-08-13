@@ -89,8 +89,8 @@ def build_oriented_step_attachment_signature(attachment, element_a, element_b) -
     )
 
 
-def build_topology_prefix_steps(world, tri_ids, upto_index: int):
-    """Construit les signatures Core des étapes du préfixe de ``tri_ids``.
+def build_topology_prefix_steps(world, triangle_ids, upto_index: int):
+    """Construit les signatures Core des étapes du préfixe de ``triangle_ids``.
 
     Retourne ``[]`` pour zéro étape, ``None`` si le monde, le parcours ou une
     liaison d'étape est indisponible. Chaque étape est un tuple trié de toutes
@@ -98,7 +98,7 @@ def build_topology_prefix_steps(world, tri_ids, upto_index: int):
     """
     if world is None:
         return None
-    ordered_ids = [str(triangle_id) for triangle_id in (tri_ids or [])]
+    ordered_ids = [str(triangle_id) for triangle_id in (triangle_ids or [])]
     if upto_index < 0:
         return None
     if upto_index == 0:

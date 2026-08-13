@@ -5,7 +5,7 @@ Moteur + algorithmes d'assemblage automatique (sans dépendance Tk).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Type, Optional
+from typing import Callable, List, Dict, Tuple, Type, Optional
 import numpy as np
 import math
 import copy
@@ -13,17 +13,16 @@ import copy
 from src.assembleur_core import (
     _tri_shape,
     _group_shape_from_nodes,
-    _build_local_triangle,
     ScenarioAssemblage,
-    TopologyWorld,
     TopologyElement,
-    TopologyNodeType,
+    TopologyWorld,
 )
 from src.assembleur_edgechoice import (
     EdgeChoiceEpts,
     buildEdgeChoiceEptsForAutoChain,
 )
 from src.assembleur_projection import buildLastDrawnFromTopology
+from src.assembleur_scenario import ScenarioHypothesis, materialize_catalogue_triangle
 
 EPS_WORLD = 1e-6
 
@@ -66,13 +65,13 @@ class InitialTriangleOrientation:
 class _BranchNode:
     parent: Optional["_BranchNode"]
     children: List["_BranchNode"]
-    branchTriId: Optional[int] = None
+    branchTriangleId: Optional[str] = None
 
 
 @dataclass
 class PlacedTriangle:
     """Triangle projeté manipulé par le moteur de simulation."""
-    triangleId: int
+    triangleId: str
     points: Dict[str, np.ndarray]
     labels: tuple | list | None = None
     mirrored: bool = False
@@ -132,7 +131,7 @@ class PlacedTriangles:
                 return entry
         return None
 
-    def findByTriangleId(self, triangle_id: int) -> Optional[PlacedTriangle]:
+    def findByTriangleId(self, triangle_id: str) -> Optional[PlacedTriangle]:
         for entry in self._entries:
             if entry.triangleId == triangle_id:
                 return entry
@@ -336,7 +335,7 @@ class AlgorithmeAssemblage:
     def __init__(self, engine: "MoteurSimulationAssemblage"):
         self.engine = engine
 
-    def run(self, tri_ids: List[int]) -> List["ScenarioAssemblage"]:
+    def run(self, triangle_ids: List[str]) -> List["ScenarioAssemblage"]:
         """Lance la simulation et retourne une liste de scénarios."""
         raise NotImplementedError
 
@@ -344,8 +343,8 @@ class AlgorithmeAssemblage:
 def createTopoQuadrilateral(
     *,
     world: TopologyWorld,
-    triangleMobFromId: int,
-    triangleMobToId: int,
+    triangleMobFromId: str,
+    triangleMobToId: str,
     triangleMobFrom: dict,
     triangleMobTo: dict,
     triangleMobFrom_PtsLocal: Dict[str, np.ndarray],
@@ -354,6 +353,7 @@ def createTopoQuadrilateral(
     triangleMobToPts: Dict[str, np.ndarray],
     entryOdd: PlacedTriangle | None = None,
     entryEven: PlacedTriangle | None = None,
+    element_factory: Callable[[str], TopologyElement],
     tol_rel: float = 1e-3,
     eps_world: float = 1e-6,
 ) -> tuple[str, str, str, str, str]:
@@ -386,26 +386,9 @@ def createTopoQuadrilateral(
 
     def _ensure_element_from_local(
         *,
-        triId: int,
-        pts_local: Dict[str, np.ndarray],
-        labels: tuple | list | None,
-        orient: str,
+        triangle_id: str,
     ) -> str:
-        v_labels = list(labels or ("O", "B", "L"))
-        v_types = [TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE]
-        edge_lengths = [
-            _edge_len(pts_local, "O", "B"),
-            _edge_len(pts_local, "B", "L"),
-            _edge_len(pts_local, "L", "O"),
-        ]
-
-        el = TopologyElement(
-            name=f"Triangle {int(triId):02d}",
-            vertex_labels=v_labels,
-            vertex_types=v_types,
-            edge_lengths_km=edge_lengths,
-            meta={"orient": orient, "triRank": int(triId)},
-        )
+        el = element_factory(triangle_id)
         # IMPORTANT: crée un nouveau groupe topo pour cet élément
         world.add_element_as_new_group(el)
         if not el.element_id:
@@ -416,16 +399,10 @@ def createTopoQuadrilateral(
     try:
         # --- 1) Creer les deux instances et conserver les IDs attribues par le Core. ---
         elementIdOdd = _ensure_element_from_local(
-            triId=int(triangleMobFromId),
-            pts_local={k: np.array(triangleMobFrom_PtsLocal[k], dtype=float) for k in ("O", "B", "L")},
-            labels=triangleMobFrom.get("labels"),
-            orient=triangleMobFrom.get("orient", False),
+            triangle_id=triangleMobFromId,
         )
         elementIdEven = _ensure_element_from_local(
-            triId=int(triangleMobToId),
-            pts_local={k: np.array(triangleMobTo_PtsLocal[k], dtype=float) for k in ("O", "B", "L")},
-            labels=triangleMobTo.get("labels"),
-            orient=triangleMobTo.get("orient", False),
+            triangle_id=triangleMobToId,
         )
 
         # --- 3) Poser les 2 éléments (monde) ---
@@ -472,8 +449,8 @@ def createTopoQuadrilateral(
         epts = EdgeChoiceEpts(
             triangleMobFromPts[aO], triangleMobFromPts[bO],
             triangleMobToPts[dst_a], triangleMobToPts[dst_b],
-            src_owner_tid=int(triangleMobFromId), src_edge=src_edge,
-            dst_owner_tid=int(triangleMobToId), dst_edge=dst_edge,
+            src_owner_tid=triangleMobFromId, src_edge=src_edge,
+            dst_owner_tid=triangleMobToId, dst_edge=dst_edge,
             src_vkey_at_mA=aO, src_vkey_at_mB=bO,
             dst_vkey_at_tA=dst_a, dst_vkey_at_tB=dst_b,
             kind="edge-edge",
@@ -550,7 +527,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
     id = "quadris_par_paires"
     label = "Quadrilatères par paires (bases communes) [WIP]"
 
-    def run(self, tri_ids: List[int]) -> List["ScenarioAssemblage"]:
+    def run(self, triangle_ids: List[str]) -> List["ScenarioAssemblage"]:
         """Étape 1+2 :
         - Si n=2 : assemble uniquement le 1er couple (2 triangles) en un quadrilatère.
         - Si n>=4 : assemble le 1er couple (tri1,tri2), puis assemble le 2e couple (tri3,tri4)
@@ -562,18 +539,18 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
         - Détecte automatiquement la longueur commune entre les 2 triangles (OB / OL / BL).
         - Tente 2 poses (direction directe / inversée) et conserve les poses sans chevauchement (shrink-only).
         """
-        if not tri_ids or len(tri_ids) < 2:
+        if not triangle_ids or len(triangle_ids) < 2:
             return []
-        if (len(tri_ids) % 2) != 0:
+        if (len(triangle_ids) % 2) != 0:
             # On ne gère que des n pairs pour l'instant
             return []
 
         # --- DEBUG init ---
         engine = self.engine
-        engine.debugReset(tri_ids)
+        engine.debugReset(triangle_ids)
 
-        tri1_id = int(tri_ids[0])
-        tri2_id = int(tri_ids[1])
+        tri1_id = triangle_ids[0]
+        tri2_id = triangle_ids[1]
 
         v = engine.viewer
 
@@ -586,10 +563,10 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
         # ---- 1) Orientation : OL ou BL au Nord (+Y) pour le 1er triangle
         P1 = {k: np.array(t1["pts"][k], dtype=float) for k in ("O", "B", "L")}
 
-        initial_orientation = getattr(engine, "initialTriangleOrientation", None)
+        initial_orientation = engine.initialTriangleOrientation
         if initial_orientation is None:
             initial_orientation = InitialTriangleOrientation.edge_north(
-                str(getattr(engine, "firstTriangleEdge", "OL") or "OL")
+                engine.firstTriangleEdge
             )
         if initial_orientation.mode not in ("edge_north", "reference"):
             raise ValueError(
@@ -642,10 +619,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             *,
             world: TopologyWorld,
             element_id: str,
-            tri_id: int,
-            pts_local: Dict[str, np.ndarray],
-            labels: tuple | list,
-            orient: str,
         ) -> None:
             # Les candidats proviennent d'un monde deja construit puis clone :
             # l'ID doit donc deja designer la meme instance Core, sans recreation.
@@ -668,8 +641,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
         def _bootstrap_topo_first_pair(
             *,
             world: TopologyWorld,
-            tri1_id: int,
-            tri2_id: int,
+            tri1_id: str,
+            tri2_id: str,
             t1: dict,
             t2: dict,
             P1_local: dict,
@@ -691,8 +664,8 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
 
             topoGroupId, elementIdOdd, elementIdEven, _, _ = createTopoQuadrilateral(
                 world=world,
-                triangleMobFromId=int(tri1_id),
-                triangleMobToId=int(tri2_id),
+                triangleMobFromId=tri1_id,
+                triangleMobToId=tri2_id,
                 triangleMobFrom=t1,
                 triangleMobTo=t2,
                 triangleMobFrom_PtsLocal=P1_local,
@@ -701,6 +674,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 triangleMobToPts=P2_world,
                 entryOdd=entryOdd,
                 entryEven=entryEven,
+                element_factory=engine.materialize_triangle,
             )
 
             return topoGroupId, [elementIdOdd, elementIdEven]
@@ -820,7 +794,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
         poses.append(P2w)
 
         # ---- 4) Si n=2 : même comportement qu'avant (1 ou 2 scénarios possibles)
-        if len(tri_ids) <= 2:
+        if len(triangle_ids) <= 2:
             out: List[ScenarioAssemblage] = []
             poses_short = list(poses[:2])
             for i, P2 in enumerate(poses_short):
@@ -828,7 +802,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                     name=(f"#1" if i == 0 else f"#{i+1}=#1+({tri2_id})"),
                     source_type="auto",
                     algo_id=self.id,
-                    tri_ids=[tri1_id, tri2_id],
+                    hypothesis=engine.source_hypothesis.clone(),
                 )
                 scen.status = "complete"
                 scen.topoScenarioId = topoScenarioId
@@ -882,7 +856,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
         # - Tous les triangles sont réunis par le même groupe Core afin que les
         #   tests de chevauchement et la manipulation de groupe restent cohérents.
 
-        if len(tri_ids) < 4:
+        if len(triangle_ids) < 4:
             return []
 
         # On fige le 1er quad sur la pose retenue (déjà pruné par overlap shrink-only)
@@ -988,7 +962,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 [{"tid": 0}, {"tid": 1}], base_placed_triangles.toLegacyList()
             )
 
-        rootNode = _BranchNode(parent=None, children=[], branchTriId=None)
+        rootNode = _BranchNode(parent=None, children=[], branchTriangleId=None)
 
         # État de recherche : liste de branches (scénarios partiels)
         # Chaque état conserve sa propre chronologie de construction, indépendante
@@ -1002,12 +976,12 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
         )]
 
         # Boucle sur les paires suivantes : (tri3,tri4), (tri5,tri6), ...
-        for pair_start in range(2, len(tri_ids), 2):
-            if pair_start + 1 >= len(tri_ids):
+        for pair_start in range(2, len(triangle_ids), 2):
+            if pair_start + 1 >= len(triangle_ids):
                 break
 
-            tri_odd_id = int(tri_ids[pair_start])       # tri3, tri5, ...
-            tri_even_id = int(tri_ids[pair_start + 1])  # tri4, tri6, ...
+            tri_odd_id = triangle_ids[pair_start]       # tri3, tri5, ...
+            tri_even_id = triangle_ids[pair_start + 1]  # tri4, tri6, ...
 
             # On construit le quad local dans l'ordre courant (odd->even)
             tOdd, tEven, Podd, Peven = _build_quad_local(tri_odd_id, tri_even_id)
@@ -1042,6 +1016,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                         triangleMobTo_PtsLocal={k: np.array(triangleMobTo["pts"][k], float) for k in ("O", "B", "L")},
                         triangleMobFromPts=triangleMobFromPts,
                         triangleMobToPts=triangleMobToPts,
+                        element_factory=engine.materialize_triangle,
                     )
 
                     # Clone de la projection placée de la branche pour les triangles temporaires.
@@ -1175,7 +1150,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                 element_id=element_id_even,
                             )
                             # décision de raccord: destEdgeAtL (côté ancre), mobEdgeAtL (côté mobile odd)
-                            candKey = f"{baseKey}|{int(triangleMobFromId)}:{mobEdgeAtL}->{destEdgeAtL}"
+                            candKey = f"{baseKey}|{triangleMobFromId}:{mobEdgeAtL}->{destEdgeAtL}"
 
                             candidates.append((
                                 placed_triangles_new,
@@ -1183,7 +1158,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                 {
                                     "odd": {
                                         "element_id": elem_id_odd,
-                                        "tri_id": int(triangleMobFromId),
+                                        "triangle_id": triangleMobFromId,
                                         "pts_world": Podd_w,
                                         "labels": triangleMobFrom.get("labels"),
                                         "mirrored": bool(triangleMobFrom.get("mirrored", False)),
@@ -1191,7 +1166,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                     },
                                     "even": {
                                         "element_id": elem_id_even,
-                                        "tri_id": int(triangleMobToId),
+                                        "triangle_id": triangleMobToId,
                                         "pts_world": Peven_w,
                                         "labels": triangleMobTo.get("labels"),
                                         "mirrored": bool(triangleMobTo.get("mirrored", False)),
@@ -1219,9 +1194,9 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                             # IMPORTANT (naming): la bifurcation correspond au triangle
                             # connecté au bloc précédent via le point de Lumière,
                             # c'est triOddId (triEvenId est "collé" au triOddId via BO).
-                            node_prev.branchTriId = int(triangleMobFromId)
+                            node_prev.branchTriangleId = triangleMobFromId
                         else:
-                            node_prev.branchTriId = None
+                            node_prev.branchTriangleId = None
 
                         if len(candidates) >= 2:
                             topo_candidates = [topoWorld_prev.clonePhysicalState() for _ in candidates]
@@ -1234,16 +1209,12 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                 for _key in ("odd", "even"):
                                     _info = topo_meta.get(_key, {})
                                     _elem_id = _info.get("element_id")
-                                    _tri_id = _info.get("tri_id")
+                                    _triangle_id = _info.get("triangle_id")
                                     _pts_local = _info.get("pts_local")
-                                    if _elem_id and _tri_id and _pts_local is not None:
+                                    if _elem_id and _triangle_id and _pts_local is not None:
                                         _ensure_element_from_local(
                                             world=topo_new,
                                             element_id=_elem_id,
-                                            tri_id=int(_tri_id),
-                                            pts_local={k: np.array(_pts_local[k], dtype=float) for k in ("O", "B", "L")},
-                                            labels=_info.get("labels"),
-                                            orient=_info.get("orient", False),
                                         )
                                     if _elem_id and _info.get("pts_world") is not None:
                                         # Pose from world points in simulation uses non-mirrored fit.
@@ -1260,7 +1231,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                             finally:
                                 topo_new.commitTopoTransaction()
 
-                            child = _BranchNode(parent=node_prev, children=[], branchTriId=None)
+                            child = _BranchNode(parent=node_prev, children=[], branchTriangleId=None)
                             node_prev.children.append(child)
                             child.debugKey = topo_meta.get("debugKey", baseKey)  # <= AJOUT
                             new_states.append(BranchState(
@@ -1347,7 +1318,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
         #   #startR = #startL + (triEvenId)
         for n in kept:
             ch = _keptChildren(n)
-            if n.branchTriId is None:
+            if n.branchTriangleId is None:
                 continue
             if len(ch) < 2:
                 continue
@@ -1360,7 +1331,9 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 idxR = leafIndex.get(rightLeaf)
                 if idxR is None:
                     continue
-                labels[rightLeaf] = f"#{idxR}=#{idxL}+({int(n.branchTriId)})"
+                labels[rightLeaf] = (
+                    f"#{idxR}=#{idxL}+({engine.get_hypothesis_rank(n.branchTriangleId)})"
+                )
 
         # Finalisation : créer les scénarios complets
         out: List[ScenarioAssemblage] = []
@@ -1373,7 +1346,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 name=labels.get(leaf, f"#{idx}"),
                 source_type="auto",
                 algo_id=self.id,
-                tri_ids=[int(x) for x in tri_ids[:len(placed_triangles)]],
+                hypothesis=engine.source_hypothesis.clone(),
             )
             scen.status = "complete"
             scen.topoWorld = topoWorld_leaf
@@ -1400,18 +1373,31 @@ ALGOS: Dict[str, Type[AlgorithmeAssemblage]] = {
 class MoteurSimulationAssemblage:
     """Wrapper 'pur data' autour des briques géométriques du viewer (manuel)."""
 
-    def __init__(self, viewer: "TriangleViewerManual"):
+    def __init__(
+        self,
+        viewer: "TriangleViewerManual",
+        source_hypothesis: ScenarioHypothesis,
+    ):
         self.viewer = viewer
+        self.source_hypothesis = source_hypothesis.clone()
         self.firstTriangleEdge = "OL"
         self.initialTriangleOrientation: InitialTriangleOrientation | None = None
         # --- DEBUG (instrumentation minimaliste, sans console spam) ---
         # Rempli par les algos si un run() échoue et retourne [].
         self.debug_last: Dict | None = None
 
+    def get_hypothesis_rank(self, triangle_id: str) -> int:
+        try:
+            return self.source_hypothesis.triangle_ids_by_rank.index(triangle_id) + 1
+        except ValueError as exc:
+            raise ValueError(
+                f"Simulation: triangle absent de l'hypothèse: {triangle_id!r}"
+            ) from exc
+
     # --- DEBUG helpers ---
-    def debugReset(self, tri_ids: List[int] | None = None):
+    def debugReset(self, triangle_ids: List[str] | None = None):
         self.debug_last = {
-            "tri_ids": list(tri_ids or []),
+            "triangle_ids": list(triangle_ids or []),
             "step": None,
             "pair": None,
             "anchor": None,
@@ -1430,37 +1416,22 @@ class MoteurSimulationAssemblage:
             "detail": detail,
         })
 
-    def getOverlapZoomRef(self) -> float:
-        return float(getattr(self, "overlapZoomRef", 1.0))
+    def materialize_triangle(self, triangle_id: str):
+        return materialize_catalogue_triangle(self.viewer.catalogue, triangle_id)
 
-    def build_local_triangle(self, tri_id: int) -> Dict:
-        """Construit un triangle en repère local à partir du DF (longueurs OB/OL/BL + orientation)."""
-        v = self.viewer
-        if getattr(v, "df", None) is None or v.df is None or v.df.empty:
-            raise RuntimeError("Aucun fichier Triangle chargé (df vide).")
-
-        row = v.df[v.df["id"] == int(tri_id)]
-        if row.empty:
-            raise ValueError(f"Triangle id={tri_id} introuvable dans la source.")
-        r = row.iloc[0]
-        P = _build_local_triangle(float(r["len_OB"]), float(r["len_OL"]), float(r["len_BL"]))
-
-        # Orientation : si CW → symétrie verticale (y -> -y)
-        ori = str(r.get("orient", "CCW")).upper().strip()
-
-        if ori == "CW":
-            P = {
-                "O": np.array([P["O"][0], -P["O"][1]], dtype=float),
-                "B": np.array([P["B"][0], -P["B"][1]], dtype=float),
-                "L": np.array([P["L"][0], -P["L"][1]], dtype=float),
-            }
-
+    def build_local_triangle(self, triangle_id: str) -> Dict:
+        """Construit la géométrie locale depuis la factory Catalogue/Core unique."""
+        element = self.materialize_triangle(triangle_id)
         return {
-            "labels": ("Bourges", r["B"], r["L"]),  # (O,B,L) labels
-            "id": int(tri_id),
+            "labels": tuple(element.vertex_labels),
+            "triangle_id": triangle_id,
             "mirrored": False,
-            "orient": ori,
-            "pts": P,
+            "orient": element.local_frame["orient"],
+            "pts": {
+                "O": np.array(element.vertex_local_xy[0], dtype=float),
+                "B": np.array(element.vertex_local_xy[1], dtype=float),
+                "L": np.array(element.vertex_local_xy[2], dtype=float),
+            },
         }
 
     def _pose_params(self, Pm: Dict[str, np.ndarray], am: str, bm: str, Vm: np.ndarray,

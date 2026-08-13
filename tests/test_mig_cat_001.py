@@ -1,87 +1,55 @@
-import pandas as pd
-import pytest
+"""Structural assertions for the Catalogue/Core-only triangle runtime."""
 
-from src.assembleur_core import (
-    ScenarioTriangleSet,
-    TopologyWorld,
-    TriangleCatalog,
-)
+from pathlib import Path
+
+from src.assembleur_core import TopologyWorld, build_topology_element_from_catalogue_triangle
 
 
-def _catalog_dataframe(count=32):
-    return pd.DataFrame([
-        {
-            "id": rank,
-            "B": f"Base {rank}",
-            "L": f"Lumiere {rank}",
-            "len_OB": 3.0,
-            "len_OL": 4.0,
-            "len_BL": 5.0,
-            "orient": "CW" if rank % 2 else "CCW",
-        }
-        for rank in range(1, count + 1)
-    ])
+def test_legacy_triangle_excel_classes_are_absent_from_the_core_runtime():
+    import src.assembleur_core as core
+
+    assert not hasattr(core, "TriangleModel")
+    assert not hasattr(core, "TriangleCatalog")
+    assert not hasattr(core, "ScenarioTriangleSet")
 
 
-def test_triangle_catalog_v1_requires_exactly_32_distinct_ranks():
-    catalog = TriangleCatalog.from_dataframe(_catalog_dataframe())
+def test_viewer_and_io_expose_no_legacy_triangle_excel_pipeline():
+    root = Path(__file__).resolve().parents[1]
+    runtime_sources = (
+        (root / "src" / "assembleur_tk.py").read_text(encoding="utf-8"),
+        (root / "src" / "assembleur_io.py").read_text(encoding="utf-8"),
+    )
+    removed_symbols = (
+        "triangle_catalog",
+        "TriangleFileService",
+        "autoLoadTrianglesFileAtStartup",
+        "DialogCreateTriangleExcel",
+        "open_excel",
+    )
 
-    assert catalog.ranks() == tuple(range(1, 33))
-    assert catalog.get_by_rank(1).model_id.startswith("model-")
-    assert catalog.get_by_rank(32).vertex_labels == ("Bourges", "Base 32", "Lumiere 32")
-
-    with pytest.raises(ValueError, match="32 modeles attendus"):
-        TriangleCatalog.from_dataframe(_catalog_dataframe(31))
-
-    invalid = _catalog_dataframe()
-    invalid.loc[31, "id"] = 31
-    with pytest.raises(ValueError, match="rank duplique"):
-        TriangleCatalog.from_dataframe(invalid)
+    for symbol in removed_symbols:
+        assert all(symbol not in source for source in runtime_sources)
 
 
-def test_scenario_triangle_set_and_world_availability_are_core_driven():
-    catalog = TriangleCatalog.from_dataframe(_catalog_dataframe())
-    triangle_set = ScenarioTriangleSet.from_catalog(catalog)
+def test_topodump_contains_only_core_triangle_identity(tmp_path):
     world = TopologyWorld()
-    world.set_scenario_triangle_set(triangle_set)
+    world.add_element_as_new_group(
+        build_topology_element_from_catalogue_triangle(
+            triangle_id="TRI-0042",
+            opening_name="O",
+            base_name="B",
+            light_name="L",
+            opening_lambert_xy=(0.0, 0.0),
+            base_lambert_xy=(3000.0, 0.0),
+            light_lambert_xy=(0.0, 4000.0),
+        )
+    )
 
-    assert not hasattr(triangle_set, "_catalog")
-    assert triangle_set.ranks() == tuple(range(1, 33))
-    assert world.get_available_triangle_ranks() == tuple(range(1, 33))
-
-    element = catalog.get_by_model_id(
-        triangle_set.get_model_id_for_rank(7)
-    ).build_topology_element()
-    world.add_element_as_new_group(element)
-
-    assert element.triangle_rank == 7
-    assert world.is_triangle_rank_used(7)
-    assert 7 not in world.get_available_triangle_ranks()
-    assert 8 in world.get_available_triangle_ranks()
-
-
-def test_catalog_rejects_invalid_orientation():
-    invalid = _catalog_dataframe()
-    invalid.loc[0, "orient"] = "NORTH"
-
-    with pytest.raises(ValueError, match="ligne invalide"):
-        TriangleCatalog.from_dataframe(invalid)
-
-
-def test_topodump_exposes_catalog_selection_and_element_model_identity(tmp_path):
-    catalog = TriangleCatalog.from_dataframe(_catalog_dataframe())
-    triangle_set = ScenarioTriangleSet.from_catalog(catalog)
-    world = TopologyWorld()
-    world.set_scenario_triangle_set(triangle_set)
-    element = catalog.get_by_model_id(
-        triangle_set.get_model_id_for_rank(3)
-    ).build_topology_element()
-    world.add_element_as_new_group(element)
-
-    dump_path = world.export_topo_dump_xml(str(tmp_path / "TopoDump.xml"), catalog=catalog)
+    dump_path = world.export_topo_dump_xml(str(tmp_path / "TopoDump.xml"))
     dump = dump_path.read_text(encoding="utf-8") if hasattr(dump_path, "read_text") else open(dump_path, encoding="utf-8").read()
 
-    assert "<Catalog available=\"1\"" in dump
-    assert "<ScenarioTriangleSet>" in dump
-    assert f'modelId="{element.model_id}"' in dump
-    assert 'triangleRank="3"' in dump
+    assert 'sourceTriangleId="TRI-0042"' in dump
+    assert "<Catalog" not in dump
+    assert "ScenarioTriangleSet" not in dump
+    assert "modelId" not in dump
+    assert "triRank" not in dump
