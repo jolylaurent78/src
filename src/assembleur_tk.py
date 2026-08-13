@@ -1555,7 +1555,11 @@ class TriangleViewerManual(
             except tk.TclError:
                 pass
 
-        window = CatalogueWindow(self, maps_dir=self.maps_dir)
+        window = CatalogueWindow(
+            self,
+            maps_dir=self.maps_dir,
+            catalogue_path=os.path.join(self.config_dir, "catalogue.json"),
+        )
         self._catalogue_window = window
 
         def _on_close():

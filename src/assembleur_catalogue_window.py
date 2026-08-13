@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import csv
 import math
 from pathlib import Path
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import filedialog, messagebox, ttk
-from typing import Callable
-from pyproj import Transformer
+from src.assembleur_catalogue import Catalogue, CatalogueCity, CatalogueTriangle as ModelCatalogueTriangle, HypothesisTemplate
+from src.assembleur_catalogue_io import load_catalogue, save_catalogue
 
 from src.assembleur_dms_editor import DmsCoordinateEditor
 from src.assembleur_geo_map_view import CalibratedGeoMap, GeoMapMarker, GeoMapPolyline, GeoMapView
@@ -23,38 +23,6 @@ _TEMPLATE_BASE_COLUMN_WIDTH = 120
 _TRIANGLE_MAP_FIT_MARGIN = 0.20
 
 
-@dataclass
-class CatalogueCity:
-    """Ville temporaire : état d'interface seulement, sans persistance ni identifiant."""
-
-    name: str
-    latitude: float
-    longitude: float
-    archived: bool = False
-    usage: int = 0
-
-
-@dataclass
-class CatalogueTriangle:
-    """Triangle temporaire référençant directement ses trois objets ville."""
-
-    date_code: str
-    opening_city: CatalogueCity
-    base_city: CatalogueCity
-    light_city: CatalogueCity
-    archived: bool = False
-
-
-@dataclass
-class CatalogueTemplate:
-    """État UX temporaire d'un template, sans validation métier ni persistance."""
-
-    name: str
-    description: str = ""
-    archived: bool = False
-    ranks: list[CatalogueTriangle | None] = field(default_factory=lambda: [None] * 32)
-
-
 @dataclass(frozen=True)
 class TemplateDropPlan:
     action: str
@@ -62,37 +30,30 @@ class TemplateDropPlan:
     message: str | None
     source_index: int | None
     target_index: int
-    target_triangle: CatalogueTriangle | None
-    preview_ranks: list[CatalogueTriangle | None] | None
-
-
-@dataclass(frozen=True)
-class TemplateValidationStatus:
-    state: str
-    filled_ranks: int
-    message: str | None = None
+    target_triangle_id: str | None
+    preview_ranks: list[str | None] | None
 
 
 @dataclass(frozen=True)
 class TriangleEditorResult:
-    date_code: str
-    opening_city: CatalogueCity
-    base_city: CatalogueCity
-    light_city: CatalogueCity
+    note: str
+    opening_city_id: str
+    base_city_id: str
+    light_city_id: str
 
 
 class CitySelectionDialog(tk.Toplevel):
     """Sélecteur générique d'un objet ville par recherche filtrante."""
 
-    def __init__(self, parent, cities: list[CatalogueCity], selected_city: CatalogueCity | None = None):
+    def __init__(self, parent, cities: list[CatalogueCity], selected_city_id: str | None = None):
         super().__init__(parent)
         self.title("Sélection d'une ville")
         self.transient(parent)
         self.resizable(True, True)
         self.minsize(280, 320)
-        self.result: CatalogueCity | None = None
+        self.result: str | None = None
         self._cities = list(cities)
-        self._selected_city = selected_city
+        self._selected_city_id = selected_city_id
         self._search_var = tk.StringVar()
 
         root = ttk.Frame(self, padding=10)
@@ -121,7 +82,7 @@ class CitySelectionDialog(tk.Toplevel):
         search.focus_set()
         self.grab_set()
 
-    def show(self) -> CatalogueCity | None:
+    def show(self) -> str | None:
         self.wait_window()
         return self.result
 
@@ -134,8 +95,8 @@ class CitySelectionDialog(tk.Toplevel):
         self._listbox.delete(0, tk.END)
         for city in visible:
             self._listbox.insert(tk.END, city.name)
-        if self._selected_city in visible:
-            index = visible.index(self._selected_city)
+        if any(city.city_id == self._selected_city_id for city in visible):
+            index = next(index for index, city in enumerate(visible) if city.city_id == self._selected_city_id)
             self._listbox.selection_set(index)
             self._listbox.activate(index)
 
@@ -143,7 +104,7 @@ class CitySelectionDialog(tk.Toplevel):
         selection = self._listbox.curselection()
         visible = self._visible_cities()
         if selection:
-            self.result = visible[selection[0]]
+            self.result = visible[selection[0]].city_id
             self.destroy()
 
 
@@ -155,8 +116,7 @@ class TriangleEditorDialog(tk.Toplevel):
         parent,
         cities: list[CatalogueCity],
         date_codes: list[str],
-        triangle: CatalogueTriangle | None = None,
-        validate: Callable[[TriangleEditorResult], str | None] | None = None,
+        triangle: ModelCatalogueTriangle | None = None,
     ):
         super().__init__(parent)
         self.title("Ajouter un triangle" if triangle is None else "Modifier un triangle")
@@ -164,15 +124,15 @@ class TriangleEditorDialog(tk.Toplevel):
         self.resizable(False, False)
         self.result: TriangleEditorResult | None = None
         self._cities = list(cities)
-        self._validate = validate
-        default_opening = next((city for city in self._cities if city.name.casefold() == "bourges"), None)
-        self._opening_city = triangle.opening_city if triangle else default_opening
-        self._base_city = triangle.base_city if triangle else None
-        self._light_city = triangle.light_city if triangle else None
-        self._date_code_var = tk.StringVar(value=triangle.date_code if triangle else "")
-        self._opening_var = tk.StringVar(value=self._opening_city.name if self._opening_city else "")
-        self._base_var = tk.StringVar(value=self._base_city.name if self._base_city else "")
-        self._light_var = tk.StringVar(value=self._light_city.name if self._light_city else "")
+        self._city_by_id = {city.city_id: city for city in self._cities}
+        default_opening_id = next((city.city_id for city in self._cities if not city.archived and city.name.casefold() == "bourges"), None)
+        self._opening_city_id = triangle.opening_city_id if triangle else default_opening_id
+        self._base_city_id = triangle.base_city_id if triangle else None
+        self._light_city_id = triangle.light_city_id if triangle else None
+        self._date_code_var = tk.StringVar(value=triangle.note if triangle else "")
+        self._opening_var = tk.StringVar(value=self._city_name(self._opening_city_id))
+        self._base_var = tk.StringVar(value=self._city_name(self._base_city_id))
+        self._light_var = tk.StringVar(value=self._city_name(self._light_city_id))
 
         root = ttk.Frame(self, padding=12)
         root.grid(row=0, column=0, sticky="nsew")
@@ -182,9 +142,9 @@ class TriangleEditorDialog(tk.Toplevel):
         ttk.Combobox(root, textvariable=self._date_code_var, values=sorted(set(date_codes), key=str.casefold), width=18).grid(
             row=1, column=1, columnspan=2, sticky="ew", pady=(0, 6)
         )
-        self._add_city_row(root, 2, "Ouverture", self._opening_var, "_opening_city")
-        self._add_city_row(root, 3, "Base", self._base_var, "_base_city")
-        self._add_city_row(root, 4, "Lumière", self._light_var, "_light_city")
+        self._add_city_row(root, 2, "Ouverture", self._opening_var, "_opening_city_id")
+        self._add_city_row(root, 3, "Base", self._base_var, "_base_city_id")
+        self._add_city_row(root, 4, "Lumière", self._light_var, "_light_city_id")
         buttons = ttk.Frame(root)
         buttons.grid(row=5, column=0, columnspan=3, sticky="e", pady=(6, 0))
         ttk.Button(buttons, text="OK", command=self._accept).pack(side=tk.LEFT)
@@ -204,28 +164,27 @@ class TriangleEditorDialog(tk.Toplevel):
         )
 
     def _choose_city(self, attribute: str):
-        selected = getattr(self, attribute)
-        city = CitySelectionDialog(self, self._cities, selected).show()
-        if city is None:
+        selected_city_id = getattr(self, attribute)
+        selectable = [city for city in self._cities if not city.archived or city.city_id == selected_city_id]
+        city_id = CitySelectionDialog(self, selectable, selected_city_id).show()
+        if city_id is None:
             return
-        setattr(self, attribute, city)
-        {"_opening_city": self._opening_var, "_base_city": self._base_var, "_light_city": self._light_var}[attribute].set(city.name)
+        setattr(self, attribute, city_id)
+        {"_opening_city_id": self._opening_var, "_base_city_id": self._base_var, "_light_city_id": self._light_var}[attribute].set(self._city_name(city_id))
+
+    def _city_name(self, city_id: str | None) -> str:
+        return self._city_by_id[city_id].name if city_id is not None else ""
 
     def _accept(self):
-        date_code = self._date_code_var.get().strip()
-        cities = (self._opening_city, self._base_city, self._light_city)
-        if not date_code or any(city is None for city in cities):
+        note = self._date_code_var.get().strip()
+        city_ids = (self._opening_city_id, self._base_city_id, self._light_city_id)
+        if not note or any(city_id is None for city_id in city_ids):
             messagebox.showerror("Triangle", "La note et les trois villes sont obligatoires.", parent=self)
             return
-        if len({id(city) for city in cities}) != 3:
+        if len(set(city_ids)) != 3:
             messagebox.showerror("Triangle", "Ouverture, Base et Lumière doivent être trois villes différentes.", parent=self)
             return
-        result = TriangleEditorResult(date_code, *cities)
-        error = self._validate(result) if self._validate is not None else None
-        if error:
-            messagebox.showerror("Triangle", error, parent=self)
-            return
-        self.result = result
+        self.result = TriangleEditorResult(note, *city_ids)
         self.destroy()
 
 
@@ -235,7 +194,7 @@ class TemplateRankSlot(tk.Frame):
     def __init__(self, parent, rank_number: int):
         super().__init__(parent, relief=tk.SUNKEN, borderwidth=1, background="#ffffff", padx=4, pady=3)
         self.rank_number = rank_number
-        self.triangle: CatalogueTriangle | None = None
+        self.triangle_id: str | None = None
         self.drop_state = "normal"
         self.is_selected = False
         self._full_text = ""
@@ -251,15 +210,15 @@ class TemplateRankSlot(tk.Frame):
         self.bind("<Configure>", self._on_resize, add="+")
         self.set_triangle(None)
 
-    def set_triangle(self, triangle: CatalogueTriangle | None) -> None:
-        self.triangle = triangle
-        self._full_text = triangle.light_city.name if triangle is not None else "Déposer un triangle..."
+    def set_triangle(self, triangle_id: str | None, light_name: str | None = None) -> None:
+        self.triangle_id = triangle_id
+        self._full_text = light_name if triangle_id is not None and light_name is not None else "Déposer un triangle..."
         self._update_display_text()
         self.set_drop_state("normal")
 
     @property
     def tooltip_text(self) -> str:
-        return self._full_text if self.triangle is not None else ""
+        return self._full_text if self.triangle_id is not None else ""
 
     def _on_resize(self, _event=None):
         self._update_display_text()
@@ -291,7 +250,7 @@ class TemplateRankSlot(tk.Frame):
         border = tk.RIDGE if self.is_selected or state in {"source", "valid", "replace", "move", "swap"} else tk.SUNKEN
         self.configure(background=background, relief=border)
         self._badge.configure(background=background, relief=tk.RIDGE)
-        self._entry.configure(readonlybackground=background, foreground="#222222" if self.triangle is not None else "#777777")
+        self._entry.configure(readonlybackground=background, foreground="#222222" if self.triangle_id is not None else "#777777")
 
     def set_selected(self, selected: bool) -> None:
         self.is_selected = selected
@@ -344,12 +303,17 @@ class TemplatePairRow(ttk.Frame):
         self.columnconfigure(1, minsize=rank_width)
         self.columnconfigure(2, minsize=rank_width)
 
-    def set_triangles(self, odd: CatalogueTriangle | None, even: CatalogueTriangle | None) -> None:
-        self.odd_rank_slot.set_triangle(odd)
-        self.even_rank_slot.set_triangle(even)
-        bases = {triangle.base_city.name for triangle in (odd, even) if triangle is not None}
-        text = bases.pop() if len(bases) == 1 else ("—" if not bases else "Bases différentes")
-        self.base_slot.set_base(text, enabled=odd is not None or even is not None)
+    def set_triangles(
+        self,
+        odd_triangle_id: str | None,
+        odd_light_name: str | None,
+        even_triangle_id: str | None,
+        even_light_name: str | None,
+        base_name: str | None,
+    ) -> None:
+        self.odd_rank_slot.set_triangle(odd_triangle_id, odd_light_name)
+        self.even_rank_slot.set_triangle(even_triangle_id, even_light_name)
+        self.base_slot.set_base(base_name or "—", enabled=odd_triangle_id is not None or even_triangle_id is not None)
 
 
 class CatalogueWindow(tk.Toplevel):
@@ -360,22 +324,25 @@ class CatalogueWindow(tk.Toplevel):
     _TEMPLATE_CSV_HEADER = ("Rang", "Ouverture", "Base", "Lumiere")
     _TEMPLATE_NOTE_ORDER = {"do": 0, "si": 1, "la": 2, "sol": 3, "fa": 4, "mi": 5, "re": 6, "zone": 7}
 
-    def __init__(self, parent, *, maps_dir: str | Path | None = None):
+    def __init__(self, parent, *, maps_dir: str | Path | None = None, catalogue_path: str | Path | None = None):
         super().__init__(parent)
         self.title("Gestion du catalogue")
         self.geometry("1000x700")
         self.minsize(760, 500)
         self._maps_dir = maps_dir
-        self.cities: list[CatalogueCity] = []
-        self.triangles: list[CatalogueTriangle] = []
-        self.templates: list[CatalogueTemplate] = [CatalogueTemplate("Ordre principal")]
-        self._default_template: CatalogueTemplate | None = self.templates[0]
-        self._selected_city: CatalogueCity | None = None
-        self._selected_triangle: CatalogueTriangle | None = None
-        self._selected_template: CatalogueTemplate | None = self.templates[0]
-        self._selected_template_triangle: CatalogueTriangle | None = None
+        self._catalogue_path = Path(catalogue_path) if catalogue_path is not None else Path(__file__).resolve().parent.parent / "catalogue.json"
+        if self._catalogue_path.exists():
+            self.catalogue = load_catalogue(self._catalogue_path)
+        else:
+            self.catalogue = Catalogue()
+            self.catalogue.add_template("Ordre principal")
+        self._validated_catalogue = self.catalogue.clone()
+        self._selected_city_id: str | None = None
+        self._selected_triangle_id: str | None = None
+        self._selected_template_id: str | None = self.catalogue.default_template_id
+        self._selected_template_triangle_id: str | None = None
         self._selected_template_rank_slot: TemplateRankSlot | None = None
-        self._template_drag_triangle: CatalogueTriangle | None = None
+        self._template_drag_triangle_id: str | None = None
         self._template_drag_started = False
         self._template_drag_source_iid: str | None = None
         self._template_drag_source_slot: TemplateRankSlot | None = None
@@ -384,10 +351,6 @@ class CatalogueWindow(tk.Toplevel):
         self._template_drag_ghost: tk.Toplevel | None = None
         self._updating_detail = False
         self._updating_template_detail = False
-        self._validated_cities: list[CatalogueCity] = []
-        self._validated_triangles: list[CatalogueTriangle] = []
-        self._validated_templates: list[CatalogueTemplate] = [CatalogueTemplate("Ordre principal")]
-        self._validated_default_template: CatalogueTemplate | None = self._validated_templates[0]
         self._is_dirty = False
         self._tooltip_window: tk.Toplevel | None = None
         self._tooltip_after_id: str | None = None
@@ -400,17 +363,18 @@ class CatalogueWindow(tk.Toplevel):
         self._triangle_base_filter_var = tk.StringVar()
         self._triangle_light_filter_var = tk.StringVar()
         self._triangle_status_filter_var = tk.StringVar(value="Actif")
-        self._template_name_var = tk.StringVar(value=self._selected_template.name)
-        self._template_default_var = tk.BooleanVar(value=True)
+        initial_template = self._get_selected_template()
+        self._template_name_var = tk.StringVar(value=initial_template.name if initial_template else "")
+        self._template_default_var = tk.BooleanVar(value=initial_template is not None)
         self._template_description_var = tk.StringVar()
         self._template_note_filter_var = tk.StringVar(value="Tous")
         self._template_base_filter_var = tk.StringVar()
         self._template_light_filter_var = tk.StringVar()
-        self._lambert_transformer = Transformer.from_crs("EPSG:4326", "EPSG:2154", always_xy=True)
 
         self._load_icons()
         self._build_ui()
         self._refresh_city_list()
+        self._refresh_triangle_tree()
         self._load_map()
         self.protocol("WM_DELETE_WINDOW", self.request_close)
 
@@ -595,7 +559,7 @@ class CatalogueWindow(tk.Toplevel):
             self._import_button.configure(command=self._import_triangles_csv, state=tk.NORMAL)
             self._export_button.configure(command=self._export_triangles_csv, state=tk.NORMAL)
         elif active_tab == str(self._templates_tab):
-            has_template = self._selected_template is not None
+            has_template = self._get_selected_template() is not None
             self._import_button.configure(
                 command=self._import_template_csv,
                 state=tk.NORMAL if has_template else tk.DISABLED,
@@ -624,7 +588,7 @@ class CatalogueWindow(tk.Toplevel):
         with open(path, "w", encoding="utf-8-sig", newline="") as csv_file:
             writer = csv.writer(csv_file, delimiter=";")
             writer.writerow(self._CITY_CSV_HEADER)
-            writer.writerows((city.name, city.latitude, city.longitude) for city in self.cities)
+            writer.writerows((city.name, city.latitude, city.longitude) for city in self.catalogue.iter_cities())
 
     def _export_triangles_csv(self):
         path = self._choose_export_path("Exporter les triangles")
@@ -633,22 +597,21 @@ class CatalogueWindow(tk.Toplevel):
         with open(path, "w", encoding="utf-8-sig", newline="") as csv_file:
             writer = csv.writer(csv_file, delimiter=";")
             writer.writerow(self._TRIANGLE_CSV_HEADER)
-            writer.writerows((
-                triangle.date_code,
-                triangle.opening_city.name,
-                triangle.base_city.name,
-                triangle.light_city.name,
-            ) for triangle in sorted(self.triangles, key=self._triangle_sort_key))
+            writer.writerows(
+                (triangle.note, opening.name, base.name, light.name)
+                for triangle in sorted(self.catalogue.iter_triangles(), key=self._triangle_sort_key)
+                for opening, base, light in (self._model_triangle_cities(triangle),)
+            )
 
     @staticmethod
     def _template_export_filename(template_name: str) -> str:
         return "".join("_" if character in '<>:"/\\|?*' else character for character in template_name).strip() + ".csv"
 
     def _export_template_csv(self):
-        template = self._selected_template
+        template = self._get_selected_template()
         if template is None:
             return
-        status = self._get_template_validation_status(template)
+        status = self.catalogue.get_template_validation_status(template.template_id)
         if status.state == "Incomplet":
             messagebox.showwarning(
                 "Exporter un template",
@@ -674,12 +637,16 @@ class CatalogueWindow(tk.Toplevel):
             with open(path, "w", encoding="utf-8-sig", newline="") as csv_file:
                 writer = csv.writer(csv_file, delimiter=";")
                 writer.writerow(self._TEMPLATE_CSV_HEADER)
-                for rank_number, triangle in enumerate(template.ranks, start=1):
+                for rank_number, triangle_id in enumerate(template.triangle_ids_by_rank, start=1):
+                    triangle = self.catalogue.get_triangle(triangle_id) if triangle_id is not None else None
+                    if triangle is None:
+                        raise ValueError("Le template validé contient un rang vide.")
+                    opening, base, light = self._model_triangle_cities(triangle)
                     writer.writerow((
                         rank_number,
-                        triangle.opening_city.name,
-                        triangle.base_city.name,
-                        triangle.light_city.name,
+                        opening.name,
+                        base.name,
+                        light.name,
                     ))
         except (OSError, UnicodeError, csv.Error) as exc:
             messagebox.showerror("Exporter un template", str(exc), parent=self)
@@ -746,7 +713,6 @@ class CatalogueWindow(tk.Toplevel):
         self._triangle_tree.configure(yscrollcommand=scrollbar.set)
         self._triangle_tree.bind("<<TreeviewSelect>>", self._on_triangle_selected)
         self._triangle_tree.bind("<Double-Button-1>", lambda _event: self._edit_selected_triangle())
-        self._triangle_by_tree_iid: dict[str, CatalogueTriangle] = {}
 
         detail.rowconfigure(4, weight=1)
         detail.columnconfigure(0, weight=1)
@@ -863,7 +829,7 @@ class CatalogueWindow(tk.Toplevel):
         scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=self._template_triangle_tree.yview)
         scrollbar.grid(row=1, column=1, sticky="ns")
         self._template_triangle_tree.configure(yscrollcommand=scrollbar.set)
-        self._template_triangle_by_tree_iid: dict[str, CatalogueTriangle] = {}
+        self._template_triangle_by_tree_iid: dict[str, str] = {}
         self._template_triangle_tree.bind("<<TreeviewSelect>>", self._on_template_triangle_selected)
         self._template_triangle_tree.bind("<ButtonPress-1>", self._on_template_tree_press, add="+")
         self._template_triangle_tree.bind("<B1-Motion>", self._on_template_tree_drag, add="+")
@@ -915,46 +881,41 @@ class CatalogueWindow(tk.Toplevel):
             pair_row.set_column_widths(base_width, rank_width)
 
     def _refresh_templates(self):
-        self._ensure_default_template()
-        names = tuple(template.name for template in self.templates)
-        self._template_selector.configure(values=names)
-        if not any(template is self._selected_template for template in self.templates):
-            self._selected_template = self.templates[0] if self.templates else None
+        templates = list(self.catalogue.iter_templates())
+        self._template_selector_ids = [template.template_id for template in templates]
+        self._template_selector.configure(values=tuple(template.name for template in templates))
+        if self._selected_template_id not in self._template_selector_ids:
+            self._selected_template_id = self.catalogue.default_template_id or (self._template_selector_ids[0] if self._template_selector_ids else None)
+        template = self._get_selected_template()
         self._updating_template_detail = True
-        if self._selected_template is not None:
-            self._template_selector.current(self._template_index(self._selected_template))
-            self._template_name_var.set(self._selected_template.name)
+        if template is not None:
+            self._template_selector.current(self._template_selector_ids.index(template.template_id))
+            self._template_name_var.set(template.name)
         else:
             self._template_selector.set("")
             self._template_name_var.set("")
-        self._template_default_var.set(self._selected_template is self._default_template)
-        self._template_description_var.set(self._selected_template.description if self._selected_template else "")
-        self._template_description_entry.configure(state=tk.NORMAL if self._selected_template else tk.DISABLED)
+        self._template_default_var.set(template is not None and template.template_id == self.catalogue.default_template_id)
+        self._template_description_var.set(template.description if template else "")
+        self._template_description_entry.configure(state=tk.NORMAL if template else tk.DISABLED)
         self._updating_template_detail = False
-        self._catalogue_notebook.tab(self._templates_tab, text=f"Templates ({len(self.templates)})")
+        self._catalogue_notebook.tab(self._templates_tab, text=f"Templates ({len(templates)})")
         self._update_template_action_buttons()
         self._refresh_template_ranks_view()
 
     def _on_template_selected(self, _event=None):
+        if self._selected_template_rank_slot is not None:
+            self._selected_template_rank_slot.set_selected(False)
+            self._selected_template_rank_slot = None
         selected_index = self._template_selector.current()
-        self._selected_template = self.templates[selected_index] if 0 <= selected_index < len(self.templates) else None
+        self._selected_template_id = self._template_selector_ids[selected_index] if 0 <= selected_index < len(self._template_selector_ids) else None
         self._refresh_templates()
         self._update_context_actions()
 
-    def _template_index(self, template: CatalogueTemplate) -> int:
-        return next(index for index, item in enumerate(self.templates) if item is template)
-
-    def _ensure_default_template(self) -> None:
-        if not self.templates:
-            self._default_template = None
-        elif not any(template is self._default_template for template in self.templates):
-            self._default_template = self.templates[0]
-
-    def _get_default_template(self) -> CatalogueTemplate | None:
-        return self._default_template
+    def _get_selected_template(self) -> HypothesisTemplate | None:
+        return self.catalogue.get_template(self._selected_template_id) if self._selected_template_id is not None else None
 
     def _commit_template_name(self):
-        template = self._selected_template
+        template = self._get_selected_template()
         if template is None:
             return
         new_name = self._template_name_var.get().strip()
@@ -965,60 +926,56 @@ class CatalogueWindow(tk.Toplevel):
         if new_name == template.name:
             self._template_name_var.set(template.name)
             return
-        if any(item is not template and item.name.casefold() == new_name.casefold() for item in self.templates):
-            messagebox.showerror("Renommer le template", "Un template porte déjà ce nom.", parent=self)
+        try:
+            self.catalogue.update_template(template.template_id, name=new_name)
+        except ValueError as exc:
+            messagebox.showerror("Renommer le template", str(exc), parent=self)
             self._template_name_var.set(template.name)
             return
-        template.name = new_name
         self._refresh_templates()
         self._mark_dirty()
 
     def _save_template_description(self, *_args):
-        if self._updating_template_detail or self._selected_template is None:
+        template = self._get_selected_template()
+        if self._updating_template_detail or template is None:
             return
-        self._selected_template.description = self._template_description_var.get()
+        self.catalogue.update_template(template.template_id, description=self._template_description_var.get())
         self._mark_dirty()
 
     def _add_template(self):
-        names = {template.name.casefold() for template in self.templates}
+        names = {template.name.casefold() for template in self.catalogue.iter_templates()}
         number = 1
         while f"Nouveau template {number}".casefold() in names:
             number += 1
-        new_template = CatalogueTemplate(f"Nouveau template {number}")
-        self.templates.append(new_template)
-        self._selected_template = new_template
-        if self._default_template is None:
-            self._default_template = new_template
+        new_template = self.catalogue.add_template(f"Nouveau template {number}")
+        self._selected_template_id = new_template.template_id
         self._refresh_templates()
         self._update_context_actions()
         self._mark_dirty()
 
     def _toggle_archive_selected_template(self):
-        if self._selected_template is None:
+        template = self._get_selected_template()
+        if template is None:
             return
-        self._selected_template.archived = not self._selected_template.archived
+        self.catalogue.update_template(template.template_id, archived=not template.archived)
         self._refresh_templates()
         self._mark_dirty()
 
     def _delete_selected_template(self):
-        if self._selected_template is None:
+        template = self._get_selected_template()
+        if template is None:
             return
-        was_default = self._selected_template is self._default_template
-        del self.templates[self._template_index(self._selected_template)]
-        if not self.templates:
-            self._default_template = None
-        elif was_default:
-            self._default_template = self.templates[0]
-        self._selected_template = None
+        self.catalogue.delete_template(template.template_id)
+        self._selected_template_id = self.catalogue.default_template_id or next(iter(self.catalogue.templates), None)
         self._refresh_templates()
         self._update_context_actions()
         self._mark_dirty()
 
     def _update_template_action_buttons(self):
-        template = self._selected_template
+        template = self._get_selected_template()
         state = tk.NORMAL if template is not None else tk.DISABLED
         self._template_default_button.configure(
-            state=tk.NORMAL if template is not None and template is not self._default_template else tk.DISABLED
+            state=tk.NORMAL if template is not None and template.template_id != self.catalogue.default_template_id else tk.DISABLED
         )
         self._template_delete_button.configure(state=state)
         self._template_archive_button.configure(
@@ -1031,26 +988,36 @@ class CatalogueWindow(tk.Toplevel):
         )
 
     def _set_selected_template_as_default(self):
-        if self._selected_template is None or self._selected_template is self._default_template:
+        template = self._get_selected_template()
+        if template is None or template.template_id == self.catalogue.default_template_id:
             return
-        self._default_template = self._selected_template
+        self.catalogue.set_default_template(template.template_id)
         self._refresh_templates()
         self._mark_dirty()
 
     def _refresh_template_ranks_view(self):
-        ranks = self._selected_template.ranks if self._selected_template else [None] * 32
+        template = self._get_selected_template()
+        ranks = template.triangle_ids_by_rank if template else [None] * 32
         for pair, pair_row in enumerate(self._template_pair_rows):
-            pair_row.set_triangles(ranks[pair * 2], ranks[pair * 2 + 1])
+            odd_id, even_id = ranks[pair * 2], ranks[pair * 2 + 1]
+            odd = self.catalogue.get_triangle(odd_id) if odd_id is not None else None
+            even = self.catalogue.get_triangle(even_id) if even_id is not None else None
+            odd_light = self.catalogue.get_city(odd.light_city_id).name if odd else None
+            even_light = self.catalogue.get_city(even.light_city_id).name if even else None
+            bases = {self.catalogue.get_city(item.base_city_id).name for item in (odd, even) if item is not None}
+            base_name = bases.pop() if len(bases) == 1 else (None if not bases else "Bases différentes")
+            pair_row.set_triangles(odd_id, odd_light, even_id, even_light, base_name)
             self._set_tooltip_text(pair_row.base_slot._entry, pair_row.base_slot.tooltip_text)
         if self._selected_template_rank_slot is not None:
             self._selected_template_rank_slot.set_selected(True)
         self._update_template_validation_status()
 
     def _update_template_validation_status(self):
-        if self._selected_template is None:
+        template = self._get_selected_template()
+        if template is None:
             self._template_validation_status_label.configure(text="Statut :")
             return
-        status = self._get_template_validation_status(self._selected_template)
+        status = self.catalogue.get_template_validation_status(template.template_id)
         text = (
             f"Statut : Incomplet ({status.filled_ranks} / 32)"
             if status.state == "Incomplet"
@@ -1072,75 +1039,31 @@ class CatalogueWindow(tk.Toplevel):
 
     def _delete_selected_template_rank(self, _event=None):
         slot = self._selected_template_rank_slot
-        if self._selected_template is None or slot is None:
+        template = self._get_selected_template()
+        if template is None or slot is None:
             return
         rank_index = slot.rank_number - 1
-        if self._selected_template.ranks[rank_index] is None:
+        if template.triangle_ids_by_rank[rank_index] is None:
             return
-        self._selected_template.ranks[rank_index] = None
+        preview = list(template.triangle_ids_by_rank)
+        preview[rank_index] = None
+        self.catalogue.set_template_ranks(template.template_id, preview)
         self._refresh_template_ranks_view()
         self._mark_dirty()
 
     def _clear_template_pair(self, pair_row: TemplatePairRow):
-        if self._selected_template is None:
+        template = self._get_selected_template()
+        if template is None:
             return
         odd_index = pair_row.pair_number * 2 - 2
         even_index = odd_index + 1
-        if self._selected_template.ranks[odd_index] is None and self._selected_template.ranks[even_index] is None:
+        if template.triangle_ids_by_rank[odd_index] is None and template.triangle_ids_by_rank[even_index] is None:
             return
-        self._selected_template.ranks[odd_index] = None
-        self._selected_template.ranks[even_index] = None
+        preview = list(template.triangle_ids_by_rank)
+        preview[odd_index] = preview[even_index] = None
+        self.catalogue.set_template_ranks(template.template_id, preview)
         self._refresh_template_ranks_view()
         self._mark_dirty()
-
-    @staticmethod
-    def _clone_cities(cities: list[CatalogueCity]) -> list[CatalogueCity]:
-        return [
-            CatalogueCity(city.name, city.latitude, city.longitude, city.archived, city.usage)
-            for city in cities
-        ]
-
-    @classmethod
-    def _clone_catalogue_state(
-        cls,
-        cities: list[CatalogueCity],
-        triangles: list[CatalogueTriangle],
-        templates: list[CatalogueTemplate],
-        default_template: CatalogueTemplate | None,
-    ) -> tuple[
-        list[CatalogueCity],
-        list[CatalogueTriangle],
-        list[CatalogueTemplate],
-        CatalogueTemplate | None,
-    ]:
-        cloned_cities = cls._clone_cities(cities)
-        city_by_source = {id(source): clone for source, clone in zip(cities, cloned_cities)}
-        cloned_triangles = [
-            CatalogueTriangle(
-                triangle.date_code,
-                city_by_source[id(triangle.opening_city)],
-                city_by_source[id(triangle.base_city)],
-                city_by_source[id(triangle.light_city)],
-                triangle.archived,
-            )
-            for triangle in triangles
-        ]
-        triangle_by_source = {id(source): clone for source, clone in zip(triangles, cloned_triangles)}
-        cloned_templates = [
-            CatalogueTemplate(
-                template.name,
-                template.description,
-                template.archived,
-                [triangle_by_source.get(id(rank)) if rank is not None else None for rank in template.ranks],
-            )
-            for template in templates
-        ]
-        default_index = next(
-            (index for index, template in enumerate(templates) if template is default_template),
-            None,
-        )
-        cloned_default_template = cloned_templates[default_index] if default_index is not None else None
-        return cloned_cities, cloned_triangles, cloned_templates, cloned_default_template
 
     def _set_dirty(self, is_dirty: bool) -> None:
         self._is_dirty = is_dirty
@@ -1153,31 +1076,25 @@ class CatalogueWindow(tk.Toplevel):
 
     def _apply_changes(self) -> None:
         """Valide uniquement l'état courant de cette session, sans persistance."""
-        (
-            self._validated_cities,
-            self._validated_triangles,
-            self._validated_templates,
-            self._validated_default_template,
-        ) = self._clone_catalogue_state(
-            self.cities, self.triangles, self.templates, self._default_template
-        )
+        try:
+            self.catalogue.validate()
+            save_catalogue(self.catalogue, self._catalogue_path)
+        except (OSError, ValueError, TypeError) as exc:
+            messagebox.showerror("Catalogue", str(exc), parent=self)
+            return
+        self._validated_catalogue = self.catalogue.clone()
         self._set_dirty(False)
 
     def _cancel_changes(self) -> None:
         """Restaure le dernier instantané validé localement."""
-        self.cities, self.triangles, self.templates, self._default_template = self._clone_catalogue_state(
-            self._validated_cities,
-            self._validated_triangles,
-            self._validated_templates,
-            self._validated_default_template,
-        )
-        self._selected_city = None
-        self._selected_triangle = None
-        self._selected_template = self._default_template if any(
-            template is self._default_template for template in self.templates
-        ) else (
-            self.templates[0] if self.templates else None
-        )
+        if self._selected_template_rank_slot is not None:
+            self._selected_template_rank_slot.set_selected(False)
+        self.catalogue = self._validated_catalogue.clone()
+        self._selected_city_id = None
+        self._selected_triangle_id = None
+        self._selected_template_id = self.catalogue.default_template_id
+        self._selected_template_triangle_id = None
+        self._selected_template_rank_slot = None
         self._refresh_city_list()
         self._refresh_triangle_tree()
         self._refresh_templates()
@@ -1202,7 +1119,11 @@ class CatalogueWindow(tk.Toplevel):
         if not path:
             return
         try:
-            self.cities.extend(self._read_cities_csv(path))
+            imported_cities = self._read_cities_csv(path)
+            preview = self.catalogue.clone()
+            for name, latitude, longitude in imported_cities:
+                preview.add_city(name, latitude, longitude)
+            self.catalogue = preview
         except (OSError, UnicodeError, ValueError, csv.Error) as exc:
             messagebox.showerror("Importer des villes", str(exc), parent=self)
             return
@@ -1210,7 +1131,7 @@ class CatalogueWindow(tk.Toplevel):
         self._mark_dirty()
 
     @classmethod
-    def _read_cities_csv(cls, path: str) -> list[CatalogueCity]:
+    def _read_cities_csv(cls, path: str) -> list[tuple[str, float, float]]:
         with open(path, "r", encoding="utf-8-sig", newline="") as csv_file:
             rows = [row for row in csv.reader(csv_file, delimiter=";") if any(str(value).strip() for value in row)]
         if not rows:
@@ -1224,7 +1145,7 @@ class CatalogueWindow(tk.Toplevel):
             name, raw_latitude, raw_longitude = (str(value).strip() for value in row)
             if not name:
                 raise ValueError(f"Ligne {line_number} : nom de ville vide.")
-            cities.append(CatalogueCity(
+            cities.append((
                 name,
                 DmsCoordinateEditor.parse_coordinate(raw_latitude, "latitude"),
                 DmsCoordinateEditor.parse_coordinate(raw_longitude, "longitude"),
@@ -1244,7 +1165,6 @@ class CatalogueWindow(tk.Toplevel):
         except (OSError, UnicodeError, ValueError, csv.Error) as exc:
             messagebox.showerror("Importer des triangles", str(exc), parent=self)
             return
-        self.triangles.extend(imported)
         self._refresh_triangle_tree()
         if imported:
             self._mark_dirty()
@@ -1257,15 +1177,15 @@ class CatalogueWindow(tk.Toplevel):
                 parent=self,
             )
 
-    def _read_triangles_csv(self, path: str) -> tuple[list[CatalogueTriangle], list[str]]:
+    def _read_triangles_csv(self, path: str) -> tuple[list[str], list[str]]:
         with open(path, "r", encoding="utf-8-sig", newline="") as csv_file:
             rows = [row for row in csv.reader(csv_file, delimiter=";") if any(str(value).strip() for value in row)]
         if not rows:
             raise ValueError("Le fichier CSV triangles est vide.")
         if tuple(str(value).strip() for value in rows[0]) != self._TRIANGLE_CSV_HEADER:
             raise ValueError("L'en-tête CSV doit être : Note;Ouverture;Base;Lumiere")
-        cities_by_name = {city.name.strip().casefold(): city for city in self.cities}
-        triangles: list[CatalogueTriangle] = []
+        cities_by_name = {city.name.strip().casefold(): city for city in self.catalogue.iter_cities()}
+        triangles: list[str] = []
         errors: list[str] = []
         for line_number, row in enumerate(rows[1:], start=2):
             if len(row) != 4:
@@ -1279,11 +1199,19 @@ class CatalogueWindow(tk.Toplevel):
                 errors.append(f"Ligne {line_number} :{detail}.")
                 continue
             opening, base, light = cities
-            triangles.append(CatalogueTriangle(note, opening, base, light))
+            try:
+                model_triangle = self.catalogue.add_triangle(
+                    note, opening.city_id, base.city_id, light.city_id,
+                )
+            except (ValueError, KeyError) as exc:
+                errors.append(f"Ligne {line_number} : {exc}")
+                continue
+            triangles.append(model_triangle.triangle_id)
         return triangles, errors
 
     def _import_template_csv(self):
-        if self._selected_template is None:
+        template = self._get_selected_template()
+        if template is None:
             return
         path = filedialog.askopenfilename(
             parent=self,
@@ -1292,7 +1220,7 @@ class CatalogueWindow(tk.Toplevel):
         )
         if not path:
             return
-        filled_count = sum(triangle is not None for triangle in self._selected_template.ranks)
+        filled_count = sum(triangle_id is not None for triangle_id in template.triangle_ids_by_rank)
         if filled_count and not messagebox.askyesno(
             "Importer un template",
             (f"Le template courant contient déjà {filled_count} rang(s) renseigné(s).\n\n"
@@ -1305,11 +1233,11 @@ class CatalogueWindow(tk.Toplevel):
         except (OSError, UnicodeError, ValueError, csv.Error) as exc:
             messagebox.showerror("Importer un template", str(exc), parent=self)
             return
-        self._selected_template.ranks[:] = imported_ranks
+        self.catalogue.set_template_ranks(template.template_id, imported_ranks)
         self._refresh_template_ranks_view()
         self._mark_dirty()
 
-    def _read_template_csv(self, path: str) -> list[CatalogueTriangle]:
+    def _read_template_csv(self, path: str) -> list[str | None]:
         with open(path, "r", encoding="utf-8-sig", newline="") as csv_file:
             rows = [
                 (line_number, row)
@@ -1322,16 +1250,17 @@ class CatalogueWindow(tk.Toplevel):
         if len(data_rows) != 32:
             raise ValueError("Le fichier doit contenir exactement 32 lignes de rang.")
 
-        triangles_by_key: dict[tuple[str, str, str], list[CatalogueTriangle]] = {}
-        for triangle in self.triangles:
+        triangles_by_key: dict[tuple[str, str, str], list[str]] = {}
+        for triangle in self.catalogue.iter_triangles():
             if not triangle.archived:
+                opening, base, light = self._model_triangle_cities(triangle)
                 key = tuple(
                     city.name.strip().casefold()
-                    for city in (triangle.opening_city, triangle.base_city, triangle.light_city)
+                    for city in (opening, base, light)
                 )
-                triangles_by_key.setdefault(key, []).append(triangle)
+                triangles_by_key.setdefault(key, []).append(triangle.triangle_id)
 
-        imported_ranks: list[CatalogueTriangle | None] = [None] * 32
+        imported_ranks: list[str | None] = [None] * 32
         seen_ranks: set[int] = set()
         for line_number, row in data_rows:
             if len(row) != 4:
@@ -1358,24 +1287,34 @@ class CatalogueWindow(tk.Toplevel):
         missing_ranks = [str(rank) for rank in range(1, 33) if rank not in seen_ranks]
         if missing_ranks:
             raise ValueError(f"Rangs manquants : {', '.join(missing_ranks)}.")
-        message = self._validate_template_ranks_preview(imported_ranks)
+        template = self._get_selected_template()
+        if template is None:
+            raise ValueError("Aucun template n'est sélectionné.")
+        message = self.catalogue.validate_template_ranks(template.template_id, imported_ranks)
         if message:
             raise ValueError(f"Le template importé est invalide : {message}")
-        return [triangle for triangle in imported_ranks if triangle is not None]
+        return imported_ranks
 
-    def _visible_triangles(self) -> list[CatalogueTriangle]:
+    def _model_triangle_cities(self, triangle: ModelCatalogueTriangle) -> tuple[CatalogueCity, CatalogueCity, CatalogueCity]:
+        return (
+            self.catalogue.get_city(triangle.opening_city_id),
+            self.catalogue.get_city(triangle.base_city_id),
+            self.catalogue.get_city(triangle.light_city_id),
+        )
+
+    def _visible_triangles(self) -> list[ModelCatalogueTriangle]:
         date_code = self._triangle_date_filter_var.get()
         base_filter = self._triangle_base_filter_var.get().strip().casefold()
         light_filter = self._triangle_light_filter_var.get().strip().casefold()
         status = self._triangle_status_filter_var.get()
         return sorted(
             (
-                triangle for triangle in self.triangles
+                triangle for triangle in self.catalogue.iter_triangles()
                 if (status == "Tout" or (status == "Actif" and not triangle.archived)
                     or (status == "Archivé" and triangle.archived))
-                and (date_code == "Tous" or triangle.date_code == date_code)
-                and (not base_filter or base_filter in triangle.base_city.name.casefold())
-                and (not light_filter or light_filter in triangle.light_city.name.casefold())
+                and (date_code == "Tous" or triangle.note == date_code)
+                and (not base_filter or base_filter in self.catalogue.get_city(triangle.base_city_id).name.casefold())
+                and (not light_filter or light_filter in self.catalogue.get_city(triangle.light_city_id).name.casefold())
             ),
             key=self._triangle_sort_key,
         )
@@ -1391,39 +1330,42 @@ class CatalogueWindow(tk.Toplevel):
         )
         return note_order, normalized
 
-    @classmethod
-    def _triangle_sort_key(cls, triangle: CatalogueTriangle) -> tuple[int, str, str, str, str]:
-        note_order, normalized = cls._template_note_order(triangle.date_code)
+    def _triangle_sort_key(self, triangle: ModelCatalogueTriangle) -> tuple[int, str, str, str, str]:
+        opening, base, light = self._model_triangle_cities(triangle)
+        note_order, normalized = self._template_note_order(triangle.note)
         return (
             note_order,
             normalized,
-            triangle.base_city.name.casefold(),
-            triangle.light_city.name.casefold(),
-            triangle.opening_city.name.casefold(),
+            base.name.casefold(), light.name.casefold(), opening.name.casefold(),
         )
 
-    @classmethod
-    def _template_note_sort_key(cls, triangle: CatalogueTriangle) -> tuple[int, str, str, str, str]:
-        return cls._triangle_sort_key(triangle)
+    def _template_note_sort_key(self, triangle: ModelCatalogueTriangle) -> tuple[int, str, str, str, str]:
+        opening, base, light = self._model_triangle_cities(triangle)
+        note_order, normalized = self._template_note_order(triangle.note)
+        return (
+            note_order,
+            normalized,
+            base.name.casefold(), light.name.casefold(), opening.name.casefold(),
+        )
 
-    def _visible_template_triangles(self) -> list[CatalogueTriangle]:
+    def _visible_template_triangles(self) -> list[ModelCatalogueTriangle]:
         note = self._template_note_filter_var.get()
         base_filter = self._template_base_filter_var.get().strip().casefold()
         light_filter = self._template_light_filter_var.get().strip().casefold()
         return sorted(
             (
-                triangle for triangle in self.triangles
+                triangle for triangle in self.catalogue.iter_triangles()
                 if not triangle.archived
-                and (note == "Tous" or triangle.date_code == note)
-                and (not base_filter or base_filter in triangle.base_city.name.casefold())
-                and (not light_filter or light_filter in triangle.light_city.name.casefold())
+                and (note == "Tous" or triangle.note == note)
+                and (not base_filter or base_filter in self.catalogue.get_city(triangle.base_city_id).name.casefold())
+                and (not light_filter or light_filter in self.catalogue.get_city(triangle.light_city_id).name.casefold())
             ),
             key=self._template_note_sort_key,
         )
 
     def _refresh_template_triangle_tree(self):
         active_notes = sorted(
-            {triangle.date_code for triangle in self.triangles if not triangle.archived},
+            {triangle.note for triangle in self.catalogue.iter_triangles() if not triangle.archived},
             key=self._template_note_order,
         )
         self._template_note_filter.configure(values=("Tous", *active_notes))
@@ -1431,56 +1373,57 @@ class CatalogueWindow(tk.Toplevel):
             self._template_note_filter_var.set("Tous")
         self._template_triangle_tree.delete(*self._template_triangle_tree.get_children())
         self._template_triangle_by_tree_iid = {}
-        grouped: dict[str, list[CatalogueTriangle]] = {}
+        grouped: dict[str, list[ModelCatalogueTriangle]] = {}
         for triangle in self._visible_template_triangles():
-            grouped.setdefault(triangle.base_city.name, []).append(triangle)
+            grouped.setdefault(self.catalogue.get_city(triangle.base_city_id).name, []).append(triangle)
         ordered_bases = sorted(
             grouped,
-            key=lambda base: (min(self._template_note_order(item.date_code) for item in grouped[base]), base.casefold()),
+            key=lambda base: (min(self._template_note_order(item.note) for item in grouped[base]), base.casefold()),
         )
         for base_index, base in enumerate(ordered_bases):
-            notes = sorted({triangle.date_code for triangle in grouped[base]}, key=self._template_note_order)
+            notes = sorted({triangle.note for triangle in grouped[base]}, key=self._template_note_order)
             base_iid = f"template-base-{base_index}"
             self._template_triangle_tree.insert("", tk.END, iid=base_iid, text=f"{base} ({', '.join(notes)})", open=True)
             for light_index, triangle in enumerate(
-                sorted(grouped[base], key=lambda item: (item.light_city.name.casefold(), self._template_note_sort_key(item)))
+                sorted(grouped[base], key=lambda item: (self.catalogue.get_city(item.light_city_id).name.casefold(), self._template_note_sort_key(item)))
             ):
                 leaf_iid = f"{base_iid}-light-{light_index}"
-                self._template_triangle_tree.insert(base_iid, tk.END, iid=leaf_iid, text=triangle.light_city.name)
-                self._template_triangle_by_tree_iid[leaf_iid] = triangle
+                self._template_triangle_tree.insert(base_iid, tk.END, iid=leaf_iid, text=self.catalogue.get_city(triangle.light_city_id).name)
+                self._template_triangle_by_tree_iid[leaf_iid] = triangle.triangle_id
 
-    def _get_selected_template_triangle(self) -> CatalogueTriangle | None:
+    def _get_selected_template_triangle(self) -> str | None:
         selection = self._template_triangle_tree.selection()
         return self._template_triangle_by_tree_iid.get(selection[0]) if selection else None
 
     def _on_template_triangle_selected(self, _event=None):
         """Ne considère comme triangle sélectionné qu'une feuille Lumière."""
-        self._selected_template_triangle = self._get_selected_template_triangle()
+        self._selected_template_triangle_id = self._get_selected_template_triangle()
 
     def _on_template_tree_press(self, event):
         iid = self._template_triangle_tree.identify_row(event.y)
-        triangle = self._template_triangle_by_tree_iid.get(iid)
-        self._template_drag_triangle = triangle
-        self._template_drag_source_iid = iid if triangle is not None else None
-        self._template_drag_start_root = (event.x_root, event.y_root) if triangle is not None else None
+        triangle_id = self._template_triangle_by_tree_iid.get(iid)
+        self._template_drag_triangle_id = triangle_id
+        self._template_drag_source_iid = iid if triangle_id is not None else None
+        self._template_drag_start_root = (event.x_root, event.y_root) if triangle_id is not None else None
         self._template_drag_started = False
 
     def _on_template_tree_drag(self, event):
-        triangle = self._template_drag_triangle
+        triangle_id = self._template_drag_triangle_id
         start = self._template_drag_start_root
-        if triangle is None or start is None:
+        if triangle_id is None or start is None:
             return
         if not self._template_drag_started:
             distance = math.hypot(event.x_root - start[0], event.y_root - start[1])
             if distance < _TEMPLATE_DRAG_THRESHOLD:
                 return
             self._template_drag_started = True
-            if self._selected_template is not None:
-                source_index = self._find_triangle_rank(self._selected_template.ranks, triangle)
+            template = self._get_selected_template()
+            if template is not None:
+                source_index = self._find_triangle_rank(template.triangle_ids_by_rank, triangle_id)
                 if source_index is not None:
                     self._template_drag_source_slot = self._get_template_rank_slot(source_index)
                     self._template_drag_source_slot.set_drop_state("source")
-            self._show_template_drag_ghost(triangle, event.x_root, event.y_root)
+            self._show_template_drag_ghost(triangle_id, event.x_root, event.y_root)
             self._set_template_drag_cursor("hand2")
         self._move_template_drag_ghost(event.x_root, event.y_root)
         slot = self._find_rank_slot_from_widget(self.winfo_containing(event.x_root, event.y_root))
@@ -1490,7 +1433,7 @@ class CatalogueWindow(tk.Toplevel):
             self._restore_template_drag_slot_state(self._template_drag_target_slot)
         self._template_drag_target_slot = slot
         if slot is not None:
-            plan = self._plan_template_drop(triangle, slot)
+            plan = self._plan_template_drop(triangle_id, slot)
             if slot is self._template_drag_source_slot and plan.action == "noop":
                 slot.set_drop_state("source")
             else:
@@ -1500,11 +1443,13 @@ class CatalogueWindow(tk.Toplevel):
         if not self._template_drag_started:
             self._reset_template_drag_state()
             return
-        triangle, slot = self._template_drag_triangle, self._template_drag_target_slot
-        if triangle is not None and slot is not None:
-            plan = self._plan_template_drop(triangle, slot)
+        triangle_id, slot = self._template_drag_triangle_id, self._template_drag_target_slot
+        if triangle_id is not None and slot is not None:
+            plan = self._plan_template_drop(triangle_id, slot)
             if plan.valid and plan.action != "noop":
-                self._selected_template.ranks[:] = plan.preview_ranks
+                template = self._get_selected_template()
+                if template is not None and plan.preview_ranks is not None:
+                    self.catalogue.set_template_ranks(template.template_id, plan.preview_ranks)
                 self._select_template_rank_slot(slot)
                 self._refresh_template_ranks_view()
                 self._mark_dirty()
@@ -1521,8 +1466,8 @@ class CatalogueWindow(tk.Toplevel):
         return None
 
     @staticmethod
-    def _find_triangle_rank(ranks: list[CatalogueTriangle | None], triangle: CatalogueTriangle) -> int | None:
-        return next((index for index, item in enumerate(ranks) if item is triangle), None)
+    def _find_triangle_rank(ranks: list[str | None], triangle_id: str) -> int | None:
+        return next((index for index, item in enumerate(ranks) if item == triangle_id), None)
 
     def _get_template_rank_slot(self, rank_index: int) -> TemplateRankSlot:
         """Retourne le widget correspondant au rang 0-based indiqué."""
@@ -1532,86 +1477,53 @@ class CatalogueWindow(tk.Toplevel):
     def _restore_template_drag_slot_state(self, slot: TemplateRankSlot) -> None:
         slot.set_drop_state("source" if slot is self._template_drag_source_slot else "normal")
 
-    @staticmethod
-    def _validate_template_pair(odd: CatalogueTriangle | None, even: CatalogueTriangle | None) -> str | None:
-        if odd is None or even is None:
-            return None
-        if odd is even:
-            return "Un triangle ne peut pas occuper deux rangs."
-        if odd.base_city is not even.base_city:
-            return "Les deux rangs d'un couple doivent utiliser la même base."
-        return None
-
-    @classmethod
-    def _validate_template_ranks_preview(cls, ranks: list[CatalogueTriangle | None]) -> str | None:
-        seen: set[int] = set()
-        for triangle in ranks:
-            if triangle is not None:
-                if id(triangle) in seen:
-                    return "Un triangle ne peut pas être utilisé dans plusieurs rangs."
-                seen.add(id(triangle))
-        for index in range(0, len(ranks), 2):
-            message = cls._validate_template_pair(ranks[index], ranks[index + 1])
-            if message:
-                return message
-        return None
-
-    @classmethod
-    def _get_template_validation_status(cls, template: CatalogueTemplate) -> TemplateValidationStatus:
-        filled_ranks = sum(triangle is not None for triangle in template.ranks)
-        if filled_ranks < len(template.ranks):
-            return TemplateValidationStatus("Incomplet", filled_ranks)
-        message = cls._validate_template_ranks_preview(template.ranks)
-        if message:
-            return TemplateValidationStatus("Invalide", filled_ranks, message)
-        return TemplateValidationStatus("Valide", filled_ranks)
-
-    def _find_auto_companion(
-        self, triangle: CatalogueTriangle, ranks: list[CatalogueTriangle | None]
-    ) -> CatalogueTriangle | None:
+    def _find_auto_companion(self, triangle_id: str, ranks: list[str | None]) -> str | None:
         """Retourne le compagnon libre d'une base ayant exactement deux triangles actifs."""
-        if self._find_triangle_rank(ranks, triangle) is not None:
+        if self._find_triangle_rank(ranks, triangle_id) is not None:
             return None
+        triangle = self.catalogue.get_triangle(triangle_id)
         candidates = [
-            item for item in self.triangles
-            if not item.archived and item.base_city is triangle.base_city
+            item for item in self.catalogue.iter_triangles()
+            if not item.archived and item.base_city_id == triangle.base_city_id
         ]
-        if len(candidates) != 2 or triangle not in candidates or candidates[0] is candidates[1]:
+        if len(candidates) != 2 or triangle_id not in {item.triangle_id for item in candidates}:
             return None
-        companion = candidates[1] if candidates[0] is triangle else candidates[0]
-        return companion if self._find_triangle_rank(ranks, companion) is None else None
+        companion_id = next(item.triangle_id for item in candidates if item.triangle_id != triangle_id)
+        return companion_id if self._find_triangle_rank(ranks, companion_id) is None else None
 
-    def _plan_template_drop(self, triangle: CatalogueTriangle, target_slot: TemplateRankSlot) -> TemplateDropPlan:
+    def _plan_template_drop(self, triangle_id: str, target_slot: TemplateRankSlot) -> TemplateDropPlan:
         target_index = target_slot.rank_number - 1
-        if self._selected_template is None:
+        template = self._get_selected_template()
+        if template is None:
             return TemplateDropPlan("invalid", False, "Aucun template n'est sélectionné.", None, target_index, None, None)
+        triangle = self.catalogue.get_triangle(triangle_id)
         if triangle.archived:
             return TemplateDropPlan("invalid", False, "Un triangle archivé ne peut pas être utilisé.", None, target_index, None, None)
-        ranks = self._selected_template.ranks
-        source_index = self._find_triangle_rank(ranks, triangle)
-        target_triangle = ranks[target_index]
+        ranks = template.triangle_ids_by_rank
+        source_index = self._find_triangle_rank(ranks, triangle_id)
+        target_triangle_id = ranks[target_index]
         if source_index == target_index:
-            return TemplateDropPlan("noop", True, None, source_index, target_index, target_triangle, list(ranks))
+            return TemplateDropPlan("noop", True, None, source_index, target_index, target_triangle_id, list(ranks))
         preview = list(ranks)
         if source_index is None:
-            preview[target_index] = triangle
-            action = "replace" if target_triangle is not None else "valid"
+            preview[target_index] = triangle_id
+            action = "replace" if target_triangle_id is not None else "valid"
             other_target_index = target_index + 1 if target_index % 2 == 0 else target_index - 1
-            companion = self._find_auto_companion(triangle, ranks)
+            companion = self._find_auto_companion(triangle_id, ranks)
             if companion is not None and ranks[other_target_index] is None:
                 preview[other_target_index] = companion
-        elif target_triangle is None:
+        elif target_triangle_id is None:
             preview[source_index] = None
-            preview[target_index] = triangle
+            preview[target_index] = triangle_id
             action = "move"
         else:
-            preview[source_index] = target_triangle
-            preview[target_index] = triangle
+            preview[source_index] = target_triangle_id
+            preview[target_index] = triangle_id
             action = "swap"
-        message = self._validate_template_ranks_preview(preview)
+        message = self.catalogue.validate_template_ranks(template.template_id, preview)
         if message:
-            return TemplateDropPlan("invalid", False, message, source_index, target_index, target_triangle, None)
-        return TemplateDropPlan(action, True, None, source_index, target_index, target_triangle, preview)
+            return TemplateDropPlan("invalid", False, message, source_index, target_index, target_triangle_id, None)
+        return TemplateDropPlan(action, True, None, source_index, target_index, target_triangle_id, preview)
 
     @staticmethod
     def _template_drop_visual_state(plan: TemplateDropPlan) -> str:
@@ -1625,10 +1537,10 @@ class CatalogueWindow(tk.Toplevel):
         }.get(plan.action, "invalid")
 
     def _validate_template_drop(
-        self, triangle: CatalogueTriangle, target_slot: TemplateRankSlot
+        self, triangle_id: str, target_slot: TemplateRankSlot
     ) -> tuple[bool, str | None, str]:
         """Compatibilité interne pour les appels existants ; délègue au plan atomique."""
-        plan = self._plan_template_drop(triangle, target_slot)
+        plan = self._plan_template_drop(triangle_id, target_slot)
         return plan.valid, plan.message, plan.action
 
     def _reset_template_drag_state(self):
@@ -1639,7 +1551,7 @@ class CatalogueWindow(tk.Toplevel):
             and self._template_drag_source_slot is not self._template_drag_target_slot
         ):
             self._template_drag_source_slot.set_drop_state("normal")
-        self._template_drag_triangle = None
+        self._template_drag_triangle_id = None
         self._template_drag_started = False
         self._template_drag_source_iid = None
         self._template_drag_source_slot = None
@@ -1648,7 +1560,7 @@ class CatalogueWindow(tk.Toplevel):
         self._destroy_template_drag_ghost()
         self._set_template_drag_cursor("")
 
-    def _show_template_drag_ghost(self, triangle: CatalogueTriangle, x_root: int, y_root: int):
+    def _show_template_drag_ghost(self, triangle_id: str, x_root: int, y_root: int):
         self._destroy_template_drag_ghost()
         ghost = tk.Toplevel(self)
         ghost.overrideredirect(True)
@@ -1661,7 +1573,9 @@ class CatalogueWindow(tk.Toplevel):
         content = tk.Frame(ghost, background="#ffffff", padx=8, pady=5)
         content.pack()
         tk.Label(content, image=self._icon_map_pin_plus, background="#ffffff").pack(side=tk.LEFT, padx=(0, 6))
-        tk.Label(content, text=triangle.light_city.name, background="#ffffff", font=(None, 9, "bold")).pack(side=tk.LEFT)
+        triangle = self.catalogue.get_triangle(triangle_id)
+        light_name = self.catalogue.get_city(triangle.light_city_id).name
+        tk.Label(content, text=light_name, background="#ffffff", font=(None, 9, "bold")).pack(side=tk.LEFT)
         self._template_drag_ghost = ghost
         self._move_template_drag_ghost(x_root, y_root)
         ghost.deiconify()
@@ -1684,37 +1598,35 @@ class CatalogueWindow(tk.Toplevel):
 
     def _refresh_triangle_tree(self):
         date_codes = sorted(
-            {triangle.date_code for triangle in self.triangles},
+            {triangle.note for triangle in self.catalogue.iter_triangles()},
             key=self._template_note_order,
         )
         self._triangle_date_filter.configure(values=("Tous", *date_codes))
         if self._triangle_date_filter_var.get() not in {"Tous", *date_codes}:
             self._triangle_date_filter_var.set("Tous")
-        selected = self._selected_triangle
+        selected_id = self._selected_triangle_id
         visible = self._visible_triangles()
         self._triangle_tree.delete(*self._triangle_tree.get_children())
-        self._triangle_by_tree_iid = {}
-        for index, triangle in enumerate(visible):
-            iid = f"triangle-{index}"
-            self._triangle_by_tree_iid[iid] = triangle
+        for triangle in visible:
+            opening, base, light = self._model_triangle_cities(triangle)
             self._triangle_tree.insert(
-                "", tk.END, iid=iid,
-                values=(triangle.date_code, triangle.opening_city.name, triangle.base_city.name, triangle.light_city.name),
+                "", tk.END, iid=triangle.triangle_id,
+                values=(triangle.note, opening.name, base.name, light.name),
             )
-        if selected in visible:
-            iid = next(iid for iid, triangle in self._triangle_by_tree_iid.items() if triangle is selected)
-            self._triangle_tree.selection_set(iid)
-            self._triangle_tree.focus(iid)
-            self._triangle_tree.see(iid)
-        elif selected is not None:
-            self._selected_triangle = None
+        visible_ids = {triangle.triangle_id for triangle in visible}
+        if selected_id in visible_ids:
+            self._triangle_tree.selection_set(selected_id)
+            self._triangle_tree.focus(selected_id)
+            self._triangle_tree.see(selected_id)
+        elif selected_id is not None:
+            self._selected_triangle_id = None
             self._show_triangle_details(None)
-        self._catalogue_notebook.tab(self._triangles_tab, text=f"Triangles ({len(self.triangles)})")
+        self._catalogue_notebook.tab(self._triangles_tab, text=f"Triangles ({len(self.catalogue.triangles)})")
         self._update_triangle_action_buttons()
         self._refresh_template_triangle_tree()
 
     def _update_triangle_action_buttons(self):
-        triangle = self._selected_triangle
+        triangle = self._get_selected_model_triangle()
         state = tk.NORMAL if triangle is not None else tk.DISABLED
         self._triangle_delete_button.configure(state=state)
         self._triangle_archive_button.configure(
@@ -1726,112 +1638,79 @@ class CatalogueWindow(tk.Toplevel):
             "Désarchiver le triangle" if triangle is not None and triangle.archived else "Archiver le triangle",
         )
 
-    def _triangle_editor_validate(
-        self, result: TriangleEditorResult, edited_triangle: CatalogueTriangle | None = None
-    ) -> str | None:
-        requested_triplet = (id(result.opening_city), id(result.base_city), id(result.light_city))
-        for triangle in self.triangles:
-            if triangle is edited_triangle:
-                continue
-            if (id(triangle.opening_city), id(triangle.base_city), id(triangle.light_city)) == requested_triplet:
-                return "Un triangle avec ce triplet Ouverture / Base / Lumière existe déjà."
-        return None
+    def _get_selected_model_triangle(self) -> ModelCatalogueTriangle | None:
+        return self.catalogue.get_triangle(self._selected_triangle_id) if self._selected_triangle_id else None
 
-    def _open_triangle_editor(self, triangle: CatalogueTriangle | None = None):
+    def _open_triangle_editor(self, triangle: ModelCatalogueTriangle | None = None):
         result = TriangleEditorDialog(
             self,
-            self.cities,
-            [item.date_code for item in self.triangles],
+            list(self.catalogue.iter_cities()),
+            [item.note for item in self.catalogue.iter_triangles()],
             triangle=triangle,
-            validate=lambda candidate: self._triangle_editor_validate(candidate, triangle),
         ).show()
         if result is None:
             return
-        if triangle is None:
-            triangle = CatalogueTriangle(
-                result.date_code, result.opening_city, result.base_city, result.light_city, archived=False
-            )
-            self.triangles.append(triangle)
-        else:
-            triangle.date_code = result.date_code
-            triangle.opening_city = result.opening_city
-            triangle.base_city = result.base_city
-            triangle.light_city = result.light_city
-        self._selected_triangle = triangle
+        try:
+            if triangle is None:
+                model_triangle = self.catalogue.add_triangle(result.note, result.opening_city_id, result.base_city_id, result.light_city_id)
+                triangle_id = model_triangle.triangle_id
+            else:
+                self.catalogue.update_triangle(
+                    triangle.triangle_id,
+                    note=result.note,
+                    opening_city_id=result.opening_city_id,
+                    base_city_id=result.base_city_id,
+                    light_city_id=result.light_city_id,
+                )
+                triangle_id = triangle.triangle_id
+        except (ValueError, KeyError) as exc:
+            messagebox.showerror("Triangle", str(exc), parent=self)
+            return
+        self._selected_triangle_id = triangle_id
         self._refresh_triangle_tree()
-        self._show_triangle_details(self._selected_triangle)
+        self._show_triangle_details(self._get_selected_model_triangle())
         self._mark_dirty()
 
     def _add_triangle(self):
         self._open_triangle_editor()
 
     def _edit_selected_triangle(self):
-        if self._selected_triangle is not None:
-            self._open_triangle_editor(self._selected_triangle)
+        triangle = self._get_selected_model_triangle()
+        if triangle is not None:
+            self._open_triangle_editor(triangle)
 
     def _toggle_archive_selected_triangle(self):
-        if self._selected_triangle is None:
+        triangle = self._get_selected_model_triangle()
+        if triangle is None:
             return
-        self._selected_triangle.archived = not self._selected_triangle.archived
+        self.catalogue.update_triangle(
+            triangle.triangle_id, archived=not triangle.archived,
+        )
         self._refresh_triangle_tree()
-        self._show_triangle_details(self._selected_triangle)
+        self._show_triangle_details(self._get_selected_model_triangle())
         self._mark_dirty()
 
     def _delete_selected_triangle(self):
-        if self._selected_triangle is None:
+        triangle = self._get_selected_model_triangle()
+        if triangle is None:
             return
-        self.triangles.remove(self._selected_triangle)
-        self._selected_triangle = None
+        try:
+            self.catalogue.delete_triangle(triangle.triangle_id)
+        except ValueError as exc:
+            messagebox.showerror("Supprimer le triangle", str(exc), parent=self)
+            return
+        self._selected_triangle_id = None
         self._refresh_triangle_tree()
         self._show_triangle_details(None)
         self._mark_dirty()
 
     def _on_triangle_selected(self, _event=None):
         selection = self._triangle_tree.selection()
-        self._selected_triangle = self._triangle_by_tree_iid.get(selection[0]) if selection else None
-        self._show_triangle_details(self._selected_triangle)
+        self._selected_triangle_id = selection[0] if selection else None
+        self._show_triangle_details(self._get_selected_model_triangle())
         self._update_triangle_action_buttons()
 
-    def _triangle_lambert_points(self, triangle: CatalogueTriangle) -> dict[str, tuple[float, float]]:
-        points = {}
-        for key, city in (("O", triangle.opening_city), ("B", triangle.base_city), ("L", triangle.light_city)):
-            x_m, y_m = self._lambert_transformer.transform(city.longitude, city.latitude)
-            points[key] = (float(x_m), float(y_m))
-        return points
-
-    @staticmethod
-    def _distance_km(first: tuple[float, float], second: tuple[float, float]) -> float:
-        return math.dist(first, second) / 1000.0
-
-    @staticmethod
-    def _angle_degrees(vertex: tuple[float, float], first: tuple[float, float], second: tuple[float, float]) -> float:
-        first_vector = (first[0] - vertex[0], first[1] - vertex[1])
-        second_vector = (second[0] - vertex[0], second[1] - vertex[1])
-        first_length = math.hypot(*first_vector)
-        second_length = math.hypot(*second_vector)
-        if first_length == 0 or second_length == 0:
-            return 0.0
-        cosine = (first_vector[0] * second_vector[0] + first_vector[1] * second_vector[1]) / (first_length * second_length)
-        return math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
-
-    def _triangle_geometry(self, triangle: CatalogueTriangle) -> tuple[dict[str, float], dict[str, float], str]:
-        points = self._triangle_lambert_points(triangle)
-        distances = {
-            "OB": self._distance_km(points["O"], points["B"]),
-            "BL": self._distance_km(points["B"], points["L"]),
-            "LO": self._distance_km(points["L"], points["O"]),
-        }
-        angles = {
-            "O": self._angle_degrees(points["O"], points["B"], points["L"]),
-            "B": self._angle_degrees(points["B"], points["O"], points["L"]),
-            "L": self._angle_degrees(points["L"], points["O"], points["B"]),
-        }
-        cross_product = ((points["B"][0] - points["O"][0]) * (points["L"][1] - points["O"][1])
-                         - (points["B"][1] - points["O"][1]) * (points["L"][0] - points["O"][0]))
-        orientation = "Antihoraire" if cross_product > 0 else "Horaire"
-        return distances, angles, orientation
-
-    def _show_triangle_details(self, triangle: CatalogueTriangle | None):
+    def _show_triangle_details(self, triangle: ModelCatalogueTriangle | None):
         if triangle is None:
             self._triangle_distances_label.configure(text="Distances")
             self._triangle_angles_label.configure(text="Angles")
@@ -1839,16 +1718,26 @@ class CatalogueWindow(tk.Toplevel):
             self._triangle_map_view.set_markers(())
             self._triangle_map_view.set_polylines(())
             return
-        distances, angles, orientation = self._triangle_geometry(triangle)
+        opening, base, light = self._model_triangle_cities(triangle)
+        try:
+            geometry = self.catalogue.get_triangle_geometry(triangle.triangle_id)
+        except ValueError:
+            self._triangle_distances_label.configure(text="Distances : géométrie invalide")
+            self._triangle_angles_label.configure(text="Angles : géométrie invalide")
+            self._triangle_status_label.configure(text=f"Statut : {'Archivé' if triangle.archived else 'Actif'}")
+            self._triangle_map_view.set_markers(())
+            self._triangle_map_view.set_polylines(())
+            return
+        orientation = {"CW": "Horaire", "CCW": "Antihoraire"}[geometry.orientation]
         self._triangle_distances_label.configure(
-            text=f"Distances : OB={distances['OB']:.1f} km    BL={distances['BL']:.1f} km    LO={distances['LO']:.1f} km"
+            text=f"Distances : OB={geometry.distance_ob_km:.1f} km    BL={geometry.distance_bl_km:.1f} km    LO={geometry.distance_ol_km:.1f} km"
         )
         self._triangle_angles_label.configure(
-            text=(f"Angles : O={angles['O']:.1f}°    B={angles['B']:.1f}°    L={angles['L']:.1f}°"
+            text=(f"Angles : O={geometry.angle_o_deg:.1f}°    B={geometry.angle_b_deg:.1f}°    L={geometry.angle_l_deg:.1f}°"
                   f"    Orientation : {orientation}")
         )
         self._triangle_status_label.configure(text=f"Statut : {'Archivé' if triangle.archived else 'Actif'}")
-        cities = (triangle.opening_city, triangle.base_city, triangle.light_city)
+        cities = (opening, base, light)
         coordinates = tuple((city.latitude, city.longitude) for city in cities)
         marker_styles = (
             ("O", "#000000", "#000000"),
@@ -1857,14 +1746,14 @@ class CatalogueWindow(tk.Toplevel):
         )
         self._triangle_map_view.set_markers(
             GeoMapMarker(
-                id(city),
+                city.city_id,
                 city.latitude,
                 city.longitude,
                 city.name,
                 always_show_label=True,
                 fill_color=fill_color,
                 outline_color=outline_color,
-                tooltip=f"{role} : {city.name}\nAngle : {angles[role]:.1f}°",
+                tooltip=f"{role} : {city.name}\nAngle : {getattr(geometry, f'angle_{role.lower()}_deg'):.1f}°",
             )
             for city, (role, fill_color, outline_color) in zip(cities, marker_styles)
         )
@@ -1874,30 +1763,30 @@ class CatalogueWindow(tk.Toplevel):
 
     def _visible_cities(self) -> list[CatalogueCity]:
         search = self._search_var.get().strip().casefold()
-        return [city for city in self.cities if (self._show_archived_var.get() or not city.archived)
+        return [city for city in self.catalogue.iter_cities() if (self._show_archived_var.get() or not city.archived)
                 and (not search or search in city.name.casefold())]
 
     def _refresh_city_list(self):
-        selected, visible = self._selected_city, self._visible_cities()
+        selected_id, visible = self._selected_city_id, self._visible_cities()
         self._city_listbox.delete(0, tk.END)
         for city in visible:
             self._city_listbox.insert(tk.END, city.name)
-        if selected in visible:
-            index = visible.index(selected)
+        if any(city.city_id == selected_id for city in visible):
+            index = next(index for index, city in enumerate(visible) if city.city_id == selected_id)
             self._city_listbox.selection_set(index)
             self._city_listbox.activate(index)
-        elif selected is not None:
-            self._selected_city = None
+        elif selected_id is not None:
+            self._selected_city_id = None
             self._load_selected_city()
-        self._catalogue_notebook.tab(self._cities_tab, text=f"Villes ({len(self.cities)})")
+        self._catalogue_notebook.tab(self._cities_tab, text=f"Villes ({len(self.catalogue.cities)})")
         self._map_view.set_markers(
-            GeoMapMarker(id(city), city.latitude, city.longitude, city.name) for city in self.cities
+            GeoMapMarker(city.city_id, city.latitude, city.longitude, city.name) for city in self.catalogue.iter_cities()
         )
-        self._map_view.set_selected_marker(id(self._selected_city) if self._selected_city else None)
+        self._map_view.set_selected_marker(self._selected_city_id)
         self._update_city_action_buttons()
 
     def _update_city_action_buttons(self):
-        city = self._selected_city
+        city = self.catalogue.get_city(self._selected_city_id) if self._selected_city_id else None
         state = tk.NORMAL if city is not None else tk.DISABLED
         self._city_delete_button.configure(state=state)
         self._city_archive_button.configure(
@@ -1911,19 +1800,19 @@ class CatalogueWindow(tk.Toplevel):
 
     def _on_city_selected(self, _event=None):
         selection, visible = self._city_listbox.curselection(), self._visible_cities()
-        self._selected_city = visible[selection[0]] if selection else None
+        self._selected_city_id = visible[selection[0]].city_id if selection else None
         self._load_selected_city()
-        self._map_view.set_selected_marker(id(self._selected_city) if self._selected_city else None, recenter=True)
+        self._map_view.set_selected_marker(self._selected_city_id, recenter=True)
         self._update_city_action_buttons()
 
     def _on_map_marker_selected(self, marker_id):
-        self._selected_city = next((city for city in self.cities if id(city) == marker_id), None)
+        self._selected_city_id = marker_id if marker_id in self.catalogue.cities else None
         self._refresh_city_list()
         self._load_selected_city()
 
     def _load_selected_city(self):
         self._updating_detail = True
-        city = self._selected_city
+        city = self.catalogue.get_city(self._selected_city_id) if self._selected_city_id else None
         self._name_var.set(city.name if city else "")
         self._latitude_editor.set_decimal(city.latitude if city else 0.0)
         self._longitude_editor.set_decimal(city.longitude if city else 0.0)
@@ -1931,13 +1820,20 @@ class CatalogueWindow(tk.Toplevel):
         self._updating_detail = False
 
     def _save_detail_changes(self, *_args):
-        if self._updating_detail or self._selected_city is None:
+        if self._updating_detail or self._selected_city_id is None:
             return
-        city = self._selected_city
-        city.name = self._name_var.get().strip()
-        city.latitude = self._latitude_editor.get_decimal()
-        city.longitude = self._longitude_editor.get_decimal()
-        city.archived = bool(self._archived_var.get())
+        try:
+            self.catalogue.update_city(
+                self._selected_city_id,
+                name=self._name_var.get().strip(),
+                latitude=self._latitude_editor.get_decimal(),
+                longitude=self._longitude_editor.get_decimal(),
+                archived=bool(self._archived_var.get()),
+            )
+        except (ValueError, KeyError) as exc:
+            messagebox.showerror("Ville", str(exc), parent=self)
+            self._load_selected_city()
+            return
         self._refresh_city_list()
         self._mark_dirty()
 
@@ -1952,23 +1848,29 @@ class CatalogueWindow(tk.Toplevel):
         self._save_detail_changes()
 
     def _add_city(self):
-        self._selected_city = CatalogueCity("Nouvelle ville", 0.0, 0.0)
-        self.cities.append(self._selected_city)
+        city = self.catalogue.add_city("Nouvelle ville", 0.0, 0.0)
+        self._selected_city_id = city.city_id
         self._refresh_city_list()
         self._load_selected_city()
         self._mark_dirty()
 
     def _archive_selected_city(self):
-        if self._selected_city is not None:
-            self._selected_city.archived = not self._selected_city.archived
+        if self._selected_city_id is not None:
+            city = self.catalogue.get_city(self._selected_city_id)
+            self.catalogue.update_city(city.city_id, archived=not city.archived)
             self._refresh_city_list()
             self._load_selected_city()
             self._mark_dirty()
 
     def _delete_selected_city(self):
-        if self._selected_city is not None:
-            self.cities.remove(self._selected_city)
-            self._selected_city = None
+        if self._selected_city_id is not None:
+            city_id = self._selected_city_id
+            try:
+                self.catalogue.delete_city(city_id)
+            except ValueError as exc:
+                messagebox.showerror("Supprimer la ville", str(exc), parent=self)
+                return
+            self._selected_city_id = None
             self._refresh_city_list()
             self._load_selected_city()
             self._mark_dirty()
