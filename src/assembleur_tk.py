@@ -67,6 +67,9 @@ from src.assembleur_projection import (
     getManualProjectionElementIds,
 )
 from src.assembleur_catalogue_window import CatalogueWindow
+from src.assembleur_catalogue import Catalogue
+from src.assembleur_catalogue_io import load_catalogue
+from src.assembleur_scenario import create_default_scenario_hypothesis
 
 
 EPS_WORLD = 1e-6
@@ -620,6 +623,14 @@ class TriangleViewerManual(
         self.config_path = os.path.join(self.config_dir, "assembleur_config.json")
         self.appConfig: Dict = {}
         self.loadAppConfig()
+        self.catalogue_path = os.path.join(self.config_dir, "catalogue.json")
+        self._catalogue_load_error: str | None = None
+        try:
+            self.catalogue = load_catalogue(self.catalogue_path) if os.path.exists(self.catalogue_path) else Catalogue()
+        except (OSError, ValueError, TypeError) as exc:
+            # Le démarrage reste compatible avec une installation sans catalogue valide.
+            self.catalogue = Catalogue()
+            self._catalogue_load_error = str(exc)
         self.triangleFiles = _assembleur_io.TriangleFileService(self)
 
         # === UI : persistance des toggles de visualisation (dico + compas) ===
@@ -667,6 +678,7 @@ class TriangleViewerManual(
             source_type="manual",
             algo_id=None,
             tri_ids=[],
+            hypothesis=self._create_manual_scenario_hypothesis(),
         )
         manual.last_drawn = self._last_drawn
         manual.view_state = self._capture_view_state()
@@ -1340,6 +1352,15 @@ class TriangleViewerManual(
         self.autoLoadBackgroundAtStartup()
         self.autoLoadBalisesAtStartup()
 
+    def _create_manual_scenario_hypothesis(self, *, report_error: bool = False):
+        """Instancie l'hypothèse propriétaire d'un nouveau scénario manuel."""
+        try:
+            return create_default_scenario_hypothesis(self.catalogue)
+        except ValueError as exc:
+            if report_error:
+                messagebox.showerror("Nouveau scénario", str(exc), parent=self)
+            return None
+
     def _simulation_get_tri_ids_first_n(self, n: int) -> List[int]:
         """Retourne les rangs catalogue du scénario, dans leur ordre métier."""
         scen = self._get_active_scenario()
@@ -1368,7 +1389,11 @@ class TriangleViewerManual(
         if removed:
             self.auto_rotation_state = None
         if not self.scenarios:
-            manual = ScenarioAssemblage(name="Scénario manuel", source_type="manual")
+            manual = ScenarioAssemblage(
+                name="Scénario manuel",
+                source_type="manual",
+                hypothesis=self._create_manual_scenario_hypothesis(),
+            )
             self._attach_catalog_to_world(manual.topoWorld)
             self.scenarios = [manual]
         self.active_scenario_index = min(self.active_scenario_index, len(self.scenarios) - 1)
@@ -1557,8 +1582,10 @@ class TriangleViewerManual(
 
         window = CatalogueWindow(
             self,
+            catalogue=self.catalogue,
             maps_dir=self.maps_dir,
-            catalogue_path=os.path.join(self.config_dir, "catalogue.json"),
+            catalogue_path=self.catalogue_path,
+            on_catalogue_applied=self._publish_catalogue,
         )
         self._catalogue_window = window
 
@@ -1569,6 +1596,10 @@ class TriangleViewerManual(
                 self._catalogue_window = None
 
         window.protocol("WM_DELETE_WINDOW", _on_close)
+
+    def _publish_catalogue(self, catalogue: Catalogue) -> None:
+        """Publie une version appliquée du Catalogue pour les futurs scénarios."""
+        self.catalogue = catalogue
 
     # ---------- Icônes ----------
     def _load_icon(self, filename: str):
@@ -4548,12 +4579,16 @@ class TriangleViewerManual(
         # Nom par défaut : "Scénario N" (N = nombre total de scénarios après ajout)
         new_index = len(self.scenarios)  # l'index qu'il prendra une fois append
         name = f"Scénario {new_index + 1}"
+        hypothesis = self._create_manual_scenario_hypothesis(report_error=True)
+        if hypothesis is None:
+            return
 
         scen = ScenarioAssemblage(
             name=name,
             source_type="manual",
             algo_id=None,
             tri_ids=[],
+            hypothesis=hypothesis,
         )
         self._attach_catalog_to_world(scen.topoWorld)
         # Scénario vide : nouvelles structures indépendantes
@@ -4618,6 +4653,7 @@ class TriangleViewerManual(
             source_type=src.source_type,
             algo_id=src.algo_id,
             tri_ids=list(src.tri_ids),
+            hypothesis=src.hypothesis.clone() if src.hypothesis is not None else None,
         )
         # copies indépendantes
         dup.last_drawn = copy.deepcopy(src.last_drawn)

@@ -6,11 +6,12 @@ from dataclasses import dataclass
 import csv
 import math
 from pathlib import Path
+from typing import Callable
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import filedialog, messagebox, ttk
 from src.assembleur_catalogue import Catalogue, CatalogueCity, CatalogueTriangle as ModelCatalogueTriangle, HypothesisTemplate
-from src.assembleur_catalogue_io import load_catalogue, save_catalogue
+from src.assembleur_catalogue_io import save_catalogue
 
 from src.assembleur_dms_editor import DmsCoordinateEditor
 from src.assembleur_geo_map_view import CalibratedGeoMap, GeoMapMarker, GeoMapPolyline, GeoMapView
@@ -324,18 +325,24 @@ class CatalogueWindow(tk.Toplevel):
     _TEMPLATE_CSV_HEADER = ("Rang", "Ouverture", "Base", "Lumiere")
     _TEMPLATE_NOTE_ORDER = {"do": 0, "si": 1, "la": 2, "sol": 3, "fa": 4, "mi": 5, "re": 6, "zone": 7}
 
-    def __init__(self, parent, *, maps_dir: str | Path | None = None, catalogue_path: str | Path | None = None):
+    def __init__(
+        self,
+        parent,
+        *,
+        catalogue: Catalogue,
+        maps_dir: str | Path | None = None,
+        catalogue_path: str | Path | None = None,
+        on_catalogue_applied: Callable[[Catalogue], None] | None = None,
+    ):
         super().__init__(parent)
         self.title("Gestion du catalogue")
         self.geometry("1000x700")
         self.minsize(760, 500)
         self._maps_dir = maps_dir
         self._catalogue_path = Path(catalogue_path) if catalogue_path is not None else Path(__file__).resolve().parent.parent / "catalogue.json"
-        if self._catalogue_path.exists():
-            self.catalogue = load_catalogue(self._catalogue_path)
-        else:
-            self.catalogue = Catalogue()
-            self.catalogue.add_template("Ordre principal")
+        self._on_catalogue_applied = on_catalogue_applied
+        # Copie transactionnelle : le Catalogue runtime du viewer reste intact jusqu'à Appliquer.
+        self.catalogue = catalogue.clone()
         self._validated_catalogue = self.catalogue.clone()
         self._selected_city_id: str | None = None
         self._selected_triangle_id: str | None = None
@@ -1082,6 +1089,8 @@ class CatalogueWindow(tk.Toplevel):
         except (OSError, ValueError, TypeError) as exc:
             messagebox.showerror("Catalogue", str(exc), parent=self)
             return
+        if self._on_catalogue_applied is not None:
+            self._on_catalogue_applied(self.catalogue.clone())
         self._validated_catalogue = self.catalogue.clone()
         self._set_dirty(False)
 

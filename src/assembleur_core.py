@@ -4,7 +4,7 @@ Noyau 'pur' (sans Tk) : géométrie + structures de base.
 
 import math
 import datetime as _dt
-from typing import Optional, List, Dict
+from typing import TYPE_CHECKING, Optional, List, Dict
 import re
 import hashlib
 
@@ -15,6 +15,9 @@ from shapely.geometry import Polygon as _ShPoly, LineString as _ShLine
 from shapely.ops import unary_union as _sh_union
 
 import xml.etree.ElementTree as _ET
+
+if TYPE_CHECKING:
+    from src.assembleur_scenario import ScenarioHypothesis
 
 
 def _tri_shape(P: Dict[str, np.ndarray]):
@@ -234,7 +237,7 @@ class ScenarioAssemblage:
     """
     def __init__(self, name: str, source_type: str = "manual", algo_id: Optional[str] = None,
                  tri_ids: Optional[List[int]] = None, first_triangle_id: Optional[int] = None,
-                 traversal_direction: Optional[str] = None):
+                 traversal_direction: Optional[str] = None, hypothesis: "ScenarioHypothesis | None" = None):
         self.name: str = name
         self.source_type: str = source_type      # "manual" ou "auto"
         self.algo_id: Optional[str] = algo_id    # id de l'algo (pour les auto)
@@ -249,6 +252,9 @@ class ScenarioAssemblage:
         self.traversal_direction: Optional[str] = (
             traversal_direction.lower() if traversal_direction else None
         )
+        # TODO CAT-SCEN: supprimer la tolérance hypothesis=None lorsque les anciens XML
+        # et les scénarios automatiques auront été migrés.
+        self.hypothesis: "ScenarioHypothesis | None" = hypothesis
         # Chronologie de construction des éléments du scénario automatique.
         # Cette information ne décrit ni la topologie ni la projection graphique.
         self.orderedElementIds: List[str] = []

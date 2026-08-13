@@ -19,6 +19,9 @@ import numpy as np
 import pandas as pd
 from math import hypot, acos, degrees
 
+from src.assembleur_catalogue import Catalogue
+from src.assembleur_scenario import ScenarioHypothesis
+
 CFG_KEY_CHEMINS_BEACON_REF = "cheminsBeaconRefId"
 
 
@@ -391,6 +394,77 @@ def setAppConfigValue(viewer, key: str, value):
         _ioWarn(viewer, f"setAppConfigValue(key={key!r})", e)
 
 
+def _save_scenario_hypothesis(
+    root: ET.Element,
+    hypothesis: ScenarioHypothesis,
+    catalogue: Catalogue,
+) -> None:
+    """Sérialise une hypothèse de scénario déjà  validée."""
+    hypothesis.validate(catalogue)
+
+    hypothesis_el = ET.SubElement(root, "hypothesis")
+    if hypothesis.source_template_id is not None:
+        hypothesis_el.set("sourceTemplateId", hypothesis.source_template_id)
+
+    for rank, triangle_id in enumerate(hypothesis.triangle_ids_by_rank, start=1):
+        ET.SubElement(
+            hypothesis_el,
+            "rank",
+            {"number": str(rank), "triangleId": triangle_id},
+        )
+
+
+def _load_scenario_hypothesis(
+    root: ET.Element,
+    catalogue: Catalogue,
+) -> ScenarioHypothesis | None:
+    """Construit et valide l'hypothèse exclusivement depuis le XML v5."""
+    hypothesis_el = root.find("hypothesis")
+    if hypothesis_el is None:
+        return None
+
+    ranks_by_number: list[str | None] = [None] * 32
+    rank_elements = hypothesis_el.findall("rank")
+    if len(rank_elements) != 32:
+        raise ValueError(
+            "L'hypothèse du scénario doit contenir exactement 32 rangs XML."
+        )
+
+    for rank_el in rank_elements:
+        number_raw = rank_el.get("number")
+        triangle_id_raw = rank_el.get("triangleId")
+        if number_raw is None:
+            raise ValueError("Un rang de l'hypothèse du scénario n'a pas d'attribut number.")
+        if triangle_id_raw is None:
+            raise ValueError("Un rang de l'hypothèse du scénario n'a pas d'attribut triangleId.")
+        try:
+            number = int(number_raw)
+        except ValueError as exc:
+            raise ValueError(
+                f"Numéro de rang d'hypothèse invalide : {number_raw!r}."
+            ) from exc
+        if not 1 <= number <= 32:
+            raise ValueError(f"Numéro de rang d'hypothèse hors plage : {number}.")
+        if ranks_by_number[number - 1] is not None:
+            raise ValueError(f"Rang d'hypothèse dupliqué : {number}.")
+
+        triangle_id = triangle_id_raw.strip()
+        if not triangle_id:
+            raise ValueError(f"Le rang d'hypothèse {number} a un triangleId vide.")
+        ranks_by_number[number - 1] = triangle_id
+
+    if any(triangle_id is None for triangle_id in ranks_by_number):
+        raise ValueError("L'hypothèse du scénario contient un rang absent.")
+
+    source_template_id = str(hypothesis_el.get("sourceTemplateId", "") or "").strip() or None
+    hypothesis = ScenarioHypothesis(
+        triangle_ids_by_rank=[triangle_id for triangle_id in ranks_by_number if triangle_id is not None],
+        source_template_id=source_template_id,
+    )
+    hypothesis.validate(catalogue)
+    return hypothesis
+
+
 def saveScenarioXml(viewer, path: str):
     """
     Sauvegarde XML Core-only v5 :
@@ -399,6 +473,15 @@ def saveScenarioXml(viewer, path: str):
       - snapshot physique TopologyWorld et états UI persistants.
     """
     scen = viewer._get_active_scenario()
+    hypothesis = getattr(scen, "hypothesis", None)
+    catalogue = None
+    if hypothesis is not None:
+        catalogue = getattr(viewer, "catalogue", None)
+        if catalogue is None:
+            raise ValueError(
+                "saveScenarioXml: un Catalogue est requis pour valider l'hypothèse du scénario."
+            )
+        hypothesis.validate(catalogue)
     world = scen.topoWorld
 
     topo_tx_orientation = world._topoTxOrientation
@@ -416,6 +499,8 @@ def saveScenarioXml(viewer, path: str):
     })
     topo_snapshot_el = ET.SubElement(root, "topoSnapshot", {"encoding": "json"})
     topo_snapshot_el.text = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
+    if hypothesis is not None:
+        _save_scenario_hypothesis(root, hypothesis, catalogue)
     world.topologyChemins._saveToXml(root)
     # source
     ET.SubElement(root, "source", {
@@ -544,6 +629,17 @@ def loadScenarioXml(viewer, path: str):
     scen = viewer._get_active_scenario()
     if scen is None:
         raise ValueError("loadScenarioXml: active scenario is required for v5 load.")
+
+    # L'hypothèse est entièrement validée avant toute mutation du scénario.
+    # Les XML v5 historiques sans cette section restent volontairement acceptés.
+    loaded_hypothesis = None
+    if root.find("hypothesis") is not None:
+        catalogue = getattr(viewer, "catalogue", None)
+        if catalogue is None:
+            raise ValueError(
+                "loadScenarioXml: un Catalogue est requis pour restaurer l'hypothèse du scénario."
+            )
+        loaded_hypothesis = _load_scenario_hypothesis(root, catalogue)
 
     # clockRef optional: clear the runtime reference when it is incomplete.
     clock_ref_el = root.find("clockRef")
@@ -753,6 +849,7 @@ def loadScenarioXml(viewer, path: str):
     # The XML contains no projection. A v5 load is always editable manually.
     scen.topoScenarioId = sid
     scen.topoWorld = world
+    scen.hypothesis = loaded_hypothesis
     scen.source_type = "manual"
     scen.algo_id = None
     scen.tri_ids = []
