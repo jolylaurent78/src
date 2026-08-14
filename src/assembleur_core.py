@@ -3199,15 +3199,22 @@ class TopologyWorld:
         anchor.beacon_id = self._require_beacon_id(beacon_id)
         return anchor
 
-    def _reconcile_group_anchors(self) -> None:
-        """Canonise les références d'ancres et retire celles dont le groupe a disparu."""
-        live_group_ids = set(self.getLiveGroupIds())
+    def reconcileGroupAnchorsByNode(self) -> None:
+        """Recalcule le groupe dérivé de chaque ancre depuis son nœud stable.
+
+        Une reconstruction d'attachments peut scinder ou recomposer les
+        composantes. ``group_id`` n'est donc jamais une identité d'ancre : le
+        seul rattachement durable est ``node_id``.
+        """
         for anchor_id, anchor in list(self.groupAnchors.items()):
-            canonical_group_id = self.find_group(anchor.group_id)
-            if canonical_group_id not in live_group_ids:
+            if anchor.node_id not in self._node_parent:
                 self.groupAnchors.pop(anchor_id, None)
                 continue
-            anchor.group_id = canonical_group_id
+            anchor.group_id = self.getGroupIdFromConceptNode(anchor.node_id)
+
+    def _reconcile_group_anchors(self) -> None:
+        """Alias interne conservé pour les appels Core existants."""
+        self.reconcileGroupAnchorsByNode()
 
     def applyGroupAnchor(self, anchor_id: str) -> None:
         """Translate rigidement le groupe pour superposer son nœud à sa balise."""

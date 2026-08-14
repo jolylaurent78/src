@@ -195,3 +195,56 @@ def test_scenario_activation_rebuilds_the_new_active_projection_from_core():
     assert second.last_drawn is viewer._last_drawn
     assert second.last_drawn is not stale_second_cache
     _assert_projection_matches_world(second_world, second.last_drawn)
+
+
+def test_scenario_activation_suppresses_map_redraw_until_new_projection_is_ready():
+    first_world, _first_group = _world_with_three_elements()
+    second_world = TopologyWorld()
+    second_world.add_element_as_new_group(_element("T04", 4))
+    first = ScenarioAssemblage("premier", source_type="manual")
+    second = ScenarioAssemblage("second", source_type="manual")
+    first.topoWorld = first_world
+    second.topoWorld = second_world
+    first.last_drawn = buildLastDrawnFromTopology(
+        topologyWorld=first_world, elementIds=["T01", "T02", "T03"]
+    )
+    second.last_drawn = []
+
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.scenarios = [first, second]
+    viewer.active_scenario_index = 0
+    viewer._last_drawn = first.last_drawn
+    viewer._discard_manual_move_preview = lambda: False
+    viewer._discard_manual_rotate_preview = lambda: False
+    viewer._discard_auto_transform_preview = lambda: False
+    viewer._attach_beacon_resolver_to_world = lambda _world: None
+    viewer._capture_view_state = lambda: {}
+    viewer._capture_map_state = lambda: {}
+    map_redraw_flags = []
+
+    def apply_map_state(_state, *, persist, redraw):
+        map_redraw_flags.append(redraw)
+        if redraw:
+            viewer._redraw_from(viewer._last_drawn)
+
+    def redraw(entries):
+        active_ids = set(viewer._get_active_scenario().topoWorld.elements)
+        assert {entry["topoElementId"] for entry in entries} <= active_ids
+
+    viewer._apply_map_state = apply_map_state
+    viewer._apply_view_state = lambda *_args, **_kwargs: None
+    viewer._rebuild_triangle_listbox_from_core = lambda: None
+    viewer._invalidate_pick_cache = lambda: None
+    viewer._redraw_from = redraw
+    viewer._redraw_overlay_only = lambda: None
+    viewer.refreshCheminTreeView = lambda: None
+    viewer._update_compass_ctx_menu_and_dico_state = lambda: None
+    viewer._ui_hypothesis_editor_button = SimpleNamespace(configure=lambda **_kwargs: None)
+    viewer.auto_fit_scenario_select = SimpleNamespace(get=lambda: False)
+    viewer.status = SimpleNamespace(config=lambda **_kwargs: None)
+    viewer.scenario_tree = None
+
+    viewer._set_active_scenario(1)
+
+    assert map_redraw_flags == [False]
+    assert [entry["topoElementId"] for entry in viewer._last_drawn] == ["T04"]

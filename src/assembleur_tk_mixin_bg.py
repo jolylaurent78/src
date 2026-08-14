@@ -267,7 +267,7 @@ class TriangleViewerBackgroundMapMixin:
     # Fond SVG en coordonnées monde
     # =========================
 
-    def _bg_clear(self, persist: bool = True):
+    def _bg_clear(self, persist: bool = True, redraw: bool = True):
         self._bg = None
         self._bg_base_pil = None
         self._bg_photo = None
@@ -277,7 +277,8 @@ class TriangleViewerBackgroundMapMixin:
 
         if persist:
             self._persistBackgroundConfig()
-        self._redraw_from(self._last_drawn)
+        if redraw:
+            self._redraw_from(self._last_drawn)
 
     def _bg_try_load_calibration(self, svg_path: str):
         """Charge data/maps/<carte>.json si présent (calibration 3 points).
@@ -346,7 +347,13 @@ class TriangleViewerBackgroundMapMixin:
             return
         self._bg_set_map(path)
 
-    def _bg_set_map(self, path: str, rect_override: dict | None = None, persist: bool = True):
+    def _bg_set_map(
+        self,
+        path: str,
+        rect_override: dict | None = None,
+        persist: bool = True,
+        redraw: bool = True,
+    ):
         """Charge une carte (fond) depuis un fichier .svg ou une image raster (.png/.jpg/.jpeg).
 
         - SVG : rasterisation (svglib/reportlab/pypdfium2) comme avant
@@ -356,16 +363,32 @@ class TriangleViewerBackgroundMapMixin:
         """
         ext = os.path.splitext(str(path))[1].lower()
         if ext == ".svg":
-            return self._bg_set_svg(path, rect_override=rect_override, persist=persist)
+            return self._bg_set_svg(
+                path,
+                rect_override=rect_override,
+                persist=persist,
+                redraw=redraw,
+            )
         if ext in (".png", ".jpg", ".jpeg"):
-            return self._bg_set_png(path, rect_override=rect_override, persist=persist)
+            return self._bg_set_png(
+                path,
+                rect_override=rect_override,
+                persist=persist,
+                redraw=redraw,
+            )
 
         messagebox.showerror(
             "Format non supporté",
             f"Carte non supportée: {path}\nFormats acceptés: .svg, .png, .jpg, .jpeg"
         )
 
-    def _bg_set_png(self, png_path: str, rect_override: dict | None = None, persist: bool = True):
+    def _bg_set_png(
+        self,
+        png_path: str,
+        rect_override: dict | None = None,
+        persist: bool = True,
+        redraw: bool = True,
+    ):
         if (Image is None or ImageTk is None):
             messagebox.showerror(
                 "Dépendances manquantes",
@@ -416,7 +439,8 @@ class TriangleViewerBackgroundMapMixin:
                 if persist:
                     self._persistBackgroundConfig()
 
-                self._redraw_from(self._last_drawn)
+                if redraw:
+                    self._redraw_from(self._last_drawn)
 
                 if persist:
                     print(f"[Fond image] Fichier chargé: {os.path.basename(str(png_path))} ({png_path})")
@@ -464,9 +488,16 @@ class TriangleViewerBackgroundMapMixin:
             self._persistBackgroundConfig()
             print(f"[Fond PNG] Fichier chargé: {os.path.basename(str(png_path))} ({png_path})")
 
-        self._redraw_from(self._last_drawn)
+        if redraw:
+            self._redraw_from(self._last_drawn)
 
-    def _bg_set_svg(self, svg_path: str, rect_override: dict | None = None, persist: bool = True):
+    def _bg_set_svg(
+        self,
+        svg_path: str,
+        rect_override: dict | None = None,
+        persist: bool = True,
+        redraw: bool = True,
+    ):
         if (Image is None or ImageTk is None or svg2rlg is None
                 or renderPDF is None or _rl_canvas is None or pdfium is None):
             messagebox.showerror(
@@ -497,7 +528,8 @@ class TriangleViewerBackgroundMapMixin:
 
                 if persist:
                     self._persistBackgroundConfig()
-                self._redraw_from(self._last_drawn)
+                if redraw:
+                    self._redraw_from(self._last_drawn)
                 return
 
         # Position/taille initiale : calée sur bbox des triangles si dispo, sinon vue écran
@@ -547,7 +579,8 @@ class TriangleViewerBackgroundMapMixin:
             if self._bg_base_pil is not None:
                 print(f"[Fond SVG] Fichier chargé: {os.path.basename(str(svg_path))} ({svg_path})")
 
-        self._redraw_from(self._last_drawn)
+        if redraw:
+            self._redraw_from(self._last_drawn)
 
     def _bg_parse_aspect(self, svg_path: str) -> float:
         s = open(svg_path, "r", encoding="utf-8", errors="ignore").read(8192)

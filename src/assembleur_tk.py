@@ -73,6 +73,7 @@ from src.assembleur_scenario import (
     ScenarioHypothesis,
     ScenarioHypothesisChangePlan,
     analyze_hypothesis_change,
+    apply_hypothesis_change_to_manual_scenario,
     create_default_scenario_hypothesis,
     materialize_catalogue_triangle,
 )
@@ -1462,9 +1463,11 @@ class TriangleViewerManual(
         if scenario.hypothesis is None:
             raise ValueError("ScenarioHypothesis absente du scénario manuel actif")
         draft.validate(self.catalogue)
+        if scenario.topoWorld.elements:
+            return apply_hypothesis_change_to_manual_scenario(
+                self.catalogue, scenario, draft
+            ).plan
         plan = analyze_hypothesis_change(self.catalogue, scenario.hypothesis, draft)
-        if scenario.topoWorld.elements and plan.global_impact is not HypothesisImpact.NONE:
-            return plan
         scenario.hypothesis = draft.clone()
         return plan
 
@@ -1487,10 +1490,9 @@ class TriangleViewerManual(
         if draft is None:
             return
         plan = self._commit_manual_hypothesis_draft(scenario, draft)
-        if scenario.topoWorld.elements and plan.global_impact is not HypothesisImpact.NONE:
-            messagebox.showwarning("Hypothèse du scénario", self._format_hypothesis_change_plan(plan), parent=self)
-            return
+        self._rebuild_active_projection_from_core()
         self._rebuild_triangle_listbox_from_core()
+        self._redraw_from(self._last_drawn)
         self.status.config(text=f"Hypothèse du scénario mise à jour ({plan.global_impact.value}).")
 
     def _publish_catalogue(self, catalogue: Catalogue) -> None:
@@ -4220,7 +4222,12 @@ class TriangleViewerManual(
             state["scale"] = self._bg_scale_factor_override
         return state
 
-    def _apply_map_state(self, ms: dict | None, persist: bool = False):
+    def _apply_map_state(
+        self,
+        ms: dict | None,
+        persist: bool = False,
+        redraw: bool = True,
+    ):
         if ms is None:
             return
 
@@ -4234,11 +4241,11 @@ class TriangleViewerManual(
 
         path = str(ms.get("path") or "").strip()
         if not path:
-            self._bg_clear(persist=persist)
+            self._bg_clear(persist=persist, redraw=redraw)
             return
 
         if not os.path.isfile(path):
-            self._bg_clear(persist=persist)
+            self._bg_clear(persist=persist, redraw=redraw)
             self._status_warn(f"Carte introuvable: {path}")
             return
 
@@ -4265,7 +4272,12 @@ class TriangleViewerManual(
             # Rien à faire : on a déjà exactement cette carte dans ce repère monde
             return
 
-        self._bg_set_map(path, rect_override=rect, persist=persist)
+        self._bg_set_map(
+            path,
+            rect_override=rect,
+            persist=persist,
+            redraw=redraw,
+        )
 
     # ---------- AUTO (scénarios automatiques): transform géométrique global ----------
 
@@ -4471,9 +4483,13 @@ class TriangleViewerManual(
         scenIsAuto = (getattr(scen, "source_type", "manual") == "auto")
 
         if scenIsAuto:
-            self._apply_map_state(self.auto_map_state, persist=False)
+            self._apply_map_state(
+                self.auto_map_state, persist=False, redraw=False
+            )
         else:
-            self._apply_map_state(getattr(scen, "map_state", None), persist=False)
+            self._apply_map_state(
+                getattr(scen, "map_state", None), persist=False, redraw=False
+            )
 
         if scenIsAuto:
             # Vue AUTO partagée, fallback si jamais pas encore initialisée

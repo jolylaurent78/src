@@ -88,7 +88,7 @@ def test_empty_manual_scenario_commits_a_draft_without_touching_an_auto_snapshot
     assert manual.topoWorld.elements == {}
 
 
-def test_non_empty_manual_scenario_keeps_hypothesis_and_topology_unchanged():
+def test_non_empty_manual_scenario_commits_without_touching_unrelated_topology():
     catalogue, original, replay_id, _detach = _catalogue_and_hypothesis()
     manual = ScenarioAssemblage("Manuel", source_type="manual", hypothesis=original)
     manual.topoWorld.add_element_as_new_group(TopologyElement(
@@ -103,7 +103,8 @@ def test_non_empty_manual_scenario_keeps_hypothesis_and_topology_unchanged():
     plan = TriangleViewerManual._commit_manual_hypothesis_draft(viewer, manual, draft)
 
     assert plan.global_impact is HypothesisImpact.REPLAY
-    assert manual.hypothesis is original
+    assert manual.hypothesis is not original
+    assert manual.hypothesis.triangle_ids_by_rank == draft.triangle_ids_by_rank
     assert manual.topoWorld._exportPhysicalSnapshot() == world_snapshot
 
 

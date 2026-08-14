@@ -21,6 +21,10 @@ from src.assembleur_edgechoice import (
     EdgeChoiceEpts,
     buildEdgeChoiceEptsForAutoChain,
 )
+from src.assembleur_edge_mapping import (
+    apply_edge_edge_pose,
+    compute_edge_edge_pose,
+)
 from src.assembleur_projection import buildLastDrawnFromTopology
 from src.assembleur_scenario import ScenarioHypothesis, materialize_catalogue_triangle
 
@@ -716,47 +720,10 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             for placed_triangle in placed_triangles:
                 placed_triangle.points = projected_by_element_id[placed_triangle.topologyElementId]
 
-        def _orient2d(a, b, c) -> float:
-            return (b[0]-a[0])*(c[1]-a[1]) - (b[1]-a[1])*(c[0]-a[0])
-
-        def _third_vertex(a: str, b: str) -> str:
-            for k in ("O", "B", "L"):
-                if k != a and k != b:
-                    return k
-            raise ValueError("edge invalid")
-
-        def _choose_mapping_by_orientation(Pm_local: dict, am: str, bm: str, Pt: dict, at: str, bt: str) -> str:
-            cm = _third_vertex(am, bm)
-            ct = _third_vertex(at, bt)
-
-            side_m = _orient2d(Pm_local[am], Pm_local[bm], Pm_local[cm])
-            # direct: dest edge oriented at->bt
-            side_t_direct = _orient2d(Pt[at], Pt[bt], Pt[ct])
-            # reverse: dest edge oriented bt->at
-            side_t_reverse = _orient2d(Pt[bt], Pt[at], Pt[ct])
-
-            eps = 1e-9
-            if abs(side_m) < eps or abs(side_t_direct) < eps:
-                # triangle quasi dégénéré par rapport à l’arête => décision instable
-                return "direct"
-
-            if side_m * side_t_direct < 0:
-                return "direct"
-            if side_m * side_t_reverse < 0:
-                return "reverse"
-
-            # aucun des deux ne met les triangles “de part et d’autre”
-            return "direct"
-
         def _pose_triangle2_with_mapping(engine, v, Pm_local, am, bm, Pt, at, bt, poly_dest):
-            mapping = _choose_mapping_by_orientation(Pm_local, am, bm, Pt, at, bt)
-            (at2, bt2) = (at, bt) if mapping == "direct" else (bt, at)
-
-            Pmw = engine.pose_points_on_edge(
-                Pm=Pm_local, am=am, bm=bm,
-                Pt=Pt,      at=at2, bt=bt2,
-                Vm=Pm_local[am], Vt=Pt[at2],
-            )
+            pose = compute_edge_edge_pose(Pm_local, am, bm, Pt, at, bt)
+            mapping = pose.mapping
+            Pmw = apply_edge_edge_pose(Pm_local, pose)
 
             def _dist(a, b):
                 return math.hypot(b[0]-a[0], b[1]-a[1])
@@ -1433,37 +1400,3 @@ class MoteurSimulationAssemblage:
                 "L": np.array(element.vertex_local_xy[2], dtype=float),
             },
         }
-
-    def _pose_params(self, Pm: Dict[str, np.ndarray], am: str, bm: str, Vm: np.ndarray,
-                     Pt: Dict[str, np.ndarray], at: str, bt: str, Vt: np.ndarray):
-        """Retourne (R, T, pivot) pour la pose 'am->bm' alignée sur 'at->bt' avec Vm→Vt."""
-        vm_dir = np.array(Pm[bm], float) - np.array(Pm[am], float)
-        vt_dir = np.array(Pt[bt], float) - np.array(Pt[at], float)
-        ang_m = math.atan2(vm_dir[1], vm_dir[0])
-        ang_t = math.atan2(vt_dir[1], vt_dir[0])
-        dtheta = ang_t - ang_m
-        c, s = math.cos(dtheta), math.sin(dtheta)
-        R = np.array([[c, -s], [s, c]], float)
-        pivot = np.array(Vm, float)
-        Vm_rot = (R @ (np.array(Pm[am], float) - pivot)) + pivot
-        T = np.array(Vt, float) - Vm_rot
-        return R, T, pivot
-
-    # --- Simulation d'une pose (pour filtrer le chevauchement après collage) ---
-    def _apply_R_T_on_P(self, P: Dict[str, np.ndarray], R: np.ndarray, T: np.ndarray, pivot: np.ndarray) -> Dict[str, np.ndarray]:
-        """Applique une rotation R autour de 'pivot' puis une translation T aux points P."""
-        out = {}
-        for k in ("O", "B", "L"):
-            v = np.array(P[k], dtype=float)
-            out[k] = (R @ (v - pivot)) + pivot + T
-        return out
-
-    def pose_points_on_edge(
-        self,
-        Pm: Dict[str, np.ndarray], am: str, bm: str,
-        Pt: Dict[str, np.ndarray], at: str, bt: str,
-        Vm: np.ndarray, Vt: np.ndarray,
-    ) -> Dict[str, np.ndarray]:
-        """Pose Pm (mobile) : aligne am→bm sur at→bt, en collant le point Vm sur Vt."""
-        R, T, pivot = self._pose_params(Pm, am, bm, Vm, Pt, at, bt, Vt)
-        return self._apply_R_T_on_P(Pm, R, T, pivot)
