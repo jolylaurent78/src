@@ -173,7 +173,7 @@ def test_scenario_activation_rebuilds_the_new_active_projection_from_core():
     viewer._discard_manual_move_preview = lambda: False
     viewer._discard_manual_rotate_preview = lambda: False
     viewer._discard_auto_transform_preview = lambda: False
-    viewer._attach_catalog_to_world = lambda _world: None
+    viewer._attach_beacon_resolver_to_world = lambda _world: None
     viewer._capture_view_state = lambda: {}
     viewer._capture_map_state = lambda: {}
     viewer._apply_map_state = lambda *_args, **_kwargs: None
@@ -184,6 +184,7 @@ def test_scenario_activation_rebuilds_the_new_active_projection_from_core():
     viewer._redraw_overlay_only = lambda: None
     viewer.refreshCheminTreeView = lambda: None
     viewer._update_compass_ctx_menu_and_dico_state = lambda: None
+    viewer._ui_hypothesis_editor_button = SimpleNamespace(configure=lambda **_kwargs: None)
     viewer.auto_fit_scenario_select = SimpleNamespace(get=lambda: False)
     viewer.status = SimpleNamespace(config=lambda **_kwargs: None)
     viewer.scenario_tree = None

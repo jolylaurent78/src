@@ -8,7 +8,6 @@ import pytest
 
 from src.assembleur_core import ScenarioAssemblage, TopologyElement, TopologyWorld
 from src.assembleur_catalogue import Catalogue
-from src.assembleur_balises import Beacon, BeaconCatalog
 from src.assembleur_io import loadScenarioXml, saveScenarioXml
 from src.assembleur_scenario import ScenarioHypothesis
 from src.assembleur_tk import TriangleViewerManual
@@ -42,15 +41,27 @@ def _catalogue_and_hypothesis():
     return catalogue, ScenarioHypothesis(triangle_ids, "TPL-0001")
 
 
+class _BeaconResolver:
+    def __init__(self, world_by_id):
+        self._world_by_id = world_by_id
+
+    def contains(self, beacon_id):
+        return beacon_id in self._world_by_id
+
+    def get_world(self, beacon_id):
+        return self._world_by_id[beacon_id]
+
+
 class _Viewer:
     _bind_canvas_objects = TriangleViewerManual._bind_canvas_objects
     _build_scenario_projection_from_core = TriangleViewerManual._build_scenario_projection_from_core
     _rebuild_active_projection_from_core = TriangleViewerManual._rebuild_active_projection_from_core
+    _reapply_scenario_group_anchors = TriangleViewerManual._reapply_scenario_group_anchors
     _strip_core_duplicates_from_last_drawn_entry = staticmethod(
         TriangleViewerManual._strip_core_duplicates_from_last_drawn_entry
     )
 
-    def __init__(self, world, entries, source_type="auto", beacon_catalog=None):
+    def __init__(self, world, entries, source_type="auto", beacon_resolver=None):
         self.catalogue, hypothesis = _catalogue_and_hypothesis()
         scenario = ScenarioAssemblage(
             "XML Core 004", source_type=source_type, hypothesis=hypothesis
@@ -68,11 +79,11 @@ class _Viewer:
         self.listbox, self.canvas = _Listbox(), _Canvas()
         self.zoom, self.offset = 1.0, np.zeros(2)
         self._clock_ref_azimuth_deg = 0.0
-        self.beacon_catalog = beacon_catalog
+        self._beacon_world_resolver = beacon_resolver
 
     def _get_active_scenario(self): return self.scenarios[self.active_scenario_index]
-    def _attach_catalog_to_world(self, world):
-        world.attachBeaconCatalog(self.beacon_catalog)
+    def _attach_beacon_resolver_to_world(self, world):
+        world.attachBeaconResolver(self._beacon_world_resolver)
     def _bg_clear(self, persist=False): pass
     def _clear_nearest_line(self): pass
     def _clear_edge_highlights(self): pass
@@ -189,20 +200,15 @@ def test_v5_round_trip_preserves_core_poses_and_handles_empty_world(tmp_path):
 
 
 def test_v5_round_trip_preserves_group_anchors(tmp_path):
-    catalog = BeaconCatalog()
-    catalog._by_id = {
-        "BAL-Bourges": Beacon(
-            "BAL-Bourges", "Bourges", 47.0, 2.0, 600.0, 6700.0, 1.0, 2.0
-        )
-    }
+    resolver = _BeaconResolver({"BEA-0001": (1.0, 2.0)})
     world = _world()
-    world.attachBeaconCatalog(catalog)
+    world.attachBeaconResolver(resolver)
     group_id = world.get_group_of_element("T01")
     node_id = str(world.elements["T01"].vertexes[0].node_id)
-    anchor = world.createGroupAnchor(group_id, "BAL-Bourges", node_id)
+    anchor = world.createGroupAnchor(group_id, "BEA-0001", node_id)
     path = tmp_path / "anchors.xml"
 
-    saveScenarioXml(_Viewer(world, [], beacon_catalog=catalog), str(path))
+    saveScenarioXml(_Viewer(world, [], beacon_resolver=resolver), str(path))
 
     root = ET.parse(path).getroot()
     assert root.find("anchors") is None
@@ -210,14 +216,15 @@ def test_v5_round_trip_preserves_group_anchors(tmp_path):
     assert snapshot["group_anchors"] == [{
         "anchor_id": anchor.anchor_id,
         "group_id": group_id,
-        "beacon_id": "BAL-Bourges",
+        "beacon_id": "BEA-0001",
         "node_id": node_id,
     }]
 
-    loaded = _Viewer(TopologyWorld(), [], beacon_catalog=catalog)
+    loaded = _Viewer(TopologyWorld(), [], beacon_resolver=resolver)
     loadScenarioXml(loaded, str(path))
     restored = loaded._get_active_scenario().topoWorld
     restored_anchor = restored.getGroupAnchor(anchor.anchor_id)
-    assert restored_anchor.beacon_id == "BAL-Bourges"
+    assert restored_anchor.beacon_id == "BEA-0001"
     assert restored_anchor.node_id == node_id
     assert restored.getAnchorForGroup(restored_anchor.group_id) is restored_anchor
+    assert restored.getBeaconWorldXY("BEA-0001") == pytest.approx((1.0, 2.0))

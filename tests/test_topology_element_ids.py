@@ -484,7 +484,6 @@ def test_manual_placement_keeps_catalog_id_separate_from_core_instance_id():
     viewer.listbox = _Listbox()
     def place(triangle_id):
         viewer._drag = {
-            "triangle": {"triangle_id": triangle_id},
             "triangle_id": triangle_id,
             "world_pts": {"O": (0.0, 0.0), "B": (3.0, 0.0), "L": (0.0, 4.0)},
         }
@@ -539,7 +538,6 @@ def test_manual_placement_projects_core_pose_without_creating_a_ui_group():
     viewer.listbox = _Listbox()
     world_pts = {"O": (10.0, 20.0), "B": (10.003, 20.0), "L": (10.0, 20.004)}
     viewer._drag = {
-        "triangle": {"triangle_id": hypothesis.triangle_ids_by_rank[0]},
         "triangle_id": hypothesis.triangle_ids_by_rank[0],
         "world_pts": world_pts,
     }

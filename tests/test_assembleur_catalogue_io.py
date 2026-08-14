@@ -19,6 +19,9 @@ def _catalogue() -> Catalogue:
 
 def test_round_trip_keeps_ids_data_references_and_runtime_cache_empty(tmp_path):
     catalogue = _catalogue()
+    catalogue.add_beacon("CITY-0001")
+    catalogue.add_beacon("CITY-0002")
+    catalogue.update_beacon("BEA-0002", archived=True)
     catalogue.update_city("CITY-0002", archived=True)
     catalogue.update_triangle("TRI-0001", archived=True)
     catalogue.get_city_lambert("CITY-0001")
@@ -28,9 +31,12 @@ def test_round_trip_keeps_ids_data_references_and_runtime_cache_empty(tmp_path):
     loaded = load_catalogue(path)
 
     assert set(loaded.cities) == set(catalogue.cities)
+    assert set(loaded.beacons) == set(catalogue.beacons)
     assert set(loaded.triangles) == set(catalogue.triangles)
     assert set(loaded.templates) == set(catalogue.templates)
     assert loaded.default_template_id == catalogue.default_template_id
+    assert loaded.get_beacon("BEA-0001").city_id == "CITY-0001"
+    assert loaded.get_beacon("BEA-0002").archived is True
     assert loaded.templates["TPL-0001"].triangle_ids_by_rank == catalogue.templates["TPL-0001"].triangle_ids_by_rank
     assert loaded._city_lambert_cache == {}
     assert loaded.get_city_lambert("CITY-0001")
@@ -77,6 +83,50 @@ def test_invalid_json_version_missing_field_and_invalid_reference_are_rejected(t
     }
     with pytest.raises(KeyError, match="Ville inconnue"):
         catalogue_from_dict(data)
+
+
+def test_json_without_beacons_loads_as_an_empty_beacon_collection():
+    catalogue = _catalogue()
+    data = {
+        "version": 1,
+        "defaultTemplateId": catalogue.default_template_id,
+        "cities": [
+            {
+                "cityId": city.city_id,
+                "name": city.name,
+                "latitude": city.latitude,
+                "longitude": city.longitude,
+                "archived": city.archived,
+            }
+            for city in catalogue.iter_cities()
+        ],
+        "triangles": [
+            {
+                "triangleId": triangle.triangle_id,
+                "note": triangle.note,
+                "openingCityId": triangle.opening_city_id,
+                "baseCityId": triangle.base_city_id,
+                "lightCityId": triangle.light_city_id,
+                "archived": triangle.archived,
+            }
+            for triangle in catalogue.iter_triangles()
+        ],
+        "templates": [
+            {
+                "templateId": template.template_id,
+                "name": template.name,
+                "description": template.description,
+                "archived": template.archived,
+                "triangleIdsByRank": template.triangle_ids_by_rank,
+            }
+            for template in catalogue.iter_templates()
+        ],
+    }
+
+    loaded = catalogue_from_dict(data)
+
+    assert loaded.beacons == {}
+    loaded.validate()
 
 
 def test_save_replaces_existing_file_atomically(tmp_path):

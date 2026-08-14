@@ -3,21 +3,22 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from src.assembleur_balises import Beacon, BeaconCatalog
 from src.assembleur_core import TopologyElement, TopologyNodeType, TopologyWorld
 from src.assembleur_tk import TriangleViewerManual
 
 
-def _catalog() -> BeaconCatalog:
-    catalog = BeaconCatalog()
-    catalog._by_id = {
-        "BAL-1": Beacon("BAL-1", "Balise 1", 0, 0, 0, 0, 10.0, 5.0),
-    }
-    return catalog
+class _BeaconResolver:
+    def contains(self, beacon_id):
+        return beacon_id == "BEA-0001"
+
+    def get_world(self, beacon_id):
+        if beacon_id != "BEA-0001":
+            raise KeyError(beacon_id)
+        return 10.0, 5.0
 
 
-def _auto_scenario(element_id: str, catalog: BeaconCatalog):
-    world = TopologyWorld(beacon_catalog=catalog)
+def _auto_scenario(element_id: str, resolver: _BeaconResolver):
+    world = TopologyWorld(beacon_resolver=resolver)
     element = TopologyElement(
         element_id=element_id,
         name=element_id,
@@ -31,7 +32,7 @@ def _auto_scenario(element_id: str, catalog: BeaconCatalog):
     )
     group_id = world.add_element_as_new_group(element)
     node_id = world.get_element_vertex_node_id_by_type(element_id, "L")
-    anchor = world.createGroupAnchor(group_id, "BAL-1", node_id)
+    anchor = world.createGroupAnchor(group_id, "BEA-0001", node_id)
     world.applyGroupAnchor(anchor.anchor_id)
     return SimpleNamespace(
         source_type="auto",
@@ -41,9 +42,9 @@ def _auto_scenario(element_id: str, catalog: BeaconCatalog):
 
 
 def test_collective_auto_rotation_uses_each_scenario_anchor_and_updates_theta():
-    catalog = _catalog()
-    first, first_group, first_anchor = _auto_scenario("T01", catalog)
-    second, second_group, second_anchor = _auto_scenario("T02", catalog)
+    resolver = _BeaconResolver()
+    first, first_group, first_anchor = _auto_scenario("T01", resolver)
+    second, second_group, second_anchor = _auto_scenario("T02", resolver)
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer.scenarios = [first, second]
     viewer.auto_rotation_state = {"thetaDeg": 0.0}
@@ -64,8 +65,8 @@ def test_collective_auto_rotation_uses_each_scenario_anchor_and_updates_theta():
 
 
 def test_collective_auto_rotation_rejects_missing_anchor():
-    catalog = _catalog()
-    scenario, group_id, anchor = _auto_scenario("T01", catalog)
+    resolver = _BeaconResolver()
+    scenario, group_id, anchor = _auto_scenario("T01", resolver)
     scenario.topoWorld.removeGroupAnchor(anchor.anchor_id)
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer.scenarios = [scenario]

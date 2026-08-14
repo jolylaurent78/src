@@ -13,8 +13,8 @@ class _WorldStub:
             "B": (0.0, 1.0),
         }
         self._beacons = {
-            "B01": (1.0, 0.0),
-            "B02": (0.0, 1.0),
+            "BEA-0001": (1.0, 0.0),
+            "BEA-0002": (0.0, 1.0),
         }
 
     def getConceptNodeWorldXY(self, node_id: str, _group_id: str) -> tuple[float, float]:
@@ -52,8 +52,8 @@ def test_triplet_calculer_geometrie_uses_selected_balise_reference() -> None:
     t_east = TopologyCheminTriplet("A", "O", "B")
     t_north = TopologyCheminTriplet("A", "O", "B")
 
-    t_east.calculerGeometrie(world, "G1", "cw", "B01")
-    t_north.calculerGeometrie(world, "G1", "cw", "B02")
+    t_east.calculerGeometrie(world, "G1", "cw", "BEA-0001")
+    t_north.calculerGeometrie(world, "G1", "cw", "BEA-0002")
 
     assert t_east.isGeometrieValide
     assert t_north.isGeometrieValide

@@ -2,7 +2,6 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from src.assembleur_balises import Beacon, BeaconCatalog
 from src.assembleur_core import TopologyElement, TopologyNodeType, TopologyWorld
 from src.assembleur_tk import TriangleViewerManual
 from src.canvas_objects_collection import CanvasObjectsCollection
@@ -110,11 +109,16 @@ def test_manual_orient_north_commits_core_once_and_overwrites_divergent_cache():
 
 def test_auto_orient_north_commits_a_core_first_global_rotation():
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
-    catalog = BeaconCatalog()
-    catalog._by_id = {
-        "BAL-1": Beacon("BAL-1", "Balise", 0, 0, 0, 0, 10.0, 5.0),
-    }
-    world = TopologyWorld(beacon_catalog=catalog)
+    class _BeaconResolver:
+        def contains(self, beacon_id):
+            return beacon_id == "BEA-0001"
+
+        def get_world(self, beacon_id):
+            if beacon_id != "BEA-0001":
+                raise KeyError(beacon_id)
+            return 10.0, 5.0
+
+    world = TopologyWorld(beacon_resolver=_BeaconResolver())
     group_id = world.add_element_as_new_group(_element("T01"))
     viewer.canvas_objects = CanvasObjectsCollection([
         {"topoElementId": "T01", "pts": {}},
@@ -135,7 +139,7 @@ def test_auto_orient_north_commits_a_core_first_global_rotation():
     )
     anchor = world.createGroupAnchor(
         group_id,
-        "BAL-1",
+        "BEA-0001",
         world.get_element_vertex_node_id_by_type("T01", "L"),
     )
     world.applyGroupAnchor(anchor.anchor_id)

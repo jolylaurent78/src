@@ -19,6 +19,13 @@ class CatalogueCity:
 
 
 @dataclass
+class CatalogueBeacon:
+    beacon_id: str
+    city_id: str
+    archived: bool = False
+
+
+@dataclass
 class CatalogueTriangle:
     triangle_id: str
     note: str
@@ -61,6 +68,7 @@ class Catalogue:
     version = 1
     _ID_PATTERNS = {
         "CITY": re.compile(r"CITY-\d{4,}$"),
+        "BEA": re.compile(r"BEA-\d{4,}$"),
         "TRI": re.compile(r"TRI-\d{4,}$"),
         "TPL": re.compile(r"TPL-\d{4,}$"),
     }
@@ -70,6 +78,7 @@ class Catalogue:
     def __init__(self) -> None:
         self.version = 1
         self.cities: dict[str, CatalogueCity] = {}
+        self.beacons: dict[str, CatalogueBeacon] = {}
         self.triangles: dict[str, CatalogueTriangle] = {}
         self.templates: dict[str, HypothesisTemplate] = {}
         self.default_template_id: str | None = None
@@ -83,6 +92,10 @@ class Catalogue:
         cloned.cities = {
             city_id: CatalogueCity(city.city_id, city.name, city.latitude, city.longitude, city.archived)
             for city_id, city in self.cities.items()
+        }
+        cloned.beacons = {
+            beacon_id: CatalogueBeacon(beacon.beacon_id, beacon.city_id, beacon.archived)
+            for beacon_id, beacon in self.beacons.items()
         }
         cloned.triangles = {
             triangle_id: CatalogueTriangle(
@@ -115,6 +128,9 @@ class Catalogue:
     def _next_city_id(self) -> str:
         return self._next_id("CITY", self.cities)
 
+    def _next_beacon_id(self) -> str:
+        return self._next_id("BEA", self.beacons)
+
     def _next_triangle_id(self) -> str:
         return self._next_id("TRI", self.triangles)
 
@@ -126,6 +142,12 @@ class Catalogue:
             return self.cities[city_id]
         except KeyError as exc:
             raise KeyError(f"Ville inconnue : {city_id}") from exc
+
+    def get_beacon(self, beacon_id: str) -> CatalogueBeacon:
+        try:
+            return self.beacons[beacon_id]
+        except KeyError as exc:
+            raise KeyError(f"Balise inconnue : {beacon_id}") from exc
 
     def get_triangle(self, triangle_id: str) -> CatalogueTriangle:
         try:
@@ -141,6 +163,9 @@ class Catalogue:
 
     def iter_cities(self) -> tuple[CatalogueCity, ...]:
         return tuple(self.cities[item_id] for item_id in sorted(self.cities))
+
+    def iter_beacons(self) -> tuple[CatalogueBeacon, ...]:
+        return tuple(self.beacons[item_id] for item_id in sorted(self.beacons))
 
     def iter_triangles(self) -> tuple[CatalogueTriangle, ...]:
         return tuple(self.triangles[item_id] for item_id in sorted(self.triangles))
@@ -198,12 +223,70 @@ class Catalogue:
             self._city_lambert_cache.pop(city_id, None)
         return city
 
+    @staticmethod
+    def _validate_archived(value: bool, label: str) -> None:
+        if not isinstance(value, bool):
+            raise ValueError(f"{label} archived doit être un booléen.")
+
+    def _validate_beacon_city_id(self, city_id: str, beacon_id: str) -> str:
+        if not isinstance(city_id, str):
+            raise ValueError(f"Balise {beacon_id} : ville Catalogue introuvable {city_id!r}")
+        if not city_id or city_id not in self.cities:
+            raise ValueError(
+                f"Balise {beacon_id} : ville Catalogue introuvable {city_id}"
+            )
+        return city_id
+
+    def _ensure_beacon_city_is_unique(self, city_id: str, current_beacon_id: str | None = None) -> None:
+        if any(
+            beacon_id != current_beacon_id and beacon.city_id == city_id
+            for beacon_id, beacon in self.beacons.items()
+        ):
+            raise ValueError(f"La ville {city_id} possède déjà une balise.")
+
+    def add_beacon(self, city_id: str) -> CatalogueBeacon:
+        beacon_id = self._next_beacon_id()
+        final_city_id = self._validate_beacon_city_id(city_id, beacon_id)
+        self._ensure_beacon_city_is_unique(final_city_id)
+        beacon = CatalogueBeacon(beacon_id, final_city_id)
+        self.beacons[beacon.beacon_id] = beacon
+        return beacon
+
+    def update_beacon(self, beacon_id: str, *, city_id: str | None = None,
+                      archived: bool | None = None) -> CatalogueBeacon:
+        beacon = self.get_beacon(beacon_id)
+        final_city_id = (
+            self._validate_beacon_city_id(city_id, beacon_id)
+            if city_id is not None else beacon.city_id
+        )
+        self._ensure_beacon_city_is_unique(final_city_id, beacon_id)
+        if archived is not None:
+            self._validate_archived(archived, f"Balise {beacon_id}")
+        beacon.city_id = final_city_id
+        if archived is not None:
+            beacon.archived = archived
+        return beacon
+
+    def delete_beacon(self, beacon_id: str) -> None:
+        self.get_beacon(beacon_id)
+        del self.beacons[beacon_id]
+
+    def get_beacons_referencing_city(self, city_id: str) -> tuple[CatalogueBeacon, ...]:
+        self.get_city(city_id)
+        return tuple(beacon for beacon in self.iter_beacons() if beacon.city_id == city_id)
+
     def get_triangles_referencing_city(self, city_id: str) -> tuple[CatalogueTriangle, ...]:
         self.get_city(city_id)
         return tuple(triangle for triangle in self.iter_triangles() if city_id in (
             triangle.opening_city_id, triangle.base_city_id, triangle.light_city_id))
 
     def delete_city(self, city_id: str) -> None:
+        beacon_references = self.get_beacons_referencing_city(city_id)
+        if beacon_references:
+            raise ValueError(
+                f"Impossible de supprimer {city_id} : la ville est référencée par "
+                f"{len(beacon_references)} balise(s)."
+            )
         references = self.get_triangles_referencing_city(city_id)
         if references:
             raise ValueError(f"Impossible de supprimer {city_id} : la ville est référencée par {len(references)} triangle(s).")
@@ -425,10 +508,18 @@ class Catalogue:
 
     def validate(self) -> None:
         self._validate_collection(self.cities, "CITY", "city_id", "ville")
+        self._validate_collection(self.beacons, "BEA", "beacon_id", "balise")
         self._validate_collection(self.triangles, "TRI", "triangle_id", "triangle")
         self._validate_collection(self.templates, "TPL", "template_id", "template")
         self._validate_unique_names(self.cities, "ville")
         self._validate_unique_names(self.templates, "template")
+        beacon_city_ids: set[str] = set()
+        for beacon in self.beacons.values():
+            city_id = self._validate_beacon_city_id(beacon.city_id, beacon.beacon_id)
+            if city_id in beacon_city_ids:
+                raise ValueError(f"Plusieurs balises référencent la ville {city_id}.")
+            beacon_city_ids.add(city_id)
+            self._validate_archived(beacon.archived, f"Balise {beacon.beacon_id}")
         triplets: set[tuple[str, str, str]] = set()
         for triangle in self.triangles.values():
             self._validate_note(triangle.note)

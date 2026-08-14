@@ -668,6 +668,23 @@
       "archived": false
     }
   ],
+  "beacons": [
+    {
+      "beaconId": "BEA-0001",
+      "cityId": "CITY-0094",
+      "archived": false
+    },
+    {
+      "beaconId": "BEA-0002",
+      "cityId": "CITY-0055",
+      "archived": false
+    },
+    {
+      "beaconId": "BEA-0003",
+      "cityId": "CITY-0095",
+      "archived": false
+    }
+  ],
   "triangles": [
     {
       "triangleId": "TRI-0001",
@@ -923,6 +940,22 @@
       "openingCityId": "CITY-0018",
       "baseCityId": "CITY-0031",
       "lightCityId": "CITY-0056",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-0033",
+      "note": "DO",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0026",
+      "lightCityId": "CITY-0047",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-0034",
+      "note": "Zone",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0041",
+      "lightCityId": "CITY-0074",
       "archived": false
     }
   ],

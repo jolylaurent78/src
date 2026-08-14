@@ -7,7 +7,13 @@ import os
 from pathlib import Path
 from typing import Any
 
-from src.assembleur_catalogue import Catalogue, CatalogueCity, CatalogueTriangle, HypothesisTemplate
+from src.assembleur_catalogue import (
+    Catalogue,
+    CatalogueBeacon,
+    CatalogueCity,
+    CatalogueTriangle,
+    HypothesisTemplate,
+)
 
 
 _VERSION = 1
@@ -28,6 +34,14 @@ def catalogue_to_dict(catalogue: Catalogue) -> dict[str, Any]:
                 "archived": city.archived,
             }
             for city in catalogue.iter_cities()
+        ],
+        "beacons": [
+            {
+                "beaconId": beacon.beacon_id,
+                "cityId": beacon.city_id,
+                "archived": beacon.archived,
+            }
+            for beacon in catalogue.iter_beacons()
         ],
         "triangles": [
             {
@@ -117,6 +131,17 @@ def catalogue_from_dict(data: object) -> Catalogue:
         if city.city_id in catalogue.cities:
             raise ValueError(f"Catalogue invalide : identifiant ville dupliqué : {city.city_id}.")
         catalogue.cities[city.city_id] = city
+
+    for index, raw_beacon in enumerate(_require_list(root.get("beacons", []), "beacons"), start=1):
+        item = _require_mapping(raw_beacon, f"beacons[{index}]")
+        beacon = CatalogueBeacon(
+            _require_str(item["beaconId"], "beaconId"),
+            _require_str(item["cityId"], "cityId"),
+            _require_bool(item["archived"], "archived"),
+        )
+        if beacon.beacon_id in catalogue.beacons:
+            raise ValueError(f"Catalogue invalide : identifiant balise dupliqué : {beacon.beacon_id}.")
+        catalogue.beacons[beacon.beacon_id] = beacon
 
     for index, raw_triangle in enumerate(_require_list(root["triangles"], "triangles"), start=1):
         item = _require_mapping(raw_triangle, f"triangles[{index}]")

@@ -39,6 +39,7 @@ class _Viewer:
     _bind_canvas_objects = TriangleViewerManual._bind_canvas_objects
     _build_scenario_projection_from_core = TriangleViewerManual._build_scenario_projection_from_core
     _rebuild_active_projection_from_core = TriangleViewerManual._rebuild_active_projection_from_core
+    _reapply_scenario_group_anchors = TriangleViewerManual._reapply_scenario_group_anchors
     _strip_core_duplicates_from_last_drawn_entry = staticmethod(
         TriangleViewerManual._strip_core_duplicates_from_last_drawn_entry
     )
@@ -64,6 +65,9 @@ class _Viewer:
 
     def _get_active_scenario(self):
         return self.scenarios[self.active_scenario_index]
+
+    def _attach_beacon_resolver_to_world(self, world):
+        world.attachBeaconResolver(None)
 
     def _bg_clear(self, persist=False):
         pass

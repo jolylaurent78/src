@@ -1,19 +1,26 @@
 import xml.etree.ElementTree as ET
 import math
+from types import SimpleNamespace
 
 import pytest
 
-from src.assembleur_balises import Beacon, BeaconCatalog
 from src.assembleur_core import TopologyElement, TopologyWorld
+from src.assembleur_tk import TriangleViewerManual
 
 
-def _catalog() -> BeaconCatalog:
-    catalog = BeaconCatalog()
-    catalog._by_id = {
-        "BAL-Bourges": Beacon("BAL-Bourges", "Bourges", 47.0, 2.0, 600.0, 6700.0, 10.0, -5.0),
-        "BAL-Rocamadour": Beacon("BAL-Rocamadour", "Rocamadour", 44.0, 1.0, 550.0, 6400.0, -7.0, 3.0),
-    }
-    return catalog
+class _BeaconResolver:
+    _world_by_id = {"BEA-0001": (10.0, -5.0), "BEA-0002": (-7.0, 3.0)}
+
+    def contains(self, beacon_id):
+        return beacon_id in self._world_by_id
+
+    def get_world(self, beacon_id):
+        return self._world_by_id[beacon_id]
+
+
+class _MutableBeaconResolver(_BeaconResolver):
+    def set_world(self, beacon_id, world_xy):
+        self._world_by_id = {**self._world_by_id, beacon_id: world_xy}
 
 
 def _element(element_id: str) -> TopologyElement:
@@ -27,7 +34,7 @@ def _element(element_id: str) -> TopologyElement:
 
 
 def _world_with_two_groups() -> tuple[TopologyWorld, str, str]:
-    world = TopologyWorld(beacon_catalog=_catalog())
+    world = TopologyWorld(beacon_resolver=_BeaconResolver())
     first = world.add_element_as_new_group(_element("T01"))
     second = world.add_element_as_new_group(_element("T02"))
     return world, first, second
@@ -39,21 +46,21 @@ def _node_id(world: TopologyWorld, element_id: str = "T01") -> str:
 
 def test_group_anchor_lifecycle_and_clone_share_the_catalog() -> None:
     world, first_group, _second_group = _world_with_two_groups()
-    anchor = world.createGroupAnchor(first_group, "BAL-Bourges", _node_id(world))
+    anchor = world.createGroupAnchor(first_group, "BEA-0001", _node_id(world))
 
     assert anchor.anchor_id == "AN001"
     assert world.getGroupAnchor("AN001") is anchor
     assert world.getAnchorForGroup(first_group) is anchor
 
-    world.setGroupAnchorBeacon(anchor.anchor_id, "BAL-Rocamadour")
-    assert anchor.beacon_id == "BAL-Rocamadour"
+    world.setGroupAnchorBeacon(anchor.anchor_id, "BEA-0002")
+    assert anchor.beacon_id == "BEA-0002"
 
     clone = world.clonePhysicalState()
     cloned_anchor = clone.getGroupAnchor(anchor.anchor_id)
     assert cloned_anchor is not anchor
-    assert cloned_anchor.beacon_id == "BAL-Rocamadour"
+    assert cloned_anchor.beacon_id == "BEA-0002"
     assert cloned_anchor.node_id == _node_id(world)
-    assert clone._beacon_catalog is world._beacon_catalog
+    assert clone._beacon_resolver is world._beacon_resolver
 
     assert world.removeGroupAnchor(anchor.anchor_id) is anchor
     assert world.getAnchorForGroup(first_group) is None
@@ -62,21 +69,21 @@ def test_group_anchor_lifecycle_and_clone_share_the_catalog() -> None:
 def test_group_anchor_rejects_unknown_entities_and_duplicate_group_anchor() -> None:
     world, first_group, _second_group = _world_with_two_groups()
     with pytest.raises(ValueError, match="groupe inexistant"):
-        world.createGroupAnchor("G999", "BAL-Bourges", _node_id(world))
+        world.createGroupAnchor("G999", "BEA-0001", _node_id(world))
     with pytest.raises(ValueError, match="balise inexistante"):
-        world.createGroupAnchor(first_group, "BAL-Inconnue", _node_id(world))
+        world.createGroupAnchor(first_group, "BEA-9999", _node_id(world))
     with pytest.raises(ValueError, match="nœud d'ancrage inexistant"):
-        world.createGroupAnchor(first_group, "BAL-Bourges", "T99:N0")
+        world.createGroupAnchor(first_group, "BEA-0001", "T99:N0")
 
-    world.createGroupAnchor(first_group, "BAL-Bourges", _node_id(world))
+    world.createGroupAnchor(first_group, "BEA-0001", _node_id(world))
     with pytest.raises(ValueError, match="déjà ancré"):
-        world.createGroupAnchor(first_group, "BAL-Rocamadour", _node_id(world))
+        world.createGroupAnchor(first_group, "BEA-0002", _node_id(world))
 
 
 def test_group_union_refuses_two_anchored_groups_and_preserves_one_anchor() -> None:
     world, first_group, second_group = _world_with_two_groups()
-    first_anchor = world.createGroupAnchor(first_group, "BAL-Bourges", _node_id(world, "T01"))
-    second_anchor = world.createGroupAnchor(second_group, "BAL-Rocamadour", _node_id(world, "T02"))
+    first_anchor = world.createGroupAnchor(first_group, "BEA-0001", _node_id(world, "T01"))
+    second_anchor = world.createGroupAnchor(second_group, "BEA-0002", _node_id(world, "T02"))
 
     with pytest.raises(ValueError, match="fusion interdite"):
         world.union_groups(first_group, second_group)
@@ -91,7 +98,7 @@ def test_group_union_refuses_two_anchored_groups_and_preserves_one_anchor() -> N
 
 def test_topodump_exposes_group_anchors(tmp_path) -> None:
     world, first_group, _second_group = _world_with_two_groups()
-    anchor = world.createGroupAnchor(first_group, "BAL-Bourges", _node_id(world))
+    anchor = world.createGroupAnchor(first_group, "BEA-0001", _node_id(world))
 
     dump = tmp_path / "TopoDump.xml"
     world.export_topo_dump_xml(str(dump))
@@ -101,7 +108,7 @@ def test_topodump_exposes_group_anchors(tmp_path) -> None:
     assert xml_anchor.attrib == {
         "id": anchor.anchor_id,
         "group": first_group,
-        "beacon": "BAL-Bourges",
+        "beacon": "BEA-0001",
         "node": _node_id(world),
     }
 
@@ -112,7 +119,7 @@ def test_apply_group_anchor_translates_rigidly_and_blocks_user_transforms() -> N
     world.setElementPose("T01", [[1.0, 0.0], [0.0, 1.0]], [2.0, 4.0])
     world.setElementPose("T02", [[1.0, 0.0], [0.0, 1.0]], [-3.0, 8.0])
     node_id = _node_id(world, "T01")
-    anchor = world.createGroupAnchor(group_id, "BAL-Bourges", node_id)
+    anchor = world.createGroupAnchor(group_id, "BEA-0001", node_id)
     node_before = world.getConceptNodeWorldXY(node_id, group_id)
     poses_before = {
         element_id: world.getElementPose(element_id)
@@ -150,9 +157,63 @@ def test_apply_group_anchor_translates_rigidly_and_blocks_user_transforms() -> N
         world.flip_group(group_id, (0.0, 0.0), (1.0, 0.0))
 
 
+def test_restored_anchor_is_reapplied_after_runtime_map_change() -> None:
+    resolver = _MutableBeaconResolver()
+    world = TopologyWorld(beacon_resolver=resolver)
+    group_id = world.add_element_as_new_group(_element("T01"))
+    node_id = _node_id(world)
+    anchor = world.createGroupAnchor(group_id, "BEA-0001", node_id)
+    world.applyGroupAnchor(anchor.anchor_id)
+    snapshot = world._exportPhysicalSnapshot()
+
+    resolver.set_world("BEA-0001", (10.0001, -5.0001))
+    restored = TopologyWorld(beacon_resolver=resolver)
+    restored._importPhysicalSnapshot(snapshot)
+    restored_anchor = restored.getGroupAnchor(anchor.anchor_id)
+    assert restored.getConceptNodeWorldXY(node_id, group_id) != pytest.approx(
+        resolver.get_world("BEA-0001")
+    )
+
+    viewer = SimpleNamespace(_beacon_world_resolver=resolver)
+    viewer._attach_beacon_resolver_to_world = (
+        TriangleViewerManual._attach_beacon_resolver_to_world.__get__(viewer)
+    )
+    TriangleViewerManual._reapply_scenario_group_anchors(
+        viewer, SimpleNamespace(topoWorld=restored),
+    )
+
+    beacon_world = resolver.get_world("BEA-0001")
+    assert restored.getConceptNodeWorldXY(node_id, group_id) == pytest.approx(beacon_world)
+    restored.rotate_group(group_id, beacon_world, math.pi / 6.0)
+    assert restored.getConceptNodeWorldXY(node_id, group_id) == pytest.approx(beacon_world)
+    restored.applyGroupAnchor(restored_anchor.anchor_id)
+    assert restored.getConceptNodeWorldXY(node_id, group_id) == pytest.approx(beacon_world)
+
+
+def test_reapply_scenario_group_anchors_does_not_change_a_free_group() -> None:
+    resolver = _MutableBeaconResolver()
+    world = TopologyWorld(beacon_resolver=resolver)
+    group_id = world.add_element_as_new_group(_element("T01"))
+    before = world.getElementPose("T01")
+    viewer = SimpleNamespace(_beacon_world_resolver=resolver)
+    viewer._attach_beacon_resolver_to_world = (
+        TriangleViewerManual._attach_beacon_resolver_to_world.__get__(viewer)
+    )
+
+    TriangleViewerManual._reapply_scenario_group_anchors(
+        viewer, SimpleNamespace(topoWorld=world),
+    )
+
+    rotation, translation, mirrored = world.getElementPose("T01")
+    assert rotation == pytest.approx(before[0])
+    assert translation == pytest.approx(before[1])
+    assert mirrored is before[2]
+    assert world.getAnchorForGroup(group_id) is None
+
+
 def test_apply_group_rigid_transform_rejected_for_anchored_group() -> None:
     world, first_group, _second_group = _world_with_two_groups()
-    world.createGroupAnchor(first_group, "BAL-Bourges", _node_id(world))
+    world.createGroupAnchor(first_group, "BEA-0001", _node_id(world))
 
     with pytest.raises(ValueError, match="RIGID_TRANSFORM interdit"):
         world.apply_group_rigid_transform(
@@ -164,7 +225,7 @@ def test_apply_group_rigid_transform_rejected_for_anchored_group() -> None:
 
 def test_apply_group_rigid_transform_allowed_after_anchor_removal() -> None:
     world, first_group, _second_group = _world_with_two_groups()
-    anchor = world.createGroupAnchor(first_group, "BAL-Bourges", _node_id(world))
+    anchor = world.createGroupAnchor(first_group, "BEA-0001", _node_id(world))
     world.removeGroupAnchor(anchor.anchor_id)
 
     world.apply_group_rigid_transform(
@@ -180,7 +241,7 @@ def test_apply_group_rigid_transform_allowed_after_anchor_removal() -> None:
 def test_anchored_group_rotation_is_allowed_only_around_its_beacon() -> None:
     world, first_group, _second_group = _world_with_two_groups()
     node_id = _node_id(world)
-    anchor = world.createGroupAnchor(first_group, "BAL-Bourges", node_id)
+    anchor = world.createGroupAnchor(first_group, "BEA-0001", node_id)
     world.applyGroupAnchor(anchor.anchor_id)
 
     world.rotate_group(first_group, (10.0, -5.0), math.pi / 2.0)
@@ -203,7 +264,7 @@ def test_free_group_rotation_accepts_an_arbitrary_valid_pivot() -> None:
 
 def test_anchored_group_rotation_rejects_wrong_pivot_without_mutating_poses() -> None:
     world, first_group, _second_group = _world_with_two_groups()
-    anchor = world.createGroupAnchor(first_group, "BAL-Bourges", _node_id(world))
+    anchor = world.createGroupAnchor(first_group, "BEA-0001", _node_id(world))
     world.applyGroupAnchor(anchor.anchor_id)
     poses_before = {
         element_id: world.getElementPose(element_id)
@@ -222,7 +283,7 @@ def test_anchored_group_rotation_rejects_wrong_pivot_without_mutating_poses() ->
 
 def test_anchored_group_rotation_rejects_preexisting_anchor_node_mismatch() -> None:
     world, first_group, _second_group = _world_with_two_groups()
-    anchor = world.createGroupAnchor(first_group, "BAL-Bourges", _node_id(world))
+    anchor = world.createGroupAnchor(first_group, "BEA-0001", _node_id(world))
     poses_before = {
         element_id: world.getElementPose(element_id)
         for element_id in world.getGroupElementIds(first_group)
@@ -240,7 +301,7 @@ def test_anchored_group_rotation_rejects_preexisting_anchor_node_mismatch() -> N
 
 def test_group_anchor_is_removed_when_its_group_is_deleted() -> None:
     world, first_group, _second_group = _world_with_two_groups()
-    anchor = world.createGroupAnchor(first_group, "BAL-Bourges", _node_id(world))
+    anchor = world.createGroupAnchor(first_group, "BEA-0001", _node_id(world))
 
     world.removeElementsAndRebuild(["T01"])
 

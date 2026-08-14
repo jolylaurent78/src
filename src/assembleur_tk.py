@@ -7,7 +7,6 @@ from math import atan2, pi
 import numpy as np
 import re
 import copy
-import traceback
 import threading
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Tuple
@@ -53,7 +52,7 @@ from src.assembleur_tk_mixin_frontier import TriangleViewerFrontierGraphMixin
 from src.assembleur_tk_mixin_bg import TriangleViewerBackgroundMapMixin
 from src.assembleur_tk_mixin_clockarc import TriangleViewerClockArcMixin
 from src.assembleur_edgechoice import buildEdgeChoiceEptsFromBest
-from src.assembleur_balises import BeaconCatalog
+from src.assembleur_beacon_runtime import BeaconWorldResolver
 from src.utils.logging_utils import get_mig_geo_logger
 from src.assembleur_topology_comparison import (
     build_topology_prefix_steps,
@@ -66,9 +65,14 @@ from src.assembleur_projection import (
     getManualProjectionElementIds,
 )
 from src.assembleur_catalogue_window import CatalogueWindow
+from src.assembleur_hypothesis_window import ScenarioHypothesisDialog
 from src.assembleur_catalogue import Catalogue
 from src.assembleur_catalogue_io import load_catalogue
 from src.assembleur_scenario import (
+    HypothesisImpact,
+    ScenarioHypothesis,
+    ScenarioHypothesisChangePlan,
+    analyze_hypothesis_change,
     create_default_scenario_hypothesis,
     materialize_catalogue_triangle,
 )
@@ -419,7 +423,6 @@ class TriangleViewerManual(
         self._map_opacity_redraw_job = None
         self._guidesCurrentColorHex: str = "#0b3d91"
         self._guides_color_btn: tk.Button | None = None
-        self.beacon_catalog = BeaconCatalog()
         # Gestion du contour
         self.show_only_group_contours = tk.BooleanVar(value=False)
         self.only_group_contours = None
@@ -503,6 +506,9 @@ class TriangleViewerManual(
             # Le démarrage reste compatible avec une installation sans catalogue valide.
             self.catalogue = Catalogue()
             self._catalogue_load_error = str(exc)
+        self._beacon_world_resolver = BeaconWorldResolver(
+            self.catalogue, self._catalogue_lambert_to_world,
+        )
         # === UI : persistance des toggles de visualisation (dico + compas) ===
         # Doit être fait AVANT _build_ui() pour que le checkbutton + le pack initial
         # reflètent correctement l'état sauvegardé.
@@ -552,7 +558,7 @@ class TriangleViewerManual(
         manual.view_state = self._capture_view_state()
         manual.map_state = self._capture_map_state()
         self.scenarios.append(manual)
-        self._attach_catalog_to_world(manual.topoWorld)
+        self._attach_beacon_resolver_to_world(manual.topoWorld)
 
         # --- Horloge (overlay fixe) : état par défaut ---
         # hour peut être un float (si l'aiguille des heures avance avec les minutes)
@@ -1201,7 +1207,6 @@ class TriangleViewerManual(
         self.status.pack(side=tk.BOTTOM, fill=tk.X)
 
         self.autoLoadBackgroundAtStartup()
-        self.autoLoadBalisesAtStartup()
 
     def _create_manual_scenario_hypothesis(self, *, report_error: bool = False):
         """Instancie l'hypothèse propriétaire d'un nouveau scénario manuel."""
@@ -1245,7 +1250,7 @@ class TriangleViewerManual(
                 source_type="manual",
                 hypothesis=self._create_manual_scenario_hypothesis(),
             )
-            self._attach_catalog_to_world(manual.topoWorld)
+            self._attach_beacon_resolver_to_world(manual.topoWorld)
             self.scenarios = [manual]
         self.active_scenario_index = min(self.active_scenario_index, len(self.scenarios) - 1)
         self._set_active_scenario(self.active_scenario_index)
@@ -1272,8 +1277,12 @@ class TriangleViewerManual(
         if default_n < 2:
             default_n = 2
         beacon_items = [
-            (beacon.beacon_id, f"{beacon.name} ({beacon.beacon_id})")
-            for beacon in self.beacon_catalog.iter_beacons()
+            (
+                beacon.beacon_id,
+                f"{self.catalogue.get_city(beacon.city_id).name} ({beacon.beacon_id})",
+            )
+            for beacon in self.catalogue.iter_beacons()
+            if not beacon.archived
         ]
         if not beacon_items:
             messagebox.showwarning(
@@ -1375,7 +1384,7 @@ class TriangleViewerManual(
             if scen.hypothesis is None:
                 raise RuntimeError("Simulation: scénario AUTO sans ScenarioHypothesis")
             scen.traversal_direction = "reverse" if str(order).lower() in ("reverse", "inverse") else "forward"
-            self._attach_catalog_to_world(scen.topoWorld)
+            self._attach_beacon_resolver_to_world(scen.topoWorld)
             self._anchor_auto_scenario_to_beacon(scen, beacon_id)
             if not scen.name:
                 scen.name = f"Auto #{count_auto + k + 1}"
@@ -1406,6 +1415,7 @@ class TriangleViewerManual(
             maps_dir=self.maps_dir,
             catalogue_path=self.catalogue_path,
             on_catalogue_applied=self._publish_catalogue,
+            is_beacon_referenced=self._is_beacon_referenced_by_anchor,
         )
         self._catalogue_window = window
 
@@ -1417,9 +1427,94 @@ class TriangleViewerManual(
 
         window.protocol("WM_DELETE_WINDOW", _on_close)
 
+    def _update_hypothesis_editor_button(self) -> None:
+        """Autorise l'édition uniquement sur le scénario manuel actif."""
+        scenario = self._get_active_scenario()
+        state = tk.NORMAL if scenario is not None and scenario.source_type == "manual" else tk.DISABLED
+        self._ui_hypothesis_editor_button.configure(state=state)
+
+    @staticmethod
+    def _format_hypothesis_change_plan(plan: ScenarioHypothesisChangePlan) -> str:
+        lines = [
+            "Modification de l'hypothèse détectée.",
+            "",
+            f"Impact : {plan.global_impact.value}",
+            f"{len(plan.rank_changes)} rang(s) modifié(s) :",
+        ]
+        for change in plan.rank_changes[:8]:
+            lines.append(
+                f"- rang {change.rank} : {change.old_triangle_id} → "
+                f"{change.new_triangle_id} — {change.impact.value}"
+            )
+        if len(plan.rank_changes) > 8:
+            lines.append(f"... et {len(plan.rank_changes) - 8} autre(s).")
+        lines.extend(("", "La propagation vers la topologie sera prise en charge par la prochaine phase."))
+        return "\n".join(lines)
+
+    def _commit_manual_hypothesis_draft(
+        self,
+        scenario: ScenarioAssemblage,
+        draft: ScenarioHypothesis,
+    ) -> ScenarioHypothesisChangePlan:
+        """Analyse puis commit seulement si le monde physique reste cohérent."""
+        if scenario.source_type != "manual":
+            raise ValueError("Seul un scénario manuel peut recevoir une ScenarioHypothesis modifiée.")
+        if scenario.hypothesis is None:
+            raise ValueError("ScenarioHypothesis absente du scénario manuel actif")
+        draft.validate(self.catalogue)
+        plan = analyze_hypothesis_change(self.catalogue, scenario.hypothesis, draft)
+        if scenario.topoWorld.elements and plan.global_impact is not HypothesisImpact.NONE:
+            return plan
+        scenario.hypothesis = draft.clone()
+        return plan
+
+    def open_scenario_hypothesis_dialog(self) -> None:
+        """Édite transactionnellement l'hypothèse du manuel actif."""
+        scenario = self._get_active_scenario()
+        if scenario is None:
+            raise RuntimeError("Scénario actif absent")
+        if scenario.source_type != "manual":
+            messagebox.showinfo(
+                "Hypothèse du scénario",
+                "L'hypothèse d'un scénario AUTO est un snapshot de simulation et ne peut pas être modifiée directement.",
+                parent=self,
+            )
+            return
+        if scenario.hypothesis is None:
+            raise ValueError("ScenarioHypothesis absente du scénario manuel actif")
+        dialog = ScenarioHypothesisDialog(self, catalogue=self.catalogue, hypothesis=scenario.hypothesis)
+        draft = dialog.show()
+        if draft is None:
+            return
+        plan = self._commit_manual_hypothesis_draft(scenario, draft)
+        if scenario.topoWorld.elements and plan.global_impact is not HypothesisImpact.NONE:
+            messagebox.showwarning("Hypothèse du scénario", self._format_hypothesis_change_plan(plan), parent=self)
+            return
+        self._rebuild_triangle_listbox_from_core()
+        self.status.config(text=f"Hypothèse du scénario mise à jour ({plan.global_impact.value}).")
+
     def _publish_catalogue(self, catalogue: Catalogue) -> None:
-        """Publie une version appliquée du Catalogue pour les futurs scénarios."""
+        """Publie le Catalogue et recale les groupes ancrés via le Core."""
         self.catalogue = catalogue
+        self._beacon_world_resolver.set_catalogue(catalogue)
+        for scenario in self.scenarios:
+            world = scenario.topoWorld
+            for anchor in tuple(world.groupAnchors.values()):
+                world.applyGroupAnchor(anchor.anchor_id)
+            if scenario is self._get_active_scenario():
+                self._rebuild_active_projection_from_core()
+            elif scenario.source_type == "auto":
+                self._project_auto_scenario_from_core(scenario)
+        self._refreshCheminsBaliseRefCombo()
+        self._redraw_from(self._last_drawn)
+
+    def _is_beacon_referenced_by_anchor(self, beacon_id: str) -> bool:
+        """Indique si une balise est encore la cible d'un ancrage runtime."""
+        return any(
+            anchor.beacon_id == beacon_id
+            for scenario in self.scenarios
+            for anchor in scenario.topoWorld.groupAnchors.values()
+        )
 
     # ---------- Icônes ----------
     def _load_icon(self, filename: str):
@@ -1462,6 +1557,7 @@ class TriangleViewerManual(
 
         # Hauteurs mini (expanded vs collapsed)
         tri_minsize_expanded = 150  # hauteur mini raisonnable pour les triangles
+        tri_header_separator_height = 5
 
         # État plié/déplié (on garde la variable si elle existe déjà)
         if not hasattr(self, "_ui_triangles_collapsed"):
@@ -1488,7 +1584,7 @@ class TriangleViewerManual(
             lb_h += 10
             # header + content paddings (approximations stables)
             hdr_h = int(header.winfo_reqheight() or 26)
-            return int(hdr_h + lb_h + 18)
+            return int(hdr_h + tri_header_separator_height + lb_h + 18)
 
         def _toggleTrianglesPanel():
             collapsed = bool(self._ui_triangles_collapsed.get())
@@ -1507,7 +1603,10 @@ class TriangleViewerManual(
 
             # Réduire/étendre réellement la pane pour éviter l'espace vide.
             hdr_h = int(header.winfo_reqheight() or 0)
-            tri_minsize_collapsed = max(28, hdr_h + 10)
+            tri_minsize_collapsed = max(
+                28,
+                hdr_h + tri_header_separator_height + 10,
+            )
             if self._ui_triangles_collapsed.get():
                 pw.paneconfigure(tri_frame, minsize=tri_minsize_collapsed, height=tri_minsize_collapsed)
             else:
@@ -1527,11 +1626,16 @@ class TriangleViewerManual(
         )
         self._ui_triangles_toggle_btn.pack(side=tk.LEFT, padx=(0, 4))
 
-        title_lbl = tk.Label(header, text="Triangles (ordre)", font=(None, 9, "bold"))
+        title_lbl = tk.Label(header, text="Catalogue", font=(None, 9, "bold"))
         title_lbl.pack(side=tk.LEFT, anchor="w")
         # Cliquer sur le titre plie/déplie aussi (plus “VS Code”)
         title_lbl.bind("<Button-1>", lambda _e: _toggleTrianglesPanel())
         header.bind("<Button-1>", lambda _e: _toggleTrianglesPanel())
+
+        ttk.Separator(tri_frame, orient="horizontal").pack(
+            fill=tk.X,
+            pady=(0, 4),
+        )
 
         # Contenu pliable
         self._ui_triangles_content = tk.Frame(tri_frame)
@@ -1562,6 +1666,22 @@ class TriangleViewerManual(
             )
         catalogue_btn.pack(side=tk.LEFT, padx=1)
         self._ui_attach_tooltip(catalogue_btn, "Gestion du catalogue")
+        self.icon_hypothesis_props = self._load_icon("scenario_props.png")
+        hypothesis_btn = tk.Button(
+            triangles_toolbar,
+            image=self.icon_hypothesis_props,
+            command=self.open_scenario_hypothesis_dialog,
+            relief=tk.FLAT,
+        ) if self.icon_hypothesis_props is not None else tk.Button(
+            triangles_toolbar,
+            text="H",
+            width=2,
+            command=self.open_scenario_hypothesis_dialog,
+            relief=tk.FLAT,
+        )
+        hypothesis_btn.pack(side=tk.LEFT, padx=1)
+        self._ui_hypothesis_editor_button = hypothesis_btn
+        self._ui_attach_tooltip(hypothesis_btn, "Modifier l'hypothÃ¨se du scÃ©nario")
 
         lb_frame = tk.Frame(self._ui_triangles_content, bd=0, highlightthickness=0)
         lb_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
@@ -1830,7 +1950,7 @@ class TriangleViewerManual(
         self._guides_color_btn.pack(side=tk.RIGHT, padx=(0, 4), anchor="e")
         self._update_guides_color_swatch()
 
-        # Ligne "Balises" : checkbox + selection du CSV
+        # Ligne "Balises" : visibilité du layer Catalogue.
         row_balises = tk.Frame(cb_wrap)
         row_balises.pack(anchor="w", fill="x", pady=(2, 0))
         row_balises.grid_columnconfigure(1, weight=1)
@@ -1852,11 +1972,6 @@ class TriangleViewerManual(
         row_balises_right = tk.Frame(row_balises, width=rightColWidth)
         row_balises_right.grid(row=0, column=2, sticky="e")
         row_balises_right.grid_propagate(False)
-
-        tk.Button(
-            row_balises_right, text="...", width=2,
-            command=self._onSelectBalisesCsv
-        ).pack(side=tk.RIGHT, padx=(0, 4), anchor="e")
 
         pw.add(layer_frame, minsize=layer_minsize_expanded)
 
@@ -2580,9 +2695,9 @@ class TriangleViewerManual(
         if not hasattr(self, "chemins_balise_ref_combo"):
             return
 
-        beacons = list(self.beacon_catalog.iter_beacons())
+        beacons = [beacon for beacon in self.catalogue.iter_beacons() if not beacon.archived]
         option_to_id = {
-            f"{beacon.name} ({beacon.beacon_id})": beacon.beacon_id
+            f"{self.catalogue.get_city(beacon.city_id).name} ({beacon.beacon_id})": beacon.beacon_id
             for beacon in beacons
         }
         self._chemins_beacon_option_ids = option_to_id
@@ -2594,7 +2709,7 @@ class TriangleViewerManual(
             return
 
         saved = str(self.getAppConfigValue(_assembleur_io.CFG_KEY_CHEMINS_BEACON_REF, "") or "").strip()
-        selected_id = saved if self.beacon_catalog.contains(saved) else beacons[0].beacon_id
+        selected_id = saved if saved in option_to_id.values() else beacons[0].beacon_id
         selected = next(option for option, beacon_id in option_to_id.items() if beacon_id == selected_id)
 
         self.chemins_balise_ref_var.set(selected)
@@ -3956,22 +4071,21 @@ class TriangleViewerManual(
                 fg="gray50" if triangle_id in used_ids else "black",
             )
 
-    def _attach_catalog_to_world(self, world: TopologyWorld | None) -> None:
-        """Injecte les référentiels runtime partagés dans un monde Core."""
+    def _catalogue_lambert_to_world(self, lambert_x_m: float, lambert_y_m: float) -> tuple[float, float]:
+        return self.bgLambertKmToWorld(lambert_x_m / 1000.0, lambert_y_m / 1000.0)
+
+    def _attach_beacon_resolver_to_world(self, world: TopologyWorld | None) -> None:
+        """Injecte le résolveur World des balises Catalogue dans un monde Core."""
         if world is None:
             return
-        world.attachBeaconCatalog(self.beacon_catalog)
+        world.attachBeaconResolver(self._beacon_world_resolver)
 
-    def _reproject_beacons_from_map(self) -> None:
-        """Recalcule le référentiel BeaconCatalog après un changement de projection."""
-        catalog = getattr(self, "beacon_catalog", None)
-        if catalog is None:
-            return
-        try:
-            catalog.reproject_world(self.bgLambertKmToWorld)
-        except RuntimeError:
-            # Sans carte calibrée, aucune coordonnée World ne doit survivre.
-            catalog.clear_world_coordinates()
+    def _reapply_scenario_group_anchors(self, scenario: ScenarioAssemblage) -> None:
+        """Recale les ancres après la restauration du repère cartographique runtime."""
+        world = scenario.topoWorld
+        self._attach_beacon_resolver_to_world(world)
+        for anchor in world.groupAnchors.values():
+            world.applyGroupAnchor(anchor.anchor_id)
 
     def _rebuild_triangle_listbox_from_core(self) -> None:
         """Projette la selection du scenario dans la listbox, sans lire ``last_drawn``."""
@@ -4226,9 +4340,11 @@ class TriangleViewerManual(
         world = scen.topoWorld
         if world is None:
             raise RuntimeError("Simulation AUTO: TopologyWorld absent")
-        self._attach_catalog_to_world(world)
-        if not self.beacon_catalog.contains(beacon_id):
+        self._attach_beacon_resolver_to_world(world)
+        if beacon_id not in self.catalogue.beacons:
             raise ValueError(f"Simulation AUTO: balise inconnue {beacon_id!r}")
+        if self.catalogue.get_beacon(beacon_id).archived:
+            raise ValueError(f"Simulation AUTO: balise archivÃ©e {beacon_id!r}")
         ordered_element_ids = scen.orderedElementIds
         if not ordered_element_ids:
             raise ValueError("Simulation AUTO: orderedElementIds vide")
@@ -4349,10 +4465,7 @@ class TriangleViewerManual(
 
         scen = self.scenarios[index]
         self.active_scenario_index = index
-        self._attach_catalog_to_world(scen.topoWorld)
-
-        # MIG-CACHE-REBUILD-003 : l'ancien cache est volontairement ignoré.
-        self._rebuild_active_projection_from_core()
+        self._attach_beacon_resolver_to_world(scen.topoWorld)
 
         # Restaurer carte + vue (sans écraser la config globale)
         scenIsAuto = (getattr(scen, "source_type", "manual") == "auto")
@@ -4368,6 +4481,12 @@ class TriangleViewerManual(
         else:
             self._apply_view_state(getattr(scen, "view_state", None))
 
+        self._reapply_scenario_group_anchors(scen)
+
+        # MIG-CACHE-REBUILD-003 : l'ancien cache est volontairement ignoré.
+        # Les ancres ont été recalées après la restauration de la carte.
+        self._rebuild_active_projection_from_core()
+
         self._rebuild_triangle_listbox_from_core()
 
         # Invalider le cache de pick et redessiner
@@ -4381,6 +4500,7 @@ class TriangleViewerManual(
             self._redraw_from(self._last_drawn)
 
         self._redraw_overlay_only()
+        self._update_hypothesis_editor_button()
 
         # Mettre à jour la sélection visuelle dans la liste (au cas d'appel programmatique)
         if hasattr(self, "scenario_tree"):
@@ -4418,7 +4538,7 @@ class TriangleViewerManual(
             algo_id=None,
             hypothesis=hypothesis,
         )
-        self._attach_catalog_to_world(scen.topoWorld)
+        self._attach_beacon_resolver_to_world(scen.topoWorld)
         # Scénario vide : nouvelles structures indépendantes
         scen.last_drawn = []
 
@@ -5284,52 +5404,6 @@ class TriangleViewerManual(
         # dès qu'un <Configure> avec une taille valide arrive.
         self._bg_defer_redraw = True
 
-    def autoLoadBalisesAtStartup(self):
-        """Recharge au démarrage le dernier CSV balises persisté (best-effort)."""
-        saved_path = str(self.getAppConfigValue("balisesCsvPath", "") or "").strip()
-        if not saved_path:
-            self._refreshCheminsBaliseRefCombo()
-            return
-        csv_path = os.path.normpath(saved_path)
-        try:
-            self.beacon_catalog.load_from_csv(csv_path)
-            self._reproject_beacons_from_map()
-        except Exception:
-            self.beacon_catalog.clear()
-            print(f"[Balises][AUTOLOAD] Echec du chargement: {csv_path}")
-            traceback.print_exc()
-        self._refreshCheminsBaliseRefCombo()
-
-    def _initialdir_from_current(self, current_path: str) -> str:
-        p = str(current_path or "").strip()
-        if p:
-            d = os.path.dirname(os.path.normpath(p))
-            if d and os.path.isdir(d):
-                return d
-        return self.data_dir
-
-    def _onSelectBalisesCsv(self):
-        saved_path = str(self.getAppConfigValue("balisesCsvPath", "") or "").strip()
-        selected = filedialog.askopenfilename(
-            title="Choisir le CSV balises",
-            initialdir=self._initialdir_from_current(saved_path),
-            filetypes=[("CSV", "*.csv"), ("Tous", "*.*")],
-        )
-        if not selected:
-            return
-
-        csv_path = os.path.normpath(selected)
-        try:
-            self.beacon_catalog.load_from_csv(csv_path)
-            self._reproject_beacons_from_map()
-        except Exception as e:
-            messagebox.showerror("Balises", f"Impossible de charger le CSV balises:\n\n{e}")
-            return
-
-        self.setAppConfigValue("balisesCsvPath", csv_path)
-        self._refreshCheminsBaliseRefCombo()
-        self._redraw_from(self._last_drawn)
-
     def _triangle_from_index(self, idx):
         """Construit l'aperçu local depuis le modèle du scénario actif."""
         scen = self._get_active_scenario()
@@ -5347,6 +5421,22 @@ class TriangleViewerManual(
             },
             "triangle_id": triangle_id,
             "mirrored": False,
+        }
+
+    def _build_drag_world_points(
+        self,
+        triangle_id: str,
+        mouse_world: tuple[float, float],
+    ) -> dict[str, np.ndarray]:
+        """Construit le preview temporaire depuis la géométrie Catalogue canonique."""
+        element = materialize_catalogue_triangle(self.catalogue, triangle_id)
+        local_points = element.vertex_local_xy
+        origin = np.asarray(local_points[0], dtype=float)
+        delta = np.asarray(mouse_world, dtype=float) - origin
+        return {
+            "O": np.asarray(local_points[0], dtype=float) + delta,
+            "B": np.asarray(local_points[1], dtype=float) + delta,
+            "L": np.asarray(local_points[2], dtype=float) + delta,
         }
 
     # ====== FRONTIER GRAPH HELPERS (factorisation) ===============================================
@@ -5718,24 +5808,12 @@ class TriangleViewerManual(
         self._invalidate_pick_cache()
 
     def _draw_balises_layer(self):
-        """Dessine les balises en points fixes (pixels) + libellé."""
-        if not hasattr(self, "beacon_catalog") or self.beacon_catalog is None:
-            return
-
-        try:
-            beacons = tuple(self.beacon_catalog.iter_beacons())
-        except Exception:
-            return
-        if not beacons:
-            return
-
-        for beacon in beacons:
-            try:
-                wx, wy = self.beacon_catalog.get_world(beacon.beacon_id)
-            except RuntimeError:
-                return
-            except KeyError:
+        """Dessine les balises Catalogue actives, résolues dans le repère World."""
+        for beacon in self.catalogue.iter_beacons():
+            if beacon.archived:
                 continue
+            wx, wy = self._beacon_world_resolver.get_world(beacon.beacon_id)
+            city = self.catalogue.get_city(beacon.city_id)
 
             sx, sy = self._world_to_screen((wx, wy))
             r = self._marker_px
@@ -5748,7 +5826,7 @@ class TriangleViewerManual(
             self.canvas.create_text(
                 sx,
                 sy + r + 2,
-                text=beacon.name,
+                text=city.name,
                 anchor="n",
                 font=("Arial", 8),
                 fill="#000000",
@@ -6156,10 +6234,9 @@ class TriangleViewerManual(
             return
 
         idx = int(sel[0])
-        tri = self._triangle_from_index(idx)
         scen = self._get_active_scenario()
         world = scen.topoWorld
-        triangle_id = tri.get("triangle_id")
+        triangle_id = self._get_triangle_id_from_listbox_index(idx)
         used = triangle_id in world.get_used_source_triangle_ids()
         if used:
             # Triangle déjà posé : on annule la sélection visuelle
@@ -6197,10 +6274,7 @@ class TriangleViewerManual(
         self.listbox.selection_clear(0, tk.END)
         self.listbox.selection_set(i)
 
-        # Récupération de la définition du triangle
-        tri = self._triangle_from_index(i)
-
-        triangle_id = tri.get("triangle_id")
+        triangle_id = self._get_triangle_id_from_listbox_index(i)
         used = triangle_id in scen.topoWorld.get_used_source_triangle_ids()
         # Si le triangle est déjà posé dans ce scénario, on bloque le drag
         if used:
@@ -6214,12 +6288,10 @@ class TriangleViewerManual(
         # (tout est géré en coords monde/écran via _world_to_screen / _screen_to_world).
         self._drag = {
             "from": "list",
-            "triangle": tri,
+            "triangle_id": triangle_id,
             "list_index": i,
             "start_screen": start_screen,
-            "mirrored": tri.get("mirrored", False),
         }
-        self._drag["triangle_id"] = triangle_id
 
         # Réinitialiser un éventuel fantôme existant
         if self._drag_preview_id is not None:
@@ -6302,14 +6374,13 @@ class TriangleViewerManual(
         if self._drag:
             wx = (event.x - self.offset[0]) / self.zoom
             wy = (self.offset[1] - event.y) / self.zoom
-            tri = self._drag["triangle"]
-            P = tri["pts"]
-            dx = wx - float(P["O"][0])
-            dy = wy - float(P["O"][1])
-            O = np.array([P["O"][0] + dx, P["O"][1] + dy])
-            B = np.array([P["B"][0] + dx, P["B"][1] + dy])
-            L = np.array([P["L"][0] + dx, P["L"][1] + dy])
-            self._drag["world_pts"] = {"O": O, "B": B, "L": L}
+            triangle_id = self._drag["triangle_id"]
+            self._drag["world_pts"] = self._build_drag_world_points(
+                triangle_id, (wx, wy),
+            )
+            O = self._drag["world_pts"]["O"]
+            B = self._drag["world_pts"]["B"]
+            L = self._drag["world_pts"]["L"]
             coords = []
             for pt in (O, B, L):
                 sx, sy = self._world_to_screen(pt)
@@ -6462,15 +6533,13 @@ class TriangleViewerManual(
 
     def _find_nearest_beacon_candidate(self, v_world):
         """Retourne la balise monde la plus proche du sommet monde donné."""
-        catalog = self.beacon_catalog
         origin = np.asarray(v_world, dtype=float)
         best = None
         best_d2 = None
-        for beacon in catalog.iter_beacons():
-            try:
-                world_pos = np.asarray(catalog.get_world(beacon.beacon_id), dtype=float)
-            except (KeyError, RuntimeError):
+        for beacon in self.catalogue.iter_beacons():
+            if beacon.archived:
                 continue
+            world_pos = np.asarray(self._beacon_world_resolver.get_world(beacon.beacon_id), dtype=float)
             if world_pos.shape != (2,) or not np.all(np.isfinite(world_pos)):
                 continue
             d2 = float(np.sum((world_pos - origin) ** 2))
@@ -6898,16 +6967,13 @@ class TriangleViewerManual(
         """Dépose un triangle manuel en créant d'abord sa géométrie Core."""
         if not self._drag or "world_pts" not in self._drag:
             return
-        tri = self._drag["triangle"]
         Pw = self._drag["world_pts"]
         scen = self._get_active_scenario()
         world = scen.topoWorld
-        triangle_id = self._drag.get("triangle_id")
+        triangle_id = self._drag["triangle_id"]
         hypothesis = scen.hypothesis
         if hypothesis is None:
             raise ValueError("ScenarioHypothesis absente du scénario actif")
-        if not triangle_id:
-            raise ValueError("ScenarioHypothesis: triangle_id absent du drag")
         if triangle_id not in hypothesis.triangle_ids_by_rank:
             raise ValueError(f"ScenarioHypothesis: triangle outside hypothesis: {triangle_id}")
         if triangle_id in world.get_used_source_triangle_ids():
@@ -7254,9 +7320,7 @@ class TriangleViewerManual(
             raise RuntimeError("Décrochage: groupe non ancré")
 
         center_world = self._get_core_group_world_centroid(world, core_group_id)
-        beacon_world = np.asarray(
-            self.beacon_catalog.get_world(anchor.beacon_id), dtype=float
-        )
+        beacon_world = np.asarray(world.getBeaconWorldXY(anchor.beacon_id), dtype=float)
         center_x, center_y = self._world_to_screen(center_world)
         beacon_x, beacon_y = self._world_to_screen(beacon_world)
         direction = np.array((center_x - beacon_x, center_y - beacon_y), dtype=float)
@@ -8114,14 +8178,9 @@ class TriangleViewerManual(
         beacon_id = self._getCheminsBeaconRefId()
         if not beacon_id:
             return None
-        if not hasattr(self, "beacon_catalog") or self.beacon_catalog is None:
+        if beacon_id not in self.catalogue.beacons:
             return None
-        if not self.beacon_catalog.contains(beacon_id):
-            return None
-        try:
-            wx, wy = self.beacon_catalog.get_world(beacon_id)
-        except Exception:
-            return None
+        wx, wy = self._beacon_world_resolver.get_world(beacon_id)
         return (float(wx), float(wy))
 
     def _clock_compute_ref_azimuth_from_balise(self) -> float | None:
@@ -8228,28 +8287,26 @@ class TriangleViewerManual(
                     }
                 )
 
-        if hasattr(self, "beacon_catalog") and self.beacon_catalog is not None:
-            for beacon in self.beacon_catalog.iter_beacons():
-                try:
-                    balise_world = np.array(self.beacon_catalog.get_world(beacon.beacon_id), dtype=float)
-                except Exception:
-                    continue
-                if float(np.linalg.norm(balise_world - center_world)) <= EPS_WORLD:
-                    continue
-                key = ("balise", "", beacon.beacon_id)
-                if key in seen:
-                    continue
-                seen.add(key)
-                out.append(
-                    {
-                        "type": "balise",
-                        "id": beacon.beacon_id,
-                        "beaconId": beacon.beacon_id,
-                        "world": balise_world,
-                        "azAbsDeg": float(self._azimuth_world_deg(center_world, balise_world)),
-                        "label": beacon.name,
-                    }
-                )
+        for beacon in self.catalogue.iter_beacons():
+            if beacon.archived:
+                continue
+            balise_world = np.array(self._beacon_world_resolver.get_world(beacon.beacon_id), dtype=float)
+            if float(np.linalg.norm(balise_world - center_world)) <= EPS_WORLD:
+                continue
+            key = ("balise", "", beacon.beacon_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(
+                {
+                    "type": "balise",
+                    "id": beacon.beacon_id,
+                    "beaconId": beacon.beacon_id,
+                    "world": balise_world,
+                    "azAbsDeg": float(self._azimuth_world_deg(center_world, balise_world)),
+                    "label": self.catalogue.get_city(beacon.city_id).name,
+                }
+            )
 
         return out
 
@@ -9203,9 +9260,7 @@ class TriangleViewerManual(
 
     def _begin_anchored_group_rotation_drag(self, world, core_group_id, anchor, event):
         """Démarre la rotation transactionnelle d'un groupe autour de sa balise."""
-        pivot_world = np.asarray(
-            self.beacon_catalog.get_world(anchor.beacon_id), dtype=float
-        )
+        pivot_world = np.asarray(world.getBeaconWorldXY(anchor.beacon_id), dtype=float)
         mouse_world = self._screen_to_world(event.x, event.y)
         self._sel = {
             "mode": "rotate_group_anchor_drag",
@@ -9694,16 +9749,11 @@ class TriangleViewerManual(
 
             # Sécurité : si world_pts n'a pas été posé (pas de <Motion>), le calculer ici
             if "world_pts" not in self._drag:
-                tri = self._drag["triangle"]
-                P = tri["pts"]
                 wx = (event.x - self.offset[0]) / self.zoom
                 wy = (self.offset[1] - event.y) / self.zoom
-                dx = wx - float(P["O"][0])
-                dy = wy - float(P["O"][1])
-                O = np.array([P["O"][0] + dx, P["O"][1] + dy])
-                B = np.array([P["B"][0] + dx, P["B"][1] + dy])
-                L = np.array([P["L"][0] + dx, P["L"][1] + dy])
-                self._drag["world_pts"] = {"O": O, "B": B, "L": L}
+                self._drag["world_pts"] = self._build_drag_world_points(
+                    self._drag["triangle_id"], (wx, wy),
+                )
 
             # Dépose réellement le triangle dans le document
             self._place_dragged_triangle()

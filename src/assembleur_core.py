@@ -1680,7 +1680,7 @@ class TopologyWorld:
     - Applique vertex↔vertex, vertex↔edge et edge↔edge (mapping direct|reverse) au niveau DSU + coverages.
     - Dégrouper/undo = suppression d’attaches puis rebuild complet (petits scénarios).
     """
-    def __init__(self, beacon_catalog=None):
+    def __init__(self, beacon_resolver=None):
         self.fusion_distance_km: float = 1.0
 
         # Tolérances géométriques de la simulation d'overlap, dans le repère
@@ -1724,10 +1724,10 @@ class TopologyWorld:
         self._isImportingSnapshot = False
         self.topologyChemins = TopologyChemins(self)
 
-        self._beacon_catalog = beacon_catalog
+        self._beacon_resolver = beacon_resolver
 
-    def attachBeaconCatalog(self, beacon_catalog) -> None:
-        self._beacon_catalog = beacon_catalog
+    def attachBeaconResolver(self, beacon_resolver) -> None:
+        self._beacon_resolver = beacon_resolver
 
     def get_used_source_triangle_ids(self) -> frozenset[str]:
         """Business source IDs currently materialized in this physical world."""
@@ -3141,7 +3141,7 @@ class TopologyWorld:
         beacon_id = (beacon_id or "").strip()
         if not beacon_id:
             raise ValueError("TopologyWorld: beacon_id vide")
-        if self._beacon_catalog is None or not self._beacon_catalog.contains(beacon_id):
+        if self._beacon_resolver is None or not self._beacon_resolver.contains(beacon_id):
             raise ValueError(f"TopologyWorld: balise inexistante: {beacon_id!r}")
         return beacon_id
 
@@ -4568,7 +4568,7 @@ class TopologyWorld:
             raise ValueError("TopologyWorld.clonePhysicalState: transaction ouverte")
 
         snapshot = self._exportPhysicalSnapshot()
-        target = TopologyWorld(beacon_catalog=self._beacon_catalog)
+        target = TopologyWorld(beacon_resolver=self._beacon_resolver)
         target._importPhysicalSnapshot(snapshot)
         return target
 
@@ -5247,12 +5247,9 @@ class TopologyWorld:
         return None if bestHit is None else bestHit[1]
 
     def hasBeacon(self, beacon_id: str) -> bool:
-        return self._beacon_catalog is not None and self._beacon_catalog.contains(beacon_id)
+        return self._beacon_resolver is not None and self._beacon_resolver.contains(beacon_id)
 
     def getBeaconWorldXY(self, beacon_id: str) -> tuple[float, float]:
-        if self._beacon_catalog is None:
-            raise RuntimeError("[Beacons] BeaconCatalog absent")
-        beacon = self._beacon_catalog.get(beacon_id)
-        if beacon.world_x is None or beacon.world_y is None:
-            raise RuntimeError(f"[Beacons] coordonnées World absentes: {beacon_id}")
-        return (float(beacon.world_x), float(beacon.world_y))
+        if self._beacon_resolver is None:
+            raise RuntimeError("[Beacons] resolver World absent")
+        return self._beacon_resolver.get_world(beacon_id)

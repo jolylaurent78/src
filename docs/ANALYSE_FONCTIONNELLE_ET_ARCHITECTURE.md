@@ -24,7 +24,7 @@ Ce document est une carte de navigation du code actuel, pas une spécification q
 | Corriger un bug d'interface | 8, Cartographie interne, Sources de vérité, 25 | `assembleur_tk` et les mixins Tk |
 | Corriger un bug topologique | 12, 16, Fonctions critiques, 25 | `assembleur_core`, `assembleur_edgechoice`, `assembleur_tk` |
 | Corriger un bug de scénario | 13, 19, Sources de vérité, Fonctions critiques | `assembleur_tk`, `assembleur_core`, `assembleur_io` |
-| Corriger un bug de carte ou calibration | 15, 17, Cartographie interne, 25 | `assembleur_tk_mixin_bg`, `assembleur_balises`, `assembleur_tk` |
+| Corriger un bug de carte ou calibration | 15, 17, Cartographie interne, 25 | `assembleur_tk_mixin_bg`, `assembleur_tk` |
 | Corriger un bug de chemin | 16, Fonctions critiques, 22 | `assembleur_core`, `assembleur_tk` |
 | Corriger un bug de décryptage | 18, 22, Fonctions critiques, 24 | `assembleur_decryptor`, `assembleur_decryptor_engine`, `assembleur_engine_runtime`, `DictionnaireEnigmes` |
 | Ajouter une fonctionnalité | 7, 20, Sources de vérité, 25 | domaine fonctionnel concerné, puis `assembleur_tk` comme orchestrateur |
@@ -140,7 +140,7 @@ flowchart TB
   TK --> IO[assembleur_io.py]
   TK --> SIM[assembleur_sim.py]
   TK --> CORE[assembleur_core.py]
-  TK --> BAL[assembleur_balises.py]
+  TK --> CAT[assembleur_catalogue.py]
   TK --> DEC[assembleur_decryptor.py]
   TK --> ENGINE[assembleur_decryptor_engine.py]
   TK --> DICO[DictionnaireEnigmes.py]
@@ -175,9 +175,8 @@ Composition/héritage : `TriangleViewerManual` hérite des quatre mixins `Dictio
 | `src/assembleur_debug.py` (296 l.) | NumPy, matplotlib | tracés et inspection topo; cinq fonctions `plot*`/`listTopoGroups` | **Secondaire/debug** : aucun appel de production trouvé. |
 | `src/assembleur_tk_mixin_frontier.py` (244 l.) | math | aides de graphe de frontière; `TriangleViewerFrontierGraphMixin` | **Actif mais rôle d'aide**, hérité par la fenêtre. |
 | `src/assembleur_engine_runtime.py` (206 l.) | threading, queue, time | contrôle pause/stop, file d'événements, checkpoints; `EngineControl`, `EventQueue`, `CheckpointPolicy` | **Actif** pour le décryptage REL. |
-| `src/assembleur_balises.py` (145 l.) | csv, dataclasses, `TriangleFileService` | CSV balises + projection Lambert; `Balise`, `BalisesManager` | **Actif**. |
 
-Ressources actives : trois `.xlsx` de catalogues, `triangle_3villes*.csv`, `livre.txt`, `balises.csv`, cartes et calibrations sous `data/maps`, trois exemples XML sous `scenario/`, et icônes PNG sous `images/`. `exports/` est une destination créée à l'exécution, pas une source métier. Les `.docx` de `specs/` et le sous-dossier `specs/old/` sont **documentation/historique**, non chargés à l'exécution.
+Ressources actives : trois `.xlsx` de catalogues, `triangle_3villes*.csv`, `livre.txt`, le catalogue JSON, cartes et calibrations sous `data/maps`, trois exemples XML sous `scenario/`, et icônes PNG sous `images/`. `exports/` est une destination créée à l'exécution, pas une source métier. Les `.docx` de `specs/` et le sous-dossier `specs/old/` sont **documentation/historique**, non chargés à l'exécution.
 
 ## Cartographie interne de assembleur_tk.py
 
@@ -354,7 +353,6 @@ Le seul algorithme enregistré dans `src/assembleur_sim.py::ALGORITHMES_ASSEMBLA
 | `config/assembleur_config.json` | `loadAppConfig`, `saveAppConfig`, `get/setAppConfigValue` | dictionnaire de chemins récents, UI, carte, simulation, patterns et décryptage. Chemins absolus observés : non portable. Écriture JSON directe sans verrou/version. |
 | `data/*.xlsx` | `TriangleFileService.loadExcel`, `createExcelFromCsv` | entêtes recherchées puis schéma canonique. Génération atomique locale via `.tmp.xlsx`, mais dépend de pandas/openpyxl/pyproj. |
 | `data/livre.txt` | `DictionnaireEnigmes.chargerFichier` | texte UTF-8, une énigme par ligne, premier mot=titre, tags `[categorie]`; les espaces empêchent les tags multi-mots. |
-| `data/balises.csv` | `BalisesManager.loadFromCsv` | CSV comma, trois colonnes et DMS stricts. |
 | `data/maps/*.calib_points.json` | mixin background | trois points WGS84 à cliquer. |
 | `data/maps/*.json` | mixin background | calibration affine, date, rectangle, transformations 6 coefficients. |
 | `scenario/*.xml` | `saveScenarioXml`, `loadScenarioXml` | XML version strictement `4`: snapshot topologique JSON, chemin, source Excel, carte, horloge, référence/guides, listbox, groupes et triangles. Les chemins de source/carte sont absolus; l'absence de l'Excel est dégradée mais un XML incomplet est refusé. |
@@ -701,7 +699,7 @@ sequenceDiagram
 | `src/assembleur_sim.py::AlgoQuadrisParPaires.run` | assemblage automatique enregistré. |
 | `src/assembleur_io.py::TriangleFileService` | génération/lecture de catalogue Excel. |
 | `src/assembleur_io.py::saveScenarioXml` / `loadScenarioXml` | persistance scénario v4. |
-| `src/assembleur_balises.py::BalisesManager` | import/projection des balises. |
+| `src/assembleur_beacon_runtime.py::BeaconWorldResolver` | rÃ©solution `BEA -> CITY -> Lambert -> World`. |
 | `src/DictionnaireEnigmes.py::DictionnaireEnigmes` | texte, scopes et coordonnées. |
 | `src/DictionnaireEnigmes.py::Pattern`, `ListePatterns`, `PatternStateSet` | syntaxe et parcours combinatoire des patterns. |
 | `src/assembleur_decryptor.py::ClockDicoDecryptor`, `Frontiere1870Decryptor`, `DecryptorConfig` | transformations et matching. |

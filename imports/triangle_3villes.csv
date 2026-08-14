@@ -1,33 +1,35 @@
 ﻿Note;Ouverture;Base;Lumiere
 DO;Bourges;Rocamadour;La Ferté-Alais
-DO;Bourges;Rocamadour;Loches
-DO;Bourges;Saint-Amour;Jumièges
-DO;Bourges;Saint-Amour;Grotte de Lombrives
-Zone;Bourges;Le Goulet;Pic du Midi
-Zone;Bourges;Le Goulet;Beaugency
-Zone;Bourges;Pont de Noirmoutier;Pertuis d'Antioche
-Zone;Bourges;Pont de Noirmoutier;Mirebeau
 DO;Bourges;Rocamadour;Lac-de-Trémelin
+DO;Bourges;Rocamadour;Loches
 DO;Bourges;Rocamadour;St Julien de Mailloc
-SOL;Bourges;Reims;Villefrancoeur
-SOL;Bourges;Reims;Thury-sous-Clermont
-MI;Bourges;Gergovie;Rumigny
-MI;Bourges;Gergovie;Solesmes
-MI;Bourges;Carignan;Bâle
-MI;Bourges;Carignan;Boulogne-sur-Mer
-SOL;Bourges;Bouvines;Paris
-SOL;Bourges;Bouvines;Waterloo
-SI;Bourges;Île-d'Aix;Mayence
-SI;Bourges;Île-d'Aix;Pevensey
+DO;Bourges;Rocamadour;Soulac-sur-Mer
+DO;Bourges;Saint-Amour;Grotte de Lombrives
+DO;Bourges;Saint-Amour;Jumièges
 SI;Bourges;Aléria;Massif des Maures
 SI;Bourges;Aléria;Sainte-Mère-Église
 SI;Bourges;Île-d'Aix;3RDV
+SI;Bourges;Île-d'Aix;Mayence
+SI;Bourges;Île-d'Aix;Pevensey
 SI;Bourges;Île-d'Aix;Vézelay
-FA;Bourges;Metz;Brétigny
-FA;Bourges;Metz;Troyes
-FA;Bourges;Château-Gaillard;Montereau
-FA;Bourges;Château-Gaillard;Guérande
-LA;Bourges;Coetquidan;Rouen
 LA;Bourges;Coetquidan;Compiègne
+LA;Bourges;Coetquidan;Rouen
 LA;Bourges;Domrémy;Donon
 LA;Bourges;Domrémy;Puy de Dôme
+SOL;Bourges;Bouvines;Paris
+SOL;Bourges;Bouvines;Waterloo
+SOL;Bourges;Reims;Thury-sous-Clermont
+SOL;Bourges;Reims;Villefrancoeur
+FA;Bourges;Château-Gaillard;Guérande
+FA;Bourges;Château-Gaillard;Montereau
+FA;Bourges;Metz;Brétigny
+FA;Bourges;Metz;Troyes
+MI;Bourges;Carignan;Boulogne-sur-Mer
+MI;Bourges;Carignan;Bâle
+MI;Bourges;Gergovie;Rumigny
+MI;Bourges;Gergovie;Solesmes
+Zone;Bourges;Le Goulet;Beaugency
+Zone;Bourges;Le Goulet;Pic du Midi
+Zone;Bourges;Pont de Noirmoutier;Mirebeau
+Zone;Bourges;Pont de Noirmoutier;Pertuis d'Antioche
+Zone;Bourges;Pont de Noirmoutier;Lac-de-Trémelin

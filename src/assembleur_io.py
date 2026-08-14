@@ -424,8 +424,7 @@ def loadScenarioXml(viewer, path: str):
     # the physical snapshot has been imported successfully.
     world = TopologyWorld()
     # Le catalogue déjà chargé par le viewer est partagé avec le monde restauré.
-    if hasattr(viewer, "_attach_catalog_to_world"):
-        viewer._attach_catalog_to_world(world)
+    viewer._attach_beacon_resolver_to_world(world)
     world._topoTxOrientation = topo_tx_orientation
     world._importPhysicalSnapshot(snapshot)
 
@@ -479,6 +478,7 @@ def loadScenarioXml(viewer, path: str):
     scen.status = None
     viewer.canvas_objects.clear()
     scen.last_drawn = []
+    viewer._reapply_scenario_group_anchors(scen)
     viewer._rebuild_active_projection_from_core()
     viewer._update_triangle_listbox_colors()
 

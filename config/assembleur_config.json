@@ -6,7 +6,7 @@
   "uiClockRefAzimuth": 167.54786231065634,
   "uiShowOnlyGroupContours": false,
   "simLastAlgoId": "quadris_par_paires",
-  "simLastN": 32,
+  "simLastN": 6,
   "simLastOrder": "forward",
   "simLastFirstEdge": "OL",
   "uiAutoFitScenario": false,
@@ -48,7 +48,6 @@
   "lastTriangleCsvIn": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_3villes.csv",
   "lastVillesCsvIn": "D:\\Dropbox\\La Chouette\\Python\\AlgoSimulator\\data\\villes_database.csv",
   "lastTriangleExcelOut": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_v11.xlsx",
-  "balisesCsvPath": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\balises.csv",
   "uiShowBalisesLayer": true,
   "dicoExclureMotsCodes": false,
   "cheminsBaliseRefName": "Grand Ballon",
@@ -62,5 +61,5 @@
     "aspect": 0.8128587830080367
   },
   "uiClockAutoRefSyncEnabled": true,
-  "simLastBeaconId": "B03"
+  "simLastBeaconId": "BEA-0003"
 }

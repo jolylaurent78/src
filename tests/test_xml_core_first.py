@@ -74,12 +74,16 @@ class _Viewer:
     def _get_active_scenario(self):
         return self.scenarios[self.active_scenario_index]
 
+    def _attach_beacon_resolver_to_world(self, world):
+        world.attachBeaconResolver(None)
+
     _bind_canvas_objects = TriangleViewerManual._bind_canvas_objects
     _strip_core_duplicates_from_last_drawn_entry = staticmethod(
         TriangleViewerManual._strip_core_duplicates_from_last_drawn_entry
     )
     _build_scenario_projection_from_core = TriangleViewerManual._build_scenario_projection_from_core
     _rebuild_active_projection_from_core = TriangleViewerManual._rebuild_active_projection_from_core
+    _reapply_scenario_group_anchors = TriangleViewerManual._reapply_scenario_group_anchors
 
     def _pt_to_xml(self, point):
         return f"{float(point[0])},{float(point[1])}"

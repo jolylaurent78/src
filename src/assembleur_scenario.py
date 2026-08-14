@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 
 from src.assembleur_catalogue import Catalogue, HypothesisTemplate
 from src.assembleur_core import (
@@ -46,6 +47,77 @@ class ScenarioHypothesis:
 
     def clone(self) -> "ScenarioHypothesis":
         return ScenarioHypothesis(list(self.triangle_ids_by_rank), self.source_template_id)
+
+
+class HypothesisImpact(Enum):
+    """Niveau de migration requis pour appliquer une hypothèse modifiée."""
+
+    NONE = "NONE"
+    REPLAY = "REPLAY"
+    DETACH = "DETACH"
+    RESET = "RESET"
+
+
+@dataclass(frozen=True)
+class HypothesisRankChange:
+    """Différence d'un rang, exprimée sans référence à Tk ou au Core."""
+
+    rank: int
+    old_triangle_id: str
+    new_triangle_id: str
+    impact: HypothesisImpact
+
+
+@dataclass(frozen=True)
+class ScenarioHypothesisChangePlan:
+    """Plan pur consommable plus tard par les migrations RESET/DETACH/REPLAY."""
+
+    template_changed: bool
+    global_impact: HypothesisImpact
+    rank_changes: tuple[HypothesisRankChange, ...]
+
+
+def _rank_change_impact(catalogue: Catalogue, old_triangle_id: str, new_triangle_id: str) -> HypothesisImpact:
+    old_triangle = catalogue.get_triangle(old_triangle_id)
+    new_triangle = catalogue.get_triangle(new_triangle_id)
+    if (
+        old_triangle.opening_city_id == new_triangle.opening_city_id
+        and old_triangle.base_city_id == new_triangle.base_city_id
+        and old_triangle.light_city_id != new_triangle.light_city_id
+    ):
+        return HypothesisImpact.REPLAY
+    return HypothesisImpact.DETACH
+
+
+def analyze_hypothesis_change(
+    catalogue: Catalogue,
+    old_hypothesis: ScenarioHypothesis,
+    new_hypothesis: ScenarioHypothesis,
+) -> ScenarioHypothesisChangePlan:
+    """Compare deux hypothèses validées sans muter ni Catalogue ni scénario."""
+    old_hypothesis.validate(catalogue)
+    new_hypothesis.validate(catalogue)
+    changes = tuple(
+        HypothesisRankChange(
+            rank=index,
+            old_triangle_id=old_triangle_id,
+            new_triangle_id=new_triangle_id,
+            impact=_rank_change_impact(catalogue, old_triangle_id, new_triangle_id),
+        )
+        for index, (old_triangle_id, new_triangle_id) in enumerate(
+            zip(old_hypothesis.triangle_ids_by_rank, new_hypothesis.triangle_ids_by_rank),
+            start=1,
+        )
+        if old_triangle_id != new_triangle_id
+    )
+    template_changed = old_hypothesis.source_template_id != new_hypothesis.source_template_id
+    if any(change.impact is HypothesisImpact.DETACH for change in changes):
+        global_impact = HypothesisImpact.DETACH
+    elif any(change.impact is HypothesisImpact.REPLAY for change in changes):
+        global_impact = HypothesisImpact.REPLAY
+    else:
+        global_impact = HypothesisImpact.NONE
+    return ScenarioHypothesisChangePlan(template_changed, global_impact, changes)
 
 
 def create_hypothesis_from_template(catalogue: Catalogue, template: HypothesisTemplate) -> ScenarioHypothesis:

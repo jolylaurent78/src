@@ -43,6 +43,35 @@ class TriangleEditorResult:
     light_city_id: str
 
 
+@dataclass(frozen=True)
+class TriangleCsvImportResult:
+    """Synthèse métier d'un import incrémental de triangles."""
+
+    imported_triangle_ids: tuple[str, ...]
+    already_present_count: int
+    errors: tuple[str, ...]
+
+    @property
+    def imported_count(self) -> int:
+        return len(self.imported_triangle_ids)
+
+
+@dataclass(frozen=True)
+class CityCsvImportResult:
+    imported_city_ids: tuple[str, ...]
+    updated_city_ids: tuple[str, ...]
+    unchanged_count: int
+    errors: tuple[str, ...]
+
+    @property
+    def imported_count(self) -> int:
+        return len(self.imported_city_ids)
+
+    @property
+    def updated_count(self) -> int:
+        return len(self.updated_city_ids)
+
+
 class CitySelectionDialog(tk.Toplevel):
     """Sélecteur générique d'un objet ville par recherche filtrante."""
 
@@ -106,6 +135,52 @@ class CitySelectionDialog(tk.Toplevel):
         visible = self._visible_cities()
         if selection:
             self.result = visible[selection[0]].city_id
+            self.destroy()
+
+
+class BeaconAddDialog(tk.Toplevel):
+    """Choisit la ville non archivée qui portera une nouvelle balise."""
+
+    def __init__(self, parent, cities: list[CatalogueCity]):
+        super().__init__(parent)
+        self.title("Ajouter une balise")
+        self.transient(parent)
+        self.resizable(False, False)
+        self.result: str | None = None
+        self._cities = list(cities)
+        self._selected_name = tk.StringVar()
+
+        root = ttk.Frame(self, padding=10)
+        root.pack(fill=tk.BOTH, expand=True)
+        root.columnconfigure(1, weight=1)
+        ttk.Label(root, text="Ville :").grid(row=0, column=0, sticky="w")
+        self._selector = ttk.Combobox(
+            root,
+            state="readonly",
+            textvariable=self._selected_name,
+            values=tuple(city.name for city in self._cities),
+            width=36,
+        )
+        self._selector.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        if self._cities:
+            self._selector.current(0)
+        buttons = ttk.Frame(root)
+        buttons.grid(row=1, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        ttk.Button(buttons, text="OK", command=self._accept).pack(side=tk.LEFT)
+        ttk.Button(buttons, text="Annuler", command=self.destroy).pack(side=tk.LEFT, padx=(6, 0))
+        self.bind("<Return>", lambda _event: self._accept())
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self._selector.focus_set()
+        self.grab_set()
+
+    def show(self) -> str | None:
+        self.wait_window()
+        return self.result
+
+    def _accept(self) -> None:
+        index = self._selector.current()
+        if 0 <= index < len(self._cities):
+            self.result = self._cities[index].city_id
             self.destroy()
 
 
@@ -321,6 +396,7 @@ class CatalogueWindow(tk.Toplevel):
     """Prototype non modal du catalogue et de son premier onglet Villes."""
 
     _CITY_CSV_HEADER = ("Nom", "Latitude", "Longitude")
+    _BEACON_XLSX_HEADER = ("Nom",)
     _TRIANGLE_CSV_HEADER = ("Note", "Ouverture", "Base", "Lumiere")
     _TEMPLATE_CSV_HEADER = ("Rang", "Ouverture", "Base", "Lumiere")
     _TEMPLATE_NOTE_ORDER = {"do": 0, "si": 1, "la": 2, "sol": 3, "fa": 4, "mi": 5, "re": 6, "zone": 7}
@@ -333,6 +409,7 @@ class CatalogueWindow(tk.Toplevel):
         maps_dir: str | Path | None = None,
         catalogue_path: str | Path | None = None,
         on_catalogue_applied: Callable[[Catalogue], None] | None = None,
+        is_beacon_referenced: Callable[[str], bool] | None = None,
     ):
         super().__init__(parent)
         self.title("Gestion du catalogue")
@@ -341,10 +418,12 @@ class CatalogueWindow(tk.Toplevel):
         self._maps_dir = maps_dir
         self._catalogue_path = Path(catalogue_path) if catalogue_path is not None else Path(__file__).resolve().parent.parent / "catalogue.json"
         self._on_catalogue_applied = on_catalogue_applied
+        self._is_beacon_referenced = is_beacon_referenced
         # Copie transactionnelle : le Catalogue runtime du viewer reste intact jusqu'à Appliquer.
         self.catalogue = catalogue.clone()
         self._validated_catalogue = self.catalogue.clone()
         self._selected_city_id: str | None = None
+        self._selected_beacon_id: str | None = None
         self._selected_triangle_id: str | None = None
         self._selected_template_id: str | None = self.catalogue.default_template_id
         self._selected_template_triangle_id: str | None = None
@@ -364,6 +443,9 @@ class CatalogueWindow(tk.Toplevel):
 
         self._search_var = tk.StringVar()
         self._show_archived_var = tk.BooleanVar(value=False)
+        self._beacon_search_var = tk.StringVar()
+        self._show_archived_beacons_var = tk.BooleanVar(value=False)
+        self._beacon_archived_var = tk.BooleanVar(value=False)
         self._name_var = tk.StringVar()
         self._archived_var = tk.BooleanVar(value=False)
         self._triangle_date_filter_var = tk.StringVar(value="Tous")
@@ -381,6 +463,7 @@ class CatalogueWindow(tk.Toplevel):
         self._load_icons()
         self._build_ui()
         self._refresh_city_list()
+        self._refresh_beacon_list()
         self._refresh_triangle_tree()
         self._load_map()
         self.protocol("WM_DELETE_WINDOW", self.request_close)
@@ -442,13 +525,16 @@ class CatalogueWindow(tk.Toplevel):
         notebook = ttk.Notebook(root)
         notebook.grid(row=0, column=0, sticky="nsew")
         self._cities_tab = ttk.Frame(notebook, padding=8)
+        self._beacons_tab = ttk.Frame(notebook, padding=8)
         self._triangles_tab = ttk.Frame(notebook, padding=8)
         self._templates_tab = ttk.Frame(notebook, padding=8)
         notebook.add(self._cities_tab, text="Villes (0)")
+        notebook.add(self._beacons_tab, text="Balises (0)")
         notebook.add(self._triangles_tab, text="Triangles (0)")
         notebook.add(self._templates_tab, text="Templates (0)")
         self._catalogue_notebook = notebook
         self._build_cities_tab()
+        self._build_beacons_tab()
         self._build_triangles_tab()
         self._build_templates_tab()
 
@@ -531,10 +617,15 @@ class CatalogueWindow(tk.Toplevel):
         usage = ttk.Frame(detail)
         usage.grid(row=3, column=0, columnspan=2, sticky="w", pady=(0, 8))
         ttk.Label(usage, text="Référencée par :").pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Label(usage, text="Triangles : 0").pack(side=tk.LEFT)
+        self._city_triangle_count_label = ttk.Label(usage, text="Triangles : 0")
+        self._city_triangle_count_label.pack(side=tk.LEFT)
         ttk.Button(usage, text="...", width=3, state=tk.DISABLED).pack(side=tk.LEFT, padx=(4, 14))
-        ttk.Label(usage, text="Balises : 0").pack(side=tk.LEFT)
-        ttk.Button(usage, text="...", width=3, state=tk.DISABLED).pack(side=tk.LEFT, padx=(4, 0))
+        self._city_beacon_count_label = ttk.Label(usage, text="Balises : 0")
+        self._city_beacon_count_label.pack(side=tk.LEFT)
+        self._city_beacon_references_button = ttk.Button(
+            usage, text="...", width=3, state=tk.DISABLED, command=self._show_city_beacon_references,
+        )
+        self._city_beacon_references_button.pack(side=tk.LEFT, padx=(4, 0))
         self._map_view = GeoMapView(
             detail,
             on_marker_selected=self._on_map_marker_selected,
@@ -546,10 +637,85 @@ class CatalogueWindow(tk.Toplevel):
         self._name_var.trace_add("write", self._save_detail_changes)
         self._archived_var.trace_add("write", self._save_detail_changes)
 
+    def _build_beacons_tab(self):
+        self._beacons_tab.rowconfigure(0, weight=1)
+        self._beacons_tab.columnconfigure(0, weight=1)
+        panes = ttk.PanedWindow(self._beacons_tab, orient=tk.HORIZONTAL)
+        panes.grid(row=0, column=0, sticky="nsew")
+        master = ttk.Frame(panes, padding=(0, 0, 8, 0))
+        detail = ttk.Frame(panes, padding=(8, 0, 0, 0))
+        panes.add(master, weight=1)
+        panes.add(detail, weight=2)
+
+        ttk.Label(master, text="Rechercher").pack(anchor="w")
+        ttk.Entry(master, textvariable=self._beacon_search_var).pack(fill=tk.X, pady=(2, 8))
+        self._beacon_search_var.trace_add("write", lambda *_: self._refresh_beacon_list())
+        ttk.Checkbutton(
+            master,
+            text="Afficher les balises archivées",
+            variable=self._show_archived_beacons_var,
+            command=self._refresh_beacon_list,
+        ).pack(anchor="w", pady=(0, 8))
+        actions = ttk.Frame(master)
+        actions.pack(fill=tk.X, pady=(0, 8))
+        self._beacon_add_button = ttk.Button(actions, image=self._icon_map_pin_plus, command=self._add_beacon)
+        self._beacon_add_button.pack(side=tk.LEFT)
+        self._attach_tooltip(self._beacon_add_button, "Ajouter une balise")
+        self._beacon_archive_button = ttk.Button(
+            actions, image=self._icon_archive, command=self._archive_selected_beacon, state=tk.DISABLED,
+        )
+        self._beacon_archive_button.pack(side=tk.LEFT, padx=4)
+        self._attach_tooltip(self._beacon_archive_button, "Archiver la balise")
+        self._beacon_delete_button = ttk.Button(
+            actions, image=self._icon_trash, command=self._delete_selected_beacon, state=tk.DISABLED,
+        )
+        self._beacon_delete_button.pack(side=tk.LEFT)
+        self._attach_tooltip(self._beacon_delete_button, "Supprimer la balise")
+        list_frame = ttk.Frame(master)
+        list_frame.pack(fill=tk.BOTH, expand=True)
+        self._beacon_listbox = tk.Listbox(list_frame, exportselection=False)
+        self._beacon_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self._beacon_listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self._beacon_listbox.configure(yscrollcommand=scrollbar.set)
+        self._beacon_listbox.bind("<<ListboxSelect>>", self._on_beacon_selected)
+
+        detail.rowconfigure(3, weight=1)
+        detail.columnconfigure(1, weight=1)
+        ttk.Label(detail, text="Ville").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        self._beacon_city_label = ttk.Label(detail, text="")
+        self._beacon_city_label.grid(row=0, column=1, sticky="w", pady=(0, 6))
+        ttk.Label(detail, text="Coordonnées").grid(row=1, column=0, sticky="w", pady=(0, 6))
+        coordinates = ttk.Frame(detail)
+        coordinates.grid(row=1, column=1, sticky="w", pady=(0, 6))
+        self._beacon_latitude_editor = DmsCoordinateEditor(coordinates, coordinate_type="latitude")
+        self._beacon_latitude_editor.grid(row=0, column=0, sticky="w")
+        self._beacon_longitude_editor = DmsCoordinateEditor(coordinates, coordinate_type="longitude")
+        self._beacon_longitude_editor.grid(row=0, column=1, sticky="w", padx=(12, 0))
+        self._set_dms_editor_readonly(self._beacon_latitude_editor)
+        self._set_dms_editor_readonly(self._beacon_longitude_editor)
+        ttk.Checkbutton(detail, text="Balise archivée", variable=self._beacon_archived_var, state=tk.DISABLED).grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(2, 6)
+        )
+        self._beacon_map_view = GeoMapView(
+            detail,
+            on_marker_selected=self._on_beacon_map_marker_selected,
+            initial_fit_zoom=2.25,
+            minimum_fit_zoom=2.25,
+        )
+        self._beacon_map_view.grid(row=3, column=0, columnspan=2, sticky="nsew")
+
+    @staticmethod
+    def _set_dms_editor_readonly(editor: DmsCoordinateEditor) -> None:
+        editor._hemisphere.configure(state=tk.DISABLED)
+        for spinbox in (editor._degrees, editor._minutes, editor._seconds):
+            spinbox.configure(state=tk.DISABLED)
+
     def _load_map(self):
         try:
             calibrated_map = CalibratedGeoMap.load_map("france_michelin", self._maps_dir)
             self._map_view.set_map(calibrated_map)
+            self._beacon_map_view.set_map(calibrated_map)
             self._triangle_map_view.set_map(calibrated_map)
         except (FileNotFoundError, OSError, ValueError) as exc:
             messagebox.showwarning("Carte du catalogue", str(exc), parent=self)
@@ -562,6 +728,9 @@ class CatalogueWindow(tk.Toplevel):
         if active_tab == str(self._cities_tab):
             self._import_button.configure(command=self._import_csv, state=tk.NORMAL)
             self._export_button.configure(command=self._export_cities_csv, state=tk.NORMAL)
+        elif active_tab == str(self._beacons_tab):
+            self._import_button.configure(command=self._import_beacons_xlsx, state=tk.NORMAL)
+            self._export_button.configure(command=self._export_beacons_xlsx, state=tk.NORMAL)
         elif active_tab == str(self._triangles_tab):
             self._import_button.configure(command=self._import_triangles_csv, state=tk.NORMAL)
             self._export_button.configure(command=self._export_triangles_csv, state=tk.NORMAL)
@@ -596,6 +765,30 @@ class CatalogueWindow(tk.Toplevel):
             writer = csv.writer(csv_file, delimiter=";")
             writer.writerow(self._CITY_CSV_HEADER)
             writer.writerows((city.name, city.latitude, city.longitude) for city in self.catalogue.iter_cities())
+
+    def _export_beacons_xlsx(self):
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Exporter les balises",
+            defaultextension=".xlsx",
+            initialfile="balises.xlsx",
+            filetypes=[("Fichiers Excel", "*.xlsx"), ("Tous les fichiers", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            from openpyxl import Workbook
+
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Balises"
+            worksheet.append(self._BEACON_XLSX_HEADER)
+            for name in self._beacon_export_names():
+                worksheet.append((name,))
+            workbook.save(path)
+            workbook.close()
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Exporter les balises", str(exc), parent=self)
 
     def _export_triangles_csv(self):
         path = self._choose_export_path("Exporter les triangles")
@@ -1100,11 +1293,13 @@ class CatalogueWindow(tk.Toplevel):
             self._selected_template_rank_slot.set_selected(False)
         self.catalogue = self._validated_catalogue.clone()
         self._selected_city_id = None
+        self._selected_beacon_id = None
         self._selected_triangle_id = None
         self._selected_template_id = self.catalogue.default_template_id
         self._selected_template_triangle_id = None
         self._selected_template_rank_slot = None
         self._refresh_city_list()
+        self._refresh_beacon_list()
         self._refresh_triangle_tree()
         self._refresh_templates()
         self._update_context_actions()
@@ -1128,19 +1323,117 @@ class CatalogueWindow(tk.Toplevel):
         if not path:
             return
         try:
-            imported_cities = self._read_cities_csv(path)
+            imported_cities, errors = self._read_cities_csv(path)
             preview = self.catalogue.clone()
+            cities_by_name = {
+                city.name.strip().casefold(): city
+                for city in preview.iter_cities()
+            }
+            imported_ids: list[str] = []
+            updated_ids: list[str] = []
+            unchanged_count = 0
             for name, latitude, longitude in imported_cities:
-                preview.add_city(name, latitude, longitude)
+                key = name.strip().casefold()
+                city = cities_by_name.get(key)
+                if city is None:
+                    city = preview.add_city(name, latitude, longitude)
+                    cities_by_name[key] = city
+                    imported_ids.append(city.city_id)
+                elif math.isclose(city.latitude, latitude, abs_tol=1e-9) and math.isclose(
+                    city.longitude, longitude, abs_tol=1e-9,
+                ):
+                    unchanged_count += 1
+                else:
+                    preview.update_city(city.city_id, latitude=latitude, longitude=longitude)
+                    updated_ids.append(city.city_id)
             self.catalogue = preview
         except (OSError, UnicodeError, ValueError, csv.Error) as exc:
             messagebox.showerror("Importer des villes", str(exc), parent=self)
             return
+        result = CityCsvImportResult(
+            tuple(imported_ids), tuple(updated_ids), unchanged_count, tuple(errors),
+        )
+        if result.imported_count or result.updated_count:
+            self._refresh_city_list()
+            self._refresh_triangle_tree()
+            self._refresh_beacon_list()
+            self._mark_dirty()
+        summary = self._format_cities_import_summary(result)
+        if result.errors:
+            messagebox.showwarning("Importer des villes", summary, parent=self)
+        else:
+            messagebox.showinfo("Importer des villes", summary, parent=self)
+
+    def _import_beacons_xlsx(self):
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="Importer des balises",
+            filetypes=[("Fichiers Excel", "*.xlsx"), ("Tous les fichiers", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            rows = self._read_beacons_xlsx(path)
+            self._import_beacon_rows(rows)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Importer des balises", str(exc), parent=self)
+            return
+        self._refresh_beacon_list()
         self._refresh_city_list()
+        self._load_selected_city()
         self._mark_dirty()
 
+    def _import_beacon_rows(self, rows: list[tuple[int, str]]) -> None:
+        """Applique l'import dans un clone, sans mutation partielle en cas d'erreur."""
+        preview = self.catalogue.clone()
+        for line_number, city_id in rows:
+            try:
+                preview.add_beacon(city_id)
+            except ValueError as exc:
+                city_name = self.catalogue.get_city(city_id).name
+                raise ValueError(f"Ligne {line_number} : {city_name} : {exc}") from exc
+        self.catalogue = preview
+
+    def _beacon_export_names(self) -> tuple[str, ...]:
+        """Exporte toutes les balises, y compris archivées, dans l'ordre des IDs."""
+        return tuple(
+            self.catalogue.get_city(beacon.city_id).name
+            for beacon in self.catalogue.iter_beacons()
+        )
+
+    def _read_beacons_xlsx(self, path: str) -> list[tuple[int, str]]:
+        from openpyxl import load_workbook
+
+        workbook = load_workbook(path, read_only=True, data_only=True)
+        try:
+            worksheet = workbook.active
+            rows = [
+                (line_number, row)
+                for line_number, row in enumerate(worksheet.iter_rows(values_only=True), start=1)
+                if any(value is not None and str(value).strip() for value in row)
+            ]
+        finally:
+            workbook.close()
+        if not rows:
+            raise ValueError("Le fichier Excel balises est vide.")
+        _header_line, header = rows[0]
+        header_values = tuple(str(value).strip() for value in header if value is not None and str(value).strip())
+        if header_values != self._BEACON_XLSX_HEADER:
+            raise ValueError("L'en-tête Excel doit contenir exactement la colonne : Nom")
+        cities_by_name = {city.name.strip().casefold(): city for city in self.catalogue.iter_cities()}
+        imported: list[tuple[int, str]] = []
+        for line_number, row in rows[1:]:
+            values = tuple(str(value).strip() for value in row if value is not None and str(value).strip())
+            if len(values) != 1:
+                raise ValueError(f"Ligne {line_number} : une seule colonne Nom est attendue.")
+            city = cities_by_name.get(values[0].casefold())
+            if city is None:
+                raise ValueError(f"Ligne {line_number} : ville inconnue : {values[0]}.")
+            imported.append((line_number, city.city_id))
+        return imported
+
     @classmethod
-    def _read_cities_csv(cls, path: str) -> list[tuple[str, float, float]]:
+    def _read_cities_csv(cls, path: str) -> tuple[list[tuple[str, float, float]], list[str]]:
         with open(path, "r", encoding="utf-8-sig", newline="") as csv_file:
             rows = [row for row in csv.reader(csv_file, delimiter=";") if any(str(value).strip() for value in row)]
         if not rows:
@@ -1148,18 +1441,37 @@ class CatalogueWindow(tk.Toplevel):
         if tuple(str(value).strip() for value in rows[0]) != cls._CITY_CSV_HEADER:
             raise ValueError("L'en-tête CSV doit être : Nom;Latitude;Longitude")
         cities = []
+        errors = []
         for line_number, row in enumerate(rows[1:], start=2):
-            if len(row) != 3:
-                raise ValueError(f"Ligne {line_number} : trois colonnes sont attendues.")
-            name, raw_latitude, raw_longitude = (str(value).strip() for value in row)
-            if not name:
-                raise ValueError(f"Ligne {line_number} : nom de ville vide.")
-            cities.append((
-                name,
-                DmsCoordinateEditor.parse_coordinate(raw_latitude, "latitude"),
-                DmsCoordinateEditor.parse_coordinate(raw_longitude, "longitude"),
-            ))
-        return cities
+            try:
+                if len(row) != 3:
+                    raise ValueError("trois colonnes sont attendues.")
+                name, raw_latitude, raw_longitude = (str(value).strip() for value in row)
+                if not name:
+                    raise ValueError("nom de ville vide.")
+                cities.append((
+                    name,
+                    DmsCoordinateEditor.parse_coordinate(raw_latitude, "latitude"),
+                    DmsCoordinateEditor.parse_coordinate(raw_longitude, "longitude"),
+                ))
+            except ValueError as exc:
+                errors.append(f"Ligne {line_number} : {exc}")
+        return cities, errors
+
+    @staticmethod
+    def _format_cities_import_summary(result: CityCsvImportResult) -> str:
+        lines = ["Import terminé.", ""]
+        if result.imported_count:
+            lines.append(f"{result.imported_count} nouvelle(s) ville(s) importée(s).")
+        if result.updated_count:
+            lines.append(f"{result.updated_count} ville(s) mise(s) à jour.")
+        if result.unchanged_count:
+            lines.append(f"{result.unchanged_count} ville(s) déjà à jour ont été ignorée(s).")
+        if not (result.imported_count or result.updated_count or result.unchanged_count):
+            lines.append("Aucune ville importée.")
+        if result.errors:
+            lines.extend(("", f"{len(result.errors)} ligne(s) n'ont pas pu être importée(s) :", "\n".join(result.errors[:12])))
+        return "\n".join(lines)
 
     def _import_triangles_csv(self):
         path = filedialog.askopenfilename(
@@ -1170,23 +1482,46 @@ class CatalogueWindow(tk.Toplevel):
         if not path:
             return
         try:
-            imported, errors = self._read_triangles_csv(path)
+            result = self._read_triangles_csv(path)
         except (OSError, UnicodeError, ValueError, csv.Error) as exc:
             messagebox.showerror("Importer des triangles", str(exc), parent=self)
             return
         self._refresh_triangle_tree()
-        if imported:
+        if result.imported_count:
             self._mark_dirty()
-        if errors:
-            preview = "\n".join(errors[:12])
-            suffix = "\n…" if len(errors) > 12 else ""
+        summary = self._format_triangles_import_summary(result)
+        if result.errors:
             messagebox.showwarning(
                 "Import des triangles",
-                f"{len(imported)} triangle(s) importé(s), {len(errors)} ligne(s) refusée(s).\n\n{preview}{suffix}",
+                summary,
                 parent=self,
             )
+        else:
+            messagebox.showinfo("Import des triangles", summary, parent=self)
 
-    def _read_triangles_csv(self, path: str) -> tuple[list[str], list[str]]:
+    @staticmethod
+    def _format_triangles_import_summary(result: TriangleCsvImportResult) -> str:
+        lines = ["Import terminé.", ""]
+        if result.imported_count:
+            suffix = "" if result.imported_count == 1 else "s"
+            lines.append(f"{result.imported_count} nouveau triangle importé{suffix}.")
+        elif result.already_present_count or result.errors:
+            lines.append("Aucun nouveau triangle.")
+        if result.already_present_count:
+            suffix = "" if result.already_present_count == 1 else "s"
+            lines.append(
+                f"{result.already_present_count} triangle{suffix} déjà présent{suffix} "
+                "ont été ignorés."
+                if result.already_present_count != 1
+                else "1 triangle déjà présent a été ignoré."
+            )
+        if result.errors:
+            preview = "\n".join(result.errors[:12])
+            suffix = "\n…" if len(result.errors) > 12 else ""
+            lines.extend(("", f"{len(result.errors)} ligne(s) n'ont pas pu être importée(s) :", preview + suffix))
+        return "\n".join(lines)
+
+    def _read_triangles_csv(self, path: str) -> TriangleCsvImportResult:
         with open(path, "r", encoding="utf-8-sig", newline="") as csv_file:
             rows = [row for row in csv.reader(csv_file, delimiter=";") if any(str(value).strip() for value in row)]
         if not rows:
@@ -1194,7 +1529,12 @@ class CatalogueWindow(tk.Toplevel):
         if tuple(str(value).strip() for value in rows[0]) != self._TRIANGLE_CSV_HEADER:
             raise ValueError("L'en-tête CSV doit être : Note;Ouverture;Base;Lumiere")
         cities_by_name = {city.name.strip().casefold(): city for city in self.catalogue.iter_cities()}
+        existing_triplets = {
+            (triangle.opening_city_id, triangle.base_city_id, triangle.light_city_id)
+            for triangle in self.catalogue.iter_triangles()
+        }
         triangles: list[str] = []
+        already_present_count = 0
         errors: list[str] = []
         for line_number, row in enumerate(rows[1:], start=2):
             if len(row) != 4:
@@ -1208,6 +1548,10 @@ class CatalogueWindow(tk.Toplevel):
                 errors.append(f"Ligne {line_number} :{detail}.")
                 continue
             opening, base, light = cities
+            triplet = (opening.city_id, base.city_id, light.city_id)
+            if triplet in existing_triplets:
+                already_present_count += 1
+                continue
             try:
                 model_triangle = self.catalogue.add_triangle(
                     note, opening.city_id, base.city_id, light.city_id,
@@ -1216,7 +1560,12 @@ class CatalogueWindow(tk.Toplevel):
                 errors.append(f"Ligne {line_number} : {exc}")
                 continue
             triangles.append(model_triangle.triangle_id)
-        return triangles, errors
+            existing_triplets.add(triplet)
+        return TriangleCsvImportResult(
+            imported_triangle_ids=tuple(triangles),
+            already_present_count=already_present_count,
+            errors=tuple(errors),
+        )
 
     def _import_template_csv(self):
         template = self._get_selected_template()
@@ -1775,6 +2124,131 @@ class CatalogueWindow(tk.Toplevel):
         return [city for city in self.catalogue.iter_cities() if (self._show_archived_var.get() or not city.archived)
                 and (not search or search in city.name.casefold())]
 
+    def _visible_beacons(self):
+        search = self._beacon_search_var.get().strip().casefold()
+        return [
+            beacon for beacon in self.catalogue.iter_beacons()
+            if (self._show_archived_beacons_var.get() or not beacon.archived)
+            and (not search or search in self.catalogue.get_city(beacon.city_id).name.casefold())
+        ]
+
+    def _refresh_beacon_list(self):
+        selected_id, visible = self._selected_beacon_id, self._visible_beacons()
+        self._beacon_listbox.delete(0, tk.END)
+        for beacon in visible:
+            self._beacon_listbox.insert(tk.END, self.catalogue.get_city(beacon.city_id).name)
+        if any(beacon.beacon_id == selected_id for beacon in visible):
+            index = next(index for index, beacon in enumerate(visible) if beacon.beacon_id == selected_id)
+            self._beacon_listbox.selection_set(index)
+            self._beacon_listbox.activate(index)
+            self._beacon_listbox.see(index)
+        elif selected_id is not None:
+            self._selected_beacon_id = None
+            self._load_selected_beacon()
+        self._catalogue_notebook.tab(self._beacons_tab, text=f"Balises ({len(self.catalogue.beacons)})")
+        self._beacon_map_view.set_markers(
+            GeoMapMarker(
+                beacon.beacon_id,
+                self.catalogue.get_city(beacon.city_id).latitude,
+                self.catalogue.get_city(beacon.city_id).longitude,
+                self.catalogue.get_city(beacon.city_id).name,
+            )
+            for beacon in visible
+        )
+        self._beacon_map_view.set_selected_marker(self._selected_beacon_id)
+        self._update_beacon_action_buttons()
+
+    def _available_beacon_cities(self) -> list[CatalogueCity]:
+        beacon_city_ids = {beacon.city_id for beacon in self.catalogue.iter_beacons()}
+        return [
+            city for city in self.catalogue.iter_cities()
+            if not city.archived and city.city_id not in beacon_city_ids
+        ]
+
+    def _on_beacon_selected(self, _event=None):
+        selection, visible = self._beacon_listbox.curselection(), self._visible_beacons()
+        self._selected_beacon_id = visible[selection[0]].beacon_id if selection else None
+        self._load_selected_beacon()
+        self._beacon_map_view.set_selected_marker(self._selected_beacon_id, recenter=True)
+        self._update_beacon_action_buttons()
+
+    def _on_beacon_map_marker_selected(self, marker_id):
+        self._selected_beacon_id = marker_id if marker_id in self.catalogue.beacons else None
+        self._refresh_beacon_list()
+        self._load_selected_beacon()
+
+    def _load_selected_beacon(self):
+        beacon = self.catalogue.get_beacon(self._selected_beacon_id) if self._selected_beacon_id else None
+        city = self.catalogue.get_city(beacon.city_id) if beacon is not None else None
+        self._beacon_city_label.configure(text=city.name if city else "")
+        self._beacon_latitude_editor.set_decimal(city.latitude if city else 0.0)
+        self._beacon_longitude_editor.set_decimal(city.longitude if city else 0.0)
+        self._beacon_archived_var.set(beacon.archived if beacon else False)
+
+    def _update_beacon_action_buttons(self):
+        beacon = self.catalogue.get_beacon(self._selected_beacon_id) if self._selected_beacon_id else None
+        state = tk.NORMAL if beacon is not None else tk.DISABLED
+        self._beacon_delete_button.configure(state=state)
+        self._beacon_archive_button.configure(
+            state=state,
+            image=self._icon_archive_off if beacon is not None and beacon.archived else self._icon_archive,
+        )
+        self._set_tooltip_text(
+            self._beacon_archive_button,
+            "Désarchiver la balise" if beacon is not None and beacon.archived else "Archiver la balise",
+        )
+
+    def _add_beacon(self):
+        city_id = BeaconAddDialog(self, self._available_beacon_cities()).show()
+        if city_id is None:
+            return
+        try:
+            beacon = self.catalogue.add_beacon(city_id)
+        except ValueError as exc:
+            messagebox.showerror("Ajouter une balise", str(exc), parent=self)
+            return
+        self._selected_beacon_id = beacon.beacon_id
+        self._refresh_beacon_list()
+        self._load_selected_beacon()
+        self._refresh_city_list()
+        self._load_selected_city()
+        self._mark_dirty()
+
+    def _archive_selected_beacon(self):
+        if self._selected_beacon_id is None:
+            return
+        beacon = self.catalogue.get_beacon(self._selected_beacon_id)
+        self.catalogue.update_beacon(beacon.beacon_id, archived=not beacon.archived)
+        self._refresh_beacon_list()
+        self._load_selected_beacon()
+        self._refresh_city_list()
+        self._load_selected_city()
+        self._mark_dirty()
+
+    def _delete_selected_beacon(self):
+        if self._selected_beacon_id is None:
+            return
+        beacon = self.catalogue.get_beacon(self._selected_beacon_id)
+        city = self.catalogue.get_city(beacon.city_id)
+        if self._is_beacon_referenced is not None and self._is_beacon_referenced(beacon.beacon_id):
+            messagebox.showerror(
+                "Supprimer la balise",
+                "Cette balise est utilisÃ©e par un ancrage de scÃ©nario. Archivez-la plutÃ´t que de la supprimer.",
+                parent=self,
+            )
+            return
+        if not messagebox.askyesno(
+            "Supprimer la balise", f"Supprimer la balise associée à {city.name} ?", parent=self,
+        ):
+            return
+        self.catalogue.delete_beacon(beacon.beacon_id)
+        self._selected_beacon_id = None
+        self._refresh_beacon_list()
+        self._load_selected_beacon()
+        self._refresh_city_list()
+        self._load_selected_city()
+        self._mark_dirty()
+
     def _refresh_city_list(self):
         selected_id, visible = self._selected_city_id, self._visible_cities()
         self._city_listbox.delete(0, tk.END)
@@ -1826,7 +2300,26 @@ class CatalogueWindow(tk.Toplevel):
         self._latitude_editor.set_decimal(city.latitude if city else 0.0)
         self._longitude_editor.set_decimal(city.longitude if city else 0.0)
         self._archived_var.set(city.archived if city else False)
+        triangle_count = len(self.catalogue.get_triangles_referencing_city(city.city_id)) if city else 0
+        beacon_references = self.catalogue.get_beacons_referencing_city(city.city_id) if city else ()
+        self._city_triangle_count_label.configure(text=f"Triangles : {triangle_count}")
+        self._city_beacon_count_label.configure(text=f"Balises : {len(beacon_references)}")
+        self._city_beacon_references_button.configure(
+            state=tk.NORMAL if beacon_references else tk.DISABLED,
+        )
         self._updating_detail = False
+
+    def _show_city_beacon_references(self):
+        if self._selected_city_id is None:
+            return
+        references = self.catalogue.get_beacons_referencing_city(self._selected_city_id)
+        if not references:
+            return
+        lines = [
+            f"{beacon.beacon_id} — {'Archivée' if beacon.archived else 'Active'}"
+            for beacon in references
+        ]
+        messagebox.showinfo("Balises référencées", "\n".join(lines), parent=self)
 
     def _save_detail_changes(self, *_args):
         if self._updating_detail or self._selected_city_id is None:

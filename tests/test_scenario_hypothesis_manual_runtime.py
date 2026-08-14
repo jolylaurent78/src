@@ -36,6 +36,23 @@ class _Listbox:
     def selection_clear(self, *_args):
         self.selected = ()
 
+    def selection_set(self, index):
+        self.selected = (index,)
+
+    def nearest(self, _y):
+        return 0
+
+
+class _Canvas:
+    def delete(self, *_args):
+        pass
+
+    def focus_set(self):
+        pass
+
+    def configure(self, **_kwargs):
+        pass
+
 
 class _Status:
     def config(self, **_kwargs):
@@ -109,7 +126,6 @@ def test_manual_preview_and_placement_use_catalogue_triangle_id_only():
     assert preview["triangle_id"] == triangle_id
     assert "model" not in preview
     viewer._drag = {
-        "triangle": preview,
         "triangle_id": triangle_id,
         "world_pts": {
             "O": np.array([10.0, 20.0]),
@@ -133,6 +149,37 @@ def test_manual_preview_and_placement_use_catalogue_triangle_id_only():
 
     with pytest.raises(ValueError, match="already used"):
         viewer._place_dragged_triangle()
+
+
+def test_list_drag_keeps_only_the_catalogue_triangle_id_and_ui_state():
+    catalogue, hypothesis = _catalogue_and_hypothesis()
+    viewer, _scenario = _viewer(catalogue, hypothesis)
+    TriangleViewerManual._rebuild_triangle_listbox_from_core(viewer)
+    viewer.canvas = _Canvas()
+    viewer._drag_preview_id = None
+
+    TriangleViewerManual._on_list_mouse_down(
+        viewer, SimpleNamespace(y=0, x_root=100, y_root=200),
+    )
+
+    assert viewer._drag["triangle_id"] == hypothesis.triangle_ids_by_rank[0]
+    assert "triangle" not in viewer._drag
+    assert "mirrored" not in viewer._drag
+
+
+def test_drag_world_points_are_resolved_from_the_catalogue_triangle_id():
+    catalogue, hypothesis = _catalogue_and_hypothesis()
+    viewer, _scenario = _viewer(catalogue, hypothesis)
+    triangle_id = hypothesis.triangle_ids_by_rank[0]
+
+    world_pts = TriangleViewerManual._build_drag_world_points(
+        viewer, triangle_id, (10.0, 20.0),
+    )
+
+    assert world_pts["O"] == pytest.approx((10.0, 20.0))
+    element = materialize_catalogue_triangle(catalogue, triangle_id)
+    expected_bl = np.asarray(element.vertex_local_xy[2]) - np.asarray(element.vertex_local_xy[0])
+    assert world_pts["L"] - world_pts["O"] == pytest.approx(expected_bl)
 
 
 def test_modern_display_label_resolves_rank_from_hypothesis_order():
@@ -186,7 +233,6 @@ def test_used_catalogue_triangle_is_grey_and_becomes_available_after_removal():
     triangle_id = hypothesis.triangle_ids_by_rank[0]
     preview = viewer._triangle_from_index(0)
     viewer._drag = {
-        "triangle": preview,
         "triangle_id": triangle_id,
         "world_pts": {"O": (0.0, 0.0), "B": (3.0, 0.0), "L": (0.0, 4.0)},
     }

@@ -2,7 +2,13 @@ import math
 
 import pytest
 
-from src.assembleur_catalogue import Catalogue, CatalogueCity, CatalogueTriangle, HypothesisTemplate
+from src.assembleur_catalogue import (
+    Catalogue,
+    CatalogueBeacon,
+    CatalogueCity,
+    CatalogueTriangle,
+    HypothesisTemplate,
+)
 
 
 def _three_cities(catalogue: Catalogue):
@@ -27,8 +33,66 @@ def test_empty_catalogue_and_ids_use_the_highest_existing_number():
     catalogue.triangles = {"TRI-9999": CatalogueTriangle("TRI-9999", "Do", "CITY-0001", "CITY-0003", "CITY-0002")}
     catalogue.templates = {"TPL-0004": HypothesisTemplate("TPL-0004", "T")}
     assert catalogue._next_city_id() == "CITY-0004"
+    assert catalogue._next_beacon_id() == "BEA-0001"
     assert catalogue._next_triangle_id() == "TRI-10000"
     assert catalogue._next_template_id() == "TPL-0005"
+
+
+def test_beacons_have_stable_ids_and_reference_one_catalogue_city_each():
+    catalogue = Catalogue()
+    first_city = catalogue.add_city("Ville A", 47.0, 2.0)
+    second_city = catalogue.add_city("Ville B", 46.0, 3.0)
+
+    first = catalogue.add_beacon(first_city.city_id)
+    second = catalogue.add_beacon(second_city.city_id)
+
+    assert first == CatalogueBeacon("BEA-0001", first_city.city_id)
+    assert tuple(CatalogueBeacon.__dataclass_fields__) == ("beacon_id", "city_id", "archived")
+    assert second == CatalogueBeacon("BEA-0002", second_city.city_id)
+    assert catalogue.get_beacon(first.beacon_id) is first
+    assert catalogue.iter_beacons() == (first, second)
+    with pytest.raises(ValueError, match="introuvable"):
+        catalogue.add_beacon("CITY-9999")
+    with pytest.raises(ValueError, match="déjà une balise"):
+        catalogue.add_beacon(first_city.city_id)
+    assert tuple(catalogue.beacons) == ("BEA-0001", "BEA-0002")
+
+
+def test_beacon_update_is_atomic_and_archived_beacons_still_protect_their_city():
+    catalogue = Catalogue()
+    first_city = catalogue.add_city("Ville A", 47.0, 2.0)
+    second_city = catalogue.add_city("Ville B", 46.0, 3.0)
+    first = catalogue.add_beacon(first_city.city_id)
+    second = catalogue.add_beacon(second_city.city_id)
+
+    with pytest.raises(ValueError, match="déjà une balise"):
+        catalogue.update_beacon(first.beacon_id, city_id=second_city.city_id)
+    assert first.city_id == first_city.city_id
+    assert second.city_id == second_city.city_id
+
+    catalogue.update_beacon(first.beacon_id, archived=True)
+    assert catalogue.get_beacon(first.beacon_id).archived is True
+    with pytest.raises(ValueError, match="balise"):
+        catalogue.delete_city(first_city.city_id)
+
+    catalogue.delete_beacon(first.beacon_id)
+    catalogue.delete_city(first_city.city_id)
+    assert first_city.city_id not in catalogue.cities
+
+
+def test_beacon_clone_is_independent_and_validate_rejects_corrupted_references():
+    catalogue = Catalogue()
+    city = catalogue.add_city("Ville A", 47.0, 2.0)
+    beacon = catalogue.add_beacon(city.city_id)
+    clone = catalogue.clone()
+
+    clone.update_beacon(beacon.beacon_id, archived=True)
+    assert clone.get_beacon(beacon.beacon_id) is not beacon
+    assert catalogue.get_beacon(beacon.beacon_id).archived is False
+
+    catalogue.beacons["BEA-0002"] = CatalogueBeacon("BEA-0002", "CITY-9999")
+    with pytest.raises(ValueError, match="introuvable"):
+        catalogue.validate()
 
 
 def test_cities_validate_names_coordinates_and_invalidate_only_changed_coordinate_cache():
