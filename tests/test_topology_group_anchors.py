@@ -66,6 +66,34 @@ def test_group_anchor_lifecycle_and_clone_share_the_catalog() -> None:
     assert world.getAnchorForGroup(first_group) is None
 
 
+def test_physical_snapshot_derives_anchor_group_from_its_stable_node() -> None:
+    resolver = _BeaconResolver()
+    world = TopologyWorld(beacon_resolver=resolver)
+    world.add_element_as_new_group(_element("T01"))
+    node_id = _node_id(world)
+    anchor = world.createGroupAnchor(
+        world.get_group_of_element("T01"), "BEA-0001", node_id
+    )
+
+    # ``group_id`` is runtime-only. A stale value must never enter the
+    # physical snapshot nor participate in its restoration.
+    anchor.group_id = "G021"
+    snapshot = world._exportPhysicalSnapshot()
+    assert snapshot["group_anchors"] == [{
+        "anchor_id": anchor.anchor_id,
+        "beacon_id": anchor.beacon_id,
+        "node_id": node_id,
+    }]
+
+    restored = TopologyWorld(beacon_resolver=resolver)
+    restored._importPhysicalSnapshot(snapshot)
+    restored_anchor = restored.getGroupAnchor(anchor.anchor_id)
+    assert restored_anchor.node_id == node_id
+    assert restored_anchor.beacon_id == anchor.beacon_id
+    assert restored_anchor.group_id == restored.getGroupIdFromConceptNode(node_id)
+    assert restored._exportPhysicalSnapshot() == snapshot
+
+
 def test_group_anchor_rejects_unknown_entities_and_duplicate_group_anchor() -> None:
     world, first_group, _second_group = _world_with_two_groups()
     with pytest.raises(ValueError, match="groupe inexistant"):

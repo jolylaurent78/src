@@ -238,6 +238,10 @@ class TopologyAttachment:
         self.source = source
 
 
+class TopologyConstraintGeometryError(ValueError):
+    """Une géométrie candidate ne satisfait plus les attachments gelés."""
+
+
 class TopologyVertex:
     """Sommet d’un élément (polygone), labellisé (ville), rattaché à un node atomique.
 
@@ -2644,20 +2648,15 @@ class TopologyWorld:
         p1d = J1.get("destPt")
         if p0m is None or p1m is None or p0d is None or p1d is None:
             return None
-        vm = np.array([float(p1m[0] - p0m[0]), float(p1m[1] - p0m[1])], dtype=float)
-        vd = np.array([float(p1d[0] - p0d[0]), float(p1d[1] - p0d[1])], dtype=float)
-        nm = float(np.hypot(vm[0], vm[1]))
-        nd = float(np.hypot(vd[0], vd[1]))
-        if nm <= 1e-12 or nd <= 1e-12:
+        try:
+            return self.compute_rigid_transform_from_two_point_correspondences(
+                p0m,
+                p1m,
+                p0d,
+                p1d,
+            )
+        except TopologyConstraintGeometryError:
             return None
-        ang_m = math.atan2(float(vm[1]), float(vm[0]))
-        ang_d = math.atan2(float(vd[1]), float(vd[0]))
-        dtheta = ang_d - ang_m
-        c = math.cos(dtheta)
-        s = math.sin(dtheta)
-        R = np.array([[c, -s], [s, c]], dtype=float)
-        T = np.array([float(p0d[0]), float(p0d[1])], dtype=float) - (R @ np.array([float(p0m[0]), float(p0m[1])], dtype=float))
-        return (R, T)
 
     def _injectSplitByEdgeDir(
         self,
@@ -3392,6 +3391,8 @@ class TopologyWorld:
     def getGroupIdFromConceptNode(self, nodeId: str) -> str:
         if not nodeId:
             raise ValueError("nodeId vide")
+        if nodeId not in self._node_parent:
+            raise ValueError(f"nodeId inexistant: {nodeId}")
         if ":" not in nodeId:
             raise ValueError(f"nodeId invalide: {nodeId}")
         triangleId = nodeId.split(":", 1)[0]
@@ -3417,6 +3418,42 @@ class TopologyWorld:
             raise ValueError(f"Element inconnu: {element_id}")
         el.set_pose(R=R, T=T, mirrored=mirrored)
         # pose change -> positions monde changent -> géométrie conceptuelle invalide
+        self.invalidateConceptGeom(self.element_to_group.get(element_id))
+
+    def replace_element_intrinsic_geometry(
+        self,
+        element_id: str,
+        replacement: TopologyElement,
+    ) -> None:
+        """Remplace la seule géométrie intrinsèque d'un élément existant.
+
+        L'identité topologique de l'instance (ID, nodes, edges, attachments et
+        pose) reste inchangée. Cette primitive sert aux simulations qui
+        rematérialisent une géométrie source sans reconstruire un second graphe
+        topologique parallèle.
+        """
+        element = self.elements.get(element_id)
+        if element is None:
+            raise ValueError(f"Element inconnu: {element_id}")
+        if replacement is None:
+            raise ValueError("Géométrie de remplacement absente")
+        if len(replacement.vertex_labels) != len(element.vertex_labels):
+            raise ValueError("Géométrie de remplacement incompatible: nombre de sommets")
+        if replacement.vertex_labels != element.vertex_labels:
+            raise ValueError("Géométrie de remplacement incompatible: labels de sommets")
+        if replacement.vertex_types != element.vertex_types:
+            raise ValueError("Géométrie de remplacement incompatible: types de sommets")
+        if replacement.source_triangle_id != element.source_triangle_id:
+            raise ValueError("Géométrie de remplacement incompatible: triangle source")
+
+        element.name = replacement.name
+        element.meta = dict(replacement.meta)
+        element.edge_lengths_km = list(replacement.edge_lengths_km)
+        element.intrinsic_sides_km = dict(replacement.intrinsic_sides_km)
+        element.local_frame = dict(replacement.local_frame)
+        element.vertex_local_xy = dict(replacement.vertex_local_xy)
+        for edge, edge_length_km in zip(element.edges, element.edge_lengths_km):
+            edge.edge_length_km = float(edge_length_km)
         self.invalidateConceptGeom(self.element_to_group.get(element_id))
 
     def _require_live_group_element_ids(self, core_group_id: str) -> list[str]:
@@ -3688,7 +3725,7 @@ class TopologyWorld:
         Contrat:
         - retourne (R_abs, T_abs) tel que:
             world = (R_abs @ (M? @ p_local)) + T_abs
-            avec mirrored supposé False (si mirrored est nécessaire, c'est à l'UI de le gérer).
+            en respectant l'état ``mirrored`` actuel de l'élément mobile.
 
         mapping:
         - "direct"  : start_m -> start_t  et end_m -> end_t
@@ -3709,9 +3746,14 @@ class TopologyWorld:
                 )
             return np.array([float(xy[0]), float(xy[1])], dtype=float)
 
-        # Endpoints LOCAL (mobile)
+        # Endpoints LOCAL (mobile). La pose stocke une éventuelle réflexion
+        # séparément de R, elle doit donc être appliquée avant le calcul de R.
         p0m = _v_local(el_m, e_m.v_start.vertex_index)
         p1m = _v_local(el_m, e_m.v_end.vertex_index)
+        if el_m.pose.mirrored:
+            mirror = TopologyElementPose2D.mirror_matrix()
+            p0m = mirror @ p0m
+            p1m = mirror @ p1m
 
         # Endpoints WORLD (cible) via pose élément
         p0t = _v_local(el_t, e_t.v_start.vertex_index)
@@ -3726,25 +3768,419 @@ class TopologyWorld:
         else:
             raise ValueError(f"compute_pose_edge_to_edge: mapping invalide: {mapping}")
 
-        vL = (p1m - p0m)
-        vW = (W1 - W0)
+        return self.compute_rigid_transform_from_two_point_correspondences(
+            p0m,
+            p1m,
+            W0,
+            W1,
+        )
 
-        nL = float(np.linalg.norm(vL))
-        nW = float(np.linalg.norm(vW))
-        if nL <= 1e-12 or nW <= 1e-12:
-            raise ValueError("compute_pose_edge_to_edge: arête dégénérée (norme ~0)")
+    @staticmethod
+    def compute_rigid_transform_from_two_point_correspondences(
+        mobile_point_0,
+        mobile_point_1,
+        target_point_0,
+        target_point_1,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Calcule la pose rigide ``Monde <- Mobile`` depuis deux points.
 
-        angL = float(np.arctan2(vL[1], vL[0]))
-        angW = float(np.arctan2(vW[1], vW[0]))
-        dtheta = angW - angL
+        Cette primitive pure est commune aux raccords edge-edge et aux
+        raccords atomiques vertex-vertex + vertex-edge. Elle ne choisit ni
+        endpoints, ni mapping, ni paramètres topologiques : ces décisions sont
+        déjà portées par les attachments historiques.
+        """
+        points = [
+            np.asarray(point, dtype=float)
+            for point in (
+                mobile_point_0,
+                mobile_point_1,
+                target_point_0,
+                target_point_1,
+            )
+        ]
+        if any(point.shape != (2,) or not np.all(np.isfinite(point)) for point in points):
+            raise ValueError("Deux correspondances rigides invalides")
+        p0m, p1m, p0t, p1t = points
+        vector_mobile = p1m - p0m
+        vector_target = p1t - p0t
+        if float(np.linalg.norm(vector_mobile)) <= 1e-12 or \
+                float(np.linalg.norm(vector_target)) <= 1e-12:
+            raise TopologyConstraintGeometryError(
+                "Deux correspondances rigides dégénérées"
+            )
+        angle = float(np.arctan2(vector_target[1], vector_target[0])) - float(
+            np.arctan2(vector_mobile[1], vector_mobile[0])
+        )
+        cosine, sine = float(np.cos(angle)), float(np.sin(angle))
+        rotation = np.array([[cosine, -sine], [sine, cosine]], dtype=float)
+        translation = p0t - (rotation @ p0m)
+        return rotation, translation
 
-        c = float(np.cos(dtheta))
-        s = float(np.sin(dtheta))
-        R_abs = np.array([[c, -s], [s,  c]], dtype=float)
+    def _attachment_edge_local_point(
+        self,
+        attachment: TopologyAttachment,
+        feature: TopologyFeatureRef,
+    ) -> np.ndarray:
+        """Retourne le point local exact d'une feature d'attachment.
 
-        # T : amener p0m sur W0
-        T_abs = np.array(W0, dtype=float) - (R_abs @ np.array(p0m, dtype=float))
-        return (R_abs, T_abs)
+        Seul le côté arête d'un ``vertex-edge`` porte un paramètre ``t``. Le
+        contrat ``edgeFrom`` reste donc interprété ici par le Core, au même
+        endroit que le rejeu géométrique des attachments.
+        """
+        if feature.feature_type == TopologyFeatureType.VERTEX:
+            element = self.elements[feature.element_id]
+            point = element.vertex_local_xy.get(int(feature.index))
+            if point is None:
+                raise ValueError(
+                    f"Attachment {attachment.attachment_id}: sommet local absent"
+                )
+            return np.asarray(point, dtype=float)
+
+        if feature.feature_type != TopologyFeatureType.EDGE:
+            raise ValueError(
+                f"Attachment {attachment.attachment_id}: feature inconnue"
+            )
+        edge = self.get_edge(feature.element_id, feature.index)
+        t = attachment.params.get("t")
+        if t is None:
+            raise ValueError(
+                f"Attachment {attachment.attachment_id}: t absent pour une arête"
+            )
+        edge_from = attachment.params.get("edgeFrom")
+        if edge_from == edge.v_start.node_id:
+            local_t = float(t)
+        elif edge_from == edge.v_end.node_id:
+            local_t = 1.0 - float(t)
+        else:
+            raise ValueError(
+                f"Attachment {attachment.attachment_id}: edgeFrom invalide"
+            )
+        return self._localPointOnEdge(self.elements[feature.element_id], edge, local_t)
+
+    def _attachment_feature_world_point(
+        self,
+        attachment: TopologyAttachment,
+        feature: TopologyFeatureRef,
+    ) -> np.ndarray:
+        return self.elementLocalToWorld(
+            feature.element_id,
+            self._attachment_edge_local_point(attachment, feature),
+        )
+
+    def _place_element_from_single_point_constraint(
+        self,
+        attachment: TopologyAttachment,
+        mobile_feature: TopologyFeatureRef,
+        target_feature: TopologyFeatureRef,
+    ) -> None:
+        """Pose un élément avec une contrainte ponctuelle en gardant son angle.
+
+        Une contrainte sommet↔sommet ou sommet↔arête fixe une translation mais
+        pas une rotation. La pose de départ du clone fournit alors l'orientation
+        déterministe conservée pendant le rejeu.
+        """
+        element = self.elements[mobile_feature.element_id]
+        local_point = self._attachment_edge_local_point(attachment, mobile_feature)
+        if element.pose.mirrored:
+            local_point = TopologyElementPose2D.mirror_matrix() @ local_point
+        rotation, _translation, mirrored = self.getElementPose(element.element_id)
+        target_world = self._attachment_feature_world_point(attachment, target_feature)
+        translation = target_world - (rotation @ local_point)
+        self.setElementPose(
+            element.element_id,
+            R=rotation,
+            T=translation,
+            mirrored=mirrored,
+        )
+
+    def _attachment_feature_for_element(
+        self,
+        attachment: TopologyAttachment,
+        element_id: str,
+    ) -> TopologyFeatureRef:
+        if attachment.feature_a.element_id == element_id and \
+                attachment.feature_b.element_id != element_id:
+            return attachment.feature_a
+        if attachment.feature_b.element_id == element_id and \
+                attachment.feature_a.element_id != element_id:
+            return attachment.feature_b
+        raise ValueError(
+            f"Attachment {attachment.attachment_id}: liaison élémentaire ambiguë"
+        )
+
+    def _effective_attachment_feature_local_point(
+        self,
+        attachment: TopologyAttachment,
+        feature: TopologyFeatureRef,
+    ) -> np.ndarray:
+        point = self._attachment_edge_local_point(attachment, feature)
+        element = self.elements[feature.element_id]
+        if element.pose.mirrored:
+            point = TopologyElementPose2D.mirror_matrix() @ point
+        return point
+
+    def _place_element_from_atomic_point_link(
+        self,
+        attachments: tuple[TopologyAttachment, TopologyAttachment],
+        mobile_element_id: str,
+        target_element_id: str,
+    ) -> None:
+        """Pose un mobile à partir du raccord atomique VV + VE gelé."""
+        vertex_vertex = next(
+            (attachment for attachment in attachments if attachment.kind == "vertex-vertex"),
+            None,
+        )
+        vertex_edge = next(
+            (attachment for attachment in attachments if attachment.kind == "vertex-edge"),
+            None,
+        )
+        if vertex_vertex is None or vertex_edge is None:
+            raise ValueError("Raccord atomique sans paire vertex-vertex + vertex-edge")
+        for attachment in attachments:
+            endpoints = {
+                attachment.feature_a.element_id,
+                attachment.feature_b.element_id,
+            }
+            if endpoints != {mobile_element_id, target_element_id}:
+                raise ValueError(
+                    f"Attachment {attachment.attachment_id}: raccord atomique incohérent"
+                )
+
+        mobile_point_0 = self._effective_attachment_feature_local_point(
+            vertex_vertex,
+            self._attachment_feature_for_element(vertex_vertex, mobile_element_id),
+        )
+        target_point_0 = self._attachment_feature_world_point(
+            vertex_vertex,
+            self._attachment_feature_for_element(vertex_vertex, target_element_id),
+        )
+        mobile_point_1 = self._effective_attachment_feature_local_point(
+            vertex_edge,
+            self._attachment_feature_for_element(vertex_edge, mobile_element_id),
+        )
+        target_point_1 = self._attachment_feature_world_point(
+            vertex_edge,
+            self._attachment_feature_for_element(vertex_edge, target_element_id),
+        )
+        rotation, translation = self.compute_rigid_transform_from_two_point_correspondences(
+            mobile_point_0,
+            mobile_point_1,
+            target_point_0,
+            target_point_1,
+        )
+        _old_rotation, _old_translation, mirrored = self.getElementPose(mobile_element_id)
+        self.setElementPose(
+            mobile_element_id,
+            R=rotation,
+            T=translation,
+            mirrored=mirrored,
+        )
+
+    def _place_element_from_attachment(
+        self,
+        attachment: TopologyAttachment,
+        mobile_element_id: str,
+        target_element_id: str,
+    ) -> None:
+        """Rejoue exactement une relation gelée en posant son élément mobile."""
+        feature_a = attachment.feature_a
+        feature_b = attachment.feature_b
+        if attachment.kind == "edge-edge":
+            if mobile_element_id == feature_a.element_id and target_element_id == feature_b.element_id:
+                mobile_feature, target_feature = feature_a, feature_b
+            elif mobile_element_id == feature_b.element_id and target_element_id == feature_a.element_id:
+                mobile_feature, target_feature = feature_b, feature_a
+            else:
+                raise ValueError(f"Attachment {attachment.attachment_id}: éléments incohérents")
+            rotation, translation = self.compute_pose_edge_to_edge(
+                self.get_group_of_element(mobile_element_id),
+                mobile_feature.element_id,
+                mobile_feature.index,
+                self.get_group_of_element(target_element_id),
+                target_feature.element_id,
+                target_feature.index,
+                mapping=str(attachment.params.get("mapping", "direct")),
+            )
+            _old_rotation, _old_translation, mirrored = self.getElementPose(mobile_element_id)
+            self.setElementPose(mobile_element_id, R=rotation, T=translation, mirrored=mirrored)
+            return
+
+        if attachment.kind == "vertex-vertex":
+            if mobile_element_id == feature_a.element_id and target_element_id == feature_b.element_id:
+                self._place_element_from_single_point_constraint(attachment, feature_a, feature_b)
+                return
+            if mobile_element_id == feature_b.element_id and target_element_id == feature_a.element_id:
+                self._place_element_from_single_point_constraint(attachment, feature_b, feature_a)
+                return
+            raise ValueError(f"Attachment {attachment.attachment_id}: éléments incohérents")
+
+        if attachment.kind == "vertex-edge":
+            if mobile_element_id == feature_a.element_id and target_element_id == feature_b.element_id:
+                self._place_element_from_single_point_constraint(attachment, feature_a, feature_b)
+                return
+            if mobile_element_id == feature_b.element_id and target_element_id == feature_a.element_id:
+                self._place_element_from_single_point_constraint(attachment, feature_b, feature_a)
+                return
+            raise ValueError(f"Attachment {attachment.attachment_id}: éléments incohérents")
+
+        raise ValueError(f"Attachment {attachment.attachment_id}: kind inconnu")
+
+    def _attachment_geometry_is_satisfied(
+        self,
+        attachment: TopologyAttachment,
+        tolerance: float,
+    ) -> bool:
+        if attachment.kind == "edge-edge":
+            edge_a = self.get_edge(attachment.feature_a.element_id, attachment.feature_a.index)
+            edge_b = self.get_edge(attachment.feature_b.element_id, attachment.feature_b.index)
+            a0 = self.elementLocalToWorld(
+                edge_a.element_id,
+                self.elements[edge_a.element_id].vertex_local_xy[edge_a.v_start.vertex_index],
+            )
+            a1 = self.elementLocalToWorld(
+                edge_a.element_id,
+                self.elements[edge_a.element_id].vertex_local_xy[edge_a.v_end.vertex_index],
+            )
+            b0 = self.elementLocalToWorld(
+                edge_b.element_id,
+                self.elements[edge_b.element_id].vertex_local_xy[edge_b.v_start.vertex_index],
+            )
+            b1 = self.elementLocalToWorld(
+                edge_b.element_id,
+                self.elements[edge_b.element_id].vertex_local_xy[edge_b.v_end.vertex_index],
+            )
+            if attachment.params.get("mapping", "direct") == "direct":
+                pairs = ((a0, b0), (a1, b1))
+            else:
+                pairs = ((a0, b1), (a1, b0))
+            return all(float(np.linalg.norm(first - second)) <= tolerance for first, second in pairs)
+
+        first = self._attachment_feature_world_point(attachment, attachment.feature_a)
+        second = self._attachment_feature_world_point(attachment, attachment.feature_b)
+        return float(np.linalg.norm(first - second)) <= tolerance
+
+    def replay_group_attachment_poses(
+        self,
+        group_id: str,
+        root_element_id: str,
+        *,
+        tolerance: float = 1e-8,
+    ) -> None:
+        """Rejoue les poses d'un groupe depuis ses attachments déjà gelés.
+
+        Les attachments ne sont ni recherchés ni modifiés. Le ``root`` conserve
+        sa pose courante, puis le parcours déterministe propage les contraintes
+        vers les autres éléments. Les relations ponctuelles conservent la
+        rotation déjà portée par l'élément mobile, car elles ne la déterminent
+        pas à elles seules. Toute relation non satisfaite après propagation
+        signale une géométrie candidate impossible.
+        """
+        gid = self._require_live_group_id(group_id)
+        element_ids = set(self.getGroupElementIds(gid))
+        if root_element_id not in element_ids:
+            raise ValueError(
+                f"Element racine hors du groupe {gid!r}: {root_element_id!r}"
+            )
+        if tolerance <= 0.0 or not np.isfinite(tolerance):
+            raise ValueError("Tolérance de rejeu invalide")
+
+        attachments = [
+            self.attachments[attachment_id]
+            for attachment_id in sorted(self.groups[gid].attachment_ids)
+        ]
+        adjacency: dict[str, list[tuple[TopologyAttachment, ...]]] = {
+            element_id: [] for element_id in element_ids
+        }
+        point_attachments_by_pair: dict[tuple[str, str], list[TopologyAttachment]] = {}
+        individual_links: list[tuple[TopologyAttachment, ...]] = []
+        for attachment in attachments:
+            self._validate_attachment_p2(attachment)
+            first_id = attachment.feature_a.element_id
+            second_id = attachment.feature_b.element_id
+            if first_id not in element_ids or second_id not in element_ids:
+                raise ValueError(
+                    f"Attachment {attachment.attachment_id}: hors du groupe {gid!r}"
+                )
+            if attachment.kind in ("vertex-vertex", "vertex-edge"):
+                pair_key = tuple(sorted((first_id, second_id)))
+                point_attachments_by_pair.setdefault(pair_key, []).append(attachment)
+            else:
+                individual_links.append((attachment,))
+
+        for pair_key, point_attachments in sorted(point_attachments_by_pair.items()):
+            ordered = tuple(sorted(point_attachments, key=lambda item: item.attachment_id or ""))
+            kinds = {attachment.kind for attachment in ordered}
+            if kinds == {"vertex-vertex", "vertex-edge"}:
+                if len(ordered) != 2:
+                    raise ValueError(
+                        "Raccord atomique ambigu entre "
+                        f"{pair_key[0]!r} et {pair_key[1]!r}"
+                    )
+                individual_links.append(ordered)
+            else:
+                individual_links.extend((attachment,) for attachment in ordered)
+
+        for link in individual_links:
+            endpoints = {
+                feature.element_id
+                for attachment in link
+                for feature in (attachment.feature_a, attachment.feature_b)
+            }
+            if len(endpoints) != 2:
+                raise ValueError("Liaison de rejeu sans deux éléments distincts")
+            for element_id in endpoints:
+                adjacency[element_id].append(link)
+
+        placed = {root_element_id}
+        while len(placed) < len(element_ids):
+            next_step: tuple[tuple[TopologyAttachment, ...], str, str] | None = None
+            for placed_id in sorted(placed):
+                for link in sorted(
+                    adjacency[placed_id],
+                    key=lambda items: tuple(item.attachment_id or "" for item in items),
+                ):
+                    endpoints = {
+                        feature.element_id
+                        for attachment in link
+                        for feature in (attachment.feature_a, attachment.feature_b)
+                    }
+                    other_ids = endpoints - {placed_id}
+                    if len(other_ids) != 1:
+                        raise ValueError("Liaison de rejeu ambiguë")
+                    other_id = next(iter(other_ids))
+                    if other_id not in placed:
+                        next_step = (link, other_id, placed_id)
+                        break
+                if next_step is not None:
+                    break
+            if next_step is None:
+                raise TopologyConstraintGeometryError(
+                    f"Le groupe {gid!r} ne peut pas être rejoué depuis {root_element_id!r}"
+                )
+            link, mobile_id, target_id = next_step
+            if len(link) == 2:
+                self._place_element_from_atomic_point_link(link, mobile_id, target_id)
+            else:
+                self._place_element_from_attachment(link[0], mobile_id, target_id)
+            placed.add(mobile_id)
+
+        for attachment in attachments:
+            if not self._attachment_geometry_is_satisfied(attachment, tolerance):
+                raise TopologyConstraintGeometryError(
+                    f"Attachment {attachment.attachment_id}: contrainte géométrique non satisfaite"
+                )
+
+    def is_group_contour_valid(self, group_id: str) -> bool:
+        """Valide le contour géométrique d'un groupe avec les services Core."""
+        gid = self._require_live_group_id(group_id)
+        self.recomputeConceptAndBoundary(gid)
+        if not self._concept_cache(gid).boundaryCycle:
+            return False
+        ring = self._build_ring_from_boundary_cycle(
+            gid,
+            eps_world=self.overlap_eps_world,
+        )
+        return ring is not None and self._isValidPolygon(ring[0])
 
     def apply_attachments(self, attachments: list[TopologyAttachment]) -> str:
         """Applique une liste d'attachments (transaction simple V1) et retourne le gid canonique final."""
@@ -4446,7 +4882,6 @@ class TopologyWorld:
         anchors_payload = [
             {
                 "anchor_id": anchor.anchor_id,
-                "group_id": anchor.group_id,
                 "beacon_id": anchor.beacon_id,
                 "node_id": anchor.node_id,
             }
@@ -4546,15 +4981,18 @@ class TopologyWorld:
             max_anchor_num = 0
             for payload in anchors_payload:
                 anchor_id = (payload.get("anchor_id", "") or "").strip()
-                group_id = (payload.get("group_id", "") or "").strip()
                 beacon_id = (payload.get("beacon_id", "") or "").strip()
                 node_id = (payload.get("node_id", "") or "").strip()
                 if not anchor_id or not re.fullmatch(r"AN\d{3,}", anchor_id):
                     raise ValueError(f"TopologyWorld: anchor_id invalide: {anchor_id!r}")
                 if anchor_id in self.groupAnchors:
                     raise ValueError(f"TopologyWorld: anchor_id dupliqué: {anchor_id!r}")
-                canonical_group_id = self._require_live_group_id(group_id)
                 beacon_id = self._require_beacon_id(beacon_id)
+                if node_id not in self._node_parent:
+                    raise ValueError(
+                        f"TopologyWorld: nœud d'ancrage inexistant: {node_id!r}"
+                    )
+                canonical_group_id = self.getGroupIdFromConceptNode(node_id)
                 node_id = self._require_anchor_node_id(canonical_group_id, node_id)
                 if self.getAnchorForGroup(canonical_group_id) is not None:
                     raise ValueError(f"TopologyWorld: plusieurs ancres pour {canonical_group_id!r}")

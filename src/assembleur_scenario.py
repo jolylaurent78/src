@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from collections.abc import Mapping
 
 import numpy as np
 
@@ -161,20 +162,46 @@ def create_default_scenario_hypothesis(catalogue: Catalogue) -> ScenarioHypothes
 def materialize_catalogue_triangle(
     catalogue: Catalogue,
     triangle_id: str,
+    *,
+    vertex_lambert_overrides: Mapping[str, tuple[float, float]] | None = None,
 ) -> TopologyElement:
-    """Resolves a Catalogue triangle before passing simple data to the Core."""
+    """Résout un triangle Catalogue vers son élément topologique.
+
+    Les overrides O/B/L sont strictement temporaires : ils permettent à une
+    simulation pure de matérialiser le même triangle source sans créer ni
+    modifier de ville Catalogue.
+    """
+    if vertex_lambert_overrides is None:
+        overrides = {}
+    elif not isinstance(vertex_lambert_overrides, Mapping):
+        raise ValueError("Les overrides Lambert doivent former une mapping O/B/L")
+    else:
+        overrides = dict(vertex_lambert_overrides)
+    unknown_roles = set(overrides) - {"O", "B", "L"}
+    if unknown_roles:
+        raise ValueError(
+            "Rôle d'override Lambert inconnu: "
+            + ", ".join(sorted(str(role) for role in unknown_roles))
+        )
+
     triangle = catalogue.get_triangle(triangle_id)
     opening = catalogue.get_city(triangle.opening_city_id)
     base = catalogue.get_city(triangle.base_city_id)
     light = catalogue.get_city(triangle.light_city_id)
+    lambert_by_role = {
+        "O": catalogue.get_city_lambert(opening.city_id),
+        "B": catalogue.get_city_lambert(base.city_id),
+        "L": catalogue.get_city_lambert(light.city_id),
+    }
+    lambert_by_role.update(overrides)
     return build_topology_element_from_catalogue_triangle(
         triangle_id=triangle.triangle_id,
         opening_name=opening.name,
         base_name=base.name,
         light_name=light.name,
-        opening_lambert_xy=catalogue.get_city_lambert(opening.city_id),
-        base_lambert_xy=catalogue.get_city_lambert(base.city_id),
-        light_lambert_xy=catalogue.get_city_lambert(light.city_id),
+        opening_lambert_xy=lambert_by_role["O"],
+        base_lambert_xy=lambert_by_role["B"],
+        light_lambert_xy=lambert_by_role["L"],
     )
 
 

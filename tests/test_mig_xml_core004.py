@@ -215,7 +215,6 @@ def test_v5_round_trip_preserves_group_anchors(tmp_path):
     snapshot = json.loads(root.find("topoSnapshot").text)
     assert snapshot["group_anchors"] == [{
         "anchor_id": anchor.anchor_id,
-        "group_id": group_id,
         "beacon_id": "BEA-0001",
         "node_id": node_id,
     }]
@@ -226,5 +225,6 @@ def test_v5_round_trip_preserves_group_anchors(tmp_path):
     restored_anchor = restored.getGroupAnchor(anchor.anchor_id)
     assert restored_anchor.beacon_id == "BEA-0001"
     assert restored_anchor.node_id == node_id
+    assert restored_anchor.group_id == restored.getGroupIdFromConceptNode(node_id)
     assert restored.getAnchorForGroup(restored_anchor.group_id) is restored_anchor
     assert restored.getBeaconWorldXY("BEA-0001") == pytest.approx((1.0, 2.0))

@@ -140,76 +140,15 @@ class EdgeChoiceEpts:
             )
             return atts
 
-        t_raw = self.tRaw
-        if t_raw is None:
-            raise ValueError("createTopologyAttachments: tRaw manquant pour vertex-edge")
-
-        vmB = vkey_to_index[self.src_vkey_at_mB]
-        vmA = vkey_to_index[self.src_vkey_at_mA]
-        vtA = vkey_to_index[self.dst_vkey_at_tA]
-        vtB = vkey_to_index[self.dst_vkey_at_tB]
-        et_dst = edge_code_to_index[self.dst_edge.upper()]
-        et_src = edge_code_to_index[self.src_edge.upper()]
-
-        if t_raw < 0.0:
-            if debug:
-                print(f"[ATTACH][VE] reject tRaw={t_raw}")
-            return []
-
-        if t_raw <= 1.0:
-            edge_from = world.get_element_vertex_node_id(elementIdDst, int(vtA))
-            atts.append(
-                TopologyAttachment(
-                    attachment_id=None,
-                    kind="vertex-edge",
-                    feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdSrc, int(vmB)),
-                    feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE,   elementIdDst, int(et_dst)),
-                    params={
-                        "t": float(t_raw),
-                        "edgeFrom": edge_from,
-                        "incident_edge_by_element": incident_edges,
-                    },
-                    source="manual",
-                )
-            )
-            atts.append(
-                TopologyAttachment(
-                    attachment_id=None,
-                    kind="vertex-vertex",
-                    feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdSrc, int(vmA)),
-                    feature_b=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdDst, int(vtA)),
-                    params={"incident_edge_by_element": incident_edges},
-                    source="manual",
-                )
-            )
-        else:
-            t_inv = 1.0 / float(t_raw)
-            edge_from = world.get_element_vertex_node_id(elementIdSrc, int(vmA))
-            atts.append(
-                TopologyAttachment(
-                    attachment_id=None,
-                    kind="vertex-edge",
-                    feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdDst, int(vtB)),
-                    feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE,   elementIdSrc, int(et_src)),
-                    params={
-                        "t": float(t_inv),
-                        "edgeFrom": edge_from,
-                        "incident_edge_by_element": incident_edges,
-                    },
-                    source="manual",
-                )
-            )
-            atts.append(
-                TopologyAttachment(
-                    attachment_id=None,
-                    kind="vertex-vertex",
-                    feature_a=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdDst, int(vtA)),
-                    feature_b=TopologyFeatureRef(TopologyFeatureType.VERTEX, elementIdSrc, int(vmA)),
-                    params={"incident_edge_by_element": incident_edges},
-                    source="manual",
-                )
-            )
-        return atts
+        return materialize_vertex_edge_attachments(
+            world=world,
+            element_id_src=elementIdSrc,
+            src_edge=self.src_edge,
+            src_anchor_vkey=self.src_vkey_at_mA,
+            element_id_dst=elementIdDst,
+            dst_edge=self.dst_edge,
+            dst_anchor_vkey=self.dst_vkey_at_tA,
+        )
 
 
 def _to_np(p):
@@ -362,6 +301,275 @@ def _compute_t_by_edge_ratio(mA, mB, tA, tB):
         raise ValueError("Degenerate target edge length")
     t = L_src / L_dst
     return float(t)
+
+
+def materialize_vertex_edge_attachments(
+    *,
+    world,
+    element_id_src: str,
+    src_edge: str,
+    src_anchor_vkey: str,
+    element_id_dst: str,
+    dst_edge: str,
+    dst_anchor_vkey: str,
+    vertex_edge_attachment_id: str | None = None,
+    vertex_vertex_attachment_id: str | None = None,
+    vertex_edge_source: str = "manual",
+    vertex_vertex_source: str = "manual",
+) -> list[TopologyAttachment]:
+    """Matérialise le raccord atomique vertex-edge depuis ses arêtes métier.
+
+    L'ordre ``src`` / ``dst`` est structurel : il conserve l'orientation de la
+    décision de groupement initiale. Les longueurs, elles, sont toujours lues
+    dans le ``TopologyWorld`` courant afin que le même contrat serve aussi aux
+    rematérialisations après déformation.
+    """
+    if world is None:
+        raise ValueError("materialize_vertex_edge_attachments: world manquant")
+
+    edge_code_to_index = {"OB": 0, "BL": 1, "LO": 2}
+    vkey_to_index = {"O": 0, "B": 1, "L": 2}
+    source_edge = str(src_edge or "").strip().upper()
+    destination_edge = str(dst_edge or "").strip().upper()
+    source_anchor = str(src_anchor_vkey or "").strip().upper()
+    destination_anchor = str(dst_anchor_vkey or "").strip().upper()
+    if source_edge not in edge_code_to_index or destination_edge not in edge_code_to_index:
+        raise ValueError("materialize_vertex_edge_attachments: arête incidente invalide")
+    if source_anchor not in vkey_to_index or destination_anchor not in vkey_to_index:
+        raise ValueError("materialize_vertex_edge_attachments: sommet d'ancrage invalide")
+    if element_id_src not in world.elements or element_id_dst not in world.elements:
+        raise ValueError("materialize_vertex_edge_attachments: élément incident inconnu")
+
+    source_edge_vkeys = _edge_code_to_vkeys(source_edge)
+    destination_edge_vkeys = _edge_code_to_vkeys(destination_edge)
+    if source_anchor not in source_edge_vkeys or destination_anchor not in destination_edge_vkeys:
+        raise ValueError(
+            "materialize_vertex_edge_attachments: sommet d'ancrage hors de son arête"
+        )
+
+    source_other = (
+        source_edge_vkeys[1]
+        if source_anchor == source_edge_vkeys[0]
+        else source_edge_vkeys[0]
+    )
+    destination_other = (
+        destination_edge_vkeys[1]
+        if destination_anchor == destination_edge_vkeys[0]
+        else destination_edge_vkeys[0]
+    )
+    source_element = world.elements[element_id_src]
+    destination_element = world.elements[element_id_dst]
+    source_anchor_index = vkey_to_index[source_anchor]
+    source_other_index = vkey_to_index[source_other]
+    destination_anchor_index = vkey_to_index[destination_anchor]
+    destination_other_index = vkey_to_index[destination_other]
+    try:
+        source_anchor_point = source_element.vertex_local_xy[source_anchor_index]
+        source_other_point = source_element.vertex_local_xy[source_other_index]
+        destination_anchor_point = destination_element.vertex_local_xy[destination_anchor_index]
+        destination_other_point = destination_element.vertex_local_xy[destination_other_index]
+    except KeyError as exc:
+        raise ValueError(
+            "materialize_vertex_edge_attachments: géométrie intrinsèque incomplète"
+        ) from exc
+
+    t_raw = _compute_t_by_edge_ratio(
+        source_anchor_point,
+        source_other_point,
+        destination_anchor_point,
+        destination_other_point,
+    )
+    if t_raw < 0.0:
+        raise ValueError(
+            f"materialize_vertex_edge_attachments: tRaw négatif ({t_raw})"
+        )
+
+    incident_edges = {
+        element_id_src: source_edge,
+        element_id_dst: destination_edge,
+    }
+    if t_raw <= 1.0:
+        vertex_edge = TopologyAttachment(
+            attachment_id=vertex_edge_attachment_id,
+            kind="vertex-edge",
+            feature_a=TopologyFeatureRef(
+                TopologyFeatureType.VERTEX, element_id_src, source_other_index
+            ),
+            feature_b=TopologyFeatureRef(
+                TopologyFeatureType.EDGE,
+                element_id_dst,
+                edge_code_to_index[destination_edge],
+            ),
+            params={
+                "t": float(t_raw),
+                "edgeFrom": world.get_element_vertex_node_id(
+                    element_id_dst, destination_anchor_index
+                ),
+                "incident_edge_by_element": incident_edges,
+            },
+            source=vertex_edge_source,
+        )
+        vertex_vertex = TopologyAttachment(
+            attachment_id=vertex_vertex_attachment_id,
+            kind="vertex-vertex",
+            feature_a=TopologyFeatureRef(
+                TopologyFeatureType.VERTEX, element_id_src, source_anchor_index
+            ),
+            feature_b=TopologyFeatureRef(
+                TopologyFeatureType.VERTEX,
+                element_id_dst,
+                destination_anchor_index,
+            ),
+            params={"incident_edge_by_element": incident_edges},
+            source=vertex_vertex_source,
+        )
+    else:
+        vertex_edge = TopologyAttachment(
+            attachment_id=vertex_edge_attachment_id,
+            kind="vertex-edge",
+            feature_a=TopologyFeatureRef(
+                TopologyFeatureType.VERTEX,
+                element_id_dst,
+                destination_other_index,
+            ),
+            feature_b=TopologyFeatureRef(
+                TopologyFeatureType.EDGE,
+                element_id_src,
+                edge_code_to_index[source_edge],
+            ),
+            params={
+                "t": float(1.0 / t_raw),
+                "edgeFrom": world.get_element_vertex_node_id(
+                    element_id_src, source_anchor_index
+                ),
+                "incident_edge_by_element": incident_edges,
+            },
+            source=vertex_edge_source,
+        )
+        vertex_vertex = TopologyAttachment(
+            attachment_id=vertex_vertex_attachment_id,
+            kind="vertex-vertex",
+            feature_a=TopologyFeatureRef(
+                TopologyFeatureType.VERTEX,
+                element_id_dst,
+                destination_anchor_index,
+            ),
+            feature_b=TopologyFeatureRef(
+                TopologyFeatureType.VERTEX, element_id_src, source_anchor_index
+            ),
+            params={"incident_edge_by_element": incident_edges},
+            source=vertex_vertex_source,
+        )
+    return [vertex_edge, vertex_vertex]
+
+
+def rematerialize_vertex_edge_attachments_for_element(
+    world,
+    element_id: str,
+) -> list[TopologyAttachment]:
+    """Retourne les attachments rematérialisés touchant ``element_id``.
+
+    Une liaison vertex-edge est un raccord atomique : son vertex-vertex frère
+    est reconstruit avec le même sens et les mêmes arêtes incidentes. Les deux
+    identifiants d'attachment restent stables.
+    """
+    attachments = list(world.attachments.values())
+    replacements: dict[str, TopologyAttachment] = {}
+    for vertex_edge in attachments:
+        if vertex_edge.kind != "vertex-edge":
+            continue
+        endpoint_ids = {
+            vertex_edge.feature_a.element_id,
+            vertex_edge.feature_b.element_id,
+        }
+        if element_id not in endpoint_ids:
+            continue
+        if len(endpoint_ids) != 2:
+            raise ValueError(
+                f"Attachment {vertex_edge.attachment_id}: vertex-edge sans deux éléments distincts"
+            )
+        incident_edges = vertex_edge.params.get("incident_edge_by_element")
+        if not isinstance(incident_edges, dict):
+            raise ValueError(
+                f"Attachment {vertex_edge.attachment_id}: incident_edge_by_element absent"
+            )
+        incident_items = list(incident_edges.items())
+        if len(incident_items) != 2:
+            raise ValueError(
+                f"Attachment {vertex_edge.attachment_id}: incident_edge_by_element incohérent"
+            )
+        (source_element_id, source_edge), (destination_element_id, destination_edge) = incident_items
+        if {source_element_id, destination_element_id} != endpoint_ids:
+            raise ValueError(
+                f"Attachment {vertex_edge.attachment_id}: arêtes incidentes incohérentes"
+            )
+
+        siblings = [
+            attachment
+            for attachment in attachments
+            if attachment.kind == "vertex-vertex"
+            and {
+                attachment.feature_a.element_id,
+                attachment.feature_b.element_id,
+            } == endpoint_ids
+        ]
+        if len(siblings) != 1:
+            raise ValueError(
+                f"Attachment {vertex_edge.attachment_id}: raccord atomique vertex-vertex ambigu"
+            )
+        vertex_vertex = siblings[0]
+        sibling_incident_edges = vertex_vertex.params.get("incident_edge_by_element")
+        if not isinstance(sibling_incident_edges, dict):
+            raise ValueError(
+                f"Attachment {vertex_edge.attachment_id}: incident_edge_by_element absent dans le raccord atomique"
+            )
+        if list(sibling_incident_edges.items()) != incident_items:
+            raise ValueError(
+                f"Attachment {vertex_edge.attachment_id}: arêtes incidentes incohérentes dans le raccord atomique"
+            )
+
+        vertex_by_element = {
+            vertex_vertex.feature_a.element_id: vertex_vertex.feature_a,
+            vertex_vertex.feature_b.element_id: vertex_vertex.feature_b,
+        }
+        if set(vertex_by_element) != endpoint_ids:
+            raise ValueError(
+                f"Attachment {vertex_edge.attachment_id}: vertex-vertex incohérent"
+            )
+        source_vertex = vertex_by_element[source_element_id]
+        destination_vertex = vertex_by_element[destination_element_id]
+        if (
+            source_vertex.feature_type != TopologyFeatureType.VERTEX
+            or destination_vertex.feature_type != TopologyFeatureType.VERTEX
+        ):
+            raise ValueError(
+                f"Attachment {vertex_edge.attachment_id}: vertex-vertex invalide"
+            )
+
+        rematerialized = materialize_vertex_edge_attachments(
+            world=world,
+            element_id_src=source_element_id,
+            src_edge=source_edge,
+            src_anchor_vkey=world.get_vertex(
+                source_element_id, source_vertex.index
+            ).node_type,
+            element_id_dst=destination_element_id,
+            dst_edge=destination_edge,
+            dst_anchor_vkey=world.get_vertex(
+                destination_element_id, destination_vertex.index
+            ).node_type,
+            vertex_edge_attachment_id=vertex_edge.attachment_id,
+            vertex_vertex_attachment_id=vertex_vertex.attachment_id,
+            vertex_edge_source=vertex_edge.source,
+            vertex_vertex_source=vertex_vertex.source,
+        )
+        replacements[vertex_edge.attachment_id] = rematerialized[0]
+        replacements[vertex_vertex.attachment_id] = rematerialized[1]
+
+    return [
+        replacements.get(attachment.attachment_id, attachment)
+        for attachment in attachments
+    ]
 
 
 def buildEdgeChoiceEptsFromBest(

@@ -104,6 +104,9 @@ class CalibratedGeoMap:
 
     def pixel_to_geographic(self, x_px: float, y_px: float) -> tuple[float, float]:
         x_m, y_m = self.pixel_to_lambert(x_px, y_px)
+        return self.lambert_to_geographic(x_m, y_m)
+
+    def lambert_to_geographic(self, x_m: float, y_m: float) -> tuple[float, float]:
         longitude, latitude = self._from_lambert.transform(x_m, y_m)
         return float(latitude), float(longitude)
 
@@ -120,6 +123,9 @@ class GeoMapView(tk.Frame):
         parent,
         *,
         on_marker_selected: Callable[[object | None], None] | None = None,
+        on_marker_drag_started: Callable[[object], None] | None = None,
+        on_marker_dragged: Callable[[object, tuple[float, float]], None] | None = None,
+        on_marker_drag_released: Callable[[object], None] | None = None,
         initial_fit_zoom: float = 1.0,
         minimum_fit_zoom: float = 1.0,
         **kwargs,
@@ -128,6 +134,9 @@ class GeoMapView(tk.Frame):
         self.canvas = tk.Canvas(self, highlightthickness=0, background="#e9e9e9")
         self.canvas.pack(fill=tk.BOTH, expand=True)
         self.on_marker_selected = on_marker_selected
+        self.on_marker_drag_started = on_marker_drag_started
+        self.on_marker_dragged = on_marker_dragged
+        self.on_marker_drag_released = on_marker_drag_released
         self.map: CalibratedGeoMap | None = None
         self._markers: list[GeoMapMarker] = []
         self._selected_marker_id: object | None = None
@@ -135,6 +144,7 @@ class GeoMapView(tk.Frame):
         self._source_image: Image.Image | None = None
         self._photo: ImageTk.PhotoImage | None = None
         self._view_scale = 1.0
+        self._view_rotation_deg = 0.0
         self._fit_scale = 0.001
         self._offset_x = 0.0
         self._offset_y = 0.0
@@ -144,6 +154,7 @@ class GeoMapView(tk.Frame):
         self._press_position: tuple[int, int] | None = None
         self._pan_last_position: tuple[int, int] | None = None
         self._drag_distance = 0.0
+        self._dragging_marker_id: object | None = None
         self._fit_pending = False
         self._redraw_after_id: str | None = None
         self._tooltip: tk.Toplevel | None = None
@@ -174,6 +185,24 @@ class GeoMapView(tk.Frame):
         self._source_image = calibrated_map.image
         self._initial_fit_applied = False
         self.fit_to_view()
+
+    def set_view_rotation_deg(self, angle_deg: float) -> None:
+        """Tourne uniquement le repere visuel de la carte autour du viewport."""
+        self._view_rotation_deg = float(angle_deg) % 360.0
+        self._constrain_view_offsets()
+        self._request_redraw()
+
+    def screen_to_lambert(self, x_screen: float, y_screen: float) -> tuple[float, float]:
+        if self.map is None:
+            raise RuntimeError("Aucune carte geographique chargee.")
+        x_map, y_map = self._screen_to_map(x_screen, y_screen)
+        return self.map.pixel_to_lambert(x_map, y_map)
+
+    def lambert_to_screen(self, x_m: float, y_m: float) -> tuple[float, float]:
+        if self.map is None:
+            raise RuntimeError("Aucune carte geographique chargee.")
+        x_map, y_map = self.map.lambert_to_pixel(x_m, y_m)
+        return self._map_to_screen(x_map, y_map)
 
     def set_markers(self, markers: Iterable[GeoMapMarker]) -> None:
         self._markers = list(markers)
@@ -265,6 +294,43 @@ class GeoMapView(tk.Frame):
     def _canvas_size(self) -> tuple[int, int]:
         return max(1, self.canvas.winfo_width()), max(1, self.canvas.winfo_height())
 
+    def _rotation_radians(self) -> float:
+        return math.radians(self._view_rotation_deg)
+
+    def _rotate_forward(self, dx: float, dy: float) -> tuple[float, float]:
+        """Applique la rotation visuelle Pillow/Canvas (angle positif anti-horaire)."""
+        cosine = math.cos(self._rotation_radians())
+        sine = math.sin(self._rotation_radians())
+        return cosine * dx + sine * dy, -sine * dx + cosine * dy
+
+    def _rotate_inverse(self, dx: float, dy: float) -> tuple[float, float]:
+        cosine = math.cos(self._rotation_radians())
+        sine = math.sin(self._rotation_radians())
+        return cosine * dx - sine * dy, sine * dx + cosine * dy
+
+    def _map_to_screen(self, x_map: float, y_map: float) -> tuple[float, float]:
+        base_x = self._offset_x + float(x_map) * self._view_scale
+        base_y = self._offset_y + float(y_map) * self._view_scale
+        canvas_width, canvas_height = self._canvas_size()
+        rotated_x, rotated_y = self._rotate_forward(
+            base_x - canvas_width / 2,
+            base_y - canvas_height / 2,
+        )
+        return rotated_x + canvas_width / 2, rotated_y + canvas_height / 2
+
+    def _screen_to_map(self, x_screen: float, y_screen: float) -> tuple[float, float]:
+        canvas_width, canvas_height = self._canvas_size()
+        base_dx, base_dy = self._rotate_inverse(
+            float(x_screen) - canvas_width / 2,
+            float(y_screen) - canvas_height / 2,
+        )
+        base_x = base_dx + canvas_width / 2
+        base_y = base_dy + canvas_height / 2
+        return (
+            (base_x - self._offset_x) / self._view_scale,
+            (base_y - self._offset_y) / self._view_scale,
+        )
+
     def _minimum_scale(self) -> float:
         return max(0.0001, self._fit_scale * self._minimum_fit_zoom)
 
@@ -282,16 +348,32 @@ class GeoMapView(tk.Frame):
 
     def _on_press(self, event):
         self._hide_tooltip()
+        marker_id = self._marker_at(event.x, event.y)
+        if marker_id is not None and self.on_marker_dragged is not None:
+            self._dragging_marker_id = marker_id
+            if self.on_marker_drag_started is not None:
+                self.on_marker_drag_started(marker_id)
+            return
         self._press_position = (event.x, event.y)
         self._pan_last_position = (event.x, event.y)
         self._drag_distance = 0.0
 
     def _on_drag(self, event):
+        if self._dragging_marker_id is not None:
+            self.on_marker_dragged(
+                self._dragging_marker_id,
+                self.screen_to_lambert(event.x, event.y),
+            )
+            return
         if self._pan_last_position is None:
             return
         previous_x, previous_y = self._pan_last_position
-        self._offset_x += event.x - previous_x
-        self._offset_y += event.y - previous_y
+        delta_x, delta_y = self._rotate_inverse(
+            event.x - previous_x,
+            event.y - previous_y,
+        )
+        self._offset_x += delta_x
+        self._offset_y += delta_y
         self._pan_last_position = (event.x, event.y)
         if self._press_position is not None:
             press_x, press_y = self._press_position
@@ -300,6 +382,12 @@ class GeoMapView(tk.Frame):
         self._request_redraw()
 
     def _on_release(self, event):
+        if self._dragging_marker_id is not None:
+            marker_id = self._dragging_marker_id
+            self._dragging_marker_id = None
+            if self.on_marker_drag_released is not None:
+                self.on_marker_drag_released(marker_id)
+            return
         was_click = self._press_position is not None and self._drag_distance <= self._CLICK_DRAG_THRESHOLD
         self._press_position = None
         self._pan_last_position = None
@@ -319,11 +407,15 @@ class GeoMapView(tk.Frame):
             max(old_scale * factor, self._minimum_scale()),
             max(0.5, self._minimum_scale()),
         )
-        map_x = (x_screen - self._offset_x) / old_scale
-        map_y = (y_screen - self._offset_y) / old_scale
+        map_x, map_y = self._screen_to_map(x_screen, y_screen)
         self._view_scale = new_scale
-        self._offset_x = x_screen - map_x * new_scale
-        self._offset_y = y_screen - map_y * new_scale
+        canvas_width, canvas_height = self._canvas_size()
+        base_dx, base_dy = self._rotate_inverse(
+            x_screen - canvas_width / 2,
+            y_screen - canvas_height / 2,
+        )
+        self._offset_x = base_dx + canvas_width / 2 - map_x * new_scale
+        self._offset_y = base_dy + canvas_height / 2 - map_y * new_scale
         self._constrain_view_offsets()
         self._request_redraw()
 
@@ -431,10 +523,16 @@ class GeoMapView(tk.Frame):
         source_scale_y = source_height / image_height
 
         # Coordonnées du rectangle visible dans le repère de l'image calibrée.
-        visible_left = max(0.0, -self._offset_x / self._view_scale)
-        visible_top = max(0.0, -self._offset_y / self._view_scale)
-        visible_right = min(image_width, (canvas_width - self._offset_x) / self._view_scale)
-        visible_bottom = min(image_height, (canvas_height - self._offset_y) / self._view_scale)
+        viewport_corners = (
+            self._screen_to_map(0.0, 0.0),
+            self._screen_to_map(float(canvas_width), 0.0),
+            self._screen_to_map(float(canvas_width), float(canvas_height)),
+            self._screen_to_map(0.0, float(canvas_height)),
+        )
+        visible_left = max(0.0, min(point[0] for point in viewport_corners))
+        visible_top = max(0.0, min(point[1] for point in viewport_corners))
+        visible_right = min(image_width, max(point[0] for point in viewport_corners))
+        visible_bottom = min(image_height, max(point[1] for point in viewport_corners))
         if visible_right <= visible_left or visible_bottom <= visible_top:
             return
 
@@ -457,20 +555,29 @@ class GeoMapView(tk.Frame):
             (max(1, round(crop_map_width * self._view_scale)), max(1, round(crop_map_height * self._view_scale))),
             Image.Resampling.LANCZOS,
         )
+        if self._view_rotation_deg:
+            rendered = rendered.rotate(
+                self._view_rotation_deg,
+                resample=Image.Resampling.BICUBIC,
+                expand=True,
+            )
         self._photo = ImageTk.PhotoImage(rendered)
         crop_map_left = source_left / source_scale_x
         crop_map_top = source_top / source_scale_y
+        crop_center_x = crop_map_left + crop_map_width / 2
+        crop_center_y = crop_map_top + crop_map_height / 2
+        crop_screen_x, crop_screen_y = self._map_to_screen(crop_center_x, crop_center_y)
         self.canvas.create_image(
-            self._offset_x + crop_map_left * self._view_scale,
-            self._offset_y + crop_map_top * self._view_scale,
+            crop_screen_x,
+            crop_screen_y,
             image=self._photo,
-            anchor="nw",
+            anchor="center",
         )
         for polyline in self._polylines:
             screen_points = []
             for latitude, longitude in polyline.points:
                 x_map, y_map = self.map.geographic_to_pixel(latitude, longitude)
-                screen_points.extend((self._offset_x + x_map * self._view_scale, self._offset_y + y_map * self._view_scale))
+                screen_points.extend(self._map_to_screen(x_map, y_map))
             if len(screen_points) >= 4:
                 if polyline.closed:
                     screen_points.extend(screen_points[:2])
@@ -482,8 +589,7 @@ class GeoMapView(tk.Frame):
                 )
         for marker in self._markers:
             x_map, y_map = self.map.geographic_to_pixel(marker.latitude, marker.longitude)
-            x_screen = self._offset_x + x_map * self._view_scale
-            y_screen = self._offset_y + y_map * self._view_scale
+            x_screen, y_screen = self._map_to_screen(x_map, y_map)
             self._marker_screen_positions[marker.marker_id] = (x_screen, y_screen)
             selected = marker.marker_id == self._selected_marker_id
             radius = 8 if selected else 6
