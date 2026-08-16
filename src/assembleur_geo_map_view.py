@@ -560,6 +560,7 @@ class GeoMapView(tk.Frame):
                 self._view_rotation_deg,
                 resample=Image.Resampling.BICUBIC,
                 expand=True,
+                fillcolor="white",
             )
         self._photo = ImageTk.PhotoImage(rendered)
         crop_map_left = source_left / source_scale_x

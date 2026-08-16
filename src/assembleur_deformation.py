@@ -53,6 +53,20 @@ def _normalize_vertex_lambert_overrides(
     return normalized
 
 
+def _normalize_city_lambert_overrides(
+    overrides: Mapping[str, tuple[float, float]],
+) -> dict[str, tuple[float, float]] | None:
+    if not isinstance(overrides, Mapping):
+        raise ValueError("Les overrides Lambert de villes doivent former une mapping")
+    normalized: dict[str, tuple[float, float]] = {}
+    for city_id, point in overrides.items():
+        normalized_point = _normalize_lambert_point(point)
+        if normalized_point is None:
+            return None
+        normalized[str(city_id)] = normalized_point
+    return normalized
+
+
 def _require_selected_group_anchor(
     world: TopologyWorld,
     group_id: str,
@@ -188,4 +202,98 @@ def simulate_triangle_deformation(
         world=working_world,
         element_id=element_id,
         vertex_lambert_overrides=MappingProxyType(dict(normalized_overrides)),
+    )
+
+
+def simulate_city_deformation(
+    *,
+    catalogue: Catalogue,
+    initial_world: TopologyWorld,
+    city_lambert_overrides: Mapping[str, tuple[float, float]],
+) -> DeformationSimulationResult:
+    """Simule atomiquement les geometries de toutes les occurrences d'une ville.
+
+    Les ``city_lambert_overrides`` sont l'autorite temporaire DEFORM. Chaque
+    triangle concerne est rematerialise avant un unique rebuild/replay Core.
+    """
+    normalized_overrides = _normalize_city_lambert_overrides(city_lambert_overrides)
+    if normalized_overrides is None:
+        return _rejected("", {}, "Override Lambert de ville candidat invalide")
+
+    replacements: dict[str, object] = {}
+    changed_element_ids: list[str] = []
+    for element_id, element in initial_world.elements.items():
+        source_triangle_id = (element.source_triangle_id or "").strip()
+        if not source_triangle_id:
+            raise ValueError(
+                f"Element topologique sans source_triangle_id: {element_id!r}"
+            )
+        triangle = catalogue.get_triangle(source_triangle_id)
+        local_overrides = {
+            role: normalized_overrides[city_id]
+            for role, city_id in (
+                ("O", triangle.opening_city_id),
+                ("B", triangle.base_city_id),
+                ("L", triangle.light_city_id),
+            )
+            if city_id in normalized_overrides
+        }
+        if not local_overrides:
+            continue
+        replacements[element_id] = materialize_catalogue_triangle(
+            catalogue,
+            source_triangle_id,
+            vertex_lambert_overrides=local_overrides,
+        )
+        changed_element_ids.append(element_id)
+
+    if not changed_element_ids:
+        return _rejected("", {}, "Aucune occurrence de ville a deformer")
+
+    source_anchor_id_by_group: dict[str, str] = {}
+    for element_id in changed_element_ids:
+        group_id = initial_world.get_group_of_element(element_id)
+        if group_id not in source_anchor_id_by_group:
+            source_anchor_id_by_group[group_id] = _require_selected_group_anchor(
+                initial_world,
+                group_id,
+            ).anchor_id
+
+    working_world = initial_world.clonePhysicalState()
+    for element_id, replacement in replacements.items():
+        working_world.replace_element_intrinsic_geometry(element_id, replacement)
+    working_world.rebuild_from_attachments()
+    working_world.reconcileGroupAnchorsByNode()
+
+    replay_element_by_group: dict[str, str] = {}
+    anchor_id_by_group: dict[str, str] = {}
+    for element_id in changed_element_ids:
+        group_id = working_world.get_group_of_element(element_id)
+        replay_element_by_group.setdefault(group_id, element_id)
+        source_group_id = initial_world.get_group_of_element(element_id)
+        anchor_id_by_group[group_id] = source_anchor_id_by_group[source_group_id]
+
+    try:
+        for group_id, replay_element_id in replay_element_by_group.items():
+            working_world.replay_group_attachment_poses(group_id, replay_element_id)
+        working_world.reconcileGroupAnchorsByNode()
+        for group_id, anchor_id in anchor_id_by_group.items():
+            anchor = working_world.groupAnchors.get(anchor_id)
+            if anchor is None:
+                raise ValueError(f"Ancre perdue pendant la reconstruction: {anchor_id!r}")
+            if anchor.group_id != group_id:
+                raise ValueError(
+                    f"Ancre {anchor_id!r} hors du groupe reconstruit {group_id!r}"
+                )
+            working_world.applyGroupAnchor(anchor_id)
+            if not working_world.is_group_contour_valid(group_id):
+                return _rejected("", {}, "Contour du groupe invalide")
+    except TopologyConstraintGeometryError as exc:
+        return _rejected("", {}, str(exc))
+
+    return DeformationSimulationResult(
+        accepted=True,
+        world=working_world,
+        element_id="",
+        vertex_lambert_overrides=MappingProxyType({}),
     )

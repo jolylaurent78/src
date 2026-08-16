@@ -68,11 +68,11 @@ from src.assembleur_projection import (
     getCoreTriangleWorldPoints,
     getManualProjectionElementIds,
 )
-from src.assembleur_catalogue_window import CatalogueWindow
+from src.assembleur_catalogue_window import CatalogueWindow, CitySelectionDialog
 from src.assembleur_hypothesis_window import ScenarioHypothesisDialog
 from src.assembleur_catalogue import Catalogue
 from src.assembleur_catalogue_io import load_catalogue
-from src.assembleur_deformation import simulate_triangle_deformation
+from src.assembleur_deformation import simulate_city_deformation
 from src.assembleur_deformation_ui import DeformationUiState
 from src.assembleur_deformation_window import (
     DeformationVertex,
@@ -89,6 +89,8 @@ from src.assembleur_scenario import (
     create_default_scenario_hypothesis,
     materialize_catalogue_triangle,
 )
+
+DEFORMATION_DRAG_REFRESH_MS = 40
 
 
 EPS_WORLD = 1e-6
@@ -351,6 +353,9 @@ class TriangleViewerManual(
     def __new__(cls, *args, **kwargs):
         instance = super().__new__(cls)
         instance._deformation_state = DeformationUiState()
+        instance._deformation_drag_after_id = None
+        instance._deformation_drag_pending_role = None
+        instance._deformation_drag_pending_point = None
         return instance
 
     def __init__(self):
@@ -393,9 +398,9 @@ class TriangleViewerManual(
         self._ctx_nearest_vertex_key = None  # 'O'|'B'|'L' sommet le plus proche du clic droit
         self._ctx_compass_idx_clear_traits: int | None = None
         self._deformation_state = DeformationUiState()
-        self._deformation_toggle_button: tk.Button | None = None
-        self.icon_deformation_off = None
-        self.icon_deformation_on = None
+        self._deformation_drag_after_id = None
+        self._deformation_drag_pending_role = None
+        self._deformation_drag_pending_point = None
         self._deformation_window: DeformationWindow | None = None
         self._deformation_map: CalibratedGeoMap | None = None
         self.ctxGroupId = None         # contexte chemin: groupId Core canonique (clic droit)
@@ -1422,30 +1427,28 @@ class TriangleViewerManual(
         self.status.config(text=f"Simulation: {len(scenarios)} scénario(s) généré(s) (algo={algo_id}, n={n})")
 
     def _is_deformation_mode_active(self) -> bool:
-        return self._deformation_state.active
+        window = self._deformation_window
+        return bool(
+            self._deformation_state.active
+            and window is not None
+            and window.winfo_exists()
+        )
 
-    def _update_deformation_toggle_button(self) -> None:
-        button = self._deformation_toggle_button
-        if button is None:
+    def _open_deformation_window(self) -> None:
+        window = self._deformation_window
+        if window is not None and window.winfo_exists():
+            window.deiconify()
+            window.lift()
+            window.focus_force()
             return
-        if self._deformation_state.active:
-            if self.icon_deformation_on is not None:
-                button.configure(image=self.icon_deformation_on, text="")
-            else:
-                button.configure(text="D", relief=tk.SUNKEN)
-        else:
-            if self.icon_deformation_off is not None:
-                button.configure(image=self.icon_deformation_off, text="")
-            else:
-                button.configure(text="D", relief=tk.FLAT)
-
-    def _toggle_deformation_mode(self) -> None:
         if self._deformation_state.active:
             self._exit_deformation_mode()
-            return
         self._deformation_state.enter()
-        self._update_deformation_toggle_button()
-        self.status.config(text="Mode deformation actif : selectionnez un triangle ancre.")
+        window = self._ensure_deformation_window()
+        window.deiconify()
+        window.lift()
+        window.focus_force()
+        self.status.config(text="DEFORM ouvert : sélectionnez un triangle ancré.")
 
     def _deformation_projection_from_world(self, world: TopologyWorld) -> list[dict]:
         scen = self._get_active_scenario()
@@ -1491,12 +1494,12 @@ class TriangleViewerManual(
             "B": triangle.base_city_id,
             "L": triangle.light_city_id,
         }
-        visible_overrides = state.preview_overrides()
+        visible_overrides = state.preview_city_overrides()
         vertices = {}
         for role, city_id in city_id_by_role.items():
             city = self.catalogue.get_city(city_id)
             lambert_xy = visible_overrides.get(
-                role,
+                city_id,
                 self.catalogue.get_city_lambert(city_id),
             )
             vertices[role] = DeformationVertex(
@@ -1538,25 +1541,139 @@ class TriangleViewerManual(
             on_vertex_drag_started=self._deformation_window_drag_started,
             on_vertex_dragged=self._deformation_window_dragged,
             on_vertex_drag_released=self._deformation_window_drag_released,
+            on_vertex_selected=self._deformation_window_vertex_selected,
+            on_occurrence_selected=self._deformation_window_occurrence_selected,
+            on_delete_selected=self._deformation_delete_selected,
+            on_map_pin_selected=self._deformation_map_pin_selected,
             on_view_mode_changed=self._deformation_window_view_mode_changed,
             on_closed=self._on_deformation_window_closed,
         )
         self._deformation_window = window
         return window
 
-    def _refresh_deformation_window(self, *, status_text: str = "") -> None:
-        if self._deformation_state.element_id is None:
-            return
+    def _refresh_deformation_window(
+        self,
+        *,
+        status_text: str = "",
+        refresh_occurrences: bool = True,
+    ) -> None:
         window = self._ensure_deformation_window()
+        state = self._deformation_state
+        if refresh_occurrences:
+            window.set_occurrences(
+                tuple(
+                    (element_id, role, self._deformation_occurrence_label(element_id, role))
+                    for element_id, role in state.modified_occurrences
+                ),
+                state.selected_occurrence,
+            )
+        if state.element_id is None:
+            return
         window.set_triangle(
-            element_id=self._deformation_state.element_id,
+            element_id=state.element_id,
             vertices=self._deformation_vertices(),
             assembly_rotation_deg=self._deformation_assembly_rotation_deg(),
+            selected_role=(
+                state.selected_occurrence[1]
+                if state.selected_occurrence is not None
+                and state.selected_occurrence[0] == state.element_id
+                else None
+            ),
             status_text=status_text,
         )
 
+    def _deformation_occurrence_label(self, element_id: str, role: str) -> str:
+        state = self._deformation_state
+        world = state.last_accepted_world or state.reference_world
+        if world is None:
+            raise RuntimeError("World de deformation absent")
+        element = world.elements.get(element_id)
+        if element is None or not element.source_triangle_id:
+            raise ValueError("Triangle de deformation sans source Catalogue")
+        hypothesis = self._get_active_scenario().hypothesis
+        if hypothesis is None:
+            raise ValueError("ScenarioHypothesis absente")
+        try:
+            rank = hypothesis.triangle_ids_by_rank.index(element.source_triangle_id) + 1
+        except ValueError as exc:
+            raise ValueError(
+                f"Triangle Catalogue absent de l'hypothese: {element.source_triangle_id!r}"
+            ) from exc
+        triangle = self.catalogue.get_triangle(element.source_triangle_id)
+        city_id = {
+            "O": triangle.opening_city_id,
+            "B": triangle.base_city_id,
+            "L": triangle.light_city_id,
+        }[role]
+        return f"T{rank}:{role} - {self.catalogue.get_city(city_id).name}"
+
+    def _deformation_city_id_for_occurrence(
+        self,
+        element_id: str,
+        role: str,
+        world: TopologyWorld | None = None,
+    ) -> str:
+        if role not in {"O", "B", "L"}:
+            raise ValueError(f"Role de deformation inconnu: {role!r}")
+        state = self._deformation_state
+        source_world = world or state.last_accepted_world or state.reference_world
+        if source_world is None:
+            raise RuntimeError("World de deformation absent")
+        element = source_world.elements.get(element_id)
+        if element is None or not element.source_triangle_id:
+            raise ValueError("Triangle de deformation sans source Catalogue")
+        triangle = self.catalogue.get_triangle(element.source_triangle_id)
+        return {
+            "O": triangle.opening_city_id,
+            "B": triangle.base_city_id,
+            "L": triangle.light_city_id,
+        }[role]
+
+    def _deformation_occurrences_for_city(
+        self,
+        city_id: str,
+        world: TopologyWorld | None = None,
+    ) -> tuple[tuple[str, str], ...]:
+        state = self._deformation_state
+        source_world = world or state.last_accepted_world or state.reference_world
+        if source_world is None:
+            raise RuntimeError("World de deformation absent")
+        hypothesis = self._get_active_scenario().hypothesis
+        if hypothesis is None:
+            raise ValueError("ScenarioHypothesis absente")
+        rank_by_triangle_id = {
+            triangle_id: rank
+            for rank, triangle_id in enumerate(hypothesis.triangle_ids_by_rank)
+        }
+        occurrences = []
+        for element_id, element in sorted(
+            source_world.elements.items(),
+            key=lambda item: (
+                rank_by_triangle_id.get(item[1].source_triangle_id, len(rank_by_triangle_id)),
+                item[0],
+            ),
+        ):
+            if not element.source_triangle_id:
+                raise ValueError("Triangle de deformation sans source Catalogue")
+            triangle = self.catalogue.get_triangle(element.source_triangle_id)
+            for role, occurrence_city_id in (
+                ("O", triangle.opening_city_id),
+                ("B", triangle.base_city_id),
+                ("L", triangle.light_city_id),
+            ):
+                if occurrence_city_id == city_id:
+                    occurrences.append((element_id, role))
+        return tuple(occurrences)
+
     def _deformation_window_drag_started(self, role: str) -> None:
-        self._deformation_state.begin_drag(role)
+        self._cancel_deformation_drag_tick()
+        state = self._deformation_state
+        if state.element_id is None:
+            raise RuntimeError("Triangle de deformation absent")
+        state.begin_drag(
+            role,
+            self._deformation_city_id_for_occurrence(state.element_id, role),
+        )
 
     def _deformation_window_dragged(self, role: str, lambert_xy: tuple[float, float]) -> None:
         state = self._deformation_state
@@ -1564,71 +1681,192 @@ class TriangleViewerManual(
             raise RuntimeError("Role de drag DEFORM incoherent")
         if state.reference_world is None or state.element_id is None:
             raise RuntimeError("Etat de deformation incomplet pendant le drag")
-        try:
-            result = simulate_triangle_deformation(
-                catalogue=self.catalogue,
-                initial_world=state.reference_world,
-                element_id=state.element_id,
-                vertex_lambert_overrides=state.candidate_overrides(lambert_xy),
+        self._deformation_drag_pending_role = role
+        self._deformation_drag_pending_point = (float(lambert_xy[0]), float(lambert_xy[1]))
+        if self._deformation_drag_after_id is None:
+            self._deformation_drag_after_id = self.after(
+                DEFORMATION_DRAG_REFRESH_MS,
+                self._process_pending_deformation_drag,
             )
-        except (ValueError, RuntimeError) as exc:
-            self._exit_deformation_mode()
-            messagebox.showerror("Deformation", str(exc), parent=self)
+
+    def _process_pending_deformation_drag(self) -> None:
+        self._deformation_drag_after_id = None
+        role = self._deformation_drag_pending_role
+        point = self._deformation_drag_pending_point
+        self._deformation_drag_pending_role = None
+        self._deformation_drag_pending_point = None
+        if role is None or point is None:
             return
-        if not result.accepted or result.world is None:
-            self._refresh_deformation_window(status_text=result.rejection_reason or "Candidat impossible")
+        state = self._deformation_state
+        if state.dragging_role != role:
             return
-        state.accept_candidate(lambert_xy, result.world)
-        self._show_deformation_preview(result.world)
-        self._refresh_deformation_window()
+        candidate_world = self._apply_deformation_city_overrides(
+            state.candidate_city_overrides(point)
+        )
+        if candidate_world is None:
+            self._refresh_deformation_window(
+                status_text="Candidat impossible",
+                refresh_occurrences=False,
+            )
+            return
+        state.accept_candidate(point, candidate_world)
+        self._show_deformation_preview(candidate_world)
+        self._refresh_deformation_window(refresh_occurrences=False)
+        if self._deformation_drag_pending_point is not None:
+            self._deformation_drag_after_id = self.after(
+                DEFORMATION_DRAG_REFRESH_MS,
+                self._process_pending_deformation_drag,
+            )
+
+    def _cancel_deformation_drag_tick(self) -> None:
+        if self._deformation_drag_after_id is not None:
+            self.after_cancel(self._deformation_drag_after_id)
+        self._deformation_drag_after_id = None
+        self._deformation_drag_pending_role = None
+        self._deformation_drag_pending_point = None
 
     def _deformation_window_drag_released(self, role: str) -> None:
         if self._deformation_state.dragging_role != role:
             raise RuntimeError("Role de release DEFORM incoherent")
-        if self._deformation_state.end_drag():
+        if self._deformation_drag_after_id is not None:
+            self.after_cancel(self._deformation_drag_after_id)
+            self._deformation_drag_after_id = None
+        if self._deformation_drag_pending_point is not None:
+            self._process_pending_deformation_drag()
+        city_id = self._deformation_state.dragging_city_id
+        if city_id is None:
+            raise RuntimeError("Ville de deformation absente au release")
+        if self._deformation_state.end_drag(
+            self._deformation_occurrences_for_city(city_id)
+        ):
             self.status.config(text="Deformation temporaire conservee.")
         else:
             self.status.config(text="Aucun candidat de deformation valide.")
         self._refresh_deformation_window()
 
     def _deformation_window_view_mode_changed(self, _mode: str) -> None:
+        self._refresh_deformation_window(refresh_occurrences=False)
+
+    def _deformation_window_vertex_selected(self, role: str) -> None:
+        state = self._deformation_state
+        if state.element_id is None:
+            return
+        state.select_occurrence(state.element_id, role)
+        self._refresh_deformation_window()
+
+    def _deformation_window_occurrence_selected(self, element_id: str, role: str) -> None:
+        state = self._deformation_state
+        if (
+            state.selected_occurrence == (element_id, role)
+            and state.element_id == element_id
+        ):
+            return
+        state.select_occurrence(element_id, role)
+        if state.element_id != element_id:
+            if not self._select_deformation_element(element_id):
+                return
+        self._refresh_deformation_window()
+
+    def _apply_deformation_city_overrides(
+        self,
+        candidate_overrides: dict[str, tuple[float, float]],
+    ) -> TopologyWorld | None:
+        state = self._deformation_state
+        if state.reference_world is None:
+            raise RuntimeError("World de reference DEFORM absent")
+        if not candidate_overrides:
+            return state.reference_world
+        result = simulate_city_deformation(
+            catalogue=self.catalogue,
+            initial_world=state.reference_world,
+            city_lambert_overrides=candidate_overrides,
+        )
+        if not result.accepted or result.world is None:
+            self.status.config(text=result.rejection_reason or "Candidat de deformation impossible")
+            return None
+        return result.world
+
+    def _deformation_delete_selected(self) -> None:
+        state = self._deformation_state
+        occurrence = state.selected_occurrence
+        if occurrence is None:
+            return
+        city_id = self._deformation_city_id_for_occurrence(*occurrence)
+        candidate_overrides = dict(state.city_lambert_overrides)
+        candidate_overrides.pop(city_id, None)
+        candidate_world = self._apply_deformation_city_overrides(candidate_overrides)
+        if candidate_world is None:
+            return
+        state.city_lambert_overrides = candidate_overrides
+        state.last_accepted_world = candidate_world
+        city_occurrences = set(self._deformation_occurrences_for_city(city_id, candidate_world))
+        state.modified_occurrences = [
+            item for item in state.modified_occurrences if item not in city_occurrences
+        ]
+        state.selected_occurrence = None
+        self._show_deformation_preview(candidate_world)
+        self._refresh_deformation_window()
+
+    def _deformation_map_pin_selected(self) -> None:
+        state = self._deformation_state
+        occurrence = state.selected_occurrence
+        if occurrence is None:
+            return
+        source_city_id = self._deformation_city_id_for_occurrence(*occurrence)
+        cities = [city for city in self.catalogue.cities.values() if not city.archived]
+        target_city_id = CitySelectionDialog(self, cities).show()
+        if target_city_id is None:
+            return
+        candidate_overrides = dict(state.city_lambert_overrides)
+        candidate_overrides[source_city_id] = self.catalogue.get_city_lambert(target_city_id)
+        candidate_world = self._apply_deformation_city_overrides(candidate_overrides)
+        if candidate_world is None:
+            return
+        state.city_lambert_overrides = candidate_overrides
+        state.last_accepted_world = candidate_world
+        for item in self._deformation_occurrences_for_city(source_city_id, candidate_world):
+            if item not in state.modified_occurrences:
+                state.modified_occurrences.append(item)
+        state.selected_occurrence = occurrence
+        self._show_deformation_preview(candidate_world)
         self._refresh_deformation_window()
 
     def _exit_deformation_mode(self) -> None:
-        if not self._deformation_state.active:
+        window = self._deformation_window
+        if not self._deformation_state.active and (
+            window is None or not window.winfo_exists()
+        ):
             return
+        self._cancel_deformation_drag_tick()
         self._close_deformation_window()
         self._deformation_state.exit()
         self._sel = None
         self._reset_assist()
         self.canvas.configure(cursor="")
         self._restore_deformation_real_projection()
-        self._update_deformation_toggle_button()
         self.status.config(text="Mode deformation abandonne.")
 
     def _select_deformation_element(self, element_id: str) -> bool:
+        self._cancel_deformation_drag_tick()
         scen = self._get_active_scenario()
-        if self._deformation_state.element_id is not None:
-            self._restore_deformation_real_projection()
-        reference_world = scen.topoWorld.clonePhysicalState()
-        try:
-            result = simulate_triangle_deformation(
-                catalogue=self.catalogue,
-                initial_world=reference_world,
-                element_id=element_id,
-                vertex_lambert_overrides={},
-            )
-        except (ValueError, RuntimeError) as exc:
-            self.status.config(text=f"Deformation indisponible : {exc}")
+        state = self._deformation_state
+        current_world = (
+            state.last_accepted_world
+            or state.reference_world
+            or scen.topoWorld.clonePhysicalState()
+        )
+        element = current_world.elements.get(element_id)
+        if element is None:
+            self.status.config(text=f"Deformation indisponible : element inconnu {element_id!r}")
             return False
-        if not result.accepted or result.world is None:
+        if not element.source_triangle_id:
             self.status.config(
-                text=f"Deformation indisponible : {result.rejection_reason or 'candidat invalide'}"
+                text=f"Deformation indisponible : source Catalogue absente pour {element_id!r}"
             )
             return False
-        self._deformation_state.select(element_id, reference_world)
-        self._deformation_state.last_accepted_world = result.world
-        self._show_deformation_preview(result.world)
+        state.select(element_id, current_world)
+        state.last_accepted_world = current_world
+        self._show_deformation_preview(current_world)
         self._refresh_deformation_window()
         self.status.config(text=f"Triangle {element_id} selectionne pour deformation.")
         return True
@@ -1637,13 +1875,12 @@ class TriangleViewerManual(
         state = self._deformation_state
         if state.element_id is None:
             raise RuntimeError("Triangle de deformation absent apres rotation")
-        reference_world = self._get_active_scenario().topoWorld.clonePhysicalState()
+        reference_world = state.last_accepted_world or self._get_active_scenario().topoWorld.clonePhysicalState()
         state.replace_reference_world(reference_world)
-        result = simulate_triangle_deformation(
+        result = simulate_city_deformation(
             catalogue=self.catalogue,
             initial_world=reference_world,
-            element_id=state.element_id,
-            vertex_lambert_overrides=state.vertex_lambert_overrides,
+            city_lambert_overrides=state.city_lambert_overrides,
         )
         if not result.accepted or result.world is None:
             raise RuntimeError(
@@ -1671,11 +1908,10 @@ class TriangleViewerManual(
         )
         preview_reference = state.reference_world.clonePhysicalState()
         preview_reference.rotate_group(core_group_id, pivot_world, angle_delta)
-        result = simulate_triangle_deformation(
+        result = simulate_city_deformation(
             catalogue=self.catalogue,
             initial_world=preview_reference,
-            element_id=state.element_id,
-            vertex_lambert_overrides=state.vertex_lambert_overrides,
+            city_lambert_overrides=state.city_lambert_overrides,
         )
         if result.accepted and result.world is not None:
             state.last_accepted_world = result.world
@@ -1707,6 +1943,7 @@ class TriangleViewerManual(
                 )
             return "break"
 
+        state.selected_occurrence = None
         self._select_deformation_element(element_id)
         return "break"
 
@@ -1999,19 +2236,18 @@ class TriangleViewerManual(
         )
         hypothesis_btn.pack(side=tk.LEFT, padx=1)
         self._ui_hypothesis_editor_button = hypothesis_btn
-        self.icon_deformation_off = self._load_icon("vector-triangle-off.png")
-        self.icon_deformation_on = self._load_icon("vector-triangle.png")
+        icon_deformation = self._load_icon("vector-triangle.png")
         deformation_btn = tk.Button(
             triangles_toolbar,
-            image=self.icon_deformation_off,
-            text="D" if self.icon_deformation_off is None else "",
-            width=2 if self.icon_deformation_off is None else 0,
-            command=self._toggle_deformation_mode,
+            image=icon_deformation,
+            text="D" if icon_deformation is None else "",
+            width=2 if icon_deformation is None else 0,
+            command=self._open_deformation_window,
             relief=tk.FLAT,
         )
         deformation_btn.pack(side=tk.LEFT, padx=1)
-        self._deformation_toggle_button = deformation_btn
-        self._ui_attach_tooltip(deformation_btn, "Mode de deformation")
+        deformation_btn.image = icon_deformation
+        self._ui_attach_tooltip(deformation_btn, "Ouvrir DEFORM")
         self._ui_attach_tooltip(hypothesis_btn, "Modifier l'hypothÃ¨se du scÃ©nario")
 
         lb_frame = tk.Frame(self._ui_triangles_content, bd=0, highlightthickness=0)
@@ -6128,6 +6364,11 @@ class TriangleViewerManual(
                     drawEdges=(not onlyContours),
                     deform_outline=deform_outline,
                 )
+                if self._deformation_state.active:
+                    self._draw_deformation_vertex_overlays(
+                        P,
+                        str(t.get("topoElementId", "") or ""),
+                    )
 
         # 2) Contour des groupes par-dessus (lisible), si demandé.
         if showContoursMode:
@@ -6390,6 +6631,26 @@ class TriangleViewerManual(
                 fill="red", tags="tri_num"
             )
             self.canvas.tag_raise("tri_num")
+
+    def _draw_deformation_vertex_overlays(self, P, element_id: str) -> None:
+        """Signale les occurrences modifiees sans modifier la geometrie Core."""
+        state = self._deformation_state
+        roles = state.modified_roles_for_element(element_id)
+        if not roles:
+            return
+        for role in roles:
+            x, y = self._world_to_screen(P[role])
+            selected = state.selected_occurrence == (element_id, role)
+            radius = 11 if selected else 8
+            self.canvas.create_oval(
+                x - radius,
+                y - radius,
+                x + radius,
+                y + radius,
+                fill="",
+                outline="#d00000" if selected else "#f59e0b",
+                width=3 if selected else 2,
+            )
 
     # --- helpers: mode déconnexion (CTRL) + curseur ---
     def _clock_get_pointer_canvas_xy(self) -> Tuple[int, int]:
@@ -7271,9 +7532,6 @@ class TriangleViewerManual(
             self._last_triangle_selection = None
 
     def _on_escape_key(self, event):
-        if self._deformation_state.active:
-            self._exit_deformation_mode()
-            return "break"
         """Annuler un drag&drop (liste) ou un déplacement/selection de triangle (avec rollback)."""
         # Annule les modes compas (arc / mesure azimut / définition azimut ref)
         if self._clock_trace_active:

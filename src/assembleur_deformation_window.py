@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+from pathlib import Path
 from typing import Callable, Mapping
 
 import tkinter as tk
@@ -60,6 +61,10 @@ class DeformationWindow(tk.Toplevel):
         on_vertex_drag_started: Callable[[str], None],
         on_vertex_dragged: Callable[[str, tuple[float, float]], None],
         on_vertex_drag_released: Callable[[str], None],
+        on_vertex_selected: Callable[[str], None],
+        on_occurrence_selected: Callable[[str, str], None],
+        on_delete_selected: Callable[[], None],
+        on_map_pin_selected: Callable[[], None],
         on_view_mode_changed: Callable[[str], None],
         on_closed: Callable[[], None],
     ):
@@ -70,40 +75,99 @@ class DeformationWindow(tk.Toplevel):
         self._on_vertex_drag_started = on_vertex_drag_started
         self._on_vertex_dragged = on_vertex_dragged
         self._on_vertex_drag_released = on_vertex_drag_released
+        self._on_vertex_selected = on_vertex_selected
+        self._on_occurrence_selected = on_occurrence_selected
+        self._on_delete_selected = on_delete_selected
+        self._on_map_pin_selected = on_map_pin_selected
         self._on_view_mode_changed = on_view_mode_changed
         self._on_closed = on_closed
         self._element_id: str | None = None
         self._assembly_rotation_deg = 0.0
         self._view_mode = tk.StringVar(value="north")
+        self._closed = False
+        self._occurrence_by_iid: dict[str, tuple[str, str]] = {}
+        self._updating_occurrences = False
 
-        toolbar = ttk.Frame(self, padding=(8, 8, 8, 4))
-        toolbar.pack(fill=tk.X)
-        ttk.Label(toolbar, text="Vue :").pack(side=tk.LEFT)
-        ttk.Radiobutton(
-            toolbar,
-            text="Nord",
-            value="north",
-            variable=self._view_mode,
-            command=self._view_mode_changed,
-        ).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Radiobutton(
-            toolbar,
-            text="Assemblage",
-            value="assembly",
-            variable=self._view_mode,
-            command=self._view_mode_changed,
-        ).pack(side=tk.LEFT, padx=(6, 0))
-        self._status = ttk.Label(toolbar, text="")
+        self._icon_compass = tk.PhotoImage(
+            file=str(Path(__file__).resolve().parent.parent / "images" / "compass.png")
+        )
+        self._icon_geometry = tk.PhotoImage(
+            file=str(Path(__file__).resolve().parent.parent / "images" / "geometry.png")
+        )
+        self._icon_map_pin = tk.PhotoImage(
+            file=str(Path(__file__).resolve().parent.parent / "images" / "map-pin.png")
+        )
+        self._icon_delete = tk.PhotoImage(
+            file=str(Path(__file__).resolve().parent.parent / "images" / "scenario_delete.png")
+        )
+
+        content = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
+        content.pack(fill=tk.BOTH, expand=True, padx=8, pady=(8, 8))
+        self._content = content
+
+        occurrence_panel = ttk.Frame(content, padding=(0, 0, 6, 0), width=250)
+        ttk.Label(occurrence_panel, text="Points déformés").pack(anchor=tk.W, pady=(0, 4))
+        list_toolbar = ttk.Frame(occurrence_panel)
+        list_toolbar.pack(fill=tk.X, pady=(0, 4))
+        self._map_pin_button = tk.Button(
+            list_toolbar, image=self._icon_map_pin, command=self._on_map_pin_selected,
+            state=tk.DISABLED, relief=tk.FLAT, bd=1,
+        )
+        self._map_pin_button.pack(side=tk.LEFT)
+        self._delete_button = tk.Button(
+            list_toolbar, image=self._icon_delete, command=self._on_delete_selected,
+            state=tk.DISABLED, relief=tk.FLAT, bd=1,
+        )
+        self._delete_button.pack(side=tk.LEFT, padx=(4, 0))
+        self._map_pin_button.bind("<Enter>", lambda _event: self._status.configure(text="Déplacer vers une ville..."))
+        self._delete_button.bind("<Enter>", lambda _event: self._status.configure(text="Supprimer la déformation"))
+
+        occurrence_scrollbar = ttk.Scrollbar(occurrence_panel, orient=tk.VERTICAL)
+        self._occurrence_tree = ttk.Treeview(occurrence_panel, show="tree", selectmode="browse", yscrollcommand=occurrence_scrollbar.set, height=12)
+        occurrence_scrollbar.configure(command=self._occurrence_tree.yview)
+        occurrence_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self._occurrence_tree.pack(fill=tk.BOTH, expand=True)
+        self._occurrence_tree.bind("<<TreeviewSelect>>", self._occurrence_tree_selected)
+
+        map_panel = ttk.Frame(content)
+        content.add(occurrence_panel, weight=0)
+        content.add(map_panel, weight=1)
+        self._initial_sash_pending = True
+        content.bind("<Configure>", self._place_initial_sash)
+        view_toolbar = ttk.Frame(map_panel)
+        view_toolbar.pack(fill=tk.X, pady=(0, 4))
+        self._north_button = tk.Button(
+            view_toolbar,
+            image=self._icon_compass,
+            command=lambda: self._set_view_mode("north"),
+            relief=tk.SUNKEN,
+            bd=1,
+        )
+        self._north_button.pack(side=tk.LEFT)
+        self._assembly_button = tk.Button(
+            view_toolbar,
+            image=self._icon_geometry,
+            command=lambda: self._set_view_mode("assembly"),
+            relief=tk.FLAT,
+            bd=1,
+        )
+        self._assembly_button.pack(side=tk.LEFT, padx=(4, 0))
+        self._status = ttk.Label(view_toolbar, text="")
         self._status.pack(side=tk.RIGHT)
 
         self.map_view = GeoMapView(
-            self,
+            map_panel,
             on_marker_drag_started=self._marker_drag_started,
             on_marker_dragged=self._marker_dragged,
             on_marker_drag_released=self._marker_drag_released,
+            on_marker_selected=self._marker_selected,
         )
-        self.map_view.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+        self.map_view.pack(fill=tk.BOTH, expand=True)
         self.map_view.set_map(calibrated_map)
+
+        footer = ttk.Frame(self, padding=(8, 0, 8, 8))
+        footer.pack(fill=tk.X)
+        ttk.Button(footer, text="Fermer", command=self._close).pack(side=tk.RIGHT)
         self.protocol("WM_DELETE_WINDOW", self._close)
 
     @property
@@ -116,6 +180,7 @@ class DeformationWindow(tk.Toplevel):
         element_id: str,
         vertices: Mapping[str, DeformationVertex],
         assembly_rotation_deg: float,
+        selected_role: str | None = None,
         status_text: str = "",
     ) -> None:
         if set(vertices) != {"O", "B", "L"}:
@@ -148,6 +213,7 @@ class DeformationWindow(tk.Toplevel):
         self.map_view.set_polylines((
             GeoMapPolyline(coordinates, color="#d00000", width=3, closed=True),
         ))
+        self.map_view.set_selected_marker(selected_role, recenter=False)
         self._status.configure(text=status_text)
         if changed_element:
             self.after_idle(
@@ -157,13 +223,57 @@ class DeformationWindow(tk.Toplevel):
                 )
             )
 
+    def set_occurrences(
+        self,
+        occurrences: tuple[tuple[str, str, str], ...],
+        selected_occurrence: tuple[str, str] | None,
+    ) -> None:
+        self._updating_occurrences = True
+        try:
+            self._occurrence_tree.delete(*self._occurrence_tree.get_children())
+            self._occurrence_by_iid.clear()
+            selected_iid = None
+            for index, (element_id, role, label) in enumerate(occurrences):
+                iid = f"occurrence-{index}"
+                self._occurrence_tree.insert("", tk.END, iid=iid, text=label)
+                occurrence = (element_id, role)
+                self._occurrence_by_iid[iid] = occurrence
+                if occurrence == selected_occurrence:
+                    selected_iid = iid
+            if selected_iid is not None:
+                self._occurrence_tree.selection_set(selected_iid)
+                self._occurrence_tree.focus(selected_iid)
+                self._occurrence_tree.see(selected_iid)
+            state = tk.NORMAL if selected_occurrence is not None else tk.DISABLED
+            self._map_pin_button.configure(state=state)
+            self._delete_button.configure(state=state)
+        finally:
+            self._updating_occurrences = False
+
+    def _place_initial_sash(self, _event=None) -> None:
+        if not self._initial_sash_pending or self._content.winfo_width() <= 250:
+            return
+        self._initial_sash_pending = False
+        self._content.sashpos(0, 250)
+
     def _apply_view_rotation(self) -> None:
         rotation = self._assembly_rotation_deg if self.view_mode == "assembly" else 0.0
         self.map_view.set_view_rotation_deg(rotation)
 
-    def _view_mode_changed(self) -> None:
+    def _set_view_mode(self, mode: str) -> None:
+        if mode not in {"north", "assembly"}:
+            raise ValueError(f"Mode de vue DEFORM invalide: {mode!r}")
+        if mode == self.view_mode:
+            return
+        self._view_mode.set(mode)
+        self._update_view_mode_buttons()
         self._apply_view_rotation()
         self._on_view_mode_changed(self.view_mode)
+
+    def _update_view_mode_buttons(self) -> None:
+        north_active = self.view_mode == "north"
+        self._north_button.configure(relief=tk.SUNKEN if north_active else tk.FLAT)
+        self._assembly_button.configure(relief=tk.FLAT if north_active else tk.SUNKEN)
 
     def _marker_drag_started(self, marker_id: object) -> None:
         self._on_vertex_drag_started(str(marker_id))
@@ -174,5 +284,22 @@ class DeformationWindow(tk.Toplevel):
     def _marker_drag_released(self, marker_id: object) -> None:
         self._on_vertex_drag_released(str(marker_id))
 
+    def _marker_selected(self, marker_id: object | None) -> None:
+        if marker_id is not None:
+            self._on_vertex_selected(str(marker_id))
+
+    def _occurrence_tree_selected(self, _event=None) -> None:
+        if self._updating_occurrences:
+            return
+        selection = self._occurrence_tree.selection()
+        if not selection:
+            return
+        occurrence = self._occurrence_by_iid.get(selection[0])
+        if occurrence is not None:
+            self._on_occurrence_selected(*occurrence)
+
     def _close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         self._on_closed()

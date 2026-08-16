@@ -9,7 +9,10 @@ from src.assembleur_core import (
     TopologyVertexEdgeAttachment,
     TopologyWorld,
 )
-from src.assembleur_deformation import simulate_triangle_deformation
+from src.assembleur_deformation import (
+    simulate_city_deformation,
+    simulate_triangle_deformation,
+)
 from src.assembleur_scenario import materialize_catalogue_triangle
 
 
@@ -130,3 +133,35 @@ def test_deformation_topodump_keeps_attachment_intentions(tmp_path):
 
     assert result.accepted
     assert _attachment_dump_signature(result.world, tmp_path / "after.xml") == attachment_dump_before
+
+
+def test_city_deformation_updates_all_shared_base_occurrences_atomically():
+    catalogue, world, _element_id, _triangle_id, _anchor = _catalogue_and_v2_chain()
+    base_city_id = next(
+        triangle.base_city_id
+        for triangle in catalogue.triangles.values()
+    )
+    base_before = np.asarray(catalogue.get_city_lambert(base_city_id))
+    elements_before = {
+        element_id: tuple(element.edge_lengths_km)
+        for element_id, element in world.elements.items()
+    }
+
+    result = simulate_city_deformation(
+        catalogue=catalogue,
+        initial_world=world,
+        city_lambert_overrides={
+            base_city_id: tuple(base_before + np.asarray((1000.0, 0.0))),
+        },
+    )
+
+    assert result.accepted
+    assert result.world is not None
+    assert all(
+        tuple(result.world.elements[element_id].edge_lengths_km)
+        != elements_before[element_id]
+        for element_id in world.elements
+    )
+    assert tuple(world.elements[next(iter(world.elements))].edge_lengths_km) == (
+        elements_before[next(iter(world.elements))]
+    )
