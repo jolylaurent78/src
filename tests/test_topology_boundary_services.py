@@ -1,12 +1,13 @@
+import xml.etree.ElementTree as ET
+
 import numpy as np
 import pytest
 
 from src.assembleur_core import (
-    TopologyAttachment,
+    TopologyEdgeEdgeAttachment,
     TopologyElement,
-    TopologyFeatureRef,
-    TopologyFeatureType,
     TopologyNodeType,
+    TopologyVertexEdgeAttachment,
     TopologyWorld,
 )
 
@@ -39,13 +40,9 @@ def _two_triangles_with_shared_edge() -> tuple[TopologyWorld, str]:
         np.array([[-1.0, 0.0], [0.0, -1.0]]),
         np.array([3.0, 0.0]),
     )
-    group_id = world.apply_attachment(TopologyAttachment(
-        "A01",
-        "edge-edge",
-        TopologyFeatureRef(TopologyFeatureType.EDGE, "T01", 0),
-        TopologyFeatureRef(TopologyFeatureType.EDGE, "T02", 0),
-        params={"mapping": "reverse"},
-    ))
+    group_id = world.apply_attachment(
+        TopologyEdgeEdgeAttachment("A01", "T01", "OB", "T02", "OB")
+    )
     return world, group_id
 
 
@@ -100,6 +97,77 @@ def test_shared_edge_is_never_returned_by_boundary_services():
         assert incident == world.getIncidentBoundarySegments(group_id, node_id)
         assert all(segment.edgeIndex != 0 for segment in incident)
         assert all(node_id in (segment.conceptA, segment.conceptB) for segment in incident)
+
+
+def test_edge_edge_mutation_invalidates_precomputed_boundary_and_rebuilds_it(tmp_path):
+    world = TopologyWorld()
+    group_t01 = world.add_element_as_new_group(_element("T01"))
+    group_t02 = world.add_element_as_new_group(_element("T02"))
+    world.setElementPose(
+        "T02",
+        np.array([[-1.0, 0.0], [0.0, -1.0]]),
+        np.array([3.0, 0.0]),
+    )
+
+    # Reproduit la précondition du bug : chaque contour existe avant la fusion.
+    world.ensureBoundary(group_t01)
+    world.ensureBoundary(group_t02)
+
+    group_id = world.apply_attachment(
+        TopologyEdgeEdgeAttachment("A01", "T01", "OB", "T02", "OB")
+    )
+
+    cache = world._concept_cache(group_id)
+    assert cache.boundaryCycle is None
+    assert cache.boundaryEdges is None
+    assert cache.boundaryIndex is None
+    assert cache.boundaryOrientation is None
+    assert cache.boundaries.cycle is None
+
+    segments = world.getBoundarySegments(group_id)
+    assert len(segments) == 4
+    assert all(
+        not (segment.elementId in {"T01", "T02"} and segment.edgeIndex == 0)
+        for segment in segments
+    )
+
+    graph = world.ensureConceptGraph(group_id)
+    shared_edge = tuple(sorted((
+        world.find_node("T01:N0"),
+        world.find_node("T01:N1"),
+    )))
+    assert len(graph.edges[shared_edge].occurrences) == 2
+
+    dump = tmp_path / "TopoDump.xml"
+    world.export_topo_dump_xml(str(dump))
+    root = ET.parse(dump).getroot()
+    boundary_nodes = root.findall(
+        f"./ConceptModels/ConceptModel[@group='{group_id}']/Boundary/Cycle/N"
+    )
+    assert boundary_nodes
+    assert all(node.get("id") == world.find_node(node.get("id")) for node in boundary_nodes)
+
+
+def test_vertex_edge_mutation_also_invalidates_precomputed_boundary():
+    world = TopologyWorld()
+    group_t01 = world.add_element_as_new_group(_element("T01"))
+    group_t02 = world.add_element_as_new_group(_element("T02"))
+    world.ensureBoundary(group_t01)
+    world.ensureBoundary(group_t02)
+
+    group_id = world.apply_attachment(
+        TopologyVertexEdgeAttachment("A01", "T01", "O", "LO", "T02", "O", "LO")
+    )
+
+    cache = world._concept_cache(group_id)
+    assert cache.boundaryCycle is None
+    assert cache.boundaries.cycle is None
+    segments = world.getBoundarySegments(group_id)
+    assert all(
+        segment.conceptA == world.find_node(segment.conceptA)
+        and segment.conceptB == world.find_node(segment.conceptB)
+        for segment in segments
+    )
 
 
 def test_boundary_segment_order_and_physical_metadata_are_stable():

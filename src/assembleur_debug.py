@@ -35,9 +35,9 @@ def listTopoGroups(topoWorld, rebuild: bool = True):
         element_id_set = set(element_ids)
         nb_att = sum(
             1
-            for attachment in topoWorld.attachments
-            if attachment.feature_a.element_id in element_id_set
-            and attachment.feature_b.element_id in element_id_set
+            for attachment in topoWorld.attachments.values()
+            if attachment.mob_element_id in element_id_set
+            and attachment.dest_element_id in element_id_set
         )
 
         # concept cache (peut être stale si graphValid=False, mais utile)

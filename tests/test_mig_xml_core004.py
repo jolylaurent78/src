@@ -6,7 +6,13 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import pytest
 
-from src.assembleur_core import ScenarioAssemblage, TopologyElement, TopologyWorld
+from src.assembleur_core import (
+    ScenarioAssemblage,
+    TopologyEdgeEdgeAttachment,
+    TopologyElement,
+    TopologyVertexEdgeAttachment,
+    TopologyWorld,
+)
 from src.assembleur_catalogue import Catalogue
 from src.assembleur_io import loadScenarioXml, saveScenarioXml
 from src.assembleur_scenario import ScenarioHypothesis
@@ -228,3 +234,49 @@ def test_v5_round_trip_preserves_group_anchors(tmp_path):
     assert restored_anchor.group_id == restored.getGroupIdFromConceptNode(node_id)
     assert restored.getAnchorForGroup(restored_anchor.group_id) is restored_anchor
     assert restored.getBeaconWorldXY("BEA-0001") == pytest.approx((1.0, 2.0))
+
+
+def test_v5_round_trip_preserves_v2_edge_edge_and_vertex_edge_attachments(tmp_path):
+    world = TopologyWorld()
+
+    def triangle(element_id, inverted=False):
+        return TopologyElement(
+            element_id=element_id,
+            name=element_id,
+            vertex_labels=["O", "B", "L"],
+            vertex_types=["O", "B", "L"],
+            edge_lengths_km=[3.0, 5.0, 4.0],
+            vertex_local_xy=(
+                {0: (0.0, 0.0), 1: (3.0, 0.0), 2: (3.0, -4.0)}
+                if inverted
+                else {0: (0.0, 0.0), 1: (3.0, 0.0), 2: (0.0, 4.0)}
+            ),
+        )
+
+    for element_id, inverted in (("T01", False), ("T02", True), ("T03", False)):
+        world.add_element_as_new_group(triangle(element_id, inverted))
+    world.apply_attachment(TopologyEdgeEdgeAttachment("A001", "T01", "OB", "T02", "OB"))
+    world.replay_group_attachment_poses(world.get_group_of_element("T01"), "T01")
+    group_id = world.apply_attachment(
+        TopologyVertexEdgeAttachment("A002", "T03", "L", "LO", "T02", "L", "LO")
+    )
+    world.replay_group_attachment_poses(group_id, "T02")
+
+    path = tmp_path / "v2-attachments.xml"
+    source = _Viewer(world, [])
+    saveScenarioXml(source, str(path))
+    snapshot = json.loads(ET.parse(path).getroot().find("topoSnapshot").text)
+    assert "resolved_attachments" not in snapshot
+
+    loaded = _Viewer(TopologyWorld(), [])
+    loadScenarioXml(loaded, str(path))
+    restored = loaded._get_active_scenario().topoWorld
+
+    assert restored.attachments == world.attachments
+    assert len(loaded._last_drawn) == 3
+    assert all(
+        isinstance(attachment, (TopologyEdgeEdgeAttachment, TopologyVertexEdgeAttachment))
+        for attachment in restored.attachments.values()
+    )
+    assert restored.getResolvedAttachment("A001") == world.getResolvedAttachment("A001")
+    assert restored.getResolvedAttachment("A002") == world.getResolvedAttachment("A002")

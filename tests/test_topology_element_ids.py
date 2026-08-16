@@ -13,7 +13,6 @@ from src.assembleur_core import (
 )
 from src.assembleur_catalogue import Catalogue
 from src.assembleur_scenario import ScenarioHypothesis
-from src.assembleur_edgechoice import buildEdgeChoiceEptsForAutoChain
 from src.assembleur_sim import (
     AlgoQuadrisParPaires,
     BranchState,
@@ -45,12 +44,12 @@ def _catalogue_and_auto_hypothesis():
     lambert = {}
     for pair_index in range(16):
         base = catalogue.add_city(f"Base {pair_index}", 45.0, 2.0)
+        opening = catalogue.add_city(f"Opening {pair_index}", 45.0, 2.0)
         lambert[base.city_id] = (pair_index * 100.0 + 3.0, 0.0)
+        lambert[opening.city_id] = (pair_index * 100.0, 0.0)
         for parity in range(2):
             rank = pair_index * 2 + parity + 1
-            opening = catalogue.add_city(f"Opening {rank}", 45.0, 2.0)
             light = catalogue.add_city(f"Light {rank}", 45.0, 2.0)
-            lambert[opening.city_id] = (pair_index * 100.0, 0.0)
             lambert[light.city_id] = (
                 pair_index * 100.0 + (0.0 if parity == 0 else 3.0),
                 4.0 if parity == 0 else -4.0,
@@ -148,9 +147,14 @@ def test_simulation_uses_core_ids_instead_of_catalog_triangle_ids():
 
     def factory(triangle_id):
         points = first_pts if triangle_id == "TRI-0007" else second_pts
+        labels = (
+            ["Opening", "Base", "Odd light"]
+            if triangle_id == "TRI-0007"
+            else ["Opening", "Base", "Even light"]
+        )
         return TopologyElement(
             name=f"Triangle {triangle_id}",
-            vertex_labels=["O", "B", "L"],
+            vertex_labels=labels,
             vertex_types=["O", "B", "L"],
             edge_lengths_km=[3.0, 5.0, 4.0],
             vertex_local_xy={
@@ -408,51 +412,6 @@ def test_last_drawn_resolves_its_group_from_current_core(monkeypatch):
     assert "group_id" not in last_drawn[0]
     assert "topoGroupId" not in last_drawn[0]
     assert world.get_group_of_element(last_drawn[0]["topoElementId"]) == "G-PROJECTED"
-
-
-def test_auto_edgechoice_receives_explicit_projection_entries():
-    world = TopologyWorld()
-    world.add_element_as_new_group(_element(element_id="T01"))
-    world.add_element_as_new_group(_element(element_id="T02"))
-    mobile = PlacedTriangle(
-        triangleId=1,
-        topologyElementId="T01",
-        points={"O": (0.0, 0.0), "B": (3.0, 0.0), "L": (0.0, 4.0)},
-    )
-    destination = PlacedTriangle(
-        triangleId=2,
-        topologyElementId="T02",
-        points={"O": (10.0, 0.0), "B": (13.0, 0.0), "L": (10.0, 4.0)},
-    )
-
-    epts, meta = buildEdgeChoiceEptsForAutoChain(
-        world=world,
-        mobile_entry=mobile,
-        destination_entry=destination,
-        src_edge="LO",
-        dst_edge="LO",
-    )
-
-    assert (epts.elementIdSrc, epts.elementIdDst) == ("T01", "T02")
-    assert (meta["src_owner_tid"], meta["dst_owner_tid"]) == (1, 2)
-
-
-@pytest.mark.parametrize(
-    ("mobile_entry", "destination_entry", "role"),
-    [
-        (None, {"id": 2, "topoElementId": "T02", "pts": {}}, "mobile"),
-        (PlacedTriangle(triangleId=1, topologyElementId="T01", points={}), {}, "destination"),
-    ],
-)
-def test_auto_edgechoice_reports_invalid_projection_entry(mobile_entry, destination_entry, role):
-    with pytest.raises(ValueError, match=role):
-        buildEdgeChoiceEptsForAutoChain(
-            world=TopologyWorld(),
-            mobile_entry=mobile_entry,
-            destination_entry=destination_entry,
-            src_edge="LO",
-            dst_edge="LO",
-        )
 
 
 def test_manual_placement_keeps_catalog_id_separate_from_core_instance_id():

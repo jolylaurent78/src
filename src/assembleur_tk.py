@@ -51,7 +51,11 @@ from src.assembleur_tk_mixin_dictionary import TriangleViewerDictionaryMixin
 from src.assembleur_tk_mixin_frontier import TriangleViewerFrontierGraphMixin
 from src.assembleur_tk_mixin_bg import TriangleViewerBackgroundMapMixin
 from src.assembleur_tk_mixin_clockarc import TriangleViewerClockArcMixin
-from src.assembleur_edgechoice import buildEdgeChoiceEptsFromBest
+from src.assembleur_edgechoice import (
+    buildManualAttachmentIntentFromBest,
+    commitManualAttachment,
+    previewManualAttachment,
+)
 from src.assembleur_beacon_runtime import BeaconWorldResolver
 from src.utils.logging_utils import get_mig_geo_logger
 from src.assembleur_topology_comparison import (
@@ -398,7 +402,8 @@ class TriangleViewerManual(
         self.ctxStartNodeId = None     # contexte chemin: startNodeId DSU canonique (clic droit)
         self._nearest_line_id = None   # trait d'aide "sommet le plus proche"
         self._edge_highlight_ids = []  # surlignage des 2 arêtes (mobile/cible)
-        self._edge_choice = None       # (i_mob, key_mob, edge_m, i_tgt, key_tgt, edge_t)
+        self._attachment_intent = None  # ManualAttachmentIntent produit par le drag
+        self._attachment_preview = None  # ManualAttachmentPreview calculé sur clone Core
         self._edge_highlights = None   # données brutes des aides (candidates + best)
         # MIG-ANCHOR-003 : cible gagnante pendant un drag de groupe par sommet.
         # Sommet raccordable et balise sont arbitrés sur leur distance monde.
@@ -5811,7 +5816,8 @@ class TriangleViewerManual(
         self.canvas_objects.clear()
         self._nearest_line_id = None
         self._clear_edge_highlights()
-        self._edge_choice = None
+        self._attachment_intent = None
+        self._attachment_preview = None
         self._edge_highlights = None
         self._rebuild_triangle_listbox_from_core()
 
@@ -6142,7 +6148,8 @@ class TriangleViewerManual(
             else:
                 # pas de sélection active -> pas d'aides persistantes
                 self._edge_highlights = None
-                self._edge_choice = None
+                self._attachment_intent = None
+                self._attachment_preview = None
 
         self._draw_clock_azimuth_traits_layer()
 
@@ -6424,137 +6431,9 @@ class TriangleViewerManual(
             self._hide_tooltip()
             self.canvas.configure(cursor="X_cursor")
 
-            # --- NOUVEAU (étape 2) ---
-            # Si CTRL est pressé *après* avoir sélectionné un sommet (assist ON),
-            # on applique immédiatement la ROTATION d'alignement (comme au release),
-            # mais SANS translation et SANS collage (CTRL empêchera le snap au relâchement).
-            if self._sel and (not self._sel.get("suppress_assist")):
-                mode = self._sel.get("mode")
-                choice = self._edge_choice
-                if choice:
-                    import numpy as np
-
-                    # -------- Cas 1 : triangle seul (mode vertex) --------
-                    if mode == "vertex":
-                        idx = self._sel.get("idx")
-                        vkey = self._sel.get("vkey")
-                        if choice[0] == idx and choice[1] == vkey:
-                            (_, _, idx_t, vkey_t, (m_a, m_b, t_a, t_b)) = choice
-                            tri_m = self._last_drawn[idx]
-                            Pm = tri_m["pts"]
-
-                            A = np.array(m_a, dtype=float)  # mobile: sommet saisi
-                            B = np.array(m_b, dtype=float)  # mobile: voisin arête
-                            U = np.array(t_a, dtype=float)  # cible: sommet (pas utilisé ici)
-                            V = np.array(t_b, dtype=float)  # cible: voisin arête
-
-                            ang_m = self._ang_of_vec(B[0] - A[0], B[1] - A[1])
-                            ang_t = self._ang_of_vec(V[0] - U[0], V[1] - U[1])
-                            dtheta = ang_t - ang_m
-
-                            if abs(dtheta) > 1e-12:
-                                R = np.array([[np.cos(dtheta), -np.sin(dtheta)],
-                                             [np.sin(dtheta),  np.cos(dtheta)]], dtype=float)
-                                for k in ("O", "B", "L"):
-                                    p = np.array(Pm[k], dtype=float)
-                                    p_rot = A + (R @ (p - A))
-                                    Pm[k][0] = float(p_rot[0])
-                                    Pm[k][1] = float(p_rot[1])
-
-                                # Redessiner + remettre les aides (rouge/gris)
-                                self._redraw_from(self._last_drawn)
-                                v_world = np.array(self._last_drawn[idx]["pts"][vkey], dtype=float)
-                                self._update_nearest_line(v_world, exclude_idx=idx)
-                                self._update_edge_highlights(idx, vkey, idx_t, vkey_t)
-
-                    # -------- Cas 2 : déplacement de groupe ancré sur sommet --------
-                    elif mode == "move_group":
-                        anchor = self._sel.get("anchor")
-                        core_group_id = str(self._sel.get("core_group_id") or "").strip()
-                        if anchor and anchor.get("type") == "vertex":
-                            anchor_tid = anchor.get("tid")
-                            anchor_vkey = anchor.get("vkey")
-                            if choice[0] == anchor_tid and choice[1] == anchor_vkey:
-                                (_, _, idx_t, vkey_t, (m_a, m_b, t_a, t_b)) = choice
-
-                                A = np.array(m_a, dtype=float)
-                                B = np.array(m_b, dtype=float)
-                                U = np.array(t_a, dtype=float)
-                                V = np.array(t_b, dtype=float)
-
-                                ang_m = self._ang_of_vec(B[0] - A[0], B[1] - A[1])
-                                ang_t = self._ang_of_vec(V[0] - U[0], V[1] - U[1])
-                                dtheta = ang_t - ang_m
-
-                                if abs(dtheta) > 1e-12:
-                                    R = np.array([[np.cos(dtheta), -np.sin(dtheta)],
-                                                 [np.sin(dtheta),  np.cos(dtheta)]], dtype=float)
-
-                                    # MIG-GROUP-019 : la composition du groupe est Core.
-                                    # La projection doit etre complete avant toute mutation,
-                                    # afin de ne jamais appliquer une rotation partielle.
-                                    scen = self._get_active_scenario()
-                                    world = scen.topoWorld
-
-                                    if not core_group_id:
-                                        raise RuntimeError("CTRL move_group: core_group_id absent de la selection.")
-                                    try:
-                                        element_ids = world.getGroupElementIds(core_group_id)
-                                    except Exception as exc:
-                                        raise RuntimeError(
-                                            f"CTRL move_group: groupe Core introuvable ({core_group_id})."
-                                        ) from exc
-                                    if not element_ids:
-                                        raise RuntimeError(
-                                            f"CTRL move_group: groupe Core vide ({core_group_id})."
-                                        )
-                                    projected_entries = self.canvas_objects.get_many_by_topology_ids(
-                                        element_ids,
-                                        strict=True,
-                                    )
-                                    if not (0 <= int(anchor_tid) < len(self._last_drawn)):
-                                        raise RuntimeError("CTRL move_group: ancre projetee introuvable.")
-                                    if self._last_drawn[int(anchor_tid)] not in projected_entries:
-                                        raise RuntimeError(
-                                            "CTRL move_group: ancre absente du groupe Core selectionne."
-                                        )
-                                    rotated_points = []
-                                    for entry in projected_entries:
-                                        points = entry.get("pts")
-                                        if not isinstance(points, dict):
-                                            raise RuntimeError(
-                                                "CTRL move_group: entree projetee sans points."
-                                            )
-                                        for key in ("O", "B", "L"):
-                                            if key not in points:
-                                                raise RuntimeError(
-                                                    f"CTRL move_group: sommet {key} absent de la projection."
-                                                )
-                                            if not hasattr(points[key], "__setitem__"):
-                                                raise RuntimeError(
-                                                    f"CTRL move_group: sommet {key} non mutable."
-                                                )
-                                            try:
-                                                point = np.array(points[key], dtype=float)
-                                                rotated = A + (R @ (point - A))
-                                            except Exception as exc:
-                                                raise RuntimeError(
-                                                    f"CTRL move_group: sommet {key} invalide."
-                                                ) from exc
-                                            rotated_points.append((points, key, rotated))
-                                    for points, key, rotated in rotated_points:
-                                        points[key][0] = float(rotated[0])
-                                        points[key][1] = float(rotated[1])
-
-                                    # Redessiner + remettre les aides (en excluant le groupe mobile)
-                                    self._redraw_from(self._last_drawn)
-                                    v_world = np.array(self._last_drawn[anchor_tid]["pts"][anchor_vkey], dtype=float)
-                                    self._update_nearest_line(
-                                        v_world,
-                                        exclude_idx=anchor_tid,
-                                        exclude_core_group_id=core_group_id,
-                                    )
-                                    self._update_edge_highlights(anchor_tid, anchor_vkey, idx_t, vkey_t)
+            # ATT-003A : CTRL conserve son rôle de déconnexion mais ne fabrique
+            # plus de pose intermédiaire à partir de données EdgeChoice legacy.
+            # La preview géométrique V2 sera introduite en ATT-003B.
 
     def _on_ctrl_up(self, event=None):
         if self._ctrl_down:
@@ -6974,7 +6853,7 @@ class TriangleViewerManual(
         """Actualise l'unique moteur de cible du drag sommet.
 
         Un sommet n'est admissible qu'après construction effective d'un
-        ``_edge_choice``. Il est ensuite arbitré avec la balise la plus proche
+        ``_attachment_intent``. Il est ensuite arbitré avec la balise la plus proche
         sur la distance géométrique ; à distance égale, le sommet gagne.
         """
         self._reset_assist()
@@ -6994,7 +6873,11 @@ class TriangleViewerManual(
                 vertex_candidate["triangle_idx"],
                 vertex_candidate["vkey"],
             )
-            if self._edge_choice is None:
+            if (
+                self._attachment_intent is None
+                or self._attachment_preview is None
+                or not self._attachment_preview.accepted
+            ):
                 vertex_candidate = None
 
         beacon_candidate = None
@@ -7005,7 +6888,8 @@ class TriangleViewerManual(
             or beacon_candidate["distance2"] < vertex_candidate["distance2"]
         ):
             self._clear_edge_highlights()
-            self._edge_choice = None
+            self._attachment_intent = None
+            self._attachment_preview = None
             self._update_assist_line_to_world(
                 v_world, beacon_candidate["world"], color="#2b78e4"
             )
@@ -7044,7 +6928,8 @@ class TriangleViewerManual(
         self._clear_nearest_line()
         self._clear_edge_highlights()
         self._edge_highlights = None
-        self._edge_choice = None
+        self._attachment_intent = None
+        self._attachment_preview = None
         self._group_drag_snap_candidate = None
         self._group_drag_clear_beacon_target()
         self._clear_anchor_rotation_pivot_highlight()
@@ -7107,6 +6992,23 @@ class TriangleViewerManual(
             outline.append((q0, q1))
         return outline
 
+    @staticmethod
+    def _select_first_accepted_manual_attachment_candidate(
+        candidates,
+        *,
+        build_intent,
+        preview_intent,
+    ):
+        """Retient le premier candidat, par score croissant, accepté par le Core."""
+        for candidate in sorted(candidates, key=lambda item: item[0]):
+            intent = build_intent(candidate)
+            if intent is None:
+                continue
+            preview = preview_intent(intent)
+            if preview.accepted:
+                return candidate, intent, preview
+        return None, None, None
+
     def _update_edge_highlights(self, mob_idx: int, vkey_m: str, tgt_idx: int, tgt_vkey: str):
         """Construit l'assistance de snap depuis les segments Boundary fournis par le Core."""
 
@@ -7143,7 +7045,8 @@ class TriangleViewerManual(
             mAId = world.get_element_vertex_node_id_by_type(mAElementId, vkey_m)
         except (KeyError, IndexError, ValueError):
             self._clear_edge_highlights()
-            self._edge_choice = None
+            self._attachment_intent = None
+            self._attachment_preview = None
             return
         core_gid_m = self._get_core_group_id_for_triangle_index(mob_idx)
         core_gid_t = self._get_core_group_id_for_triangle_index(tgt_idx)
@@ -7152,7 +7055,8 @@ class TriangleViewerManual(
         # l'incidence. L'UI ne fait que projeter ces segments puis les classe.
         if not core_gid_m or not core_gid_t:
             self._clear_edge_highlights()
-            self._edge_choice = None
+            self._attachment_intent = None
+            self._attachment_preview = None
             return
         mob_boundary_segments = world.getBoundarySegments(core_gid_m)
         tgt_boundary_segments = world.getBoundarySegments(core_gid_t)
@@ -7165,7 +7069,7 @@ class TriangleViewerManual(
         t_inc = self._project_boundary_segments(core_gid_t, tgt_incident_boundary_segments)
 
         # 4) sélection globale : minimiser l’écart d’azimut + anti-chevauchement
-        best = None  # (score, m_edge, t_edge)
+        candidates = []  # (score, m_edge, t_edge)
         mob_projected_elements = self._get_projected_elements_for_core_group(core_gid_m)
         tgt_projected_elements = self._get_projected_elements_for_core_group(core_gid_t)
         mob_tids = [index for index, _entry in self.canvas_objects.get_indexed_by_topology_ids(
@@ -7175,41 +7079,8 @@ class TriangleViewerManual(
             entry.get("topoElementId") for entry in tgt_projected_elements
         )]
 
-        # Helper pour tester le chevauchement via Algo Topologique
-        def _overlap_topo_for_pair(score, me, te) -> bool:
-            # 1) fabriquer un "best" local, compatible buildEdgeChoiceEptsFromBest
-            best_local = (score, me, te)
-
-            res = buildEdgeChoiceEptsFromBest(
-                best_local,
-                world=world,
-                mob_idx=mob_idx,
-                tgt_idx=tgt_idx,
-                mob_tids=mob_tids,
-                tgt_tids=tgt_tids,
-                last_drawn=self._last_drawn,
-                eps_world=EPS_WORLD,
-                mATmpId=mAId,
-                tATmpId=tAId,
-                debug=False,
-            )
-            if not res:
-                # Candidate Boundary non représentable par EdgeChoiceEpts :
-                # même convention que le chevauchement, elle est rejetée mais
-                # les autres paires restent évaluables.
-                return True
-
-            epts, _meta = res
-            attachments = epts.createTopologyAttachments(world=world, debug=False)
-            if not attachments:
-                return False
-
-            return bool(world.simulateOverlapTopologique(
-                core_gid_t,
-                core_gid_m,
-                attachments,
-                debug=False,
-            ))
+        # ATT-003A : la sélection visuelle ne lance plus de simulation legacy.
+        # La preview Core V2 (dont l'overlap) sera introduite en ATT-003B.
 
         m_oriented = [(a, b) if _almost_eq(a, vm) else (b, a) for (a, b) in (m_inc or [])]
         t_oriented = [(a, b) if _almost_eq(a, vt) else (b, a) for (a, b) in (t_inc or [])]
@@ -7218,10 +7089,26 @@ class TriangleViewerManual(
             for te in t_oriented:
                 azt = _azim(*te)
                 score = _ang_dist(azm, azt)
-                if _overlap_topo_for_pair(score, me, te):
-                    continue
-                if (best is None) or (score < best[0]):
-                    best = (score, me, te)
+                candidates.append((score, me, te))
+
+        best, self._attachment_intent, self._attachment_preview = (
+            self._select_first_accepted_manual_attachment_candidate(
+                candidates,
+                build_intent=lambda candidate: buildManualAttachmentIntentFromBest(
+                    candidate,
+                    world=world,
+                    mob_idx=mob_idx,
+                    tgt_idx=tgt_idx,
+                    mob_tids=mob_tids,
+                    tgt_tids=tgt_tids,
+                    last_drawn=self._last_drawn,
+                    eps_world=EPS_WORLD,
+                    mATmpId=mAId,
+                    tATmpId=tAId,
+                ),
+                preview_intent=lambda intent: previewManualAttachment(world, intent),
+            )
+        )
 
         # 5) sorties visuelles
         mo = [(tuple(a), tuple(b)) for (a, b) in (mob_outline or [])]
@@ -7235,38 +7122,11 @@ class TriangleViewerManual(
             "tgt_outline": [(tuple(a), tuple(b)) for (a, b) in (tgt_outline or [])],
         }
 
-        # --- NOTE: _edge_choice est la "source de vérité" pour le release ---
-        # Contrainte: d'autres appels attendent que choice[4] soit déballable en (m_a,m_b,t_a,t_b).
-        self._edge_choice = None
-        if best:
-            mob_tids = [index for index, _entry in self.canvas_objects.get_indexed_by_topology_ids(
-                entry.get("topoElementId") for entry in mob_projected_elements
-            )]
-            tgt_tids = [index for index, _entry in self.canvas_objects.get_indexed_by_topology_ids(
-                entry.get("topoElementId") for entry in tgt_projected_elements
-            )]
-            res = buildEdgeChoiceEptsFromBest(
-                best,
-                world=world,
-                mob_idx=mob_idx,
-                tgt_idx=tgt_idx,
-                mob_tids=mob_tids,
-                tgt_tids=tgt_tids,
-                last_drawn=self._last_drawn,
-                eps_world=EPS_WORLD,
-                mATmpId=mAId,
-                tATmpId=tAId,
-                debug=False,
-            )
-            if res:
-                epts, _meta = res
-                self._edge_choice = (mob_idx, vkey_m, tgt_idx, tgt_vkey, epts)
-
         self._redraw_edge_highlights()
 
     def _clear_edge_highlights(self):
         """Efface du canvas les lignes d'aide déjà dessinées.
-        N'efface PAS self._edge_choice ni self._edge_highlights (elles peuvent être réutilisées)."""
+        N'efface PAS self._attachment_intent ni self._edge_highlights."""
         if self._edge_highlight_ids:
             for _id in self._edge_highlight_ids:
                 self.canvas.delete(_id)
@@ -7300,22 +7160,24 @@ class TriangleViewerManual(
             _id = self._draw_temp_edge_world(np.array(a, float), np.array(b, float), color="#BBBBBB", width=1)
             if _id:
                 self._edge_highlight_ids.append(_id)
-        # 3) Meilleure (ROUGE, cible + mobile) — toujours par-dessus
+        # 3) Meilleure : verte si la preview Core V2 est acceptée, rouge sinon.
         best = data.get("best")
         if best:
+            preview = self._attachment_preview
+            best_color = "#178C3A" if preview is not None and preview.accepted else "#FF0000"
             # best = (m_a, m_b, t_a, t_b)
             m_a, m_b, t_a, t_b = best
             # Côté cible (épais)
-            _id = self._draw_temp_edge_world(np.array(t_a, float), np.array(t_b, float), color="#FF0000", width=4)
+            _id = self._draw_temp_edge_world(np.array(t_a, float), np.array(t_b, float), color=best_color, width=4)
             if _id:
                 self._edge_highlight_ids.append(_id)
             # Côté mobile (épais également)
-            _id = self._draw_temp_edge_world(np.array(m_a, float), np.array(m_b, float), color="#FF0000", width=4)
+            _id = self._draw_temp_edge_world(np.array(m_a, float), np.array(m_b, float), color=best_color, width=4)
             if _id:
                 self._edge_highlight_ids.append(_id)
 
             # côté mobile (fin) — l'arête entrée en contact
-            _id2 = self._draw_temp_edge_world(np.array(m_a, float), np.array(m_b, float), color="#FF0000", width=3)
+            _id2 = self._draw_temp_edge_world(np.array(m_a, float), np.array(m_b, float), color=best_color, width=3)
             if _id2:
                 self._edge_highlight_ids.append(_id2)
 
@@ -9210,7 +9072,7 @@ class TriangleViewerManual(
         """
         Filtre les scénarios automatiques en conservant uniquement ceux
         qui commencent par le même préfixe de triangles ET les mêmes contraintes
-        TopologyAttachment entre triangles consécutifs, jusqu'au triangle cliqué.
+        Attachments V2 entre triangles consécutifs, jusqu'au triangle cliqué.
 
         Le scénario actif est la référence absolue et ne peut jamais être supprimé.
         """
@@ -9258,7 +9120,7 @@ class TriangleViewerManual(
                 removed += 1
                 continue
 
-            # 2) mêmes contraintes TopologyAttachment dans le préfixe
+            # 2) mêmes contraintes d'attachment V2 dans le préfixe
             steps = self._scenario_prefix_edge_steps(scen, upto_index)
             if steps != ref_steps:
                 removed += 1
@@ -10202,14 +10064,29 @@ class TriangleViewerManual(
             snap_world = None
             mobile_element_id = None
             beacon_candidate = self._group_drag_snap_candidate
+            attachment_intent = self._attachment_intent
+            attachment_preview = self._attachment_preview
+            manual_attachment_attempted = False
+            manual_attachment_intent_pending = False
 
             # On nettoie l'aide visuelle dans tous les cas
             self._clear_edge_highlights()
 
-            # Si l'aide était active et qu'on a bien un choix d'arête,
-            # on applique la même géométrie que pour un triangle seul,
-            # mais à TOUS les triangles du groupe.
-            choice = self._edge_choice
+            # ATT-003A : le release ne convertit plus une aide géométrique
+            # legacy en attachment. ATT-003B/003C consommeront l'intention
+            # métier puis laisseront le Core résoudre preview et commit.
+            manual_attachment_attempted = bool(
+                not suppress
+                and not self._ctrl_down
+                and not beacon_anchor_applied
+                and attachment_intent is not None
+            )
+            if (
+                manual_attachment_attempted
+                and attachment_preview is not None
+                and attachment_preview.accepted
+            ):
+                manual_attachment_intent_pending = True
 
             # MIG-ANCHOR-003 : sommet raccordable et balise sont recherchés
             # indépendamment ; le candidat admissible le plus proche gagne.
@@ -10258,101 +10135,17 @@ class TriangleViewerManual(
                     text=f"Groupe ancrÃ© sur la balise {beacon_candidate['beacon_id']}."
                 )
 
-            if (
-                not suppress
-                and not self._ctrl_down
-                and not beacon_anchor_applied
-                and anchor
-                and anchor.get("type") == "vertex"
-                and choice
-                and choice[0] == anchor.get("tid")
-                and choice[1] == anchor.get("vkey")
-               ):
-
-                # Déballage du choix d'arête: (mob_idx,vkey_m,tgt_idx,vkey_t,epts)
-                # epts est un objet séquence (mA,mBEdgeVertex,tA,tBEdgeVertex) enrichi pendant l'assist
-                (_, _, idx_t, vkey_t, epts) = choice
-
-                scen = self._get_active_scenario()
-                world = scen.topoWorld
-                snap_world = world
-                R, T = epts.computeRigidTransform()
-                if mobile_core_group_id is None:
-                    raise RuntimeError(
-                        "[MIG-CACHE-TRANSFORM-001E1] groupe Core mobile absent"
-                    )
-                mobile_entry = self._last_drawn[int(choice[0])]
-                mobile_element_id = str(mobile_entry.get("topoElementId", "") or "").strip()
-                if not mobile_element_id:
-                    raise RuntimeError(
-                        "[MIG-CACHE-TRANSFORM-001E1] topoElementId mobile absent"
-                    )
-
-                # MIG-CACHE-TRANSFORM-001E1:
-                # la transformation Core précède encore la fusion topologique sans transaction
-                # globale. L’atomicité sera traitée dans une migration dédiée.
-                drag_delta = self._get_move_drag_delta_world(event)
-                R_core = np.array(R, dtype=float, copy=True)
-                T_snap = np.array(T, dtype=float, copy=True)
-                if R_core.shape != (2, 2) or T_snap.shape != (2,):
-                    raise ValueError(
-                        "[MIG-CACHE-TRANSFORM-001E1-FIX] transform de snap invalide"
-                    )
-                T_core = (R_core @ drag_delta) + T_snap
-                if not np.all(np.isfinite(T_core)):
-                    raise ValueError(
-                        "[MIG-CACHE-TRANSFORM-001E1-FIX] translation Core invalide"
-                    )
-                MIG_GEO_LOGGER.debug(
-                    "[MIG-CACHE-TRANSFORM-001E1-FIX] "
-                    "group=%s drag_delta=%s R_snap=%s T_snap=%s T_core=%s",
-                    mobile_core_group_id, drag_delta, R_core, T_snap, T_core,
-                )
-                world.apply_group_rigid_transform(
-                    str(mobile_core_group_id), R_core, T_core
-                )
-                self._project_core_group_to_last_drawn(world, str(mobile_core_group_id))
-                core_snap_transform_applied = True
-
-                # ------------------------------------------------------------
-                # Topologie Core (intention) : edge-edge OU vertex-edge
-                # -> décision déjà prise pendant l'assist (epts.kind / epts.tRaw / labels / edges)
-                # -> pose Core = sync depuis Tk (pas de compute_pose_* ici)
-                # ------------------------------------------------------------
-                new_core_gid = None
-
-                target_core_group_id = None
-                tri_t = self._last_drawn[int(idx_t)]
-                element_id_t = tri_t.get("topoElementId", None)
-                if element_id_t:
-                    target_core_group_id = str(
-                        world.get_group_of_element(str(element_id_t))
-                    )
-
-                # La décision métier « deux groupes différents » relève du
-                # Core. Les IDs UI ne participent qu'à la projection ci-dessous.
-                if (
-                    mobile_core_group_id
-                    and target_core_group_id
-                    and str(target_core_group_id) != str(mobile_core_group_id)
-                ):
-                    kind = str(epts.kind).strip().lower()
-                    if kind not in ("edge-edge", "vertex-edge"):
-                        raise RuntimeError(f"kind inattendu: {kind}")
-
-                    attachments_to_apply = epts.createTopologyAttachments(
-                        world=world,
-                        debug=False,
-                    )
-                    if attachments_to_apply:
-                        world.beginTopoTransaction()
-                        new_core_gid = world.apply_attachments(attachments_to_apply)
-                        world.commitTopoTransaction()
-
             # Commit exclusif : soit snap Core-first, soit translation
             # libre Core-first (un move_group), jamais les deux.
             if beacon_anchor_applied:
                 pass
+            elif manual_attachment_intent_pending:
+                scen = self._get_active_scenario()
+                world = scen.topoWorld
+                commitManualAttachment(world, attachment_intent)
+                self._rebuild_active_projection_from_core()
+            elif manual_attachment_attempted:
+                self._rebuild_active_projection_from_core()
             elif (
                 self._is_active_auto_scenario()
                 and not core_snap_transform_applied
@@ -10380,6 +10173,10 @@ class TriangleViewerManual(
                     float(drag_delta[1]),
                 )
 
+            if manual_attachment_intent_pending:
+                self.status.config(text="Raccord manuel V2 appliqué.")
+            elif manual_attachment_attempted:
+                self.status.config(text="Raccord manuel refusé.")
             self._sel = None
             self._reset_assist()
             self._redraw_from(self._last_drawn)

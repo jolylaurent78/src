@@ -401,7 +401,8 @@ def loadScenarioXml(viewer, path: str):
     viewer._clear_edge_highlights()
     viewer._hide_tooltip()
     viewer._ctx_target_element_id = None
-    viewer._edge_choice = None
+    viewer._attachment_intent = None
+    viewer._attachment_preview = None
     viewer._drag_preview_id = None
     viewer.canvas.delete("preview")
 

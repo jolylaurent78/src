@@ -13,7 +13,6 @@ from src.assembleur_core import (
     TopologyConstraintGeometryError,
     TopologyWorld,
 )
-from src.assembleur_edgechoice import rematerialize_vertex_edge_attachments_for_element
 from src.assembleur_scenario import materialize_catalogue_triangle
 
 
@@ -111,9 +110,11 @@ def simulate_triangle_deformation(
 ) -> DeformationSimulationResult:
     """Simule des overrides O/B/L sans muter le Catalogue ni le World source.
 
-    Les attachments, leur mapping et leurs paramètres sont rejoués tels quels.
-    Les coordonnées sont Lambert (mètres), soit le repère canonique utilisé par
-    la factory de matérialisation Catalogue.
+    La déformation remplace uniquement la géométrie intrinsèque du triangle.
+    Les attachments V2 restent inchangés ; leurs résolutions et les états
+    géométriques dérivés sont reconstruits par le Core avant le replay.
+    Les coordonnées sont Lambert (mètres), soit le repère canonique utilisé
+    par la factory de matérialisation Catalogue.
     """
     normalized_overrides = _normalize_vertex_lambert_overrides(
         vertex_lambert_overrides
@@ -152,12 +153,7 @@ def simulate_triangle_deformation(
 
     working_world = initial_world.clonePhysicalState()
     working_world.replace_element_intrinsic_geometry(element_id, replacement)
-    rematerialized_attachments = rematerialize_vertex_edge_attachments_for_element(
-        working_world,
-        element_id,
-    )
-    working_world.rebuild_from_attachments(rematerialized_attachments)
-    working_world.rebuildGroupElementLists()
+    working_world.rebuild_from_attachments()
     working_world.reconcileGroupAnchorsByNode()
 
     candidate_group_id = working_world.get_group_of_element(element_id)

@@ -192,6 +192,16 @@ def test_modern_display_label_resolves_rank_from_hypothesis_order():
     assert viewer._build_triangle_display_label({"topoElementId": element.element_id}) == "T2"
 
 
+def test_modern_display_label_does_not_infer_rank_from_element_id():
+    catalogue, hypothesis = _catalogue_and_hypothesis()
+    viewer, scenario = _viewer(catalogue, hypothesis)
+    element = materialize_catalogue_triangle(catalogue, hypothesis.triangle_ids_by_rank[5])
+    element.element_id = "T05"
+    scenario.topoWorld.add_element_as_new_group(element)
+
+    assert viewer._build_triangle_display_label({"topoElementId": "T05"}) == "T6"
+
+
 def test_modern_display_label_rejects_missing_or_unknown_source_triangle_id():
     catalogue, hypothesis = _catalogue_and_hypothesis()
     viewer, scenario = _viewer(catalogue, hypothesis)

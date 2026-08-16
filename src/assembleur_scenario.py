@@ -11,13 +11,10 @@ import numpy as np
 from src.assembleur_catalogue import Catalogue, HypothesisTemplate
 from src.assembleur_core import (
     ScenarioAssemblage,
-    TopologyAttachment,
+    TopologyEdgeEdgeAttachment,
     TopologyElement,
-    TopologyFeatureRef,
-    TopologyFeatureType,
     build_topology_element_from_catalogue_triangle,
 )
-from src.assembleur_edge_mapping import compute_edge_edge_pose
 
 
 @dataclass
@@ -218,109 +215,36 @@ def _single_materialized_element_id(world, triangle_id: str) -> str | None:
     return matches[0] if matches else None
 
 
-def _edge_index_for_vertex_types(element: TopologyElement, first: str, second: str) -> int:
-    wanted = {first, second}
-    for edge in element.edges:
-        edge_types = {
-            element.vertex_types[edge.v_start.vertex_index],
-            element.vertex_types[edge.v_end.vertex_index],
-        }
-        if edge_types == wanted:
-            return int(edge.edge_index)
-    raise ValueError(
-        f"Élément {element.element_id!r}: arête {first}{second} introuvable"
-    )
-
-
-def _points_by_vertex_type(element: TopologyElement) -> dict[str, np.ndarray]:
-    points: dict[str, np.ndarray] = {}
-    for index, vertex_type in enumerate(element.vertex_types):
-        point = element.vertex_local_xy.get(index)
-        if point is None:
-            raise ValueError(
-                f"Élément {element.element_id!r}: coordonnées locales absentes pour {vertex_type}"
-            )
-        points[vertex_type] = np.asarray(point, dtype=float)
-    if set(points) != {"O", "B", "L"}:
-        raise ValueError(f"Élément {element.element_id!r}: triangle O/B/L attendu")
-    return points
-
-
 def _has_ob_edge_edge_attachment(world, first_element_id: str, second_element_id: str) -> bool:
     expected = {first_element_id, second_element_id}
     for attachment in world.attachments.values():
-        if attachment.kind != "edge-edge":
+        if not isinstance(attachment, TopologyEdgeEdgeAttachment):
             continue
         if {
-            attachment.feature_a.element_id,
-            attachment.feature_b.element_id,
+            attachment.mob_element_id,
+            attachment.dest_element_id,
         } != expected:
             continue
-        first = world.get_edge(attachment.feature_a.element_id, attachment.feature_a.index)
-        second = world.get_edge(attachment.feature_b.element_id, attachment.feature_b.index)
-        first_types = {
-            world.elements[first.element_id].vertex_types[first.v_start.vertex_index],
-            world.elements[first.element_id].vertex_types[first.v_end.vertex_index],
-        }
-        second_types = {
-            world.elements[second.element_id].vertex_types[second.v_start.vertex_index],
-            world.elements[second.element_id].vertex_types[second.v_end.vertex_index],
-        }
-        if first_types == {"O", "B"} and second_types == {"O", "B"}:
+        if attachment.mob_edge == "OB" and attachment.dest_edge == "OB":
             return True
     return False
 
 
-def _replay_ob_edge_edge_attachment(world, mobile_element_id: str, target_element_id: str) -> None:
-    mobile = world.elements[mobile_element_id]
-    target = world.elements[target_element_id]
-    mobile_points = _points_by_vertex_type(mobile)
-    target_local_points = _points_by_vertex_type(target)
-    target_points = {
-        vertex_type: world.elementLocalToWorld(target_element_id, point)
-        for vertex_type, point in target_local_points.items()
-    }
-    _old_rotation, _old_translation, mobile_mirrored = world.getElementPose(
-        mobile_element_id
+def _apply_ob_edge_edge_attachment_v2(
+    world,
+    mobile_element_id: str,
+    target_element_id: str,
+) -> None:
+    """Recrée le seul raccord REPLAY autorisé, puis conserve la cible fixe."""
+    attachment = TopologyEdgeEdgeAttachment(
+        attachment_id=world.new_attachment_id(),
+        mob_element_id=mobile_element_id,
+        mob_edge="OB",
+        dest_element_id=target_element_id,
+        dest_edge="OB",
     )
-    pose = compute_edge_edge_pose(
-        mobile_points,
-        "O",
-        "B",
-        target_points,
-        "O",
-        "B",
-        mobile_mirrored=mobile_mirrored,
-    )
-    world.setElementPose(
-        mobile_element_id,
-        pose.rotation,
-        pose.translation,
-        mirrored=pose.mirrored,
-    )
-    attachment = TopologyAttachment(
-        attachment_id=None,
-        kind="edge-edge",
-        feature_a=TopologyFeatureRef(
-            TopologyFeatureType.EDGE,
-            mobile_element_id,
-            _edge_index_for_vertex_types(mobile, "O", "B"),
-        ),
-        feature_b=TopologyFeatureRef(
-            TopologyFeatureType.EDGE,
-            target_element_id,
-            _edge_index_for_vertex_types(target, "O", "B"),
-        ),
-        params={
-            "mapping": pose.mapping,
-            "incident_edge_by_element": {
-                mobile_element_id: "OB",
-                target_element_id: "OB",
-            },
-        },
-        source="manual",
-    )
-    world.apply_attachments([attachment])
+    group_id = world.apply_attachment(attachment)
+    world.replay_group_attachment_poses(group_id, target_element_id)
 
 
 def apply_hypothesis_change_to_manual_scenario(
@@ -437,7 +361,7 @@ def apply_hypothesis_change_to_manual_scenario(
             )
         if mobile_element_id is None or target_element_id is None:
             continue
-        _replay_ob_edge_edge_attachment(
+        _apply_ob_edge_edge_attachment_v2(
             working_world, mobile_element_id, target_element_id
         )
         replayed_attachment_count += 1

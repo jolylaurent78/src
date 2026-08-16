@@ -6,10 +6,8 @@ d'un alias DSU et de son objet ``TopologyGroup`` historique.
 """
 
 from src.assembleur_core import (
-    TopologyAttachment,
+    TopologyEdgeEdgeAttachment,
     TopologyElement,
-    TopologyFeatureRef,
-    TopologyFeatureType,
     TopologyNodeType,
     TopologyWorld,
 )
@@ -33,11 +31,12 @@ def _fused_world() -> tuple[TopologyWorld, str, str]:
     world = TopologyWorld()
     group_a = world.add_element_as_new_group(_element("T01"))
     group_b = world.add_element_as_new_group(_element("T02"))
-    attachment = TopologyAttachment(
+    attachment = TopologyEdgeEdgeAttachment(
         "A001",
-        "vertex-vertex",
-        TopologyFeatureRef(TopologyFeatureType.VERTEX, "T01", 0),
-        TopologyFeatureRef(TopologyFeatureType.VERTEX, "T02", 0),
+        "T01",
+        "OB",
+        "T02",
+        "OB",
     )
     assert world.apply_attachment(attachment) == group_b
     return world, group_a, group_b

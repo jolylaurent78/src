@@ -16,12 +16,12 @@ def _catalogue_and_hypothesis():
     lambert = {}
     for pair_index in range(16):
         base = catalogue.add_city(f"Base {pair_index}", 45.0, 2.0)
+        opening = catalogue.add_city(f"Opening {pair_index}", 45.0, 2.0)
         lambert[base.city_id] = (pair_index * 100.0 + 3.0, 0.0)
+        lambert[opening.city_id] = (pair_index * 100.0, 0.0)
         for parity in range(2):
             rank = pair_index * 2 + parity + 1
-            opening = catalogue.add_city(f"Opening {rank}", 45.0, 2.0)
             light = catalogue.add_city(f"Light {rank}", 45.0, 2.0)
-            lambert[opening.city_id] = (pair_index * 100.0, 0.0)
             lambert[light.city_id] = (
                 pair_index * 100.0 + (0.0 if parity == 0 else 3.0),
                 4.0 if parity == 0 else -4.0,

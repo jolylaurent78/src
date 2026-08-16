@@ -108,7 +108,7 @@ class ScenarioAssemblage:
 
 
 # =============================================================================
-# TopologyModel v4.3 (Core) – Modèle objet V1 (sans Tk) – IDs lisibles (Phase 2)
+# TopologyModel Core — attachments V2 résolus (sans Tk)
 # =============================================================================
 #
 # Convention d’identifiants lisibles :
@@ -117,20 +117,8 @@ class ScenarioAssemblage:
 # - Group (DSU)                 : "G<k:03d>"                ex: "G001"
 # - Attachment                  : "A<k:03d>"                ex: "A003"
 #
-# Remarques :
-# - Les IDs sont des strings pour une lisibilité maximale (TopoDump XML).
-# - La règle “plus récent gagne” utilise createdOrder (int monotone interne),
-#   et PAS l’ordre lexicographique des IDs.
-# - t est fourni par l’UI en référentiel monde (km).
-# - Les points internes sont purement conceptuels (pas de points physiques sur les arêtes).
-#
-# Couverture V1 :
-# - vertex↔vertex
-# - vertex↔edge (t obligatoire)
-# - edge↔edge (mapping "direct"|"reverse") + coverage total [0,1] sur les deux arêtes
-#
-# Dégrouper/Undo (MVP) :
-# - suppression d’attaches + rebuild complet depuis la liste des attachments.
+# Le Core conserve les intentions persistantes V2, les résout centralement,
+# puis reconstruit les groupes DSU, les coverages et les split points dérivés.
 #
 
 
@@ -144,8 +132,7 @@ class TopologyNodeType:
     Ne fait PAS :
     - Ne stocke aucune donnée d’instance (simple namespace de constantes).
 
-    V1 :
-    - La règle de priorité L > B > O est figée par la spec v4.2.
+    La priorité L > B > O est un invariant du Core.
     """
     OUVERTURE = "O"
     BASE = "B"
@@ -160,82 +147,72 @@ class TopologyNodeType:
         return 1
 
 
-class TopologyFeatureType:
-    """Types de features référencées par TopologyFeatureRef.
-
-    Rôle :
-    - Distinguer explicitement les deux natures de cible manipulées par la topologie :
-      - vertex (sommet d’un élément)
-      - edge (arête d’un élément)
-
-    Ne fait PAS :
-    - Ne contient aucune logique topo ; c’est un namespace de constantes.
-
-    V1 :
-    - Suffisant pour vertex↔vertex, vertex↔edge et edge↔edge.
-    """
-    VERTEX = "vertex"
-    EDGE = "edge"
+class TopologyAttachmentValidationError(ValueError):
+    """Un attachment V2 ne respecte pas le contrat structurel du Core."""
 
 
-class TopologyFeatureRef:
-    """Référence typée et sérialisable vers une feature topologique.
-
-    Rôle :
-    - Pointer de manière stable vers une feature (Vertex ou Edge) dans un élément donné :
-      (feature_type, element_id, index).
-    - Permettre de stocker/rejouer des TopologyAttachment sans dépendre d’objets Python en mémoire.
-    - Servir directement à la sérialisation (TopoDump XML) : export lisible et diffable.
-
-    Ne fait PAS :
-    - Ne porte aucune décision topologique (pas de fusion, pas de merge).
-    - Ne dépend pas du canvas Tk ; aucun calcul géométrique.
-
-    Note :
-    - Le champ optionnel t est une commodité de debug/trace. Dans la spec v4.2,
-      t est fourni par l’UI (référentiel monde, km) et consommé par le Core.
-
-    V1 :
-    - Utilisée comme brique de base pour les attachments et l’export TopoDump.
-    """
-    def __init__(self, feature_type: str, element_id: str, index: int, t: float | None = None):
-        self.feature_type = feature_type
-        self.element_id = element_id
-        self.index = index
-        self.t = float(t) if t is not None else None
-
-    def to_string(self) -> str:
-        if self.t is None:
-            return f"{self.feature_type}({self.element_id},{self.index})"
-        return f"{self.feature_type}({self.element_id},{self.index},t={self.t:.6f})"
+class TopologyAttachmentResolutionError(ValueError):
+    """Un attachment V2 valide ne peut pas être résolu géométriquement."""
 
 
-class TopologyAttachment:
-    """Trace métier d’une intention topologique binaire (action rejouable).
+@dataclass(frozen=True)
+class TopologyVertexEdgeAttachment:
+    """Intention topologique persistante d'un raccord vertex-edge."""
 
-    Rôle :
-    - Représenter UNE action topologique atomique entre deux features (A ↔ B).
-    - Constituer la source de vérité pour reconstruire la topologie (rebuild depuis la liste d’attaches).
-    - Être sérialisable (TopoDump XML) et diffable (par scénario).
+    attachment_id: str
+    mob_element_id: str
+    mob_vertex: str
+    mob_edge: str
+    dest_element_id: str
+    dest_vertex: str
+    dest_edge: str
 
-    Ne fait PAS :
-    - Ne modifie pas directement le modèle : l’application est effectuée par TopologyWorld.
-    - Ne stocke pas de coordonnées (la géométrie est hors topo ; t est fourni par l’UI).
 
-    V1 :
-    - Stockage + export.
-    - Supporte vertex↔vertex, vertex↔edge et edge↔edge (mapping direct|reverse).
-    - La reconstruction (rebuild) depuis la liste d’attaches est la stratégie de référence.
-    """
-    def __init__(self, attachment_id: str | None, kind: str,
-                 feature_a: TopologyFeatureRef, feature_b: TopologyFeatureRef,
-                 params: dict | None = None, source: str = "manual"):
-        self.attachment_id = None if attachment_id is None else attachment_id
-        self.kind = kind
-        self.feature_a = feature_a
-        self.feature_b = feature_b
-        self.params = params if params is not None else {}
-        self.source = source
+@dataclass(frozen=True)
+class TopologyEdgeEdgeAttachment:
+    """Intention topologique persistante d'un raccord edge-edge."""
+
+    attachment_id: str
+    mob_element_id: str
+    mob_edge: str
+    dest_element_id: str
+    dest_edge: str
+
+
+@dataclass(frozen=True)
+class ResolvedVertexEdgeAttachment:
+    """Résolution géométrique runtime d'un vertex-edge persistant."""
+
+    attachment_id: str
+    anchor_mob_element_id: str
+    anchor_mob_vertex: str
+    anchor_dest_element_id: str
+    anchor_dest_vertex: str
+    vertex_element_id: str
+    vertex: str
+    edge_element_id: str
+    edge: str
+    edge_anchor_vertex: str
+    position_from_anchor: float
+
+
+@dataclass(frozen=True)
+class ResolvedEdgeEdgeAttachment:
+    """Résolution géométrique runtime d'un edge-edge persistant."""
+
+    attachment_id: str
+    mob_element_id: str
+    mob_edge: str
+    dest_element_id: str
+    dest_edge: str
+    mob_vertex_1: str
+    dest_vertex_1: str
+    mob_vertex_2: str
+    dest_vertex_2: str
+
+
+ResolvedAttachment = ResolvedVertexEdgeAttachment | ResolvedEdgeEdgeAttachment
+TopologyAttachmentV2 = TopologyVertexEdgeAttachment | TopologyEdgeEdgeAttachment
 
 
 class TopologyConstraintGeometryError(ValueError):
@@ -254,8 +231,7 @@ class TopologyVertex:
     - Ne calcule pas la topologie ; il ne fait que référencer le node d’origine.
     - Ne dépend pas de la géométrie (pas de coordonnées).
 
-    V1 :
-    - Les unions (DSU) opèrent au niveau TopologyWorld via node_id (atomique) -> node canonique.
+    Les unions DSU opèrent au niveau ``TopologyWorld`` via ``node_id``.
     """
     def __init__(self, element_id: str, vertex_index: int, label: str, node_id: str, node_type: str):
         self.element_id = element_id
@@ -276,10 +252,8 @@ class TopologyCoverageInterval:
     Ne fait PAS :
     - Ne décide pas quand une couverture apparaît : cela dépend des attachments et des règles métier.
 
-    V1 :
-    - Structure utilisée.
-    - Un collage edge↔edge produit un coverage total [0.0, 1.0] sur chacune des deux arêtes collées.
-    - Le boundary sera calculé comme le complément de l’union des coverages sur [0,1].
+    Un collage edge-edge produit un coverage total [0.0, 1.0] sur les deux
+    arêtes concernées ; le boundary est calculé par complément.
     """
     def __init__(self, t0: float, t1: float):
         self.t0 = float(t0)
@@ -298,9 +272,8 @@ class TopologyEdge:
     - Ne fait pas de DSU : la canonisation des nodes est dans TopologyWorld.
     - Ne dépend pas du canvas Tk ; aucune logique d’affichage.
 
-    V1 :
-    - Les split points sont strictement conceptuels (pas de points physiques).
-    - Le calcul complet du boundary sera implémenté ultérieurement.
+    Les split points sont des données géométriques dérivées, sans points
+    physiques additionnels.
     """
     def __init__(self, element_id: str, edge_index: int, v_start: TopologyVertex, v_end: TopologyVertex,
                  edge_length_km: float):
@@ -418,9 +391,8 @@ class TopologyElement:
     - La pose monde (rotation + translation) permet de dériver des coordonnées monde si nécessaire.
     - Les coordonnées monde ne sont pas une vérité métier ; elles sont dérivées.
 
-    V1 :
-    - edge_lengths_km peut être fourni (recommandé). À défaut, une valeur par défaut est posée
-      et remplacée ensuite par la géométrie monde.
+    ``edge_lengths_km`` peut être fourni (recommandé). À défaut, une valeur
+    par défaut est posée puis remplacée par la géométrie monde.
     """
     def __init__(self, name: str,
                  vertex_labels: list[str], vertex_types: list[str],
@@ -495,19 +467,19 @@ class TopologyElement:
     def _try_build_default_local_coords(self):
         """Construit des coordonnées locales canoniques si l'élément est un triangle O/B/L.
 
-        Stratégie V1 :
+        Stratégie :
         - On détecte les indices des sommets de type O, B, L.
         - On reconstruit les longueurs OB, OL, BL depuis edge_lengths_km (cycle).
         - On pose O=(0,0), B=(OB,0), L=(x,y) (y>=0) via la loi des cosinus.
 
-        Si l'élément n'est pas un triangle O/B/L (hors-scope V1), la méthode ne fait rien.
+        Si l'élément n'est pas un triangle O/B/L, la méthode ne fait rien.
         Si l'élément EST un triangle O/B/L mais que les longueurs nécessaires sont absentes,
         c'est un problème de données et on lève une exception explicite (pas de masquage).
         """
         if len(self.vertex_labels) != 3:
             return
 
-        # Hors-scope V1 : si on n'a pas exactement un O, un B et un L, on ne force pas.
+        # Si on n'a pas exactement un O, un B et un L, on ne force pas.
         if (TopologyNodeType.OUVERTURE not in self.vertex_types) or \
            (TopologyNodeType.BASE not in self.vertex_types) or \
            (TopologyNodeType.LUMIERE not in self.vertex_types):
@@ -641,8 +613,7 @@ class TopologyGroup:
     - Ne calcule pas la connectivité : TopologyWorld gère l’union-find des groupes.
     - Ne stocke pas de géométrie.
 
-    V1 :
-    - Structure légère : l’objectif est d’avoir un conteneur stable pour l’export TopoDump.
+    Structure légère, stable pour les exports de diagnostic.
     """
     def __init__(self, group_id: str):
         self.group_id = group_id
@@ -1664,6 +1635,240 @@ class TopologyChemins:
         )
 
 
+class TopologyAttachmentResolver:
+    """Interprète exclusivement les intentions d'attachments V2."""
+
+    _EDGE_VERTICES = {
+        "OB": ("O", "B"),
+        "BL": ("B", "L"),
+        "LO": ("L", "O"),
+    }
+    _VERTICES = frozenset({"O", "B", "L"})
+
+    @classmethod
+    def validate(cls, world, attachment: TopologyAttachmentV2) -> None:
+        if not isinstance(
+            attachment,
+            (TopologyVertexEdgeAttachment, TopologyEdgeEdgeAttachment),
+        ):
+            raise TopologyAttachmentValidationError(
+                f"Type d'attachment V2 inconnu: {type(attachment)!r}"
+            )
+        if not attachment.attachment_id:
+            raise TopologyAttachmentValidationError("attachment_id vide")
+        mob_element = world.elements.get(attachment.mob_element_id)
+        if mob_element is None:
+            raise TopologyAttachmentValidationError(
+                f"Attachment {attachment.attachment_id}: élément mobile inconnu "
+                f"{attachment.mob_element_id!r}"
+            )
+        dest_element = world.elements.get(attachment.dest_element_id)
+        if dest_element is None:
+            raise TopologyAttachmentValidationError(
+                f"Attachment {attachment.attachment_id}: élément destination inconnu "
+                f"{attachment.dest_element_id!r}"
+            )
+        if attachment.mob_element_id == attachment.dest_element_id:
+            raise TopologyAttachmentValidationError(
+                f"Attachment {attachment.attachment_id}: mobile et destination identiques"
+            )
+
+        cls._validate_edge(mob_element, attachment.mob_edge, attachment.attachment_id)
+        cls._validate_edge(dest_element, attachment.dest_edge, attachment.attachment_id)
+        if isinstance(attachment, TopologyVertexEdgeAttachment):
+            cls._validate_vertex(
+                mob_element, attachment.mob_vertex, attachment.attachment_id
+            )
+            cls._validate_vertex(
+                dest_element, attachment.dest_vertex, attachment.attachment_id
+            )
+            if attachment.mob_vertex not in cls._EDGE_VERTICES[attachment.mob_edge]:
+                raise TopologyAttachmentValidationError(
+                    f"Attachment {attachment.attachment_id}: sommet mobile "
+                    "non incident à son arête"
+                )
+            if attachment.dest_vertex not in cls._EDGE_VERTICES[attachment.dest_edge]:
+                raise TopologyAttachmentValidationError(
+                    f"Attachment {attachment.attachment_id}: sommet destination "
+                    "non incident à son arête"
+                )
+
+    @classmethod
+    def resolve(cls, world, attachment: TopologyAttachmentV2) -> ResolvedAttachment:
+        cls.validate(world, attachment)
+        if isinstance(attachment, TopologyVertexEdgeAttachment):
+            return cls._resolve_vertex_edge(world, attachment)
+        if isinstance(attachment, TopologyEdgeEdgeAttachment):
+            return cls._resolve_edge_edge(world, attachment)
+        raise TypeError(f"Type d'attachment V2 inconnu: {type(attachment)!r}")
+
+    @classmethod
+    def _validate_vertex(cls, element, vertex: str, attachment_id: str) -> None:
+        if vertex not in cls._VERTICES or element.vertex_types.count(vertex) != 1:
+            raise TopologyAttachmentValidationError(
+                f"Attachment {attachment_id}: sommet invalide {vertex!r} "
+                f"pour {element.element_id!r}"
+            )
+
+    @classmethod
+    def _validate_edge(cls, element, edge: str, attachment_id: str) -> None:
+        if edge not in cls._EDGE_VERTICES:
+            raise TopologyAttachmentValidationError(
+                f"Attachment {attachment_id}: arête invalide {edge!r}"
+            )
+        for vertex in cls._EDGE_VERTICES[edge]:
+            cls._validate_vertex(element, vertex, attachment_id)
+
+    @classmethod
+    def _other_vertex(cls, edge: str, anchor_vertex: str) -> str:
+        first, second = cls._EDGE_VERTICES[edge]
+        if anchor_vertex == first:
+            return second
+        if anchor_vertex == second:
+            return first
+        raise TopologyAttachmentValidationError(
+            f"Sommet {anchor_vertex!r} non incident à l'arête {edge!r}"
+        )
+
+    @staticmethod
+    def _local_point(element, vertex: str, attachment_id: str) -> np.ndarray:
+        index = element.vertex_types.index(vertex)
+        if index not in element.vertex_local_xy:
+            raise TopologyAttachmentResolutionError(
+                f"Attachment {attachment_id}: coordonnées locales absentes pour "
+                f"{element.element_id}.{vertex}"
+            )
+        raw_point = element.vertex_local_xy[index]
+        if (
+            not isinstance(raw_point, (tuple, list, np.ndarray))
+            or len(raw_point) != 2
+            or not all(isinstance(coordinate, (int, float, np.number)) for coordinate in raw_point)
+        ):
+            raise TopologyAttachmentResolutionError(
+                f"Attachment {attachment_id}: coordonnées locales invalides pour "
+                f"{element.element_id}.{vertex}"
+            )
+        point = np.asarray(raw_point, dtype=float)
+        if point.shape != (2,) or not np.all(np.isfinite(point)):
+            raise TopologyAttachmentResolutionError(
+                f"Attachment {attachment_id}: coordonnées locales invalides pour "
+                f"{element.element_id}.{vertex}"
+            )
+        return point
+
+    @classmethod
+    def _resolve_vertex_edge(
+        cls,
+        world,
+        attachment: TopologyVertexEdgeAttachment,
+    ) -> ResolvedVertexEdgeAttachment:
+        mob_element = world.elements[attachment.mob_element_id]
+        dest_element = world.elements[attachment.dest_element_id]
+        mob_anchor = cls._local_point(
+            mob_element, attachment.mob_vertex, attachment.attachment_id
+        )
+        dest_anchor = cls._local_point(
+            dest_element, attachment.dest_vertex, attachment.attachment_id
+        )
+        mob_other_vertex = cls._other_vertex(attachment.mob_edge, attachment.mob_vertex)
+        dest_other_vertex = cls._other_vertex(
+            attachment.dest_edge, attachment.dest_vertex
+        )
+        mob_other = cls._local_point(
+            mob_element, mob_other_vertex, attachment.attachment_id
+        )
+        dest_other = cls._local_point(
+            dest_element, dest_other_vertex, attachment.attachment_id
+        )
+        mob_length = float(np.linalg.norm(mob_other - mob_anchor))
+        dest_length = float(np.linalg.norm(dest_other - dest_anchor))
+        if mob_length <= 1e-12 or dest_length <= 1e-12:
+            raise TopologyAttachmentResolutionError(
+                f"Attachment {attachment.attachment_id}: arête intrinsèque dégénérée"
+            )
+
+        if mob_length <= dest_length:
+            vertex_element_id = attachment.mob_element_id
+            vertex = mob_other_vertex
+            edge_element_id = attachment.dest_element_id
+            edge = attachment.dest_edge
+            edge_anchor_vertex = attachment.dest_vertex
+            position_from_anchor = mob_length / dest_length
+        else:
+            vertex_element_id = attachment.dest_element_id
+            vertex = dest_other_vertex
+            edge_element_id = attachment.mob_element_id
+            edge = attachment.mob_edge
+            edge_anchor_vertex = attachment.mob_vertex
+            position_from_anchor = dest_length / mob_length
+
+        return ResolvedVertexEdgeAttachment(
+            attachment_id=attachment.attachment_id,
+            anchor_mob_element_id=attachment.mob_element_id,
+            anchor_mob_vertex=attachment.mob_vertex,
+            anchor_dest_element_id=attachment.dest_element_id,
+            anchor_dest_vertex=attachment.dest_vertex,
+            vertex_element_id=vertex_element_id,
+            vertex=vertex,
+            edge_element_id=edge_element_id,
+            edge=edge,
+            edge_anchor_vertex=edge_anchor_vertex,
+            position_from_anchor=float(position_from_anchor),
+        )
+
+    @classmethod
+    def _resolve_edge_edge(
+        cls,
+        world,
+        attachment: TopologyEdgeEdgeAttachment,
+    ) -> ResolvedEdgeEdgeAttachment:
+        mob_element = world.elements[attachment.mob_element_id]
+        dest_element = world.elements[attachment.dest_element_id]
+        mob_first, mob_second = cls._EDGE_VERTICES[attachment.mob_edge]
+        dest_first, dest_second = cls._EDGE_VERTICES[attachment.dest_edge]
+        mob_third = next(vertex for vertex in cls._VERTICES if vertex not in {
+            mob_first, mob_second
+        })
+        dest_third = next(vertex for vertex in cls._VERTICES if vertex not in {
+            dest_first, dest_second
+        })
+        mob_first_point = cls._local_point(mob_element, mob_first, attachment.attachment_id)
+        mob_second_point = cls._local_point(mob_element, mob_second, attachment.attachment_id)
+        mob_third_point = cls._local_point(mob_element, mob_third, attachment.attachment_id)
+        dest_first_point = cls._local_point(dest_element, dest_first, attachment.attachment_id)
+        dest_second_point = cls._local_point(dest_element, dest_second, attachment.attachment_id)
+        dest_third_point = cls._local_point(dest_element, dest_third, attachment.attachment_id)
+        mob_side = cls._orientation(mob_first_point, mob_second_point, mob_third_point)
+        dest_side = cls._orientation(dest_first_point, dest_second_point, dest_third_point)
+        if abs(mob_side) <= 1e-12 or abs(dest_side) <= 1e-12:
+            raise TopologyAttachmentResolutionError(
+                f"Attachment {attachment.attachment_id}: géométrie intrinsèque dégénérée"
+            )
+
+        if mob_side * dest_side < 0.0:
+            resolved_dest_first, resolved_dest_second = dest_first, dest_second
+        else:
+            resolved_dest_first, resolved_dest_second = dest_second, dest_first
+        return ResolvedEdgeEdgeAttachment(
+            attachment_id=attachment.attachment_id,
+            mob_element_id=attachment.mob_element_id,
+            mob_edge=attachment.mob_edge,
+            dest_element_id=attachment.dest_element_id,
+            dest_edge=attachment.dest_edge,
+            mob_vertex_1=mob_first,
+            dest_vertex_1=resolved_dest_first,
+            mob_vertex_2=mob_second,
+            dest_vertex_2=resolved_dest_second,
+        )
+
+    @staticmethod
+    def _orientation(first: np.ndarray, second: np.ndarray, third: np.ndarray) -> float:
+        return float(
+            (second[0] - first[0]) * (third[1] - first[1])
+            - (second[1] - first[1]) * (third[0] - first[0])
+        )
+
+
 class TopologyWorld:
     """Racine métier du modèle topologique (Core, sans Tk).
 
@@ -1672,17 +1877,12 @@ class TopologyWorld:
     - Implémenter les DSU non destructifs :
       - nodes : canonisation métier (L > B > O, puis plus récent ID max),
       - groupes : canonisation par plus récent (ID max).
-    - Gérer les attachments et la canonisation DSU (sans points physiques sur les arêtes).
-    - Fournir un export TopoDump XML manuel (par scénario), lisible et diffable.
+    - Conserver les intentions V2 vertex-edge et edge-edge, ainsi que leur
+      résolution lazy runtime.
+    - Dériver coverages, split points et frontières, puis rejouer les poses
+      depuis les ResolvedAttachment.
 
-    Ne fait PAS :
-    - Ne dépend jamais du canvas Tk.
-    - Ne calcule pas t (fourni par l’UI en référentiel monde, km).
-
-    V1 :
-    - Pose les fondations (classes + DSU + export TopoDump).
-    - Applique vertex↔vertex, vertex↔edge et edge↔edge (mapping direct|reverse) au niveau DSU + coverages.
-    - Dégrouper/undo = suppression d’attaches puis rebuild complet (petits scénarios).
+    Le Core ne dépend jamais du canvas Tk.
     """
     def __init__(self, beacon_resolver=None):
         self.fusion_distance_km: float = 1.0
@@ -1705,7 +1905,8 @@ class TopologyWorld:
         self.groups: dict[str, TopologyGroup] = {}
         self.elements: dict[str, TopologyElement] = {}
         self.element_to_group: dict[str, str] = {}
-        self.attachments: dict[str, TopologyAttachment] = {}
+        self.attachments: dict[str, TopologyAttachmentV2] = {}
+        self.resolved_attachments: dict[str, ResolvedAttachment] = {}
         self.groupAnchors: dict[str, TopologyGroupAnchor] = {}
 
         self._node_parent: dict[str, str] = {}
@@ -1725,7 +1926,6 @@ class TopologyWorld:
         self._topoTxDepth = 0
         self._topoTxTouchedGroups: set[str] = set()
         self._topoTxOrientation = "cw"
-        self._isImportingSnapshot = False
         self.topologyChemins = TopologyChemins(self)
 
         self._beacon_resolver = beacon_resolver
@@ -1741,6 +1941,25 @@ class TopologyWorld:
             if element.source_triangle_id is not None
         )
 
+# ------------------------------------------------------------------
+# Attachments V2 résolus
+# ------------------------------------------------------------------
+    def getResolvedAttachment(self, attachment_id: str) -> ResolvedAttachment:
+        """Retourne la résolution lazy et centralisée d'un attachment V2."""
+        resolved = self.resolved_attachments.get(attachment_id)
+        if resolved is not None:
+            return resolved
+        attachment = self.attachments[attachment_id]
+        resolved = TopologyAttachmentResolver.resolve(self, attachment)
+        self.resolved_attachments[attachment_id] = resolved
+        return resolved
+
+    def invalidateResolvedForElement(self, element_id: str) -> None:
+        """Invalide uniquement les résolutions incidentes à une géométrie modifiée."""
+        for attachment_id, attachment in self.attachments.items():
+            if element_id in (attachment.mob_element_id, attachment.dest_element_id):
+                self.resolved_attachments.pop(attachment_id, None)
+
     # ------------------------------------------------------------------
     # Topologie conceptuelle (MVP)
     # - concept node = find_node(canon)
@@ -1748,17 +1967,30 @@ class TopologyWorld:
     # - concept edge = segment entre 2 concept nodes consécutifs sur une arête
     # ------------------------------------------------------------------
     def invalidateConceptGraph(self, group_id: str | None = None) -> None:
-        """Invalide le cache conceptuel (graph + geom)."""
+        """Invalide le cache conceptuel structurel et son Boundary dérivé.
+
+        Le cycle Boundary référence directement les nœuds et arêtes du
+        ConceptGraph. Il ne peut donc jamais survivre à une mutation de
+        connectivité. La géométrie seule suit un contrat distinct :
+        :meth:`invalidateConceptGeom` ne l'invalide pas automatiquement.
+        """
+        def invalidate_cache(cache: ConceptGroupCache) -> None:
+            cache.graphValid = False
+            cache.geomValid = False
+            cache.boundaryCycle = None
+            cache.boundaryEdges = None
+            cache.boundaryIndex = None
+            cache.boundaryOrientation = None
+            cache.boundaries.clear()
+
         if group_id is None:
             for c in self._concept_by_gid.values():
-                c.graphValid = False
-                c.geomValid = False
+                invalidate_cache(c)
             return
         gid = self.find_group(group_id)
         c = self._concept_by_gid.get(gid)
         if c is not None:
-            c.graphValid = False
-            c.geomValid = False
+            invalidate_cache(c)
 
     def invalidateConceptGeom(self, group_id: str | None = None) -> None:
         """Invalide uniquement la géométrie conceptuelle (world coords)."""
@@ -1870,9 +2102,7 @@ class TopologyWorld:
     def buildDerivedSplitPointsForPhysEdge(self, element_id: str, edge_index: int,
                                            eps_t: float = 1e-9) -> list[dict]:
         edge = self.get_edge(element_id, edge_index)
-        edge_start = edge.v_start.node_id
-        edge_end = edge.v_end.node_id
-        if edge_start == edge_end:
+        if edge.v_start.node_id == edge.v_end.node_id:
             raise ValueError(f"[DP][{edge.edge_id()}] edge endpoints are identical")
         start_cn = self.find_node(edge.v_start.node_id)
         end_cn = self.find_node(edge.v_end.node_id)
@@ -1881,47 +2111,44 @@ class TopologyWorld:
             {"t": 1.0, "nodeCanon": end_cn, "source": "endpoint"},
         ]
 
-        for att in self.attachments.values():
-            if att.kind != "vertex-edge":
+        for attachment_id in sorted(self.attachments):
+            resolved = self.getResolvedAttachment(attachment_id)
+            if not isinstance(resolved, ResolvedVertexEdgeAttachment):
                 continue
-            if att.feature_a.feature_type == TopologyFeatureType.VERTEX and att.feature_b.feature_type == TopologyFeatureType.EDGE:
-                vRef, eRef = att.feature_a, att.feature_b
-            elif att.feature_a.feature_type == TopologyFeatureType.EDGE and att.feature_b.feature_type == TopologyFeatureType.VERTEX:
-                vRef, eRef = att.feature_b, att.feature_a
-            else:
+            if resolved.edge_element_id != element_id:
                 continue
-            if str(eRef.element_id) != str(element_id) or int(eRef.index) != int(edge_index):
+            resolved_edge = self.get_element_edge_by_vertex_types(
+                resolved.edge_element_id,
+                resolved.edge,
+            )
+            if resolved_edge.edge_id() != edge.edge_id():
                 continue
-            t_val = att.params.get("t", None)
-            if t_val is None:
-                raise ValueError(f"[DP][{edge.edge_id()}] vertex-edge missing t id={att.attachment_id}")
-            edge_from = att.params.get("edgeFrom", None)
-            if edge_from is None or str(edge_from).strip() == "":
-                raise ValueError(f"[DP][{edge.edge_id()}] vertex-edge missing edgeFrom id={att.attachment_id}")
-            edge_from = str(edge_from)
-            if edge_from == edge_start:
-                t_phys = float(t_val)
-            elif edge_from == edge_end:
-                t_phys = 1.0 - float(t_val)
-            else:
-                raise ValueError(
-                    f"[DP][{edge.edge_id()}] edgeFrom not on edge (edgeFrom={edge_from}) id={att.attachment_id}"
+            t_phys = self._resolved_edge_physical_t(
+                edge,
+                resolved.edge_anchor_vertex,
+                resolved.position_from_anchor,
+                resolved.attachment_id,
                 )
             if t_phys < 0.0 - eps_t or t_phys > 1.0 + eps_t:
                 raise ValueError(
-                    f"[DP][{edge.edge_id()}] vertex-edge t out of [0,1] (t={t_phys:.6f}) id={att.attachment_id}"
+                    f"[DP][{edge.edge_id()}] vertex-edge t out of [0,1] "
+                    f"(t={t_phys:.6f}) id={resolved.attachment_id}"
                 )
             if abs(t_phys) <= eps_t or abs(t_phys - 1.0) <= eps_t:
                 continue
-            v = self.get_vertex(vRef.element_id, vRef.index)
-            node_canon = self.find_node(v.node_id)
+            node_canon = self.find_node(
+                self.get_element_vertex_node_id_by_type(
+                    resolved.vertex_element_id,
+                    resolved.vertex,
+                )
+            )
             if node_canon == start_cn or node_canon == end_cn:
                 continue
             dp.append({
                 "t": float(t_phys),
                 "nodeCanon": node_canon,
                 "source": "vertex-edge",
-                "attachmentId": att.attachment_id,
+                "attachmentId": resolved.attachment_id,
             })
 
         dp.sort(key=lambda p: float(p.get("t", 0.0)))
@@ -2417,247 +2644,6 @@ class TopologyWorld:
         b_rev = list(reversed(b))
         return list(a[:-1]) + b_rev[:-1]
 
-    def _resolveJunctionsMobDest(
-        self,
-        attachments: list[TopologyAttachment],
-        nodesMob: list[str],
-        ptsMob: list[np.ndarray],
-        indexMob: dict[str, int],
-        nodesDest: list[str],
-        ptsDest: list[np.ndarray],
-        indexDest: dict[str, int],
-    ) -> tuple[dict, dict] | None:
-        """
-        Overview
-        --------
-        Interprète une liste d’attachments (edge-edge ou vertex-edge) et en déduit deux jonctions
-        topologiques J0 et J1 entre un ring "mobile" et un ring "destination". Ces jonctions
-        sont la base de toute la simulation: elles définissent les deux points (ou point+point sur arête)
-        qui permettent de calculer une pose rigide et de découper les deux rings en arcs.
-
-        Entrées
-        -------
-        attachments : list[TopologyAttachment]
-            Attachments candidats (edge-edge ou vertex-edge selon le cas).
-        nodesMob, ptsMob, indexMob : (list[str], list[np.ndarray], dict[str,int])
-            Ring mobile (concept node ids + points monde + index).
-        nodesDest, ptsDest, indexDest : (list[str], list[np.ndarray], dict[str,int])
-            Ring destination (concept node ids + points monde + index).
-
-        Sorties
-        -------
-        tuple[dict, dict] | None
-            - None si les attachments ne correspondent pas à un cas supporté ou si des
-              informations nécessaires manquent dans les rings.
-            - Sinon (J0, J1) : deux dictionnaires décrivant les jonctions mob/dest.
-              Chaque jonction expose typiquement:
-              - mobType / destType : "node" ou "edge"
-              - mobId / destId     : id conceptuel (node) ou référence (edge)
-              - mobPt / destPt     : np.ndarray 2D (si type "node", lu depuis le ring)
-              Des champs additionnels (t, dir, etc.) peuvent être présents selon le cas vertex-edge.
-
-        Traitement
-        ----------
-        1) Normalise la liste d’attachments, rejette les cas vides ou non supportés.
-        2) Cas A : edge-edge (un seul attachment)
-           - Identifie quelles extrémités d’arêtes appartiennent au ring mobile et au ring destination.
-           - Applique le mapping (direct/reverse) pour obtenir deux jonctions "node-node":
-             J0 = (mob0 ↔ dest0) et J1 = (mob1 ↔ dest1).
-        3) Cas B : vertex-edge (deux attachments: un vertex-vertex + un vertex-edge)
-           - Le vertex-vertex définit J0 (node-node) et fixe la référence d’orientation.
-           - Le vertex-edge définit un point sur une arête (t + edgeFrom):
-             - calcule t côté edge (sens) et le point monde correspondant,
-             - récupère une direction unitaire de l’arête depuis le ring (référencée côté J0),
-             - décide si la partie "edge" appartient au ring mobile ou au ring destination,
-               et construit J1 comme (edge ↔ node) du bon côté.
-        4) Complète les champs `mobPt` / `destPt` pour les jonctions de type "node"
-           en lisant les coordonnées dans les rings (indexMob / indexDest).
-        5) Retourne (J0, J1) prêts pour le calcul de pose et la découpe en arcs.
-        """
-
-        atts = list(attachments or [])
-        if not atts:
-            return None
-
-        def _edge_t_from_params(edge: TopologyEdge, t_val: float, edge_from: str) -> float | None:
-            if edge_from == edge.v_start.node_id:
-                return float(t_val)
-            if edge_from == edge.v_end.node_id:
-                return 1.0 - float(t_val)
-            return None
-
-        def _node_pt(nid: str, pts: list[np.ndarray], idx: dict[str, int]) -> np.ndarray | None:
-            if nid not in idx:
-                return None
-            return pts[idx[nid]]
-
-        def _edge_dir_from_ring(edge: TopologyEdge, ptsRing: list, indexRing: dict[str, int], refNodeId: str):
-            """
-            Return a unit direction vector for edgeId, oriented so it starts from refNodeId.
-            refNodeId MUST be one of the edge endpoints in the ring (concept node id).
-            """
-            a = self.find_node(edge.v_start.node_id)
-            b = self.find_node(edge.v_end.node_id)
-
-            if a not in indexRing or b not in indexRing:
-                return None
-
-            pa = ptsRing[indexRing[a]]
-            pb = ptsRing[indexRing[b]]
-
-            v = pb - pa
-            n = float((v[0] ** 2 + v[1] ** 2) ** 0.5)
-            if n <= 1e-12:
-                return None
-            dir_ab = v / n
-
-            # orienter le vecteur au départ du refNode
-            if refNodeId == a:
-                return dir_ab
-            if refNodeId == b:
-                return -dir_ab
-
-            # refNode n'est pas un endpoint => incohérent
-            return None
-
-        # Cas A: edge-edge (1 attachment)
-        if len(atts) == 1 and atts[0].kind == "edge-edge":
-            att = atts[0]
-            if att.feature_a is None or att.feature_b is None:
-                return None
-            if att.feature_a.feature_type != TopologyFeatureType.EDGE or att.feature_b.feature_type != TopologyFeatureType.EDGE:
-                return None
-
-            eA = self.get_edge(att.feature_a.element_id, att.feature_a.index)
-            eB = self.get_edge(att.feature_b.element_id, att.feature_b.index)
-            a0 = self.find_node(eA.v_start.node_id)
-            a1 = self.find_node(eA.v_end.node_id)
-            b0 = self.find_node(eB.v_start.node_id)
-            b1 = self.find_node(eB.v_end.node_id)
-
-            mapping = str(att.params.get("mapping", "") or "").strip().lower()
-            if mapping not in ("direct", "reverse"):
-                return None
-
-            if a0 in indexMob and a1 in indexMob and b0 in indexDest and b1 in indexDest:
-                mob0, mob1 = a0, a1
-                dest0, dest1 = b0, b1
-            elif b0 in indexMob and b1 in indexMob and a0 in indexDest and a1 in indexDest:
-                mob0, mob1 = b0, b1
-                dest0, dest1 = a0, a1
-            else:
-                return None
-
-            if mapping == "reverse":
-                dest0, dest1 = dest1, dest0
-
-            J0 = {"mobType": "node", "mobId": mob0, "destType": "node", "destId": dest0}
-            J1 = {"mobType": "node", "mobId": mob1, "destType": "node", "destId": dest1}
-
-        # Cas B: vertex-edge (2 attachments)
-        elif len(atts) == 2:
-            att_vv = None
-            att_ve = None
-            for att in atts:
-                if att.kind == "vertex-vertex":
-                    att_vv = att
-                elif att.kind == "vertex-edge":
-                    att_ve = att
-            if att_vv is None or att_ve is None:
-                return None
-
-            # vertex-vertex => J0
-            if att_vv.feature_a is None or att_vv.feature_b is None:
-                return None
-            vA = self.get_vertex(att_vv.feature_a.element_id, att_vv.feature_a.index)
-            vB = self.get_vertex(att_vv.feature_b.element_id, att_vv.feature_b.index)
-            nA = self.find_node(vA.node_id)
-            nB = self.find_node(vB.node_id)
-            if nA in indexMob and nB in indexDest:
-                J0 = {"mobType": "node", "mobId": nA, "destType": "node", "destId": nB}
-            elif nB in indexMob and nA in indexDest:
-                J0 = {"mobType": "node", "mobId": nB, "destType": "node", "destId": nA}
-            else:
-                return None
-
-            # vertex-edge => J1 (edge side)
-            if att_ve.feature_a is None or att_ve.feature_b is None:
-                return None
-            if att_ve.feature_a.feature_type == TopologyFeatureType.VERTEX and att_ve.feature_b.feature_type == TopologyFeatureType.EDGE:
-                v_ref = att_ve.feature_a
-                e_ref = att_ve.feature_b
-            elif att_ve.feature_a.feature_type == TopologyFeatureType.EDGE and att_ve.feature_b.feature_type == TopologyFeatureType.VERTEX:
-                v_ref = att_ve.feature_b
-                e_ref = att_ve.feature_a
-            else:
-                return None
-
-            edge = self.get_edge(e_ref.element_id, e_ref.index)
-            t_raw = att_ve.params.get("t", None)
-            edge_from = att_ve.params.get("edgeFrom", None)
-            if t_raw is None or edge_from is None or edge_from.strip() == "":
-                return None
-            t_val = float(t_raw)
-
-            t_edge = _edge_t_from_params(edge, t_val, edge_from)
-            if t_edge is None:
-                return None
-
-            el = self.elements.get(e_ref.element_id)
-            if el is None:
-                return None
-            p_local = self._localPointOnEdge(el, edge, float(t_edge))
-            p_world = el.localToWorld(p_local)
-
-            ref_node = self.find_node(edge.v_start.node_id) if t_edge <= 0.5 else self.find_node(edge.v_end.node_id)
-            # on trouve les vecteurs edge_mob et edge_dest avec une référence coté J0
-            edge_dir_mob = _edge_dir_from_ring(edge=edge, ptsRing=ptsMob, indexRing=indexMob, refNodeId=J0["mobId"])
-            edge_dir_dest = _edge_dir_from_ring(edge=edge, ptsRing=ptsDest, indexRing=indexDest, refNodeId=J0["destId"])
-
-            v_node = self.find_node(self.get_vertex(v_ref.element_id, v_ref.index).node_id)
-            if edge_dir_mob is not None and ref_node in indexMob:
-                J1 = {"mobType": "edge", "mobId": edge.edge_id(), "mobPt": p_world, "mobDir": edge_dir_mob,
-                      "destType": "node", "destId": v_node}
-            elif edge_dir_dest is not None and ref_node in indexDest:
-                J1 = {"mobType": "node", "mobId": v_node,
-                      "destType": "edge", "destId": edge.edge_id(), "destPt": p_world, "destDir": edge_dir_dest}
-            else:
-                return None
-        else:
-            return None
-
-        # Remplir points depuis rings
-        for j in (J0, J1):
-            if j.get("mobType") == "node":
-                p = _node_pt(j.get("mobId", ""), ptsMob, indexMob)
-                if p is None:
-                    return None
-                j["mobPt"] = p
-            if j.get("destType") == "node":
-                p = _node_pt(j.get("destId", ""), ptsDest, indexDest)
-                if p is None:
-                    return None
-                j["destPt"] = p
-        return (J0, J1)
-
-    def _computeRigidTransform(self, J0: dict, J1: dict) -> tuple[np.ndarray, np.ndarray] | None:
-        """Calcule (R,T) tel que R*mob + T = dest entre J0 et J1."""
-        p0m = J0.get("mobPt")
-        p1m = J1.get("mobPt")
-        p0d = J0.get("destPt")
-        p1d = J1.get("destPt")
-        if p0m is None or p1m is None or p0d is None or p1d is None:
-            return None
-        try:
-            return self.compute_rigid_transform_from_two_point_correspondences(
-                p0m,
-                p1m,
-                p0d,
-                p1d,
-            )
-        except TopologyConstraintGeometryError:
-            return None
-
     def _injectSplitByEdgeDir(
         self,
         nodes: list[str],
@@ -2667,7 +2653,7 @@ class TopologyWorld:
         splitPt: np.ndarray,
         edgeDirRot: np.ndarray,
     ) -> tuple[list[str], list[np.ndarray], dict[str, int], str] | None:
-        """Injecte un pseudo-nœud sur un ring selon la direction d'arête."""
+        """Injecte le pseudo-nœud de split, suivant la direction historique de l'arête."""
         if refNode not in index:
             return None
         n = len(nodes)
@@ -2680,8 +2666,14 @@ class TopologyWorld:
         p_prev = pts[i_prev]
         p_next = pts[i_next]
 
-        v_prev = np.array([float(p_prev[0] - p_ref[0]), float(p_prev[1] - p_ref[1])], dtype=float)
-        v_next = np.array([float(p_next[0] - p_ref[0]), float(p_next[1] - p_ref[1])], dtype=float)
+        v_prev = np.array(
+            [float(p_prev[0] - p_ref[0]), float(p_prev[1] - p_ref[1])],
+            dtype=float,
+        )
+        v_next = np.array(
+            [float(p_next[0] - p_ref[0]), float(p_next[1] - p_ref[1])],
+            dtype=float,
+        )
         n_prev = float(np.hypot(v_prev[0], v_prev[1]))
         n_next = float(np.hypot(v_next[0], v_next[1]))
         if n_prev <= 1e-12 or n_next <= 1e-12:
@@ -2698,206 +2690,291 @@ class TopologyWorld:
         pseudo = "__EDGE__1"
         insert_at = i + 1 if insert_after else i
         out_nodes.insert(insert_at, pseudo)
-        out_pts.insert(insert_at, np.array([float(splitPt[0]), float(splitPt[1])], dtype=float))
-        out_index = {str(nid): k for k, nid in enumerate(out_nodes)}
+        out_pts.insert(
+            insert_at,
+            np.array([float(splitPt[0]), float(splitPt[1])], dtype=float),
+        )
+        out_index = {str(node_id): position for position, node_id in enumerate(out_nodes)}
         if len(out_index) != len(out_nodes):
             return None
-        return (out_nodes, out_pts, out_index, pseudo)
+        return out_nodes, out_pts, out_index, pseudo
 
-    def _isValidPolygon(self, ringPts: list[np.ndarray]) -> bool:
-        """Valide un contour simple: LineString simple + Polygon valide + aire > EPS_AREA."""
-        if not ringPts or len(ringPts) < 3:
-            return False
-        ring = [(float(p[0]), float(p[1])) for p in ringPts]
-        ls = _ShLine(ring)
-        if not ls.is_simple:
-            return False
-        poly = _ShPoly(ring)
-        if getattr(poly, "is_empty", False) or not poly.is_valid:
-            return False
-        if abs(float(poly.area)) <= self.overlap_eps_area:
-            return False
-        return True
+    def _simulate_topological_overlap_edge_edge(
+        self,
+        group_dest_id: str,
+        group_mob_id: str,
+        attachment: TopologyEdgeEdgeAttachment,
+    ) -> tuple[bool, list[np.ndarray]]:
+        """Port V2 fidèle du chemin Edge-Edge historique de simulation Boundary."""
+        gid_mob = self._require_live_group_id(group_mob_id)
+        gid_dest = self._require_live_group_id(group_dest_id)
+        if gid_mob == gid_dest:
+            return True, []
+        if not isinstance(attachment, TopologyEdgeEdgeAttachment):
+            raise NotImplementedError("Simulation topologique V2: Vertex-Edge hors scope OVL-001A")
 
-    def simulateOverlapTopologique(self,
-                                   groupDest : TopologyGroup | str, groupMob: TopologyGroup | str,
-                                   attachments : list[TopologyAttachment],
-                                   debug : bool = False) -> bool:
-        """
-        Overview
-        --------
-        Simule une tentative d’assemblage topologique entre deux groupes (mobile et destination)
-        à partir d’attachments candidats, et détecte un chevauchement via la qualité du contour
-        résultant. L’idée est de reconstruire un ring "résultat" en recollant deux arcs de boundary,
-        puis de valider que ce contour est un polygone simple (pas d’auto-intersection, aire non nulle).
-
-        Entrées
-        -------
-        groupDest : TopologyGroup | str
-            Groupe destination (ou identifiant) sur lequel on tente de coller.
-        groupMob : TopologyGroup | str
-            Groupe mobile (ou identifiant) que l’on tente de poser.
-        attachments : list[TopologyAttachment]
-            Attachments candidats décrivant la jonction (edge-edge ou vertex-edge).
-        debug : bool
-            Active un mode de trace interne (si implémenté dans la version courante).
-
-        Sorties
-        -------
-        bool
-            True  : chevauchement détecté / placement rejeté.
-            False : placement admissible (contour final simple et valide).
-
-        Traitement
-        ----------
-        1) Vérifications et normalisations (groupes, ids, attachments).
-        2) Reconstruit les rings géométriques (monde) des deux groupes depuis leurs boundary cycles
-           via `_build_ring_from_boundary_cycle(...)`.
-        3) Analyse les attachments pour construire deux jonctions J0/J1 (types, ids, points, directions)
-           via `_resolveJunctionsMobDest(...)`.
-        4) Calcule la pose rigide (R, T) qui aligne la partie mobile sur la destination à partir de J0/J1,
-           puis applique (R, T) au ring mobile.
-        5) Si J1 implique une jonction sur arête (type "edge"), injecte un pseudo-nœud (split)
-           sur le ring concerné, en choisissant le côté d’insertion selon la direction de l’arête.
-        6) Résout les indices de coupe (positions de J0 et J1 dans les rings) et construit deux arcs
-           complémentaires entre ces jonctions. Le choix Forward/Reverse est fait pour respecter le
-           sens du boundary (CW dans le modèle courant).
-        7) Concatène les deux arcs pour former le ring de sortie (`ring_out`).
-        8) Valide le ring final avec `_isValidPolygon` (simple + polygon valide + aire > eps).
-           Ring invalide ⇒ placement rejeté (chevauchement).
-        """
-        def _dbg(msg: str) -> None:
-            if debug:
-                print(msg)
-
-        def _fmt_feature(f) -> str:
-            if f is None:
-                return "None"
-            return f"{f.feature_type}:{f.element_id}:{f.index}"
-
-        def _fmt_atts(att_list: list[TopologyAttachment]) -> str:
-            out = []
-            for a in att_list:
-                kind = a.kind
-                fa = _fmt_feature(a.feature_a)
-                fb = _fmt_feature(a.feature_b)
-                params = a.params
-                keys = {}
-                for k in ("t", "edgeFrom", "mapping"):
-                    if k in params:
-                        keys[k] = params.get(k)
-                out.append(f"{kind}({fa}<->{fb}){keys}")
-            return "[" + ", ".join(out) + "]"
-
-        # --- checks ---
-        if groupMob is None or groupDest is None:
-            return True
-
-        group_mob_id = groupMob if isinstance(groupMob, str) else groupMob.group_id
-        group_dest_id = groupDest if isinstance(groupDest, str) else groupDest.group_id
-        gid_mob = self.find_group(group_mob_id)
-        gid_dest = self.find_group(group_dest_id)
-        if not gid_mob or not gid_dest or gid_mob == gid_dest:
-            return True
-
-        atts = list(attachments or [])
-        if not atts:
-            return True
-
-        _dbg(f"[TOPO-OVERLAP][START] mob={gid_mob} dest={gid_dest} atts={_fmt_atts(atts)}")
-
-        # --- build rings from boundary cycles ---
+        resolved = TopologyAttachmentResolver.resolve(self, attachment)
+        if not isinstance(resolved, ResolvedEdgeEdgeAttachment):
+            raise RuntimeError("Simulation topologique V2: résolution Edge-Edge attendue")
+        self.ensureBoundary(gid_mob)
+        self.ensureBoundary(gid_dest)
         ring_mob = self._build_ring_from_boundary_cycle(gid_mob, eps_world=self.overlap_eps_world)
         ring_dest = self._build_ring_from_boundary_cycle(gid_dest, eps_world=self.overlap_eps_world)
         if ring_mob is None or ring_dest is None:
-            return True
-        nodes_mob, pts_mob, index_mob = ring_mob[1], ring_mob[0], ring_mob[2]
-        nodes_dest, pts_dest, index_dest = ring_dest[1], ring_dest[0], ring_dest[2]
+            return True, []
+        pts_mob, nodes_mob, index_mob = ring_mob
+        pts_dest, nodes_dest, index_dest = ring_dest
+        def _node(element_id: str, vertex: str) -> str:
+            return self.find_node(self.get_element_vertex_node_id_by_type(element_id, vertex))
 
-        _dbg(f"[TOPO-OVERLAP][RINGS] nMob={len(pts_mob)} nDest={len(pts_dest)}")
+        j0 = {
+            "mobId": _node(resolved.mob_element_id, resolved.mob_vertex_1),
+            "destId": _node(resolved.dest_element_id, resolved.dest_vertex_1),
+        }
+        j1 = {
+            "mobId": _node(resolved.mob_element_id, resolved.mob_vertex_2),
+            "destId": _node(resolved.dest_element_id, resolved.dest_vertex_2),
+        }
+        if any(node not in index_mob for node in (j0["mobId"], j1["mobId"])) or any(
+            node not in index_dest for node in (j0["destId"], j1["destId"])
+        ):
+            return True, []
+        j0["mobPt"] = pts_mob[index_mob[j0["mobId"]]]
+        j0["destPt"] = pts_dest[index_dest[j0["destId"]]]
+        j1["mobPt"] = pts_mob[index_mob[j1["mobId"]]]
+        j1["destPt"] = pts_dest[index_dest[j1["destId"]]]
+        try:
+            R, T = self.compute_rigid_transform_from_two_point_correspondences(
+                j0["mobPt"], j1["mobPt"], j0["destPt"], j1["destPt"]
+            )
+        except TopologyConstraintGeometryError:
+            return True, []
+        pts_mob = [(R @ np.asarray(point, dtype=float)) + T for point in pts_mob]
 
-        # --- resolve junctions ---
-        res = self._resolveJunctionsMobDest(atts, nodes_mob, pts_mob, index_mob, nodes_dest, pts_dest, index_dest)
-        if res is None:
-            return True
-        J0, J1 = res
-        _dbg(f"[TOPO-OVERLAP][J] J0={J0}")
-        _dbg(f"[TOPO-OVERLAP][J] J1={J1}")
-
-        # --- compute rigid transform (mob -> dest) ---
-        RT = self._computeRigidTransform(J0, J1)
-        if RT is None:
-            return True
-        R, T = RT
-        _dbg(f"[TOPO-OVERLAP][RT] R={R.tolist()} T={[float(T[0]), float(T[1])]}")
-
-        # Apply transform to mob ring
-        pts_mob = [(R @ np.array([float(p[0]), float(p[1])], dtype=float)) + T for p in pts_mob]
-
-        # --- inject split by edge direction (only for J1 edge) ---
-        if J1.get("mobType") == "edge":
-            edge_dir_rot = R @ np.array(J1.get("mobDir"), dtype=float)
-            split_pt = (R @ np.array([float(J1["mobPt"][0]), float(J1["mobPt"][1])], dtype=float)) + T
-            res_split = self._injectSplitByEdgeDir(nodes_mob, pts_mob, index_mob, J0.get("mobId"), split_pt, edge_dir_rot)
-            if res_split is None:
-                return True
-            nodes_mob, pts_mob, index_mob, edge_node_id = res_split
-            J1["mobType"] = "node"
-            J1["mobId"] = edge_node_id
-            J1["mobPt"] = split_pt
-
-        if J1.get("destType") == "edge":
-            edge_dir_rot = np.array(J1.get("destDir"), dtype=float)
-            split_pt = np.array([float(J1["destPt"][0]), float(J1["destPt"][1])], dtype=float)
-            res_split = self._injectSplitByEdgeDir(nodes_dest, pts_dest, index_dest, J0.get("destId"), split_pt, edge_dir_rot)
-            if res_split is None:
-                return True
-            nodes_dest, pts_dest, index_dest, edge_node_id = res_split
-            J1["destType"] = "node"
-            J1["destId"] = edge_node_id
-            J1["destPt"] = split_pt
-
-        # --- resolve cut indices ---
-        if J0.get("mobId") not in index_mob or J1.get("mobId") not in index_mob:
-            return True
-        if J0.get("destId") not in index_dest or J1.get("destId") not in index_dest:
-            return True
-        i_m0 = int(index_mob[J0.get("mobId")])
-        i_m1 = int(index_mob[J1.get("mobId")])
-        i_d0 = int(index_dest[J0.get("destId")])
-        i_d1 = int(index_dest[J1.get("destId")])
+        i_m0, i_m1 = index_mob[j0["mobId"]], index_mob[j1["mobId"]]
+        i_d0, i_d1 = index_dest[j0["destId"]], index_dest[j1["destId"]]
         if i_m0 == i_m1 or i_d0 == i_d1:
-            return True
-        _dbg(f"[TOPO-OVERLAP][CUT] iMob=({i_m0},{i_m1}) iDest=({i_d0},{i_d1})")
+            return True, []
+        def _arc(pts, i0, i1):
+            if i1 == (i0 + 1) % len(pts):
+                return self._arcReverse(pts, i0, i1)
+            if i1 == (i0 - 1) % len(pts):
+                return self._arcForward(pts, i0, i1)
+            return []
 
-        # --- build output ring ---
-        # on part du point __EDGE_ pour revenir à refNode
-        def arcEntreJonctionsSelonEdge(pts, j0, j1):
-            """
-            Renvoie l'arc entre a et b en choisissant Forward/Reverse selon le sens de l'edge j0->j1
-            par rapport au boundary CW.
-            """
-            n = len(pts)
-            if j1 == (j0 + 1) % n:       # edge suit CW
-                return self._arcReverse(pts, j0, j1)
-            elif j1 == (j0 - 1) % n:     # edge inversé
-                return self._arcForward(pts, j0, j1)
+        ring_out = self._concatArcs(_arc(pts_mob, i_m0, i_m1), _arc(pts_dest, i_d0, i_d1))
+        overlap = not self._isValidPolygon(ring_out)
+        return overlap, ring_out
 
-        arc_mob = arcEntreJonctionsSelonEdge(pts_mob, i_m0, i_m1)
-        arc_dest = arcEntreJonctionsSelonEdge(pts_dest, i_d0, i_d1)
-        ring_out = self._concatArcs(arc_mob, arc_dest)
-        ring_xy = [(float(p[0]), float(p[1])) for p in ring_out]
-        poly = _ShPoly(ring_xy) if ring_xy else _ShPoly()
-        area = float(getattr(poly, "area", 0.0) or 0.0)
-        _dbg(f"[TOPO-OVERLAP][RINGOUT] n={len(ring_xy)} area={area:.6f}")
+    def _simulate_topological_overlap_vertex_edge(
+        self,
+        group_dest_id: str,
+        group_mob_id: str,
+        attachment: TopologyVertexEdgeAttachment,
+    ) -> tuple[bool, list[np.ndarray]]:
+        """Port V2 fidèle du chemin Vertex-Edge historique de simulation Boundary."""
+        gid_mob = self._require_live_group_id(group_mob_id)
+        gid_dest = self._require_live_group_id(group_dest_id)
+        if gid_mob == gid_dest:
+            return True, []
 
-        # --- validate final ring ---
-        is_valid = self._isValidPolygon(ring_out)
-        overlap = not is_valid
-        _dbg(f"[TOPO-OVERLAP][VALID] overlap={overlap}")
-        return overlap
+        resolved = TopologyAttachmentResolver.resolve(self, attachment)
+        if not isinstance(resolved, ResolvedVertexEdgeAttachment):
+            raise RuntimeError("Simulation topologique V2: résolution Vertex-Edge attendue")
+        self.ensureBoundary(gid_mob)
+        self.ensureBoundary(gid_dest)
+        ring_mob = self._build_ring_from_boundary_cycle(
+            gid_mob,
+            eps_world=self.overlap_eps_world,
+        )
+        ring_dest = self._build_ring_from_boundary_cycle(
+            gid_dest,
+            eps_world=self.overlap_eps_world,
+        )
+        if ring_mob is None or ring_dest is None:
+            return True, []
+        pts_mob, nodes_mob, index_mob = ring_mob
+        pts_dest, nodes_dest, index_dest = ring_dest
+        def _node(element_id: str, vertex: str) -> str:
+            return self.find_node(
+                self.get_element_vertex_node_id_by_type(element_id, vertex)
+            )
 
-    # --- Parcours du graphe conceptuel (par groupe) ---
+        def _edge_dir_from_ring(
+            edge: TopologyEdge,
+            pts_ring: list[np.ndarray],
+            index_ring: dict[str, int],
+            ref_node_id: str,
+        ) -> np.ndarray | None:
+            a = self.find_node(edge.v_start.node_id)
+            b = self.find_node(edge.v_end.node_id)
+            if a not in index_ring or b not in index_ring:
+                return None
+            pa = pts_ring[index_ring[a]]
+            pb = pts_ring[index_ring[b]]
+            direction = pb - pa
+            norm = float(np.hypot(direction[0], direction[1]))
+            if norm <= 1e-12:
+                return None
+            direction_ab = direction / norm
+            if ref_node_id == a:
+                return direction_ab
+            if ref_node_id == b:
+                return -direction_ab
+            return None
+
+        j0 = {
+            "mobType": "node",
+            "mobId": _node(
+                resolved.anchor_mob_element_id,
+                resolved.anchor_mob_vertex,
+            ),
+            "destType": "node",
+            "destId": _node(
+                resolved.anchor_dest_element_id,
+                resolved.anchor_dest_vertex,
+            ),
+        }
+        if j0["mobId"] not in index_mob or j0["destId"] not in index_dest:
+            return True, []
+        j0["mobPt"] = pts_mob[index_mob[j0["mobId"]]]
+        j0["destPt"] = pts_dest[index_dest[j0["destId"]]]
+
+        vertex_node_id = _node(resolved.vertex_element_id, resolved.vertex)
+        edge = self.get_element_edge_by_vertex_types(
+            resolved.edge_element_id,
+            resolved.edge,
+        )
+        edge_world_pt = self.elements[resolved.edge_element_id].localToWorld(
+            self._resolved_edge_local_point(
+                resolved.edge_element_id,
+                resolved.edge,
+                resolved.edge_anchor_vertex,
+                resolved.position_from_anchor,
+                resolved.attachment_id,
+            )
+        )
+        edge_group_id = self.get_group_of_element(resolved.edge_element_id)
+        vertex_group_id = self.get_group_of_element(resolved.vertex_element_id)
+
+        if edge_group_id == gid_mob and vertex_group_id == gid_dest:
+            edge_dir = _edge_dir_from_ring(
+                edge,
+                pts_mob,
+                index_mob,
+                j0["mobId"],
+            )
+            if edge_dir is None or vertex_node_id not in index_dest:
+                return True, []
+            j1 = {
+                "mobType": "edge",
+                "mobId": edge.edge_id(),
+                "mobPt": edge_world_pt,
+                "mobDir": edge_dir,
+                "destType": "node",
+                "destId": vertex_node_id,
+                "destPt": pts_dest[index_dest[vertex_node_id]],
+            }
+        elif edge_group_id == gid_dest and vertex_group_id == gid_mob:
+            edge_dir = _edge_dir_from_ring(
+                edge,
+                pts_dest,
+                index_dest,
+                j0["destId"],
+            )
+            if edge_dir is None or vertex_node_id not in index_mob:
+                return True, []
+            j1 = {
+                "mobType": "node",
+                "mobId": vertex_node_id,
+                "mobPt": pts_mob[index_mob[vertex_node_id]],
+                "destType": "edge",
+                "destId": edge.edge_id(),
+                "destPt": edge_world_pt,
+                "destDir": edge_dir,
+            }
+        else:
+            return True, []
+        try:
+            R, T = self.compute_rigid_transform_from_two_point_correspondences(
+                j0["mobPt"],
+                j1["mobPt"],
+                j0["destPt"],
+                j1["destPt"],
+            )
+        except TopologyConstraintGeometryError:
+            return True, []
+        pts_mob = [(R @ np.asarray(point, dtype=float)) + T for point in pts_mob]
+
+        if j1["mobType"] == "edge":
+            split = self._injectSplitByEdgeDir(
+                nodes_mob,
+                pts_mob,
+                index_mob,
+                j0["mobId"],
+                (R @ np.asarray(j1["mobPt"], dtype=float)) + T,
+                R @ np.asarray(j1["mobDir"], dtype=float),
+            )
+            if split is None:
+                return True, []
+            nodes_mob, pts_mob, index_mob, edge_node_id = split
+            j1["mobType"] = "node"
+            j1["mobId"] = edge_node_id
+            j1["mobPt"] = pts_mob[index_mob[edge_node_id]]
+
+        if j1["destType"] == "edge":
+            split = self._injectSplitByEdgeDir(
+                nodes_dest,
+                pts_dest,
+                index_dest,
+                j0["destId"],
+                np.asarray(j1["destPt"], dtype=float),
+                np.asarray(j1["destDir"], dtype=float),
+            )
+            if split is None:
+                return True, []
+            nodes_dest, pts_dest, index_dest, edge_node_id = split
+            j1["destType"] = "node"
+            j1["destId"] = edge_node_id
+            j1["destPt"] = pts_dest[index_dest[edge_node_id]]
+
+        i_m0, i_m1 = index_mob[j0["mobId"]], index_mob[j1["mobId"]]
+        i_d0, i_d1 = index_dest[j0["destId"]], index_dest[j1["destId"]]
+        if i_m0 == i_m1 or i_d0 == i_d1:
+            return True, []
+        def _arc(pts: list[np.ndarray], i0: int, i1: int) -> list[np.ndarray]:
+            if i1 == (i0 + 1) % len(pts):
+                return self._arcReverse(pts, i0, i1)
+            if i1 == (i0 - 1) % len(pts):
+                return self._arcForward(pts, i0, i1)
+            return []
+
+        ring_out = self._concatArcs(
+            _arc(pts_mob, i_m0, i_m1),
+            _arc(pts_dest, i_d0, i_d1),
+        )
+        overlap = not self._isValidPolygon(ring_out)
+        return overlap, ring_out
+
+    def simulate_topological_overlap(
+        self, group_dest_id: str, group_mob_id: str, attachment: TopologyAttachmentV2
+    ) -> bool:
+        """Verdict V2 d'anti-overlap historique pour un attachment résolu."""
+        if isinstance(attachment, TopologyEdgeEdgeAttachment):
+            return self._simulate_topological_overlap_edge_edge(
+                group_dest_id,
+                group_mob_id,
+                attachment,
+            )[0]
+        if isinstance(attachment, TopologyVertexEdgeAttachment):
+            return self._simulate_topological_overlap_vertex_edge(
+                group_dest_id,
+                group_mob_id,
+                attachment,
+            )[0]
+        raise TypeError(f"Attachment topologique V2 non supporté: {type(attachment).__name__}")
+
+
     def getConceptEdgesForNode(self, node_id: str, group_id: str | None = None) -> list[dict]:
         """Liste des edges conceptuels incidentes à un concept node (par groupe)."""
         gid = group_id if group_id is not None else self._infer_group_for_node(node_id)
@@ -3053,8 +3130,11 @@ class TopologyWorld:
         return f"T{self._created_counter_elements:02d}"
 
     def new_attachment_id(self) -> str:
-        self._created_counter_attachments += 1
-        return f"A{self._created_counter_attachments:03d}"
+        while True:
+            self._created_counter_attachments += 1
+            attachment_id = f"A{self._created_counter_attachments:03d}"
+            if attachment_id not in self.attachments:
+                return attachment_id
 
     def new_group_anchor_id(self) -> str:
         self._created_counter_anchors += 1
@@ -3339,6 +3419,113 @@ class TopologyWorld:
     def get_edge(self, element_id: str, edge_index: int) -> TopologyEdge:
         return self.elements[element_id].edges[int(edge_index)]
 
+    def get_element_edge_by_vertex_types(
+        self,
+        element_id: str,
+        edge_name: str,
+    ) -> TopologyEdge:
+        """Retourne l'arête portant les deux types de sommets métier demandés."""
+        expected_vertex_types = frozenset(edge_name)
+        if len(edge_name) != 2 or len(expected_vertex_types) != 2:
+            raise ValueError(f"Nom d'arête métier invalide: {edge_name!r}")
+        element = self.elements[element_id]
+        matches = [
+            edge
+            for edge in element.edges
+            if {edge.v_start.node_type, edge.v_end.node_type} == expected_vertex_types
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f"Arête métier ambiguë ou absente: {element_id!r}/{edge_name!r}"
+            )
+        return matches[0]
+
+    def get_element_edge_business_key(
+        self,
+        element_id: str,
+        edge: str,
+    ) -> tuple[str, str]:
+        """Retourne la clé métier canonique d'une arête O/B/L.
+
+        La clé est composée des deux libellés de villes des sommets, triés
+        indépendamment de l'orientation physique de l'arête. Aucune donnée
+        géométrique ne participe à cette classification.
+        """
+        key = str(element_id or "").strip()
+        if key not in self.elements:
+            raise KeyError(f"TopologyWorld: element inconnu: {element_id!r}")
+        edge_name = str(edge or "").strip().upper()
+        if edge_name not in {"OB", "BL", "LO"}:
+            raise ValueError(f"TopologyWorld: arête métier invalide: {edge!r}")
+        physical_edge = self.get_element_edge_by_vertex_types(key, edge_name)
+        labels = []
+        for vertex in (physical_edge.v_start, physical_edge.v_end):
+            label = str(vertex.label or "").strip()
+            if not label:
+                raise ValueError(
+                    f"TopologyWorld: libellé de ville absent pour {key!r}/{edge_name}"
+                )
+            labels.append(label)
+        if labels[0] == labels[1]:
+            raise ValueError(
+                f"TopologyWorld: libellés d'extrémité incohérents pour {key!r}/{edge_name}"
+            )
+        return tuple(sorted(labels))
+
+    def are_same_business_edge(
+        self,
+        element_a_id: str,
+        edge_a: str,
+        element_b_id: str,
+        edge_b: str,
+    ) -> bool:
+        """Indique si deux arêtes portent exactement les mêmes deux villes."""
+        return self.get_element_edge_business_key(
+            element_a_id, edge_a
+        ) == self.get_element_edge_business_key(element_b_id, edge_b)
+
+    def _resolved_edge_physical_t(
+        self,
+        edge: TopologyEdge,
+        edge_anchor_vertex: str,
+        position_from_anchor: float,
+        attachment_id: str,
+    ) -> float:
+        if not np.isfinite(position_from_anchor):
+            raise ValueError(
+                f"Attachment {attachment_id}: position résolue non finie"
+            )
+        if edge_anchor_vertex == edge.v_start.node_type:
+            return float(position_from_anchor)
+        if edge_anchor_vertex == edge.v_end.node_type:
+            return 1.0 - float(position_from_anchor)
+        raise ValueError(
+            f"Attachment {attachment_id}: ancre d'arête invalide "
+            f"{edge_anchor_vertex!r}"
+        )
+
+    def _resolved_edge_local_point(
+        self,
+        element_id: str,
+        edge_name: str,
+        edge_anchor_vertex: str,
+        position_from_anchor: float,
+        attachment_id: str,
+    ) -> np.ndarray:
+        edge = self.get_element_edge_by_vertex_types(element_id, edge_name)
+        t_phys = self._resolved_edge_physical_t(
+            edge,
+            edge_anchor_vertex,
+            position_from_anchor,
+            attachment_id,
+        )
+        if t_phys < 0.0 or t_phys > 1.0:
+            raise ValueError(
+                f"Attachment {attachment_id}: position résolue hors [0,1] "
+                f"({t_phys:.6f})"
+            )
+        return self._localPointOnEdge(self.elements[element_id], edge, t_phys)
+
     def get_vertex(self, element_id: str, vertex_index: int) -> TopologyVertex:
         return self.elements[element_id].vertexes[int(vertex_index)]
 
@@ -3454,6 +3641,7 @@ class TopologyWorld:
         element.vertex_local_xy = dict(replacement.vertex_local_xy)
         for edge, edge_length_km in zip(element.edges, element.edge_lengths_km):
             edge.edge_length_km = float(edge_length_km)
+        self.invalidateResolvedForElement(element_id)
         self.invalidateConceptGeom(self.element_to_group.get(element_id))
 
     def _require_live_group_element_ids(self, core_group_id: str) -> list[str]:
@@ -3698,83 +3886,6 @@ class TopologyWorld:
         return TopologyPose2D(R=R, T=T)
 
     # ------------------------------------------------------------------
-    # Pose Edge↔Edge (V1) : calcule la pose ABSOLUE (R,T) du groupe mobile
-    # pour aligner une arête mobile sur une arête cible.
-    # - mapping="direct" : (start_m -> start_t) et (end_m -> end_t)
-    # - mapping="reverse": (start_m -> end_t) et (end_m -> start_t)
-    # Contrat :
-    #   - retourne (R_abs, T_abs) : Monde <- GroupeMobile
-    #   - aucune modif de state (pur calcul)
-    # ------------------------------------------------------------------
-    def compute_pose_edge_to_edge(
-        self,
-        group_id_m: str,
-        element_id_m: str,
-        edge_index_m: int,
-        group_id_t: str,
-        element_id_t: str,
-        edge_index_t: int,
-        mapping: str = "direct",
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Calcule une pose ABSOLUE (R,T) pour l'ÉLÉMENT mobile afin d'aligner une arête mobile sur une arête cible.
-
-        NOTE: les groupes sont topologiques (pas de pose groupe).
-        - Cette fonction sert uniquement de helper géométrique éventuel côté UI/tests.
-        - Elle ne modifie aucun state.
-
-        Contrat:
-        - retourne (R_abs, T_abs) tel que:
-            world = (R_abs @ (M? @ p_local)) + T_abs
-            en respectant l'état ``mirrored`` actuel de l'élément mobile.
-
-        mapping:
-        - "direct"  : start_m -> start_t  et end_m -> end_t
-        - "reverse" : start_m -> end_t    et end_m -> start_t
-        """
-        # On ignore group_id_* (compat API), tout est porté par les poses d'éléments.
-        e_m = self.get_edge(element_id_m, edge_index_m)
-        e_t = self.get_edge(str(element_id_t), edge_index_t)
-
-        el_m = self.elements[element_id_m]
-        el_t = self.elements[element_id_t]
-
-        def _v_local(el: TopologyElement, vidx: int) -> np.ndarray:
-            xy = el.vertex_local_xy.get(int(vidx))
-            if xy is None:
-                raise ValueError(
-                    f"compute_pose_edge_to_edge: vertex_local_xy manquant (element={el.element_id} idx={vidx})"
-                )
-            return np.array([float(xy[0]), float(xy[1])], dtype=float)
-
-        # Endpoints LOCAL (mobile). La pose stocke une éventuelle réflexion
-        # séparément de R, elle doit donc être appliquée avant le calcul de R.
-        p0m = _v_local(el_m, e_m.v_start.vertex_index)
-        p1m = _v_local(el_m, e_m.v_end.vertex_index)
-        if el_m.pose.mirrored:
-            mirror = TopologyElementPose2D.mirror_matrix()
-            p0m = mirror @ p0m
-            p1m = mirror @ p1m
-
-        # Endpoints WORLD (cible) via pose élément
-        p0t = _v_local(el_t, e_t.v_start.vertex_index)
-        p1t = _v_local(el_t, e_t.v_end.vertex_index)
-        w0t = self.elementLocalToWorld(element_id_t, p0t)
-        w1t = self.elementLocalToWorld(element_id_t, p1t)
-
-        if mapping.lower() == "direct":
-            W0, W1 = w0t, w1t
-        elif mapping.lower() == "reverse":
-            W0, W1 = w1t, w0t
-        else:
-            raise ValueError(f"compute_pose_edge_to_edge: mapping invalide: {mapping}")
-
-        return self.compute_rigid_transform_from_two_point_correspondences(
-            p0m,
-            p1m,
-            W0,
-            W1,
-        )
-
     @staticmethod
     def compute_rigid_transform_from_two_point_correspondences(
         mobile_point_0,
@@ -3782,12 +3893,11 @@ class TopologyWorld:
         target_point_0,
         target_point_1,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Calcule la pose rigide ``Monde <- Mobile`` depuis deux points.
+        """Calcule une pose rigide depuis deux correspondances déjà déterminées.
 
-        Cette primitive pure est commune aux raccords edge-edge et aux
-        raccords atomiques vertex-vertex + vertex-edge. Elle ne choisit ni
-        endpoints, ni mapping, ni paramètres topologiques : ces décisions sont
-        déjà portées par les attachments historiques.
+        Cette primitive pure ne choisit ni endpoints, ni orientation, ni
+        mapping, ni décision topologique. Ces données sont fournies par un
+        ``ResolvedAttachment`` ou par un autre appelant géométrique.
         """
         points = [
             np.asarray(point, dtype=float)
@@ -3816,152 +3926,148 @@ class TopologyWorld:
         translation = p0t - (rotation @ p0m)
         return rotation, translation
 
-    def _attachment_edge_local_point(
+    def _local_vertex_point_by_type(
         self,
-        attachment: TopologyAttachment,
-        feature: TopologyFeatureRef,
-    ) -> np.ndarray:
-        """Retourne le point local exact d'une feature d'attachment.
-
-        Seul le côté arête d'un ``vertex-edge`` porte un paramètre ``t``. Le
-        contrat ``edgeFrom`` reste donc interprété ici par le Core, au même
-        endroit que le rejeu géométrique des attachments.
-        """
-        if feature.feature_type == TopologyFeatureType.VERTEX:
-            element = self.elements[feature.element_id]
-            point = element.vertex_local_xy.get(int(feature.index))
-            if point is None:
-                raise ValueError(
-                    f"Attachment {attachment.attachment_id}: sommet local absent"
-                )
-            return np.asarray(point, dtype=float)
-
-        if feature.feature_type != TopologyFeatureType.EDGE:
-            raise ValueError(
-                f"Attachment {attachment.attachment_id}: feature inconnue"
-            )
-        edge = self.get_edge(feature.element_id, feature.index)
-        t = attachment.params.get("t")
-        if t is None:
-            raise ValueError(
-                f"Attachment {attachment.attachment_id}: t absent pour une arête"
-            )
-        edge_from = attachment.params.get("edgeFrom")
-        if edge_from == edge.v_start.node_id:
-            local_t = float(t)
-        elif edge_from == edge.v_end.node_id:
-            local_t = 1.0 - float(t)
-        else:
-            raise ValueError(
-                f"Attachment {attachment.attachment_id}: edgeFrom invalide"
-            )
-        return self._localPointOnEdge(self.elements[feature.element_id], edge, local_t)
-
-    def _attachment_feature_world_point(
-        self,
-        attachment: TopologyAttachment,
-        feature: TopologyFeatureRef,
-    ) -> np.ndarray:
-        return self.elementLocalToWorld(
-            feature.element_id,
-            self._attachment_edge_local_point(attachment, feature),
-        )
-
-    def _place_element_from_single_point_constraint(
-        self,
-        attachment: TopologyAttachment,
-        mobile_feature: TopologyFeatureRef,
-        target_feature: TopologyFeatureRef,
-    ) -> None:
-        """Pose un élément avec une contrainte ponctuelle en gardant son angle.
-
-        Une contrainte sommet↔sommet ou sommet↔arête fixe une translation mais
-        pas une rotation. La pose de départ du clone fournit alors l'orientation
-        déterministe conservée pendant le rejeu.
-        """
-        element = self.elements[mobile_feature.element_id]
-        local_point = self._attachment_edge_local_point(attachment, mobile_feature)
-        if element.pose.mirrored:
-            local_point = TopologyElementPose2D.mirror_matrix() @ local_point
-        rotation, _translation, mirrored = self.getElementPose(element.element_id)
-        target_world = self._attachment_feature_world_point(attachment, target_feature)
-        translation = target_world - (rotation @ local_point)
-        self.setElementPose(
-            element.element_id,
-            R=rotation,
-            T=translation,
-            mirrored=mirrored,
-        )
-
-    def _attachment_feature_for_element(
-        self,
-        attachment: TopologyAttachment,
         element_id: str,
-    ) -> TopologyFeatureRef:
-        if attachment.feature_a.element_id == element_id and \
-                attachment.feature_b.element_id != element_id:
-            return attachment.feature_a
-        if attachment.feature_b.element_id == element_id and \
-                attachment.feature_a.element_id != element_id:
-            return attachment.feature_b
-        raise ValueError(
-            f"Attachment {attachment.attachment_id}: liaison élémentaire ambiguë"
-        )
-
-    def _effective_attachment_feature_local_point(
-        self,
-        attachment: TopologyAttachment,
-        feature: TopologyFeatureRef,
+        vertex_type: str,
     ) -> np.ndarray:
-        point = self._attachment_edge_local_point(attachment, feature)
-        element = self.elements[feature.element_id]
-        if element.pose.mirrored:
-            point = TopologyElementPose2D.mirror_matrix() @ point
-        return point
+        element = self.elements[element_id]
+        matches = [
+            vertex.vertex_index
+            for vertex in element.vertexes
+            if vertex.node_type == vertex_type
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f"Sommet métier ambigu ou absent: {element_id!r}/{vertex_type!r}"
+            )
+        point = element.vertex_local_xy.get(matches[0])
+        if point is None:
+            raise ValueError(
+                f"Sommet local absent: {element_id!r}/{vertex_type!r}"
+            )
+        return np.asarray(point, dtype=float)
 
-    def _place_element_from_atomic_point_link(
+    def _effective_mobile_local_point(
         self,
-        attachments: tuple[TopologyAttachment, TopologyAttachment],
+        element_id: str,
+        local_point: np.ndarray,
+    ) -> np.ndarray:
+        element = self.elements[element_id]
+        if element.pose.mirrored:
+            return TopologyElementPose2D.mirror_matrix() @ local_point
+        return local_point
+
+    def _place_element_from_resolved_attachment(
+        self,
+        resolved: ResolvedAttachment,
         mobile_element_id: str,
         target_element_id: str,
     ) -> None:
-        """Pose un mobile à partir du raccord atomique VV + VE gelé."""
-        vertex_vertex = next(
-            (attachment for attachment in attachments if attachment.kind == "vertex-vertex"),
-            None,
-        )
-        vertex_edge = next(
-            (attachment for attachment in attachments if attachment.kind == "vertex-edge"),
-            None,
-        )
-        if vertex_vertex is None or vertex_edge is None:
-            raise ValueError("Raccord atomique sans paire vertex-vertex + vertex-edge")
-        for attachment in attachments:
-            endpoints = {
-                attachment.feature_a.element_id,
-                attachment.feature_b.element_id,
-            }
-            if endpoints != {mobile_element_id, target_element_id}:
+        """Pose un élément depuis les deux correspondances du resolved V2."""
+        if isinstance(resolved, ResolvedEdgeEdgeAttachment):
+            if (
+                mobile_element_id == resolved.mob_element_id
+                and target_element_id == resolved.dest_element_id
+            ):
+                mobile_vertices = (resolved.mob_vertex_1, resolved.mob_vertex_2)
+                target_vertices = (resolved.dest_vertex_1, resolved.dest_vertex_2)
+            elif (
+                mobile_element_id == resolved.dest_element_id
+                and target_element_id == resolved.mob_element_id
+            ):
+                mobile_vertices = (resolved.dest_vertex_1, resolved.dest_vertex_2)
+                target_vertices = (resolved.mob_vertex_1, resolved.mob_vertex_2)
+            else:
                 raise ValueError(
-                    f"Attachment {attachment.attachment_id}: raccord atomique incohérent"
+                    f"Attachment {resolved.attachment_id}: éléments incohérents"
+        )
+            mobile_point_0 = self._effective_mobile_local_point(
+                mobile_element_id,
+                self._local_vertex_point_by_type(mobile_element_id, mobile_vertices[0]),
+        )
+            mobile_point_1 = self._effective_mobile_local_point(
+                mobile_element_id,
+                self._local_vertex_point_by_type(mobile_element_id, mobile_vertices[1]),
+            )
+            target_point_0 = self.elementLocalToWorld(
+                target_element_id,
+                self._local_vertex_point_by_type(target_element_id, target_vertices[0]),
+            )
+            target_point_1 = self.elementLocalToWorld(
+                target_element_id,
+                self._local_vertex_point_by_type(target_element_id, target_vertices[1]),
+            )
+        elif isinstance(resolved, ResolvedVertexEdgeAttachment):
+            endpoints = {
+                resolved.anchor_mob_element_id,
+                resolved.anchor_dest_element_id,
+            }
+            if {mobile_element_id, target_element_id} != endpoints:
+                raise ValueError(
+                    f"Attachment {resolved.attachment_id}: éléments incohérents"
                 )
 
-        mobile_point_0 = self._effective_attachment_feature_local_point(
-            vertex_vertex,
-            self._attachment_feature_for_element(vertex_vertex, mobile_element_id),
+            if mobile_element_id == resolved.anchor_mob_element_id:
+                mobile_anchor_vertex = resolved.anchor_mob_vertex
+                target_anchor_vertex = resolved.anchor_dest_vertex
+            else:
+                mobile_anchor_vertex = resolved.anchor_dest_vertex
+                target_anchor_vertex = resolved.anchor_mob_vertex
+
+            mobile_point_0 = self._effective_mobile_local_point(
+                mobile_element_id,
+                self._local_vertex_point_by_type(
+                    mobile_element_id,
+                    mobile_anchor_vertex,
+                ),
         )
-        target_point_0 = self._attachment_feature_world_point(
-            vertex_vertex,
-            self._attachment_feature_for_element(vertex_vertex, target_element_id),
+            target_point_0 = self.elementLocalToWorld(
+                target_element_id,
+                self._local_vertex_point_by_type(
+                    target_element_id,
+                    target_anchor_vertex,
+                ),
         )
-        mobile_point_1 = self._effective_attachment_feature_local_point(
-            vertex_edge,
-            self._attachment_feature_for_element(vertex_edge, mobile_element_id),
+
+            edge_point = self._resolved_edge_local_point(
+                resolved.edge_element_id,
+                resolved.edge,
+                resolved.edge_anchor_vertex,
+                resolved.position_from_anchor,
+                resolved.attachment_id,
         )
-        target_point_1 = self._attachment_feature_world_point(
-            vertex_edge,
-            self._attachment_feature_for_element(vertex_edge, target_element_id),
+            if mobile_element_id == resolved.vertex_element_id:
+                mobile_point_1 = self._effective_mobile_local_point(
+                    mobile_element_id,
+                    self._local_vertex_point_by_type(
+                        resolved.vertex_element_id,
+                        resolved.vertex,
+                    ),
         )
+                target_point_1 = self.elementLocalToWorld(
+                    target_element_id,
+                    edge_point,
+                )
+            elif mobile_element_id == resolved.edge_element_id:
+                mobile_point_1 = self._effective_mobile_local_point(
+                    mobile_element_id,
+                    edge_point,
+                )
+                target_point_1 = self.elementLocalToWorld(
+                    target_element_id,
+                    self._local_vertex_point_by_type(
+                        resolved.vertex_element_id,
+                        resolved.vertex,
+                    ),
+                )
+            else:
+                raise ValueError(
+                    f"Attachment {resolved.attachment_id}: point résolu incohérent"
+                )
+        else:
+            raise TypeError(f"Type d'attachment résolu inconnu: {type(resolved)!r}")
+
         rotation, translation = self.compute_rigid_transform_from_two_point_correspondences(
             mobile_point_0,
             mobile_point_1,
@@ -3976,88 +4082,72 @@ class TopologyWorld:
             mirrored=mirrored,
         )
 
-    def _place_element_from_attachment(
+    def _resolved_attachment_geometry_is_satisfied(
         self,
-        attachment: TopologyAttachment,
-        mobile_element_id: str,
-        target_element_id: str,
-    ) -> None:
-        """Rejoue exactement une relation gelée en posant son élément mobile."""
-        feature_a = attachment.feature_a
-        feature_b = attachment.feature_b
-        if attachment.kind == "edge-edge":
-            if mobile_element_id == feature_a.element_id and target_element_id == feature_b.element_id:
-                mobile_feature, target_feature = feature_a, feature_b
-            elif mobile_element_id == feature_b.element_id and target_element_id == feature_a.element_id:
-                mobile_feature, target_feature = feature_b, feature_a
-            else:
-                raise ValueError(f"Attachment {attachment.attachment_id}: éléments incohérents")
-            rotation, translation = self.compute_pose_edge_to_edge(
-                self.get_group_of_element(mobile_element_id),
-                mobile_feature.element_id,
-                mobile_feature.index,
-                self.get_group_of_element(target_element_id),
-                target_feature.element_id,
-                target_feature.index,
-                mapping=str(attachment.params.get("mapping", "direct")),
-            )
-            _old_rotation, _old_translation, mirrored = self.getElementPose(mobile_element_id)
-            self.setElementPose(mobile_element_id, R=rotation, T=translation, mirrored=mirrored)
-            return
-
-        if attachment.kind == "vertex-vertex":
-            if mobile_element_id == feature_a.element_id and target_element_id == feature_b.element_id:
-                self._place_element_from_single_point_constraint(attachment, feature_a, feature_b)
-                return
-            if mobile_element_id == feature_b.element_id and target_element_id == feature_a.element_id:
-                self._place_element_from_single_point_constraint(attachment, feature_b, feature_a)
-                return
-            raise ValueError(f"Attachment {attachment.attachment_id}: éléments incohérents")
-
-        if attachment.kind == "vertex-edge":
-            if mobile_element_id == feature_a.element_id and target_element_id == feature_b.element_id:
-                self._place_element_from_single_point_constraint(attachment, feature_a, feature_b)
-                return
-            if mobile_element_id == feature_b.element_id and target_element_id == feature_a.element_id:
-                self._place_element_from_single_point_constraint(attachment, feature_b, feature_a)
-                return
-            raise ValueError(f"Attachment {attachment.attachment_id}: éléments incohérents")
-
-        raise ValueError(f"Attachment {attachment.attachment_id}: kind inconnu")
-
-    def _attachment_geometry_is_satisfied(
-        self,
-        attachment: TopologyAttachment,
+        resolved: ResolvedAttachment,
         tolerance: float,
     ) -> bool:
-        if attachment.kind == "edge-edge":
-            edge_a = self.get_edge(attachment.feature_a.element_id, attachment.feature_a.index)
-            edge_b = self.get_edge(attachment.feature_b.element_id, attachment.feature_b.index)
-            a0 = self.elementLocalToWorld(
-                edge_a.element_id,
-                self.elements[edge_a.element_id].vertex_local_xy[edge_a.v_start.vertex_index],
+        if isinstance(resolved, ResolvedEdgeEdgeAttachment):
+            pairs = (
+                (resolved.mob_vertex_1, resolved.dest_vertex_1),
+                (resolved.mob_vertex_2, resolved.dest_vertex_2),
             )
-            a1 = self.elementLocalToWorld(
-                edge_a.element_id,
-                self.elements[edge_a.element_id].vertex_local_xy[edge_a.v_end.vertex_index],
+            return all(
+                float(np.linalg.norm(
+                    self.elementLocalToWorld(
+                        resolved.mob_element_id,
+                        self._local_vertex_point_by_type(
+                            resolved.mob_element_id,
+                            mob_vertex,
+                        ),
             )
-            b0 = self.elementLocalToWorld(
-                edge_b.element_id,
-                self.elements[edge_b.element_id].vertex_local_xy[edge_b.v_start.vertex_index],
+                    - self.elementLocalToWorld(
+                        resolved.dest_element_id,
+                        self._local_vertex_point_by_type(
+                            resolved.dest_element_id,
+                            dest_vertex,
+                        ),
             )
-            b1 = self.elementLocalToWorld(
-                edge_b.element_id,
-                self.elements[edge_b.element_id].vertex_local_xy[edge_b.v_end.vertex_index],
+                )) <= tolerance
+                for mob_vertex, dest_vertex in pairs
             )
-            if attachment.params.get("mapping", "direct") == "direct":
-                pairs = ((a0, b0), (a1, b1))
-            else:
-                pairs = ((a0, b1), (a1, b0))
-            return all(float(np.linalg.norm(first - second)) <= tolerance for first, second in pairs)
-
-        first = self._attachment_feature_world_point(attachment, attachment.feature_a)
-        second = self._attachment_feature_world_point(attachment, attachment.feature_b)
-        return float(np.linalg.norm(first - second)) <= tolerance
+        if isinstance(resolved, ResolvedVertexEdgeAttachment):
+            anchor_mob = self.elementLocalToWorld(
+                resolved.anchor_mob_element_id,
+                self._local_vertex_point_by_type(
+                    resolved.anchor_mob_element_id,
+                    resolved.anchor_mob_vertex,
+                ),
+            )
+            anchor_dest = self.elementLocalToWorld(
+                resolved.anchor_dest_element_id,
+                self._local_vertex_point_by_type(
+                    resolved.anchor_dest_element_id,
+                    resolved.anchor_dest_vertex,
+                ),
+            )
+            vertex_point = self.elementLocalToWorld(
+                resolved.vertex_element_id,
+                self._local_vertex_point_by_type(
+                    resolved.vertex_element_id,
+                    resolved.vertex,
+                ),
+            )
+            edge_point = self.elementLocalToWorld(
+                resolved.edge_element_id,
+                self._resolved_edge_local_point(
+                    resolved.edge_element_id,
+                    resolved.edge,
+                    resolved.edge_anchor_vertex,
+                    resolved.position_from_anchor,
+                    resolved.attachment_id,
+                ),
+            )
+            return (
+                float(np.linalg.norm(anchor_mob - anchor_dest)) <= tolerance
+                and float(np.linalg.norm(vertex_point - edge_point)) <= tolerance
+            )
+        raise TypeError(f"Type d'attachment résolu inconnu: {type(resolved)!r}")
 
     def replay_group_attachment_poses(
         self,
@@ -4066,15 +4156,7 @@ class TopologyWorld:
         *,
         tolerance: float = 1e-8,
     ) -> None:
-        """Rejoue les poses d'un groupe depuis ses attachments déjà gelés.
-
-        Les attachments ne sont ni recherchés ni modifiés. Le ``root`` conserve
-        sa pose courante, puis le parcours déterministe propage les contraintes
-        vers les autres éléments. Les relations ponctuelles conservent la
-        rotation déjà portée par l'élément mobile, car elles ne la déterminent
-        pas à elles seules. Toute relation non satisfaite après propagation
-        signale une géométrie candidate impossible.
-        """
+        """Rejoue les poses d'un groupe depuis les attachments V2 résolus."""
         gid = self._require_live_group_id(group_id)
         element_ids = set(self.getGroupElementIds(gid))
         if root_element_id not in element_ids:
@@ -4084,72 +4166,39 @@ class TopologyWorld:
         if tolerance <= 0.0 or not np.isfinite(tolerance):
             raise ValueError("Tolérance de rejeu invalide")
 
-        attachments = [
-            self.attachments[attachment_id]
-            for attachment_id in sorted(self.groups[gid].attachment_ids)
-        ]
-        adjacency: dict[str, list[tuple[TopologyAttachment, ...]]] = {
+        attachment_ids = sorted(self.groups[gid].attachment_ids)
+        adjacency: dict[str, list[str]] = {
             element_id: [] for element_id in element_ids
         }
-        point_attachments_by_pair: dict[tuple[str, str], list[TopologyAttachment]] = {}
-        individual_links: list[tuple[TopologyAttachment, ...]] = []
-        for attachment in attachments:
-            self._validate_attachment_p2(attachment)
-            first_id = attachment.feature_a.element_id
-            second_id = attachment.feature_b.element_id
+        for attachment_id in attachment_ids:
+            attachment = self.attachments[attachment_id]
+            first_id = attachment.mob_element_id
+            second_id = attachment.dest_element_id
             if first_id not in element_ids or second_id not in element_ids:
                 raise ValueError(
                     f"Attachment {attachment.attachment_id}: hors du groupe {gid!r}"
                 )
-            if attachment.kind in ("vertex-vertex", "vertex-edge"):
-                pair_key = tuple(sorted((first_id, second_id)))
-                point_attachments_by_pair.setdefault(pair_key, []).append(attachment)
-            else:
-                individual_links.append((attachment,))
-
-        for pair_key, point_attachments in sorted(point_attachments_by_pair.items()):
-            ordered = tuple(sorted(point_attachments, key=lambda item: item.attachment_id or ""))
-            kinds = {attachment.kind for attachment in ordered}
-            if kinds == {"vertex-vertex", "vertex-edge"}:
-                if len(ordered) != 2:
-                    raise ValueError(
-                        "Raccord atomique ambigu entre "
-                        f"{pair_key[0]!r} et {pair_key[1]!r}"
-                    )
-                individual_links.append(ordered)
-            else:
-                individual_links.extend((attachment,) for attachment in ordered)
-
-        for link in individual_links:
-            endpoints = {
-                feature.element_id
-                for attachment in link
-                for feature in (attachment.feature_a, attachment.feature_b)
-            }
-            if len(endpoints) != 2:
+            if first_id == second_id:
                 raise ValueError("Liaison de rejeu sans deux éléments distincts")
-            for element_id in endpoints:
-                adjacency[element_id].append(link)
+            adjacency[first_id].append(attachment_id)
+            adjacency[second_id].append(attachment_id)
 
         placed = {root_element_id}
         while len(placed) < len(element_ids):
-            next_step: tuple[tuple[TopologyAttachment, ...], str, str] | None = None
+            next_step: tuple[str, str, str] | None = None
             for placed_id in sorted(placed):
-                for link in sorted(
-                    adjacency[placed_id],
-                    key=lambda items: tuple(item.attachment_id or "" for item in items),
-                ):
+                for attachment_id in sorted(adjacency[placed_id]):
+                    attachment = self.attachments[attachment_id]
                     endpoints = {
-                        feature.element_id
-                        for attachment in link
-                        for feature in (attachment.feature_a, attachment.feature_b)
+                        attachment.mob_element_id,
+                        attachment.dest_element_id,
                     }
                     other_ids = endpoints - {placed_id}
                     if len(other_ids) != 1:
                         raise ValueError("Liaison de rejeu ambiguë")
                     other_id = next(iter(other_ids))
                     if other_id not in placed:
-                        next_step = (link, other_id, placed_id)
+                        next_step = (attachment_id, other_id, placed_id)
                         break
                 if next_step is not None:
                     break
@@ -4157,18 +4206,32 @@ class TopologyWorld:
                 raise TopologyConstraintGeometryError(
                     f"Le groupe {gid!r} ne peut pas être rejoué depuis {root_element_id!r}"
                 )
-            link, mobile_id, target_id = next_step
-            if len(link) == 2:
-                self._place_element_from_atomic_point_link(link, mobile_id, target_id)
-            else:
-                self._place_element_from_attachment(link[0], mobile_id, target_id)
+            attachment_id, mobile_id, target_id = next_step
+            self._place_element_from_resolved_attachment(
+                self.getResolvedAttachment(attachment_id),
+                mobile_id,
+                target_id,
+            )
             placed.add(mobile_id)
 
-        for attachment in attachments:
-            if not self._attachment_geometry_is_satisfied(attachment, tolerance):
+        for attachment_id in attachment_ids:
+            resolved = self.getResolvedAttachment(attachment_id)
+            if not self._resolved_attachment_geometry_is_satisfied(resolved, tolerance):
                 raise TopologyConstraintGeometryError(
-                    f"Attachment {attachment.attachment_id}: contrainte géométrique non satisfaite"
+                    f"Attachment {resolved.attachment_id}: contrainte géométrique non satisfaite"
                 )
+
+    def _isValidPolygon(self, ringPts: list[np.ndarray]) -> bool:
+        """Valide un contour simple, non vide et d'aire non négligeable."""
+        if not ringPts or len(ringPts) < 3:
+            return False
+        ring = [(float(point[0]), float(point[1])) for point in ringPts]
+        if not _ShLine(ring).is_simple:
+            return False
+        polygon = _ShPoly(ring)
+        if getattr(polygon, "is_empty", False) or not polygon.is_valid:
+            return False
+        return abs(float(polygon.area)) > self.overlap_eps_area
 
     def is_group_contour_valid(self, group_id: str) -> bool:
         """Valide le contour géométrique d'un groupe avec les services Core."""
@@ -4182,275 +4245,129 @@ class TopologyWorld:
         )
         return ring is not None and self._isValidPolygon(ring[0])
 
-    def apply_attachments(self, attachments: list[TopologyAttachment]) -> str:
-        """Applique une liste d'attachments (transaction simple V1) et retourne le gid canonique final."""
+    def apply_attachments(self, attachments: list[TopologyAttachmentV2]) -> str:
+        """Applique une liste d'attachments V2 et retourne le dernier groupe canonique."""
         gid_last: str | None = None
-        for att in list(attachments or []):
-            # Si ID vide OU collision => on régénère ici.
-            if (att.attachment_id is None) or (att.attachment_id in self.attachments):
-                att.attachment_id = self.new_attachment_id()
+        for att in attachments:
             gid_last = self.apply_attachment(att)
         return gid_last if gid_last is not None else ""
 
-    def _edge_endpoints_atomic_nodes(self, edge: TopologyEdge) -> tuple[str, str]:
-        return (edge.v_start.node_id, edge.v_end.node_id)
+    def _apply_resolved_attachment_internal(
+        self,
+        resolved: ResolvedAttachment,
+    ) -> str:
+        if isinstance(resolved, ResolvedVertexEdgeAttachment):
+            mob_element_id = resolved.anchor_mob_element_id
+            dest_element_id = resolved.anchor_dest_element_id
+        elif isinstance(resolved, ResolvedEdgeEdgeAttachment):
+            mob_element_id = resolved.mob_element_id
+            dest_element_id = resolved.dest_element_id
+        else:
+            raise TypeError(f"Type d'attachment résolu inconnu: {type(resolved)!r}")
 
-    # --- points on edge ---
-    # --- attachments ---
-    def _validate_attachment_p2(self, attachment: TopologyAttachment, eps_t: float = 1e-9) -> None:
-        if self._isImportingSnapshot:
-            return
-        kind = str(getattr(attachment, "kind", "") or "")
-        if kind not in ("vertex-vertex", "vertex-edge", "edge-edge"):
-            raise ValueError(f"[P2][Attachment] invalid type={kind} id={attachment.attachment_id}")
+        gA = self.get_group_of_element(mob_element_id)
+        gB = self.get_group_of_element(dest_element_id)
+        gC = self.union_groups(gA, gB) if gA != gB else gA
 
-        if attachment.feature_a is None or attachment.feature_b is None:
-            raise ValueError(f"[P2][Attachment] missing featureA/featureB type={kind} id={attachment.attachment_id}")
-
-        def require_vertex_ref(f, side: str) -> None:
-            if f.feature_type != TopologyFeatureType.VERTEX:
-                raise ValueError(
-                    f"[P2][Attachment] expected VertexRef for {side} got={f.feature_type} id={attachment.attachment_id}"
+        if isinstance(resolved, ResolvedVertexEdgeAttachment):
+            self.union_nodes(
+                self.get_element_vertex_node_id_by_type(
+                    resolved.anchor_mob_element_id,
+                    resolved.anchor_mob_vertex,
+                ),
+                self.get_element_vertex_node_id_by_type(
+                    resolved.anchor_dest_element_id,
+                    resolved.anchor_dest_vertex,
+                ),
                 )
-            element = self.elements.get(f.element_id)
-            if element is None:
-                raise ValueError(
-                    f"[P2][Attachment] unknown element elementId={f.element_id} in feature{side} id={attachment.attachment_id}"
+        elif isinstance(resolved, ResolvedEdgeEdgeAttachment):
+            self.union_nodes(
+                self.get_element_vertex_node_id_by_type(
+                    resolved.mob_element_id,
+                    resolved.mob_vertex_1,
+                ),
+                self.get_element_vertex_node_id_by_type(
+                    resolved.dest_element_id,
+                    resolved.dest_vertex_1,
+                ),
                 )
-            vidx = int(f.index)
-            if vidx < 0 or vidx >= len(element.vertexes):
-                attid = attachment.attachment_id
-                eid = element.element_id
-                raise ValueError(
-                    f"[P2][Attachment] unknown vertex vertexId=N{vidx} in elementId={eid} feature{side} id={attid}"
-                )
-
-        def require_edge_ref(f, side: str) -> None:
-            if f.feature_type != TopologyFeatureType.EDGE:
-                raise ValueError(
-                    f"[P2][Attachment] expected EdgeRef for {side} got={f.feature_type} id={attachment.attachment_id}"
-                )
-            eid = f.element_id
-            attid = attachment.attachment_id
-            element = self.elements.get(eid)
-            if element is None:
-                raise ValueError(
-                    f"[P2][Attachment] unknown element elementId={eid} in feature{side} id={attid}"
-                )
-            eidx = int(f.index)
-            if eidx < 0 or eidx >= len(element.edges):
-                raise ValueError(
-                    f"[P2][Attachment] unknown edge edgeId=E{eidx} in elementId={element.element_id} feature{side} id={attid}"
+            self.union_nodes(
+                self.get_element_vertex_node_id_by_type(
+                    resolved.mob_element_id,
+                    resolved.mob_vertex_2,
+                ),
+                self.get_element_vertex_node_id_by_type(
+                    resolved.dest_element_id,
+                    resolved.dest_vertex_2,
+                ),
                 )
 
-        if kind == "vertex-vertex":
-            require_vertex_ref(attachment.feature_a, "A")
-            require_vertex_ref(attachment.feature_b, "B")
-            if attachment.params.get("t", None) is not None:
-                raise ValueError(
-                    f"[P2][Attachment] vertex-vertex must not have t (t={attachment.params.get('t')}) id={attachment.attachment_id}"
-                )
-            return
+        attachment_ids = self.groups[self.find_group(gC)].attachment_ids
+        if resolved.attachment_id not in attachment_ids:
+            attachment_ids.append(resolved.attachment_id)
+        self.invalidateConceptGraph(gC)
+        self._markTopoTouched(gC)
+        return gC
 
-        if kind == "edge-edge":
-            require_edge_ref(attachment.feature_a, "A")
-            require_edge_ref(attachment.feature_b, "B")
-            if attachment.params.get("t", None) is not None:
-                raise ValueError(
-                    f"[P2][Attachment] edge-edge must not have t (t={attachment.params.get('t')}) id={attachment.attachment_id}"
-                )
-            return
+    def _apply_attachment_internal(self, attachment: TopologyAttachmentV2) -> str:
+        """Applique au Core la connectivité portée par son attachment V2 résolu."""
+        return self._apply_resolved_attachment_internal(
+            self.getResolvedAttachment(attachment.attachment_id)
+        )
 
-        # vertex-edge
-        require_vertex_ref(attachment.feature_a, "A")
-        require_edge_ref(attachment.feature_b, "B")
-        if "t" not in attachment.params or attachment.params.get("t", None) is None:
-            raise ValueError(f"[P2][Attachment] vertex-edge missing t id={attachment.attachment_id}")
-        try:
-            t_val = float(attachment.params.get("t"))
-        except (TypeError, ValueError):
-            raise ValueError(
-                f"[P2][Attachment] vertex-edge t not float (t={attachment.params.get('t')}) id={attachment.attachment_id}"
+    def _rebuild_derived_coverages(self) -> None:
+        """Reconstruit les coverages EE, cache dérivé des attachments résolus."""
+        for element in self.elements.values():
+            for edge in element.edges:
+                edge.coverages = []
+
+        for attachment_id in sorted(self.attachments):
+            resolved = self.getResolvedAttachment(attachment_id)
+            if not isinstance(resolved, ResolvedEdgeEdgeAttachment):
+                continue
+            self.get_element_edge_by_vertex_types(
+                resolved.mob_element_id,
+                resolved.mob_edge,
+            ).coverages.append(TopologyCoverageInterval(0.0, 1.0))
+            self.get_element_edge_by_vertex_types(
+                resolved.dest_element_id,
+                resolved.dest_edge,
+            ).coverages.append(TopologyCoverageInterval(0.0, 1.0))
+
+    def apply_attachment(self, attachment: TopologyAttachmentV2) -> str:
+        TopologyAttachmentResolver.validate(self, attachment)
+        if attachment.attachment_id in self.attachments:
+            raise TopologyAttachmentValidationError(
+                f"Attachment V2 déjà présent: {attachment.attachment_id!r}"
             )
-        if t_val < -eps_t or t_val > 1.0 + eps_t:
-            raise ValueError(
-                f"[P2][Attachment] vertex-edge t out of [0,1] (t={t_val:.6f}) id={attachment.attachment_id}"
-            )
-        if abs(t_val) <= eps_t:
-            t_val = 0.0
-        elif abs(t_val - 1.0) <= eps_t:
-            t_val = 1.0
-        attachment.params["t"] = t_val
-        edge_from = attachment.params.get("edgeFrom", None)
-        if edge_from is None or edge_from.strip() == "":
-            raise ValueError(f"[P2][Attachment] vertex-edge missing edgeFrom id={attachment.attachment_id}")
-        e = self.get_edge(attachment.feature_b.element_id, attachment.feature_b.index)
-        s = e.v_start.node_id
-        t = e.v_end.node_id
-        if edge_from != s and edge_from != t:
-            raise ValueError(
-                f"[P2][Attachment] vertex-edge edgeFrom not on edge (edgeFrom={edge_from}) id={attachment.attachment_id}"
-            )
-        attachment.params["edgeFrom"] = edge_from
-
-    def record_attachment(self, attachment: TopologyAttachment, group_id: str | None = None):
         self.attachments[attachment.attachment_id] = attachment
-        if group_id is not None:
-            self.groups[self.find_group(group_id)].attachment_ids.append(attachment.attachment_id)
+        self.resolved_attachments.pop(attachment.attachment_id, None)
+        group_id = self._apply_attachment_internal(attachment)
+        self._rebuild_derived_coverages()
+        return group_id
 
-    def _apply_attachment_internal(self, attachment: TopologyAttachment) -> str:
-        gA = self.get_group_of_element(attachment.feature_a.element_id)
-        gB = self.get_group_of_element(attachment.feature_b.element_id)
-        gC = self.union_groups(gA, gB) if gA != gB else gA
-        kind = attachment.kind
+    def rebuild_from_attachments(
+        self,
+        attachments: list[TopologyAttachmentV2] | None = None,
+    ) -> None:
+        """Reconstruit DSU et groupes à partir des attachments V2 enregistrés."""
+        if attachments is not None:
+            next_attachments: dict[str, TopologyAttachmentV2] = {}
+            for attachment in attachments:
+                TopologyAttachmentResolver.validate(self, attachment)
+                if attachment.attachment_id in next_attachments:
+                    raise TopologyAttachmentValidationError(
+                        f"Attachment V2 dupliqué: {attachment.attachment_id!r}"
+                    )
+                next_attachments[attachment.attachment_id] = attachment
 
-        if kind == "vertex-vertex":
-            vA = self.get_vertex(attachment.feature_a.element_id, attachment.feature_a.index)
-            vB = self.get_vertex(attachment.feature_b.element_id, attachment.feature_b.index)
-            self.union_nodes(vA.node_id, vB.node_id)
+            for attachment_id, attachment in next_attachments.items():
+                if self.attachments.get(attachment_id) != attachment:
+                    self.resolved_attachments.pop(attachment_id, None)
+            for attachment_id in set(self.attachments) - set(next_attachments):
+                self.resolved_attachments.pop(attachment_id, None)
+            self.attachments = next_attachments
 
-        elif kind == "vertex-edge":
-            a, b = attachment.feature_a, attachment.feature_b
-            ta, tb = a.feature_type, b.feature_type
-
-            if ta == TopologyFeatureType.VERTEX and tb == TopologyFeatureType.EDGE:
-                vRef, eRef = a, b
-            elif ta == TopologyFeatureType.EDGE and tb == TopologyFeatureType.VERTEX:
-                vRef, eRef = b, a
-            else:
-                raise ValueError("vertex-edge attend un vertexRef et un edgeRef")
-
-            t = attachment.params.get("t", None)
-            if t is None:
-                t = vRef.t if vRef.t is not None else eRef.t
-            if t is None:
-                raise ValueError("vertex-edge: parametre t manquant")
-            edge_from = attachment.params.get("edgeFrom", None)
-            if edge_from is None or (edge_from).strip() == "":
-                raise ValueError("vertex-edge: parametre edgeFrom manquant")
-
-            v = self.get_vertex(vRef.element_id, vRef.index)
-            e = self.get_edge(eRef.element_id, eRef.index)
-
-            if edge_from == e.v_start.node_id:
-                t_val = float(t)
-            elif edge_from == e.v_end.node_id:
-                t_val = 1.0 - float(t)
-            else:
-                raise ValueError(f"vertex-edge: edgeFrom incoherent (edgeFrom={edge_from})")
-            eps = float(getattr(self, "vertex_edge_endpoint_epsilon", 1e-6))
-            if abs(t_val) <= eps:
-                self.union_nodes(v.node_id, e.v_start.node_id)
-            elif abs(t_val - 1.0) <= eps:
-                self.union_nodes(v.node_id, e.v_end.node_id)
-
-        elif kind == "edge-edge":
-            eA = self.get_edge(attachment.feature_a.element_id, attachment.feature_a.index)
-            eB = self.get_edge(attachment.feature_b.element_id, attachment.feature_b.index)
-
-            mapping = attachment.params.get("mapping", "direct")
-            a0, a1 = self._edge_endpoints_atomic_nodes(eA)
-            b0, b1 = self._edge_endpoints_atomic_nodes(eB)
-
-            if mapping == "direct":
-                self.union_nodes(a0, b0)
-                self.union_nodes(a1, b1)
-            elif mapping == "reverse":
-                self.union_nodes(a0, b1)
-                self.union_nodes(a1, b0)
-            else:
-                raise ValueError(f"edge-edge: mapping invalide: {mapping}")
-
-            eA.coverages.append(TopologyCoverageInterval(0.0, 1.0))
-            eB.coverages.append(TopologyCoverageInterval(0.0, 1.0))
-
-        else:
-            raise ValueError(f"Attachment kind non supporte: {kind}")
-
-        self.record_attachment(attachment, group_id=gC)
-        self.invalidateConceptGraph(gC)
-        self._markTopoTouched(gC)
-        return gC
-
-    def loadAttachment(self, attachment: TopologyAttachment) -> str:
-        """Load one attachment from snapshot in strict passive mode."""
-        gA = self.get_group_of_element(attachment.feature_a.element_id)
-        gB = self.get_group_of_element(attachment.feature_b.element_id)
-        gC = self.union_groups(gA, gB) if gA != gB else gA
-
-        kind = attachment.kind
-
-        if kind == "vertex-vertex":
-            vA = self.get_vertex(attachment.feature_a.element_id, attachment.feature_a.index)
-            vB = self.get_vertex(attachment.feature_b.element_id, attachment.feature_b.index)
-            self.union_nodes(vA.node_id, vB.node_id)
-
-        elif kind == "vertex-edge":
-            a, b = attachment.feature_a, attachment.feature_b
-            ta, tb = a.feature_type, b.feature_type
-            if ta == TopologyFeatureType.VERTEX and tb == TopologyFeatureType.EDGE:
-                vRef, eRef = a, b
-            elif ta == TopologyFeatureType.EDGE and tb == TopologyFeatureType.VERTEX:
-                vRef, eRef = b, a
-            else:
-                raise ValueError("Snapshot invalide : vertex-edge attend un vertexRef et un edgeRef")
-
-            v = self.get_vertex(vRef.element_id, vRef.index)
-            e = self.get_edge(eRef.element_id, eRef.index)
-            edge_from = attachment.params.get("edgeFrom", None)
-            if edge_from is None:
-                raise ValueError("Snapshot invalide : edgeFrom non porte par l'arete referencee")
-
-            s = e.v_start.node_id
-            tnode = e.v_end.node_id
-            if edge_from != s and edge_from != tnode:
-                raise ValueError("Snapshot invalide : edgeFrom non porte par l'arete referencee")
-
-            t_raw = attachment.params.get("t", None)
-            if t_raw is not None:
-                t_val = float(t_raw)
-                if edge_from == s:
-                    if t_val == 0.0:
-                        self.union_nodes(v.node_id, e.v_start.node_id)
-                    elif t_val == 1.0:
-                        self.union_nodes(v.node_id, e.v_end.node_id)
-                else:
-                    if t_val == 0.0:
-                        self.union_nodes(v.node_id, e.v_end.node_id)
-                    elif t_val == 1.0:
-                        self.union_nodes(v.node_id, e.v_start.node_id)
-
-        elif kind == "edge-edge":
-            eA = self.get_edge(attachment.feature_a.element_id, attachment.feature_a.index)
-            eB = self.get_edge(attachment.feature_b.element_id, attachment.feature_b.index)
-            mapping = attachment.params.get("mapping", "direct")
-            a0, a1 = self._edge_endpoints_atomic_nodes(eA)
-            b0, b1 = self._edge_endpoints_atomic_nodes(eB)
-            if mapping == "direct":
-                self.union_nodes(a0, b0)
-                self.union_nodes(a1, b1)
-            elif mapping == "reverse":
-                self.union_nodes(a0, b1)
-                self.union_nodes(a1, b0)
-            else:
-                raise ValueError(f"Snapshot invalide : mapping edge-edge invalide ({mapping})")
-            eA.coverages.append(TopologyCoverageInterval(0.0, 1.0))
-            eB.coverages.append(TopologyCoverageInterval(0.0, 1.0))
-
-        else:
-            raise ValueError(f"Snapshot invalide : kind d'attachment non supporte ({kind})")
-
-        self.record_attachment(attachment, group_id=gC)
-        self.invalidateConceptGraph(gC)
-        self._markTopoTouched(gC)
-        return gC
-
-    def apply_attachment(self, attachment: TopologyAttachment) -> str:
-        self._validate_attachment_p2(attachment)
-        return self._apply_attachment_internal(attachment)
-
-    def rebuild_from_attachments(self, attachments: list[TopologyAttachment]):
-        self.attachments = {}
         for g in self.groups.values():
             g.attachment_ids = []
 
@@ -4461,13 +4378,17 @@ class TopologyWorld:
         for gid in list(self._group_parent.keys()):
             self._group_parent[gid] = gid
             self._group_members[gid] = [gid]
+        self.rebuildGroupElementLists()
 
-        for el in self.elements.values():
-            for edge in el.edges:
-                edge.coverages = []
+        for attachment_id in sorted(self.attachments):
+            self._apply_attachment_internal(self.attachments[attachment_id])
+        self._rebuild_derived_coverages()
 
-        for att in sorted(attachments, key=lambda a: a.attachment_id):
-            self.apply_attachment(att)
+    def _remove_attachments(self, attachment_ids: set[str]) -> None:
+        """Retire des attachments V2 et leurs caches resolved associés."""
+        for attachment_id in attachment_ids:
+            self.attachments.pop(attachment_id)
+            self.resolved_attachments.pop(attachment_id, None)
 
     def removeElementsAndRebuild(self, elementIds: list[str]) -> None:
         """Supprime des éléments du monde (core) et reconstruit la topologie à partir des attachments restants.
@@ -4499,17 +4420,14 @@ class TopologyWorld:
             if gid0 is not None:
                 removedGroups.add(self.find_group(gid0))
 
-        # 1) Filtrer les attachments conservés (avant de modifier self.attachments)
-        keptAttachments: list[TopologyAttachment] = []
-        for att in list(getattr(self, "attachments", {}).values()):
-            try:
-                a_eid = att.feature_a.element_id
-                b_eid = att.feature_b.element_id
-            except Exception as e:
-                raise ValueError("TopologyWorld.removeElementsAndRebuild: attachment corrompu (feature)") from e
-            if a_eid in removed or b_eid in removed:
-                continue
-            keptAttachments.append(att)
+        # 1) Supprimer les attachments V2 incidents avant les éléments.
+        incident_attachment_ids = {
+            attachment_id
+            for attachment_id, attachment in self.attachments.items()
+            if attachment.mob_element_id in removed
+            or attachment.dest_element_id in removed
+        }
+        self._remove_attachments(incident_attachment_ids)
 
         # 2) Supprimer les éléments + noeuds atomiques
         for eid in list(removed):
@@ -4558,8 +4476,8 @@ class TopologyWorld:
                 self._group_members.pop(gid, None)
                 self._group_created_order.pop(gid, None)
 
-        # 4) Reconstruire la topologie depuis les attachments conservés
-        self.rebuild_from_attachments(keptAttachments)
+        # 4) Reconstruire la topologie depuis les attachments V2 conservés
+        self.rebuild_from_attachments()
         self.rebuildGroupElementLists()
         self._reconcile_group_anchors()
 
@@ -4578,67 +4496,69 @@ class TopologyWorld:
     # Dégrouper par nœud (suppression d'attachments + rebuild complet)
     # ------------------------------------------------------------------
 
-    def _degrouperAttachmentElementPair(self, att: TopologyAttachment) -> tuple[str, str]:
-        eA = att.feature_a.element_id
-        eB = att.feature_b.element_id
-        if not eA or not eB:
-            raise ValueError(f"[degrouper] attachment sans elementId (aid={att.attachment_id})")
-        return (eA, eB)
+    def _degrouper_attachment_element_pair(
+        self,
+        attachment: TopologyAttachmentV2,
+    ) -> tuple[str, str]:
+        return (attachment.mob_element_id, attachment.dest_element_id)
 
-    def _degrouperIterGroupScopedAttachments(self, elementIds: set[str]) -> list[TopologyAttachment]:
-        out: list[TopologyAttachment] = []
+    def _degrouper_iter_group_scoped_attachments(
+        self,
+        element_ids: set[str],
+    ) -> list[TopologyAttachmentV2]:
+        out: list[TopologyAttachmentV2] = []
         for aid in sorted(self.attachments.keys()):
-            att = self.attachments[aid]
-            eA, eB = self._degrouperAttachmentElementPair(att)
-            if eA in elementIds and eB in elementIds:
-                out.append(att)
+            attachment = self.attachments[aid]
+            mob_element_id, dest_element_id = self._degrouper_attachment_element_pair(
+                attachment
+            )
+            if mob_element_id in element_ids and dest_element_id in element_ids:
+                out.append(attachment)
         return out
 
-    def _degrouperIsVertexFeatureOnNode(self, f: TopologyFeatureRef, nodeId: str) -> bool:
-        if f.feature_type != TopologyFeatureType.VERTEX:
-            raise ValueError(f"[degrouper] feature attendue vertex, reçu={f.feature_type}")
-        v = self.get_vertex(f.element_id, f.index)
-        return self.find_node(v.node_id) == nodeId
-
-    def _degrouperIsEdgeFeatureOnNode(self, f: TopologyFeatureRef, nodeId: str) -> bool:
-        if f.feature_type != TopologyFeatureType.EDGE:
-            raise ValueError(f"[degrouper] feature attendue edge, reçu={f.feature_type}")
-        e = self.get_edge(f.element_id, int(f.index))
-        a = self.find_node(e.v_start.node_id)
-        b = self.find_node(str(e.v_end.node_id))
-        return (a == nodeId) or (b == nodeId)
-
-    def _degrouperIsVertexVertexIncident(self, att: TopologyAttachment, nodeId: str) -> bool:
-        if att.kind != "vertex-vertex":
-            return False
-        return (
-            self._degrouperIsVertexFeatureOnNode(att.feature_a, nodeId)
-            or self._degrouperIsVertexFeatureOnNode(att.feature_b, nodeId)
+    def _degrouper_attachment_is_incident_at_node(
+        self,
+        attachment: TopologyAttachmentV2,
+        node_id: str,
+    ) -> bool:
+        resolved = self.getResolvedAttachment(attachment.attachment_id)
+        if isinstance(resolved, ResolvedVertexEdgeAttachment):
+            incident_node_ids = (
+                self.get_element_vertex_node_id_by_type(
+                    resolved.anchor_mob_element_id,
+                    resolved.anchor_mob_vertex,
+                ),
+                self.get_element_vertex_node_id_by_type(
+                    resolved.anchor_dest_element_id,
+                    resolved.anchor_dest_vertex,
+                ),
+                self.get_element_vertex_node_id_by_type(
+                    resolved.vertex_element_id,
+                    resolved.vertex,
+                ),
         )
-
-    def _degrouperIsEdgeEdgeIncident(self, att: TopologyAttachment, nodeId: str) -> bool:
-        if att.kind != "edge-edge":
-            return False
-        return (
-            self._degrouperIsEdgeFeatureOnNode(att.feature_a, nodeId)
-            or self._degrouperIsEdgeFeatureOnNode(att.feature_b, nodeId)
+        elif isinstance(resolved, ResolvedEdgeEdgeAttachment):
+            incident_node_ids = (
+                self.get_element_vertex_node_id_by_type(
+                    resolved.mob_element_id,
+                    resolved.mob_vertex_1,
+                ),
+                self.get_element_vertex_node_id_by_type(
+                    resolved.mob_element_id,
+                    resolved.mob_vertex_2,
+                ),
+                self.get_element_vertex_node_id_by_type(
+                    resolved.dest_element_id,
+                    resolved.dest_vertex_1,
+                ),
+                self.get_element_vertex_node_id_by_type(
+                    resolved.dest_element_id,
+                    resolved.dest_vertex_2,
+                ),
         )
-
-    def _degrouperVertexEdgeTrianglePair(self, att: TopologyAttachment) -> tuple[str, str]:
-        if att.kind != "vertex-edge":
-            raise ValueError(f"[degrouper] kind inattendu pour vertex-edge pair: {att.kind}")
-
-        a = att.feature_a
-        b = att.feature_b
-        ta = a.feature_type
-        tb = b.feature_type
-
-        if ta == TopologyFeatureType.VERTEX and tb == TopologyFeatureType.EDGE:
-            return (a.element_id, b.element_id)
-        if ta == TopologyFeatureType.EDGE and tb == TopologyFeatureType.VERTEX:
-            return (b.element_id, a.element_id)
-
-        raise ValueError(f"[degrouper] vertex-edge invalide (aid={att.attachment_id})")
+        else:
+            raise TypeError(f"Type d'attachment résolu inconnu: {type(resolved)!r}")
+        return any(self.find_node(incident_node_id) == node_id for incident_node_id in incident_node_ids)
 
     def canDegrouperAtNode(self, groupId: str, nodeId: str) -> bool:
         gid = self.find_group(groupId)
@@ -4648,14 +4568,12 @@ class TopologyWorld:
         if g is None:
             return False
 
-        elementIds = {eid for eid in list(getattr(g, "element_ids", []) or [])}
-        if not elementIds:
+        element_ids = set(g.element_ids)
+        if not element_ids:
             return False
 
-        for att in self._degrouperIterGroupScopedAttachments(elementIds):
-            if self._degrouperIsVertexVertexIncident(att, nid):
-                return True
-            if self._degrouperIsEdgeEdgeIncident(att, nid):
+        for attachment in self._degrouper_iter_group_scoped_attachments(element_ids):
+            if self._degrouper_attachment_is_incident_at_node(attachment, nid):
                 return True
         return False
 
@@ -4692,56 +4610,37 @@ class TopologyWorld:
         self.rebuildGroupElementLists()
         g = self.groups.get(gid)
         assert g is not None, f"[degrouper] groupe canonique introuvable: {gid}"
-        sourceElementIds = sorted({eid for eid in list(getattr(g, "element_ids", []) or [])})
+        sourceElementIds = sorted(set(g.element_ids))
         sourceSet = set(sourceElementIds)
         assert sourceSet, f"[degrouper] groupe vide: {gid}"
 
         # B) Collecte des attachments à supprimer
-        groupAttachments = self._degrouperIterGroupScopedAttachments(sourceSet)
-        vvIncident: list[TopologyAttachment] = []
-        eeIncident: list[TopologyAttachment] = []
-        for att in groupAttachments:
-            if self._degrouperIsVertexVertexIncident(att, nid):
-                vvIncident.append(att)
-            if self._degrouperIsEdgeEdgeIncident(att, nid):
-                eeIncident.append(att)
+        groupAttachments = self._degrouper_iter_group_scoped_attachments(sourceSet)
+        incidentAttachments = [
+            attachment
+            for attachment in groupAttachments
+            if self._degrouper_attachment_is_incident_at_node(attachment, nid)
+        ]
+        if not incidentAttachments:
+            raise ValueError(
+                "[degrouper] aucun attachment incident eligible au noeud cible"
+            )
 
-        if not vvIncident and not eeIncident:
-            assert False, "[degrouper] aucun attachment incident eligible au noeud cible"
-
-        toRemove: set[str] = set()
-        for att in (vvIncident + eeIncident):
-            aid = att.attachment_id
-            assert aid, "[degrouper] attachment sans id"
-            toRemove.add(aid)
-
-        vvTrianglePairsOriented: set[tuple[str, str]] = set()
-        for att in vvIncident:
-            ti, tj = self._degrouperAttachmentElementPair(att)
-            vvTrianglePairsOriented.add((ti, tj))
-            vvTrianglePairsOriented.add((tj, ti))
-
-        if vvTrianglePairsOriented:
-            for att in groupAttachments:
-                if att.kind != "vertex-edge":
-                    continue
-                tv, te = self._degrouperVertexEdgeTrianglePair(att)
-                if (tv, te) in vvTrianglePairsOriented:
-                    aid = att.attachment_id
-                    assert aid, "[degrouper] attachment sans id"
-                    toRemove.add(aid)
-
-        allAttachmentsSorted = [self.attachments[aid] for aid in sorted(self.attachments.keys())]
-        keptAttachments = [att for att in allAttachmentsSorted if att.attachment_id not in toRemove]
+        toRemove = {attachment.attachment_id for attachment in incidentAttachments}
+        self._remove_attachments(toRemove)
+        keptAttachments = [
+            self.attachments[attachment_id]
+            for attachment_id in sorted(self.attachments)
+        ]
 
         # C) Rebuild conceptuel intermédiaire
-        self.rebuild_from_attachments(keptAttachments)
+        self.rebuild_from_attachments()
         self.rebuildGroupElementLists()
 
         # D) Composantes connexes triangle<->triangle sur les éléments du groupe source
         adjacency: dict[str, set[str]] = {eid: set() for eid in sourceElementIds}
         for att in keptAttachments:
-            eA, eB = self._degrouperAttachmentElementPair(att)
+            eA, eB = self._degrouper_attachment_element_pair(att)
             if eA in sourceSet and eB in sourceSet:
                 adjacency[eA].add(eB)
                 adjacency[eB].add(eA)
@@ -4783,7 +4682,7 @@ class TopologyWorld:
             for eid in moved:
                 self.element_to_group[eid] = newGid
 
-        self.rebuild_from_attachments(keptAttachments)
+        self.rebuild_from_attachments()
         self.rebuildGroupElementLists()
         self.pruneOrphanGroups()
         self._reconcile_group_anchors()
@@ -4792,19 +4691,17 @@ class TopologyWorld:
 
         # Invariant: aucune attache ne relie 2 groupes différents.
         for att in self.attachments.values():
-            gA = self.get_group_of_element(att.feature_a.element_id)
-            gB = self.get_group_of_element(att.feature_b.element_id)
+            gA = self.get_group_of_element(att.mob_element_id)
+            gB = self.get_group_of_element(att.dest_element_id)
             assert gA == gB, (
                 f"[degrouper] attachment inter-groupes interdit: aid={att.attachment_id} gA={gA} gB={gB}"
             )
 
-        # F) Recompute concept + contour
+        # F) Les structures conceptuelles sont dérivées du nouveau graphe.
         for rid in allResultGroupIds:
             ridc = self.find_group(rid)
             assert ridc == rid, f"[degrouper] groupId canonique inattendu: req={rid} got={ridc}"
-            self.recomputeConceptAndBoundary(rid)
-            boundary = self.getBoundarySegments(rid)
-            assert len(boundary) >= 3, f"[degrouper] contour invalide pour {rid}"
+            self.invalidateConceptGraph(rid)
 
         # G) Chemins: casser si le groupe touché portait le chemin
         tc = self.topologyChemins
@@ -4853,24 +4750,31 @@ class TopologyWorld:
 
         attachments_payload: list[dict] = []
         for att in self.attachments.values():
-            attachments_payload.append({
-                "attachment_id": att.attachment_id,
-                "kind": att.kind,
-                "feature_a": {
-                    "feature_type": att.feature_a.feature_type,
-                    "element_id": att.feature_a.element_id,
-                    "index": int(att.feature_a.index),
-                    "t": None if att.feature_a.t is None else float(att.feature_a.t),
-                },
-                "feature_b": {
-                    "feature_type": att.feature_b.feature_type,
-                    "element_id": att.feature_b.element_id,
-                    "index": int(att.feature_b.index),
-                    "t": None if att.feature_b.t is None else float(att.feature_b.t),
-                },
-                "params": dict(att.params) if att.params is not None else {},
-                "source": att.source,
-            })
+            if isinstance(att, TopologyVertexEdgeAttachment):
+                attachments_payload.append({
+                    "kind": "vertex-edge",
+                    "attachment_id": att.attachment_id,
+                    "mob_element_id": att.mob_element_id,
+                    "mob_vertex": att.mob_vertex,
+                    "mob_edge": att.mob_edge,
+                    "dest_element_id": att.dest_element_id,
+                    "dest_vertex": att.dest_vertex,
+                    "dest_edge": att.dest_edge,
+                })
+            elif isinstance(att, TopologyEdgeEdgeAttachment):
+                attachments_payload.append({
+                    "kind": "edge-edge",
+                    "attachment_id": att.attachment_id,
+                    "mob_element_id": att.mob_element_id,
+                    "mob_edge": att.mob_edge,
+                    "dest_element_id": att.dest_element_id,
+                    "dest_edge": att.dest_edge,
+                })
+            else:
+                raise TypeError(
+                    "TopologyWorld._exportPhysicalSnapshot: attachment V2 invalide "
+                    f"{type(att)!r}"
+                )
 
         config_payload = {
             "fusion_distance_km": float(getattr(self, "fusion_distance_km", 1.0)),
@@ -4898,114 +4802,112 @@ class TopologyWorld:
     def _importPhysicalSnapshot(self, snapshot: dict) -> None:
         if snapshot is None:
             raise ValueError("TopologyWorld._importPhysicalSnapshot: snapshot absent")
-        self._isImportingSnapshot = True
-        try:
-            config = snapshot.get("config", {}) or {}
-            if "fusion_distance_km" in config:
-                self.fusion_distance_km = float(config.get("fusion_distance_km", 1.0))
-            if "worldYAxisDown" in config:
-                self.worldYAxisDown = bool(config.get("worldYAxisDown", False))
-            if "vertex_edge_endpoint_epsilon" in config:
-                self.vertex_edge_endpoint_epsilon = float(config.get("vertex_edge_endpoint_epsilon", 1e-6))
+        config = snapshot.get("config", {}) or {}
+        if "fusion_distance_km" in config:
+            self.fusion_distance_km = float(config.get("fusion_distance_km", 1.0))
+        if "worldYAxisDown" in config:
+            self.worldYAxisDown = bool(config.get("worldYAxisDown", False))
+        if "vertex_edge_endpoint_epsilon" in config:
+            self.vertex_edge_endpoint_epsilon = float(config.get("vertex_edge_endpoint_epsilon", 1e-6))
 
-            elements_payload = list(snapshot.get("elements", []) or [])
-            for el in elements_payload:
-                eid = el.get("element_id")
-                raw_vxy = el.get("vertex_local_xy", {}) or {}
-                vertex_local_xy = {}
-                for k, v in dict(raw_vxy).items():
-                    kk = int(k)
-                    vertex_local_xy[kk] = (float(v[0]), float(v[1]))
-                clone = TopologyElement(
-                    element_id=eid,
-                    name=el.get("name", ""),
-                    vertex_labels=list(el.get("vertex_labels", [])),
-                    vertex_types=list(el.get("vertex_types", [])),
-                    edge_lengths_km=list(el.get("edge_lengths_km", [])),
-                    intrinsic_sides_km=dict(el.get("intrinsic_sides_km", {}) or {}),
-                    local_frame=dict(el.get("local_frame", {}) or {}),
-                    vertex_local_xy=vertex_local_xy,
-                    meta=dict(el.get("meta", {}) or {}),
-                    source_triangle_id=el.get("source_triangle_id"),
+        elements_payload = list(snapshot.get("elements", []) or [])
+        for el in elements_payload:
+            eid = el.get("element_id")
+            raw_vxy = el.get("vertex_local_xy", {}) or {}
+            vertex_local_xy = {}
+            for k, v in dict(raw_vxy).items():
+                kk = int(k)
+                vertex_local_xy[kk] = (float(v[0]), float(v[1]))
+            clone = TopologyElement(
+                element_id=eid,
+                name=el.get("name", ""),
+                vertex_labels=list(el.get("vertex_labels", [])),
+                vertex_types=list(el.get("vertex_types", [])),
+                edge_lengths_km=list(el.get("edge_lengths_km", [])),
+                intrinsic_sides_km=dict(el.get("intrinsic_sides_km", {}) or {}),
+                local_frame=dict(el.get("local_frame", {}) or {}),
+                vertex_local_xy=vertex_local_xy,
+                meta=dict(el.get("meta", {}) or {}),
+                source_triangle_id=el.get("source_triangle_id"),
+            )
+            self.add_element_as_new_group(clone)
+            pose = el.get("pose", {}) or {}
+            if pose:
+                self.setElementPose(
+                    eid,
+                    R=np.array(pose.get("R", np.eye(2)), float),
+                    T=np.array(pose.get("T", np.zeros(2)), float),
+                    mirrored=bool(pose.get("mirrored", False)),
                 )
-                self.add_element_as_new_group(clone)
-                pose = el.get("pose", {}) or {}
-                if pose:
-                    self.setElementPose(
-                        eid,
-                        R=np.array(pose.get("R", np.eye(2)), float),
-                        T=np.array(pose.get("T", np.zeros(2)), float),
-                        mirrored=bool(pose.get("mirrored", False)),
-                    )
 
-            attachments_payload = list(snapshot.get("attachments", []) or [])
-            max_att_num = 0
-            for att in attachments_payload:
-                fa = att.get("feature_a", {}) or {}
-                fb = att.get("feature_b", {}) or {}
-                feature_a = TopologyFeatureRef(
-                    feature_type=fa.get("feature_type"),
-                    element_id=fa.get("element_id"),
-                    index=int(fa.get("index", 0)),
-                    t=fa.get("t", None),
-                )
-                feature_b = TopologyFeatureRef(
-                    feature_type=fb.get("feature_type"),
-                    element_id=fb.get("element_id"),
-                    index=int(fb.get("index", 0)),
-                    t=fb.get("t", None),
-                )
-                attachment = TopologyAttachment(
+        attachments_payload = list(snapshot.get("attachments", []) or [])
+        max_att_num = 0
+        for att in attachments_payload:
+            kind = att.get("kind")
+            if kind == "vertex-edge":
+                attachment = TopologyVertexEdgeAttachment(
                     attachment_id=att.get("attachment_id"),
-                    kind=att.get("kind"),
-                    feature_a=feature_a,
-                    feature_b=feature_b,
-                    params=dict(att.get("params", {}) or {}),
-                    source=att.get("source", "manual"),
+                    mob_element_id=att.get("mob_element_id"),
+                    mob_vertex=att.get("mob_vertex"),
+                    mob_edge=att.get("mob_edge"),
+                    dest_element_id=att.get("dest_element_id"),
+                    dest_vertex=att.get("dest_vertex"),
+                    dest_edge=att.get("dest_edge"),
+            )
+            elif kind == "edge-edge":
+                attachment = TopologyEdgeEdgeAttachment(
+                    attachment_id=att.get("attachment_id"),
+                    mob_element_id=att.get("mob_element_id"),
+                    mob_edge=att.get("mob_edge"),
+                    dest_element_id=att.get("dest_element_id"),
+                    dest_edge=att.get("dest_edge"),
+            )
+            else:
+                raise ValueError(
+                    "TopologyWorld._importPhysicalSnapshot: kind d'attachment V2 "
+                    f"invalide {kind!r}"
+            )
+            self.apply_attachment(attachment)
+            m = re.search(r"(?:^A|:A)(\d+)$", attachment.attachment_id)
+            if m:
+                max_att_num = max(max_att_num, int(m.group(1)))
+
+        if max_att_num > 0:
+            self._created_counter_attachments = max_att_num
+
+        self.rebuildGroupElementLists()
+        for gid in sorted(self.groups.keys()):
+            if gid == self.find_group(gid):
+                self.recomputeConceptAndBoundary(gid)
+
+        anchors_payload = list(snapshot.get("group_anchors", []) or [])
+        self.groupAnchors = {}
+        max_anchor_num = 0
+        for payload in anchors_payload:
+            anchor_id = (payload.get("anchor_id", "") or "").strip()
+            beacon_id = (payload.get("beacon_id", "") or "").strip()
+            node_id = (payload.get("node_id", "") or "").strip()
+            if not anchor_id or not re.fullmatch(r"AN\d{3,}", anchor_id):
+                raise ValueError(f"TopologyWorld: anchor_id invalide: {anchor_id!r}")
+            if anchor_id in self.groupAnchors:
+                raise ValueError(f"TopologyWorld: anchor_id dupliqué: {anchor_id!r}")
+            beacon_id = self._require_beacon_id(beacon_id)
+            if node_id not in self._node_parent:
+                raise ValueError(
+                    f"TopologyWorld: nœud d'ancrage inexistant: {node_id!r}"
                 )
-                self.loadAttachment(attachment)
-                m = re.search(r"(?:^A|:A)(\d+)$", attachment.attachment_id)
-                if m:
-                    max_att_num = max(max_att_num, int(m.group(1)))
-
-            if max_att_num > 0:
-                self._created_counter_attachments = max_att_num
-
-            self.rebuildGroupElementLists()
-            for gid in sorted(self.groups.keys()):
-                if gid == self.find_group(gid):
-                    self.recomputeConceptAndBoundary(gid)
-
-            anchors_payload = list(snapshot.get("group_anchors", []) or [])
-            self.groupAnchors = {}
-            max_anchor_num = 0
-            for payload in anchors_payload:
-                anchor_id = (payload.get("anchor_id", "") or "").strip()
-                beacon_id = (payload.get("beacon_id", "") or "").strip()
-                node_id = (payload.get("node_id", "") or "").strip()
-                if not anchor_id or not re.fullmatch(r"AN\d{3,}", anchor_id):
-                    raise ValueError(f"TopologyWorld: anchor_id invalide: {anchor_id!r}")
-                if anchor_id in self.groupAnchors:
-                    raise ValueError(f"TopologyWorld: anchor_id dupliqué: {anchor_id!r}")
-                beacon_id = self._require_beacon_id(beacon_id)
-                if node_id not in self._node_parent:
-                    raise ValueError(
-                        f"TopologyWorld: nœud d'ancrage inexistant: {node_id!r}"
-                    )
-                canonical_group_id = self.getGroupIdFromConceptNode(node_id)
-                node_id = self._require_anchor_node_id(canonical_group_id, node_id)
-                if self.getAnchorForGroup(canonical_group_id) is not None:
-                    raise ValueError(f"TopologyWorld: plusieurs ancres pour {canonical_group_id!r}")
-                self.groupAnchors[anchor_id] = TopologyGroupAnchor(
-                    anchor_id=anchor_id,
-                    group_id=canonical_group_id,
-                    beacon_id=beacon_id,
-                    node_id=node_id,
-                )
-                max_anchor_num = max(max_anchor_num, int(anchor_id[2:]))
-            self._created_counter_anchors = max_anchor_num
-        finally:
-            self._isImportingSnapshot = False
+            canonical_group_id = self.getGroupIdFromConceptNode(node_id)
+            node_id = self._require_anchor_node_id(canonical_group_id, node_id)
+            if self.getAnchorForGroup(canonical_group_id) is not None:
+                raise ValueError(f"TopologyWorld: plusieurs ancres pour {canonical_group_id!r}")
+            self.groupAnchors[anchor_id] = TopologyGroupAnchor(
+                anchor_id=anchor_id,
+                group_id=canonical_group_id,
+                beacon_id=beacon_id,
+                node_id=node_id,
+            )
+            max_anchor_num = max(max_anchor_num, int(anchor_id[2:]))
+        self._created_counter_anchors = max_anchor_num
 
     def clonePhysicalState(self) -> "TopologyWorld":
         """Clone deterministe de l'etat physique (sans derives)."""
@@ -5203,8 +5105,8 @@ class TopologyWorld:
             errors.append(exc)
         for aid in sorted(self.attachments.keys()):
             try:
-                self._validate_attachment_p2(self.attachments[aid])
-            except ValueError as exc:
+                TopologyAttachmentResolver.validate(self, self.attachments[aid])
+            except TopologyAttachmentValidationError as exc:
                 errors.append(exc)
         eps_t = float(getattr(self, "concept_split_epsilon_t", 1e-9))
         for el in self.elements.values():
@@ -5556,23 +5458,93 @@ class TopologyWorld:
                         "node": self.find_node(node_id),
                         "nodeOrigin": node_id,
                     })
+                split_points = _ET.SubElement(edge_el, "DerivedSplitPoints")
+                for split_point in self.buildDerivedSplitPointsForPhysEdge(
+                    el.element_id,
+                    e.edge_index,
+                ):
+                    split_attrs = {
+                        "t": f"{float(split_point['t']):.12g}",
+                        "node": str(split_point["nodeCanon"]),
+                        "source": str(split_point["source"]),
+                    }
+                    attachment_id = split_point.get("attachmentId")
+                    if attachment_id is not None:
+                        split_attrs["attachmentId"] = str(attachment_id)
+                    _ET.SubElement(split_points, "SplitPoint", split_attrs)
                 covs = _ET.SubElement(edge_el, "Coverages")
                 for c in sorted(e.coverages, key=lambda c: (c.t0, c.t1)):
                     _ET.SubElement(covs, "C", {"t0": f"{c.t0:.6f}", "t1": f"{c.t1:.6f}"})
 
-        atts_el = _ET.SubElement(root, "Attachments")
+        atts_el = _ET.SubElement(root, "Attachments", {
+            "count": str(len(self.attachments)),
+        })
         for aid in sorted(self.attachments.keys()):
             a = self.attachments[aid]
-            att = _ET.SubElement(atts_el, "Attachment", {
-                "id": a.attachment_id,
-                "kind": a.kind,
-                "source": a.source,
-                "featureA": a.feature_a.to_string(),
-                "featureB": a.feature_b.to_string(),
-            })
-            params_el = _ET.SubElement(att, "Params")
-            for k in sorted(a.params.keys()):
-                _ET.SubElement(params_el, "Param", {"name": str(k), "value": str(a.params[k])})
+            if isinstance(a, TopologyVertexEdgeAttachment):
+                att = _ET.SubElement(atts_el, "VertexEdgeAttachment", {
+                    "id": a.attachment_id,
+                    "mobElement": a.mob_element_id,
+                    "mobVertex": a.mob_vertex,
+                    "mobEdge": a.mob_edge,
+                    "destElement": a.dest_element_id,
+                    "destVertex": a.dest_vertex,
+                    "destEdge": a.dest_edge,
+                })
+            elif isinstance(a, TopologyEdgeEdgeAttachment):
+                att = _ET.SubElement(atts_el, "EdgeEdgeAttachment", {
+                    "id": a.attachment_id,
+                    "mobElement": a.mob_element_id,
+                    "mobEdge": a.mob_edge,
+                    "destElement": a.dest_element_id,
+                    "destEdge": a.dest_edge,
+                })
+            else:
+                raise TypeError(
+                    "TopologyWorld.export_topo_dump_xml: attachment V2 invalide "
+                    f"{type(a)!r}"
+                )
+
+            try:
+                resolved = self.getResolvedAttachment(a.attachment_id)
+            except (
+                TopologyAttachmentValidationError,
+                TopologyAttachmentResolutionError,
+            ) as exc:
+                _ET.SubElement(att, "Resolved", {
+                    "status": "error",
+                    "errorType": type(exc).__name__,
+                    "message": str(exc),
+                })
+                continue
+
+            if isinstance(resolved, ResolvedVertexEdgeAttachment):
+                _ET.SubElement(att, "Resolved", {
+                    "status": "ok",
+                    "anchorMobElement": resolved.anchor_mob_element_id,
+                    "anchorMobVertex": resolved.anchor_mob_vertex,
+                    "anchorDestElement": resolved.anchor_dest_element_id,
+                    "anchorDestVertex": resolved.anchor_dest_vertex,
+                    "vertexElement": resolved.vertex_element_id,
+                    "vertex": resolved.vertex,
+                    "edgeElement": resolved.edge_element_id,
+                    "edge": resolved.edge,
+                    "edgeAnchorVertex": resolved.edge_anchor_vertex,
+                    "positionFromAnchor": f"{float(resolved.position_from_anchor):.12g}",
+                })
+            elif isinstance(resolved, ResolvedEdgeEdgeAttachment):
+                _ET.SubElement(att, "Resolved", {
+                    "status": "ok",
+                    "mobVertex1": resolved.mob_vertex_1,
+                    "destVertex1": resolved.dest_vertex_1,
+                    "mobVertex2": resolved.mob_vertex_2,
+                    "destVertex2": resolved.dest_vertex_2,
+                })
+            else:
+                raise TypeError(
+                    "TopologyWorld.export_topo_dump_xml: résolution V2 invalide "
+                    f"{type(resolved)!r}"
+                )
 
         _ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
         return path

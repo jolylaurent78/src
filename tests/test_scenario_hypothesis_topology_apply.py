@@ -3,11 +3,11 @@ import pytest
 
 from src.assembleur_catalogue import Catalogue
 from src.assembleur_core import (
+    ResolvedEdgeEdgeAttachment,
     ScenarioAssemblage,
-    TopologyAttachment,
-    TopologyFeatureRef,
-    TopologyFeatureType,
+    TopologyEdgeEdgeAttachment,
     TopologyGroupAnchor,
+    TopologyVertexEdgeAttachment,
 )
 from src.assembleur_scenario import (
     ScenarioHypothesis,
@@ -58,27 +58,50 @@ class _BeaconResolver:
         return self._world_xy
 
 
-def _attach_ob_edge_edge(world, first_element_id, second_element_id, mapping="direct"):
-    world.apply_attachments([
-        TopologyAttachment(
-            attachment_id=None,
-            kind="edge-edge",
-            feature_a=TopologyFeatureRef(TopologyFeatureType.EDGE, first_element_id, 0),
-            feature_b=TopologyFeatureRef(TopologyFeatureType.EDGE, second_element_id, 0),
-            params={"mapping": mapping},
-            source="manual",
+def _attach_ob_edge_edge(world, first_element_id, second_element_id):
+    world.apply_attachment(
+        TopologyEdgeEdgeAttachment(
+            attachment_id=world.new_attachment_id(),
+            mob_element_id=first_element_id,
+            mob_edge="OB",
+            dest_element_id=second_element_id,
+            dest_edge="OB",
         )
-    ])
-
-
-def _edge_world_endpoints(world, element_id, edge_index):
-    edge = world.get_edge(element_id, edge_index)
-    first = world.elements[element_id].vertex_local_xy[edge.v_start.vertex_index]
-    second = world.elements[element_id].vertex_local_xy[edge.v_end.vertex_index]
-    return (
-        world.elementLocalToWorld(element_id, first),
-        world.elementLocalToWorld(element_id, second),
     )
+
+
+def _attach_lo_vertex_edge(world, first_element_id, second_element_id):
+    world.apply_attachment(
+        TopologyVertexEdgeAttachment(
+            attachment_id=world.new_attachment_id(),
+            mob_element_id=first_element_id,
+            mob_vertex="L",
+            mob_edge="LO",
+            dest_element_id=second_element_id,
+            dest_vertex="L",
+            dest_edge="LO",
+        )
+    )
+
+
+def _assert_resolved_edge_edge_is_coincident(world, attachment):
+    resolved = world.getResolvedAttachment(attachment.attachment_id)
+    assert isinstance(resolved, ResolvedEdgeEdgeAttachment)
+    for mob_vertex, dest_vertex in (
+        (resolved.mob_vertex_1, resolved.dest_vertex_1),
+        (resolved.mob_vertex_2, resolved.dest_vertex_2),
+    ):
+        mob_local = world.elements[resolved.mob_element_id].vertex_local_xy[
+            world.elements[resolved.mob_element_id].vertex_types.index(mob_vertex)
+        ]
+        dest_local = world.elements[resolved.dest_element_id].vertex_local_xy[
+            world.elements[resolved.dest_element_id].vertex_types.index(dest_vertex)
+        ]
+        assert world.elementLocalToWorld(
+            resolved.mob_element_id, mob_local
+        ) == pytest.approx(
+            world.elementLocalToWorld(resolved.dest_element_id, dest_local)
+        )
 
 
 def test_apply_replaces_materialized_triangle_on_a_clone_and_replays_ob_connection():
@@ -90,7 +113,7 @@ def test_apply_replaces_materialized_triangle_on_a_clone_and_replays_ob_connecti
     scenario.topoWorld.add_element_as_new_group(second)
     scenario.topoWorld.setElementPose(first.element_id, np.eye(2), np.array([10.0, 20.0]))
     scenario.topoWorld.setElementPose(second.element_id, np.eye(2), np.array([20.0, 30.0]))
-    _attach_ob_edge_edge(scenario.topoWorld, first.element_id, second.element_id, mapping="direct")
+    _attach_ob_edge_edge(scenario.topoWorld, second.element_id, first.element_id)
     source_snapshot = scenario.topoWorld._exportPhysicalSnapshot()
     source_world = scenario.topoWorld
     source_hypothesis = scenario.hypothesis
@@ -106,18 +129,52 @@ def test_apply_replaces_materialized_triangle_on_a_clone_and_replays_ob_connecti
     assert result.replayed_attachment_count == 1
     assert len(scenario.topoWorld.attachments) == 1
     attachment = next(iter(scenario.topoWorld.attachments.values()))
-    assert attachment.kind == "edge-edge"
-    assert attachment.params["mapping"] == "reverse"
-    new_element = scenario.topoWorld.elements[attachment.feature_a.element_id]
+    assert isinstance(attachment, TopologyEdgeEdgeAttachment)
+    assert attachment.mob_edge == attachment.dest_edge == "OB"
+    new_element = scenario.topoWorld.elements[attachment.mob_element_id]
     assert new_element.source_triangle_id == replay_id
-    mobile_start, mobile_end = _edge_world_endpoints(
-        scenario.topoWorld, attachment.feature_a.element_id, attachment.feature_a.index
+    _assert_resolved_edge_edge_is_coincident(scenario.topoWorld, attachment)
+
+
+def test_apply_replay_without_ob_does_not_reconnect_a_vertex_edge_link():
+    catalogue, old_hypothesis, replay_id = _catalogue_with_hypothesis()
+    scenario = ScenarioAssemblage("Manuel", hypothesis=old_hypothesis)
+    first = materialize_catalogue_triangle(catalogue, old_hypothesis.triangle_ids_by_rank[0])
+    second = materialize_catalogue_triangle(catalogue, old_hypothesis.triangle_ids_by_rank[1])
+    scenario.topoWorld.add_element_as_new_group(first)
+    scenario.topoWorld.add_element_as_new_group(second)
+    _attach_lo_vertex_edge(scenario.topoWorld, first.element_id, second.element_id)
+    draft = old_hypothesis.clone()
+    draft.triangle_ids_by_rank[0] = replay_id
+
+    result = apply_hypothesis_change_to_manual_scenario(catalogue, scenario, draft)
+
+    assert result.plan.global_impact.name == "REPLAY"
+    assert result.replayed_attachment_count == 0
+    assert not scenario.topoWorld.attachments
+
+
+def test_apply_detach_does_not_recreate_an_existing_ob_link():
+    catalogue, old_hypothesis, _replay_id = _catalogue_with_hypothesis()
+    scenario = ScenarioAssemblage("Manuel", hypothesis=old_hypothesis)
+    first = materialize_catalogue_triangle(catalogue, old_hypothesis.triangle_ids_by_rank[0])
+    second = materialize_catalogue_triangle(catalogue, old_hypothesis.triangle_ids_by_rank[1])
+    scenario.topoWorld.add_element_as_new_group(first)
+    scenario.topoWorld.add_element_as_new_group(second)
+    _attach_ob_edge_edge(scenario.topoWorld, first.element_id, second.element_id)
+    old = catalogue.get_triangle(old_hypothesis.triangle_ids_by_rank[0])
+    new_opening = catalogue.add_city("Opening detach", 58.0, 1.0)
+    detached = catalogue.add_triangle(
+        "Detach", new_opening.city_id, old.base_city_id, old.light_city_id
     )
-    target_start, target_end = _edge_world_endpoints(
-        scenario.topoWorld, attachment.feature_b.element_id, attachment.feature_b.index
-    )
-    assert mobile_start == pytest.approx(target_end)
-    assert mobile_end == pytest.approx(target_start)
+    draft = old_hypothesis.clone()
+    draft.triangle_ids_by_rank[0] = detached.triangle_id
+
+    result = apply_hypothesis_change_to_manual_scenario(catalogue, scenario, draft)
+
+    assert result.plan.global_impact.name == "DETACH"
+    assert result.replayed_attachment_count == 0
+    assert not scenario.topoWorld.attachments
 
 
 def test_apply_replays_a_changed_pair_only_once():
@@ -184,18 +241,8 @@ def test_apply_replays_independent_neighbour_connections_and_preserves_anchor():
     ) == pytest.approx((500.0, -200.0))
 
     for attachment in scenario.topoWorld.attachments.values():
-        mobile_start, mobile_end = _edge_world_endpoints(
-            scenario.topoWorld, attachment.feature_a.element_id, attachment.feature_a.index
-        )
-        target_start, target_end = _edge_world_endpoints(
-            scenario.topoWorld, attachment.feature_b.element_id, attachment.feature_b.index
-        )
-        if attachment.params["mapping"] == "direct":
-            assert mobile_start == pytest.approx(target_start)
-            assert mobile_end == pytest.approx(target_end)
-        else:
-            assert mobile_start == pytest.approx(target_end)
-            assert mobile_end == pytest.approx(target_start)
+        assert isinstance(attachment, TopologyEdgeEdgeAttachment)
+        _assert_resolved_edge_edge_is_coincident(scenario.topoWorld, attachment)
 
 
 def test_apply_rejects_a_direct_anchor_without_mutating_the_scenario():

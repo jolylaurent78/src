@@ -14,12 +14,13 @@ from src.assembleur_core import (
     _tri_shape,
     _group_shape_from_nodes,
     ScenarioAssemblage,
+    TopologyEdgeEdgeAttachment,
     TopologyElement,
+    TopologyAttachmentResolutionError,
+    TopologyAttachmentValidationError,
+    TopologyConstraintGeometryError,
+    TopologyVertexEdgeAttachment,
     TopologyWorld,
-)
-from src.assembleur_edgechoice import (
-    EdgeChoiceEpts,
-    buildEdgeChoiceEptsForAutoChain,
 )
 from src.assembleur_edge_mapping import (
     apply_edge_edge_pose,
@@ -358,35 +359,18 @@ def createTopoQuadrilateral(
     entryOdd: PlacedTriangle | None = None,
     entryEven: PlacedTriangle | None = None,
     element_factory: Callable[[str], TopologyElement],
-    tol_rel: float = 1e-3,
-    eps_world: float = 1e-6,
 ) -> tuple[str, str, str, str, str]:
     """
     Crée un quadrilatère topologique cohérent (toujours) :
       - 2 TopologyElement (odd/even) dans `world`
       - pose des deux éléments via setElementPoseFromWorldPts()
-      - attachement interne edge-edge (arête commune détectée en local)
+      - attachement interne edge-edge (arête commune classifiée par le Core)
       - commit topo
       - retourne (topoGroupId, elementIdOdd, elementIdEven, src_edge, dst_edge)
 
     entryOdd/entryEven (si fournis) reçoivent l'identifiant topologique de leur
     élément. Le groupe est projeté à la finalisation du scénario.
     """
-
-    # --- helpers locaux ---
-    def _edge_len(P: Dict[str, np.ndarray], a: str, b: str) -> float:
-        v = np.array(P[b], float) - np.array(P[a], float)
-        return float(np.hypot(v[0], v[1]))
-
-    def _edge_code(a: str, b: str) -> str | None:
-        s = {a, b}
-        if s == {"O", "B"} :
-            return "OB"
-        if s == {"B", "L"} :
-            return "BL"
-        if s == {"L", "O"} :
-            return "LO"
-        return None
 
     def _ensure_element_from_local(
         *,
@@ -419,54 +403,53 @@ def createTopoQuadrilateral(
         if entryEven is not None:
             entryEven.topologyElementId = elementIdEven
 
-        # --- 4) Détecter l’arête commune (en local) ---
-        edges = [("O", "B"), ("O", "L"), ("B", "L")]
-        best = None  # (rel, (aO,bO), (aE,bE))
-        for aO, bO in edges:
-            lO = _edge_len(triangleMobFrom_PtsLocal, aO, bO)
-            for aE, bE in edges:
-                lE = _edge_len(triangleMobTo_PtsLocal, aE, bE)
-                rel = abs(lO - lE) / max(lO, lE, 1e-9)
-                if rel <= float(tol_rel) and (best is None or rel < best[0]):
-                    best = (rel, (aO, bO), (aE, bE))
+        # --- 4) Détecter l'unique arête métier commune dans le Core. ---
+        common_edges = [
+            (odd_edge, even_edge)
+            for odd_edge in ("OB", "BL", "LO")
+            for even_edge in ("OB", "BL", "LO")
+            if world.are_same_business_edge(
+                elementIdOdd,
+                odd_edge,
+                elementIdEven,
+                even_edge,
+            )
+        ]
+        if not common_edges:
+            raise ValueError(
+                "createTopoQuadrilateral: aucune arête métier commune"
+            )
+        if len(common_edges) != 1:
+            raise ValueError(
+                "createTopoQuadrilateral: arêtes métier communes ambiguës"
+            )
+        src_edge, dst_edge = common_edges[0]
 
-        if best is None:
-            raise ValueError("createTopoQuadrilateral: aucune arête commune détectée (tol_rel)")
-
-        _, (aO, bO), (aE, bE) = best
-        src_edge = _edge_code(aO, bO)
-        dst_edge = _edge_code(aE, bE)
-        if not src_edge or not dst_edge:
-            raise ValueError("createTopoQuadrilateral: edge code invalide")
-
-        # --- 5) Déterminer l’ordre des endpoints côté EVEN via les positions monde ---
-        # Objectif: que triangleMobToPts[dst_a] corresponde à triangleMobFromPts[aO] (à eps_world près)
-        dst_a = aE
-        dst_b = bE
-        if np.linalg.norm(np.array(triangleMobToPts[dst_a], float) - np.array(triangleMobFromPts[aO], float)) <= float(eps_world):
-            pass
-        elif np.linalg.norm(np.array(triangleMobToPts[dst_b], float) - np.array(triangleMobFromPts[aO], float)) <= float(eps_world):
-            dst_a, dst_b = dst_b, dst_a
-        # sinon: on garde l'ordre, mais l'attachment edge-edge décidera mapping via vkeys (direct/reverse)
-
-        # --- 6) Créer + commit l’attachement interne edge-edge ---
-        epts = EdgeChoiceEpts(
-            triangleMobFromPts[aO], triangleMobFromPts[bO],
-            triangleMobToPts[dst_a], triangleMobToPts[dst_b],
-            src_owner_tid=triangleMobFromId, src_edge=src_edge,
-            dst_owner_tid=triangleMobToId, dst_edge=dst_edge,
-            src_vkey_at_mA=aO, src_vkey_at_mB=bO,
-            dst_vkey_at_tA=dst_a, dst_vkey_at_tB=dst_b,
-            kind="edge-edge",
-            elementIdSrc=elementIdOdd,
-            elementIdDst=elementIdEven,
+        # --- 5) Créer le raccord interne edge-edge V2 ---
+        # Le Resolver V2 détermine seul la correspondance directe/inversée
+        # des extrémités : AUTO ne transporte aucun mapping d'endpoints.
+        attachment = TopologyEdgeEdgeAttachment(
+            attachment_id=world.new_attachment_id(),
+            mob_element_id=elementIdOdd,
+            mob_edge=src_edge,
+            dest_element_id=elementIdEven,
+            dest_edge=dst_edge,
         )
+        group_mob_id = world.get_group_of_element(attachment.mob_element_id)
+        group_dest_id = world.get_group_of_element(attachment.dest_element_id)
+        if world.simulate_topological_overlap(
+            group_dest_id,
+            group_mob_id,
+            attachment,
+        ):
+            raise TopologyConstraintGeometryError(
+                "createTopoQuadrilateral: chevauchement topologique interne"
+            )
+        topoGroupId = world.apply_attachment(attachment)
 
-        atts = epts.createTopologyAttachments(world=world)
-        if not atts:
-            raise ValueError("createTopoQuadrilateral: attachments edge-edge introuvables")
-
-        world.apply_attachments(atts)
+        # Le premier triangle du couple reste la référence géométrique du
+        # scénario. Le rejeu place uniquement l'élément pair depuis le EE V2.
+        world.replay_group_attachment_poses(topoGroupId, elementIdOdd)
     finally:
         world.commitTopoTransaction()
 
@@ -594,53 +577,32 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             for k in ("O", "B", "L"):
                 P1[k] = (R @ (P1[k] - pivot)) + pivot
 
-        # ---- 2) Détection de l'arête commune (OB / OL / BL)
-
-        def _edge_len(P: Dict[str, np.ndarray], a: str, b: str) -> float:
-            vv = np.array(P[b], float) - np.array(P[a], float)
-            return float(np.hypot(vv[0], vv[1]))
-
-        edges = [("O", "B"), ("O", "L"), ("B", "L")]
-        e1 = [(a, b, _edge_len(P1, a, b)) for a, b in edges]
-
-        P2_local = {k: np.array(t2["pts"][k], dtype=float) for k in ("O", "B", "L")}
-        e2 = [(a, b, _edge_len(P2_local, a, b)) for a, b in edges]
-
-        tol_rel = 1e-3
-        best = None  # (rel, (a1,b1),(a2,b2))
-        for a1, b1, l1 in e1:
-            for a2, b2, l2 in e2:
-                rel = abs(l1 - l2) / max(l1, l2, 1e-9)
-                if rel <= tol_rel and (best is None or rel < best[0]):
-                    best = (rel, (a1, b1), (a2, b2))
-
-        if best is None:
-            raise ValueError("Aucune arête commune détectée entre les 2 triangles (tolérance 0.1%).")
-
-        (_, (a1, b1), (a2, b2)) = best
-
-        def _ensure_element_from_local(
-            *,
-            world: TopologyWorld,
-            element_id: str,
-        ) -> None:
-            # Les candidats proviennent d'un monde deja construit puis clone :
-            # l'ID doit donc deja designer la meme instance Core, sans recreation.
-            if element_id not in world.elements:
-                raise ValueError(
-                    f"Simulation: elementId Core absent dans le clone: {element_id}"
+        # ---- 2) Classification topologique de l'arête commune.
+        def _shared_business_edges(triangle_a_id, triangle_b_id):
+            probe = TopologyWorld()
+            element_a = engine.materialize_triangle(triangle_a_id)
+            element_b = engine.materialize_triangle(triangle_b_id)
+            probe.add_element_as_new_group(element_a)
+            probe.add_element_as_new_group(element_b)
+            matches = [
+                (edge_a, edge_b)
+                for edge_a in ("OB", "BL", "LO")
+                for edge_b in ("OB", "BL", "LO")
+                if probe.are_same_business_edge(
+                    element_a.element_id, edge_a, element_b.element_id, edge_b
                 )
+            ]
+            if not matches:
+                raise ValueError("AUTO: aucune arête métier commune")
+            if len(matches) != 1:
+                raise ValueError("AUTO: arêtes métier communes ambiguës")
+            return matches[0]
 
-        def _assignTopologyElementIdToPlacedTriangle(
-            *,
-            entry: PlacedTriangle,
-            element_id: str,
-        ) -> str:
-            elem_id = (element_id or "").strip()
-            if not elem_id:
-                raise ValueError("Simulation: topoElementId Core absent")
-            entry.topologyElementId = elem_id
-            return elem_id
+        edge_vertices = {"OB": ("O", "B"), "BL": ("B", "L"), "LO": ("L", "O")}
+        edge_1, edge_2 = _shared_business_edges(tri1_id, tri2_id)
+        a1, b1 = edge_vertices[edge_1]
+        a2, b2 = edge_vertices[edge_2]
+        P2_local = {k: np.array(t2["pts"][k], dtype=float) for k in ("O", "B", "L")}
 
         def _bootstrap_topo_first_pair(
             *,
@@ -724,22 +686,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             pose = compute_edge_edge_pose(Pm_local, am, bm, Pt, at, bt)
             mapping = pose.mapping
             Pmw = apply_edge_edge_pose(Pm_local, pose)
-
-            def _dist(a, b):
-                return math.hypot(b[0]-a[0], b[1]-a[1])
-
-            def _edge_len(P, a, b):
-                return _dist(P[a], P[b])
-
-            def _len_close(l1, l2, rel=1e-4, abs_=1e-8):
-                return abs(l1 - l2) <= max(abs_, rel * max(l1, l2))
-
-            len_m = _edge_len(Pm_local, am, bm)
-            len_t = _edge_len(Pt, at, bt)
-
-            if not _len_close(len_m, len_t, rel=1e-4):
-                return None, mapping, True  # invalide (mismatch longueur)
-
             return Pmw, mapping, False
 
         # ---- 3) Pose du triangle 2 : 2 essais (direct / inversé)
@@ -871,22 +817,9 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             PA = _orient_O_to_L_north({k: np.array(tA["pts"][k], dtype=float) for k in ("O", "B", "L")})
             PB_local = {k: np.array(tB["pts"][k], dtype=float) for k in ("O", "B", "L")}
 
-            edges = [("O", "B"), ("O", "L"), ("B", "L")]
-            eA = [(a, b, _edge_len(PA, a, b)) for a, b in edges]
-            eB = [(a, b, _edge_len(PB_local, a, b)) for a, b in edges]
-
-            tol_rel = 1e-3
-            best = None  # (rel, (aA,bA),(aB,bB))
-            for aA, bA, lA in eA:
-                for aB, bB, lB in eB:
-                    rel = abs(lA - lB) / max(lA, lB, 1e-9)
-                    if rel <= tol_rel and (best is None or rel < best[0]):
-                        best = (rel, (aA, bA), (aB, bB))
-
-            if best is None:
-                raise ValueError("Aucune arête commune détectée entre les 2 triangles (tolérance 0.1%).")
-
-            (_, (aA, bA), (aB, bB)) = best
+            edge_a, edge_b = _shared_business_edges(triA_id, triB_id)
+            aA, bA = edge_vertices[edge_a]
+            aB, bB = edge_vertices[edge_b]
 
             polyA = _tri_shape(PA)
 
@@ -970,11 +903,12 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                     ordered_element_ids_prev = state.orderedElementIds
                     baseKey = getattr(node_prev, "debugKey", "")    # Une cle de debug pour tracer les scénarios
                     candidates = []
-                    mob_keys = ("O", "B")
 
-                    # --- Phase 3 : création du quadrilatère topo mobile (UNE FOIS)
+                    # Le parent reste immuable : le quadrilatère mobile interne
+                    # V2 est construit une seule fois dans son clone de base.
+                    topo_world_candidate_base = topoWorld_prev.clonePhysicalState()
                     _, element_id_odd, element_id_even, _, _ = createTopoQuadrilateral(
-                        world=topoWorld_prev,
+                        world=topo_world_candidate_base,
                         triangleMobFromId=triangleMobFromId,
                         triangleMobToId=triangleMobToId,
                         triangleMobFrom=triangleMobFrom,
@@ -985,170 +919,99 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                         triangleMobToPts=triangleMobToPts,
                         element_factory=engine.materialize_triangle,
                     )
-
-                    # Clone de la projection placée de la branche pour les triangles temporaires.
-                    placed_triangles_base = placed_triangles_prev.clone()
-
-                    # On rajoute le quadrilatère mobile dans placed_triangles_base
-                    # ET on la synchonise avec la topo pour avoir les coordonnées réels
-                    placed_triangles_base.append(PlacedTriangle(
-                        triangleId=triangleMobFromId,
-                        points=triangleMobFromPts,          # pose INITIALE (pas Podd_w)
-                        labels=triangleMobFrom.get("labels"),
-                        mirrored=bool(triangleMobFrom.get("mirrored", False)),
-                    ))
-                    _assignTopologyElementIdToPlacedTriangle(
-                        entry=placed_triangles_base.last(),
-                        element_id=element_id_odd,
-                    )
-
-                    placed_triangles_base.append(PlacedTriangle(
-                        triangleId=triangleMobToId,
-                        points=triangleMobToPts,         # pose INITIALE
-                        labels=triangleMobTo.get("labels"),
-                        mirrored=bool(triangleMobTo.get("mirrored", False)),
-                    ))
-                    _assignTopologyElementIdToPlacedTriangle(
-                        entry=placed_triangles_base.last(),
-                        element_id=element_id_even,
-                    )
                     ordered_element_ids_base = [
                         *ordered_element_ids_prev,
                         element_id_odd,
                         element_id_even,
                     ]
-                    mobile_base_entry = placed_triangles_base.findByTopologyElementId(element_id_odd)
-                    if mobile_base_entry is None:
-                        raise RuntimeError(f"Simulation: projection absente pour {element_id_odd}")
-                    destination_entry = placed_triangles_base.findByTopologyElementId(state.tailElementId)
-                    if destination_entry is None:
-                        raise RuntimeError(f"Simulation: projection absente pour {state.tailElementId}")
+                    if state.tailElementId is None:
+                        raise RuntimeError("Simulation: élément final absent de la branche")
 
-                    # On rebuild cache et contours pour éviter les surprises
-                    topoWorld_prev.rebuildGroupElementLists()
-                    for core_gid in topoWorld_prev.getLiveGroupIds():
-                        topoWorld_prev.ensureConceptGraph(core_gid)
-
-                    pass  # Point de debug
-
-                    # On teste sur les 4 cas LB-LB, LB-LO, LO-LB, LO - Lo
-                    for mob_key in mob_keys:
-                        for bt_key in ("O", "B"):
+                    # Les quatre combinaisons métier sont indépendantes :
+                    # LO/LO, LO/BL, BL/LO, BL/BL.
+                    for mobEdgeAtL in ("LO", "BL"):
+                        for destEdgeAtL in ("LO", "BL"):
                             dbg_try += 1
-
-                            # --- Phase 3.1 : construire EdgeChoiceEpts (sans décision topo, juste préparation)
-                            # Convention auto actuelle : raccord via L, arêtes LO/BL.
-                            # Détermination explicite des arêtes testées
-                            destEdgeAtL = "LO" if bt_key == "O" else "BL"
-                            mobEdgeAtL = "LO" if mob_key == "O" else "BL"
-
-                            edgeChoiceEpts, edgeChoiceMeta = buildEdgeChoiceEptsForAutoChain(
-                                world=topoWorld_prev,
-                                mobile_entry=mobile_base_entry,
-                                destination_entry=destination_entry,
-                                src_edge=mobEdgeAtL,                    # arêtes explicites
-                                dst_edge=destEdgeAtL,
-                                src_vkey="L",                           # sommet d’ancrage (toujours L en phase 3)
-                                dst_vkey="L",
-                                kind="vertex-edge",
-                                debug=False,
+                            candidate_world = topo_world_candidate_base.clonePhysicalState()
+                            attachment = TopologyVertexEdgeAttachment(
+                                attachment_id=candidate_world.new_attachment_id(),
+                                mob_element_id=element_id_odd,
+                                mob_vertex="L",
+                                mob_edge=mobEdgeAtL,
+                                dest_element_id=state.tailElementId,
+                                dest_vertex="L",
+                                dest_edge=destEdgeAtL,
                             )
-
-                            topoAttachments = edgeChoiceEpts.createTopologyAttachments(world=topoWorld_prev)
-
-                            # On teste l'overlap .
-                            # group ids depuis les elementIds
-                            gidDest = topoWorld_prev.get_group_of_element(state.tailElementId)
-                            gidMob = topoWorld_prev.get_group_of_element(mobile_base_entry.topologyElementId)
-                            overlap = topoWorld_prev.simulateOverlapTopologique(
-                                gidDest,
-                                gidMob,
-                                topoAttachments,
-                                debug=False,
-                            )
-                            if overlap:
-                                dbg_overlap += 1
+                            try:
+                                group_mob_id = candidate_world.get_group_of_element(
+                                    attachment.mob_element_id
+                                )
+                                group_dest_id = candidate_world.get_group_of_element(
+                                    attachment.dest_element_id
+                                )
+                                if candidate_world.simulate_topological_overlap(
+                                    group_dest_id,
+                                    group_mob_id,
+                                    attachment,
+                                ):
+                                    dbg_overlap += 1
+                                    continue
+                                candidate_world.beginTopoTransaction()
+                                try:
+                                    group_id = candidate_world.apply_attachment(attachment)
+                                    candidate_world.replay_group_attachment_poses(
+                                        group_id,
+                                        state.tailElementId,
+                                    )
+                                finally:
+                                    candidate_world.commitTopoTransaction()
+                            except (
+                                TopologyAttachmentValidationError,
+                                TopologyAttachmentResolutionError,
+                                TopologyConstraintGeometryError,
+                            ):
                                 continue
 
-                            # Pour les cas validés, on récupère la transformation R et T
-                            # que l'on applique au 2 triangles graphiques
-                            def applyRT(P, R, T):
-                                return {k: (R @ np.array(P[k], float) + T) for k in ("O", "B", "L")}
-
-                            R, T = edgeChoiceEpts.computeRigidTransform()
-                            Podd_w = applyRT(triangleMobFromPts,  R, T)
-                            Peven_w = applyRT(triangleMobToPts, R, T)
-
-                            poly_new = _group_shape_from_nodes(
-                                [{"tid": 0}, {"tid": 1}],
-                                [{"pts": Podd_w}, {"pts": Peven_w}]
+                            projection = buildLastDrawnFromTopology(
+                                topologyWorld=candidate_world,
+                                elementIds=ordered_element_ids_base,
                             )
-
+                            projected_points = {
+                                entry["topoElementId"]: entry["pts"]
+                                for entry in projection
+                            }
                             placed_triangles_new = placed_triangles_prev.clone()
-
-                            # --- mémoriser la jonction entre quads (connexion via L)
-                            # bt_key = côté choisi sur l'ancre (L->O ou L->B)
-                            # mob_key = côté choisi sur le triangle odd (L->O ou L->B)
-                            # On encode l'arête incidente à L : "LO" ou "BL"
-                            destEdgeAtL = "LO" if bt_key == "O" else "BL"
-                            mobEdgeAtL = "LO" if mob_key == "O" else "BL"
-
+                            for placed_triangle in placed_triangles_new:
+                                placed_triangle.points = projected_points[
+                                    placed_triangle.topologyElementId
+                                ]
                             placed_triangles_new.append(PlacedTriangle(
                                 triangleId=triangleMobFromId,
-                                points=Podd_w,
+                                points=projected_points[element_id_odd],
                                 labels=triangleMobFrom.get("labels"),
                                 mirrored=bool(triangleMobFrom.get("mirrored", False)),
+                                topologyElementId=element_id_odd,
                             ))
-                            elem_id_odd = _assignTopologyElementIdToPlacedTriangle(
-                                entry=placed_triangles_new.last(),
-                                element_id=element_id_odd,
-                            )
-                            mobile_entry = placed_triangles_new.findByTopologyElementId(elem_id_odd)
-                            if mobile_entry is None:
-                                raise RuntimeError(f"Simulation: projection absente pour {elem_id_odd}")
                             placed_triangles_new.append(PlacedTriangle(
                                 triangleId=triangleMobToId,
-                                points=Peven_w,
+                                points=projected_points[element_id_even],
                                 labels=triangleMobTo.get("labels"),
                                 mirrored=bool(triangleMobTo.get("mirrored", False)),
+                                topologyElementId=element_id_even,
                             ))
-                            elem_id_even = _assignTopologyElementIdToPlacedTriangle(
-                                entry=placed_triangles_new.last(),
-                                element_id=element_id_even,
+                            poly_new = _group_shape_from_nodes(
+                                [{"tid": 0}, {"tid": 1}],
+                                [
+                                    {"pts": projected_points[element_id_odd]},
+                                    {"pts": projected_points[element_id_even]},
+                                ],
                             )
-                            # décision de raccord: destEdgeAtL (côté ancre), mobEdgeAtL (côté mobile odd)
                             candKey = f"{baseKey}|{triangleMobFromId}:{mobEdgeAtL}->{destEdgeAtL}"
-
                             candidates.append((
+                                candidate_world,
                                 placed_triangles_new,
                                 poly_occ_prev.union(poly_new),
-                                {
-                                    "odd": {
-                                        "element_id": elem_id_odd,
-                                        "triangle_id": triangleMobFromId,
-                                        "pts_world": Podd_w,
-                                        "labels": triangleMobFrom.get("labels"),
-                                        "mirrored": bool(triangleMobFrom.get("mirrored", False)),
-                                        "pts_local": triangleMobFromPts,
-                                    },
-                                    "even": {
-                                        "element_id": elem_id_even,
-                                        "triangle_id": triangleMobToId,
-                                        "pts_world": Peven_w,
-                                        "labels": triangleMobTo.get("labels"),
-                                        "mirrored": bool(triangleMobTo.get("mirrored", False)),
-                                        "pts_local": triangleMobToPts,
-                                    },
-                                    "edgeChoice": {
-                                        "ok": bool(edgeChoiceEpts),
-                                        "meta": edgeChoiceMeta,
-                                        "topoAccepted": True,
-                                    },
-                                    "topoAttachments": topoAttachments,
-                                    "topoAnchorElemId": state.tailElementId,
-                                    "topoMobileElemId": mobile_base_entry.topologyElementId,
-                                    "debugKey": candKey,
-                                },
+                                candKey,
                             ))
                             dbg_added += 1
 
@@ -1165,42 +1028,10 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                         else:
                             node_prev.branchTriangleId = None
 
-                        if len(candidates) >= 2:
-                            topo_candidates = [topoWorld_prev.clonePhysicalState() for _ in candidates]
-                        else:
-                            topo_candidates = [topoWorld_prev for _ in candidates]
-
-                        for (placed_triangles_new, poly_u, topo_meta), topo_new in zip(candidates, topo_candidates):
-                            topo_new.beginTopoTransaction()
-                            try:
-                                for _key in ("odd", "even"):
-                                    _info = topo_meta.get(_key, {})
-                                    _elem_id = _info.get("element_id")
-                                    _triangle_id = _info.get("triangle_id")
-                                    _pts_local = _info.get("pts_local")
-                                    if _elem_id and _triangle_id and _pts_local is not None:
-                                        _ensure_element_from_local(
-                                            world=topo_new,
-                                            element_id=_elem_id,
-                                        )
-                                    if _elem_id and _info.get("pts_world") is not None:
-                                        # Pose from world points in simulation uses non-mirrored fit.
-                                        setElementPoseFromWorldPts(
-                                            topo_new,
-                                            _elem_id,
-                                            _info.get("pts_world"),
-                                            mirrored=False,
-                                        )
-
-                                # On raccroche les 2 groupes via l'attachement
-                                atts = topo_meta.get("topoAttachments")
-                                topo_new.apply_attachments(atts)
-                            finally:
-                                topo_new.commitTopoTransaction()
-
+                        for topo_new, placed_triangles_new, poly_u, cand_key in candidates:
                             child = _BranchNode(parent=node_prev, children=[], branchTriangleId=None)
                             node_prev.children.append(child)
-                            child.debugKey = topo_meta.get("debugKey", baseKey)  # <= AJOUT
+                            child.debugKey = cand_key
                             new_states.append(BranchState(
                                 node=child,
                                 topoWorld=topo_new,
@@ -1215,19 +1046,6 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
             new_states, dbg_try, dbg_overlap, dbg_added = tryAttachMobQuadToDestChain(
                 tOdd, tEven, Podd, Peven, tri_odd_id, tri_even_id
             )
-
-            # 2) Fallback minimal : si échec, on retente en inversant odd/even
-            #    (mobile = tri_even_id). Ça corrige la dépendance implicite à l'ordre.
-            if not new_states:
-                tOdd2, tEven2, Podd2, Peven2 = _build_quad_local(tri_even_id, tri_odd_id)
-                new_states2, dbg_try2, dbg_overlap2, dbg_added2 = tryAttachMobQuadToDestChain(
-                    tOdd2, tEven2, Podd2, Peven2, tri_even_id, tri_odd_id
-                )
-                if new_states2:
-                    new_states = new_states2
-                    dbg_try += dbg_try2
-                    dbg_overlap += dbg_overlap2
-                    dbg_added += dbg_added2
 
             states = new_states
             if not states:
