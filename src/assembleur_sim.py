@@ -21,6 +21,7 @@ from src.assembleur_core import (
     TopologyConstraintGeometryError,
     TopologyVertexEdgeAttachment,
     TopologyWorld,
+    compute_vertex_edge_attachment_orientation,
 )
 from src.assembleur_edge_mapping import (
     apply_edge_edge_pose,
@@ -937,10 +938,16 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                                 attachment_id=candidate_world.new_attachment_id(),
                                 mob_element_id=element_id_odd,
                                 mob_vertex="L",
-                                mob_edge=mobEdgeAtL,
+                                creation_mob_edge=mobEdgeAtL,
                                 dest_element_id=state.tailElementId,
                                 dest_vertex="L",
-                                dest_edge=destEdgeAtL,
+                                creation_dest_edge=destEdgeAtL,
+                                mob_orientation=compute_vertex_edge_attachment_orientation(
+                                    candidate_world, element_id_odd, "L", mobEdgeAtL
+                                ),
+                                dest_orientation=compute_vertex_edge_attachment_orientation(
+                                    candidate_world, state.tailElementId, "L", destEdgeAtL
+                                ),
                             )
                             try:
                                 group_mob_id = candidate_world.get_group_of_element(

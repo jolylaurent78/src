@@ -253,7 +253,7 @@ def test_auto_four_triangles_uses_only_v2_attachments_and_explores_all_edges(mon
 
     def record_simulation(world, group_dest_id, group_mob_id, attachment):
         if isinstance(attachment, TopologyVertexEdgeAttachment):
-            attempts.append((attachment.mob_edge, attachment.dest_edge))
+            attempts.append((attachment.creation_mob_edge, attachment.creation_dest_edge))
         return original_simulate(
             world,
             group_dest_id,

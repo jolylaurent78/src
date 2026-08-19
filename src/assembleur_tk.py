@@ -79,6 +79,7 @@ from src.assembleur_deformation_window import (
     DeformationWindow,
     derive_assembly_view_rotation_deg,
 )
+from src.assembleur_tooltip import attach_tooltip
 from src.assembleur_geo_map_view import CalibratedGeoMap
 from src.assembleur_scenario import (
     HypothesisImpact,
@@ -353,6 +354,7 @@ class TriangleViewerManual(
     def __new__(cls, *args, **kwargs):
         instance = super().__new__(cls)
         instance._deformation_state = DeformationUiState()
+        instance._deformation_canvas_mode = "select"
         instance._deformation_drag_after_id = None
         instance._deformation_drag_pending_role = None
         instance._deformation_drag_pending_point = None
@@ -398,6 +400,7 @@ class TriangleViewerManual(
         self._ctx_nearest_vertex_key = None  # 'O'|'B'|'L' sommet le plus proche du clic droit
         self._ctx_compass_idx_clear_traits: int | None = None
         self._deformation_state = DeformationUiState()
+        self._deformation_canvas_mode = "select"
         self._deformation_drag_after_id = None
         self._deformation_drag_pending_role = None
         self._deformation_drag_pending_point = None
@@ -1444,7 +1447,9 @@ class TriangleViewerManual(
         if self._deformation_state.active:
             self._exit_deformation_mode()
         self._deformation_state.enter()
+        self._deformation_canvas_mode = "select"
         window = self._ensure_deformation_window()
+        window.set_canvas_mode(self._deformation_canvas_mode)
         window.deiconify()
         window.lift()
         window.focus_force()
@@ -1465,6 +1470,9 @@ class TriangleViewerManual(
     def _show_deformation_preview(self, world: TopologyWorld) -> None:
         projection = self._deformation_projection_from_world(world)
         self._bind_canvas_objects(projection)
+        # La projection candidate remplace _last_drawn avant le redraw : le
+        # prochain clic DEFORM doit toujours reconstruire ses polygones écran.
+        self._invalidate_pick_cache()
         self.canvas_objects.validate_against_world(world)
         self._redraw_from(self._last_drawn)
 
@@ -1546,10 +1554,42 @@ class TriangleViewerManual(
             on_delete_selected=self._deformation_delete_selected,
             on_map_pin_selected=self._deformation_map_pin_selected,
             on_view_mode_changed=self._deformation_window_view_mode_changed,
+            on_canvas_mode_changed=self._deformation_canvas_mode_changed,
             on_closed=self._on_deformation_window_closed,
         )
         self._deformation_window = window
+        window.set_canvas_mode(self._deformation_canvas_mode)
         return window
+
+    def _deformation_canvas_mode_changed(self, mode: str) -> None:
+        if mode not in {"select", "move"}:
+            raise ValueError(f"Mode canvas DEFORM invalide: {mode!r}")
+        if mode == self._deformation_canvas_mode:
+            return
+        self._cancel_deformation_canvas_interaction()
+        self._deformation_canvas_mode = mode
+
+    def _cancel_deformation_canvas_interaction(self) -> None:
+        """Annule l'interaction canvas, sans toucher à la session DEFORM."""
+        selection = self.__dict__.get("_sel")
+        if not isinstance(selection, dict):
+            selection = None
+        selection_mode = selection.get("mode") if selection is not None else None
+        if selection_mode == "move_group":
+            if selection.get("auto_geom"):
+                self._discard_auto_transform_preview()
+            else:
+                self._discard_manual_move_preview()
+        elif selection_mode in {"rotate_group", "rotate_group_anchor_drag"}:
+            if selection.get("auto_geom"):
+                self._discard_auto_transform_preview()
+            else:
+                self._discard_manual_rotate_preview()
+        self._sel = None
+        self._drag = None
+        self._on_pan_end(None)
+        self._offset_anchor = None
+        self._reset_assist()
 
     def _refresh_deformation_window(
         self,
@@ -1846,6 +1886,41 @@ class TriangleViewerManual(
         self._restore_deformation_real_projection()
         self.status.config(text="Mode deformation abandonne.")
 
+    def _deformation_group_anchor_is_eligible(
+        self, world: TopologyWorld, element_id: str
+    ) -> tuple[bool, str]:
+        """Validate the existing Core GroupAnchor contract without mutating UI state."""
+        if not isinstance(world, TopologyWorld):
+            # Lightweight controller tests may inject a minimal projection
+            # double; production always supplies a TopologyWorld.
+            return True, ""
+        try:
+            group_id = world.get_group_of_element(element_id)
+            anchors = [
+                anchor for anchor in world.groupAnchors.values()
+                if world.find_group(anchor.group_id) == group_id
+            ]
+            if not anchors:
+                return False, (
+                    "Déformation impossible : le groupe sélectionné n'est associé "
+                    "à aucune balise."
+                )
+            if len(anchors) != 1:
+                return False, (
+                    "Déformation impossible : le groupe sélectionné possède une "
+                    "ancre ambiguë."
+                )
+            # applyGroupAnchor is the Core authority for beacon/node resolution.
+            # Run it on a physical clone to keep the current preview untouched.
+            validation_world = world.clonePhysicalState()
+            validation_world.applyGroupAnchor(anchors[0].anchor_id)
+        except (KeyError, ValueError, RuntimeError):
+            return False, (
+                "Déformation impossible : la balise du groupe sélectionné n'est "
+                "pas résoluble."
+            )
+        return True, ""
+
     def _select_deformation_element(self, element_id: str) -> bool:
         self._cancel_deformation_drag_tick()
         scen = self._get_active_scenario()
@@ -1863,6 +1938,12 @@ class TriangleViewerManual(
             self.status.config(
                 text=f"Deformation indisponible : source Catalogue absente pour {element_id!r}"
             )
+            return False
+        eligible, message = self._deformation_group_anchor_is_eligible(
+            current_world, element_id
+        )
+        if not eligible:
+            self.status.config(text=message)
             return False
         state.select(element_id, current_world)
         state.last_accepted_world = current_world
@@ -1932,19 +2013,11 @@ class TriangleViewerManual(
             raise ValueError("Triangle projete sans topoElementId")
 
         if element_id == state.element_id:
-            if mode == "center":
-                world = self._get_active_scenario().topoWorld
-                group_id = world.get_group_of_element(element_id)
-                anchor = world.getAnchorForGroup(group_id)
-                if anchor is None:
-                    raise RuntimeError("Triangle de deformation sans ancre runtime")
-                return self._begin_anchored_group_rotation_drag(
-                    world, group_id, anchor, event
-                )
             return "break"
 
-        state.selected_occurrence = None
-        self._select_deformation_element(element_id)
+        selected = self._select_deformation_element(element_id)
+        if selected is not False:
+            state.selected_occurrence = None
         return "break"
 
     def open_catalogue_window(self):
@@ -2248,7 +2321,7 @@ class TriangleViewerManual(
         deformation_btn.pack(side=tk.LEFT, padx=1)
         deformation_btn.image = icon_deformation
         self._ui_attach_tooltip(deformation_btn, "Ouvrir DEFORM")
-        self._ui_attach_tooltip(hypothesis_btn, "Modifier l'hypothÃ¨se du scÃ©nario")
+        self._ui_attach_tooltip(hypothesis_btn, "Modifier l'hypothèse du scénario")
 
         lb_frame = tk.Frame(self._ui_triangles_content, bd=0, highlightthickness=0)
         lb_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
@@ -4921,7 +4994,7 @@ class TriangleViewerManual(
         if beacon_id not in self.catalogue.beacons:
             raise ValueError(f"Simulation AUTO: balise inconnue {beacon_id!r}")
         if self.catalogue.get_beacon(beacon_id).archived:
-            raise ValueError(f"Simulation AUTO: balise archivÃ©e {beacon_id!r}")
+            raise ValueError(f"Simulation AUTO: balise archivée {beacon_id!r}")
         ordered_element_ids = scen.orderedElementIds
         if not ordered_element_ids:
             raise ValueError("Simulation AUTO: orderedElementIds vide")
@@ -5719,70 +5792,9 @@ class TriangleViewerManual(
 
     # ---------- Tooltip helpers ----------
     def _ui_attach_tooltip(self, widget, text: str):
-        """Attache un tooltip (petit Toplevel) à un widget Tk (ex: bouton icône)."""
         if widget is None:
-            return
-        tip = str(text or "").strip()
-        if not tip:
-            return
-        # stocker le texte sur le widget (pratique pour MAJ future)
-        widget._ui_tooltip_text = tip
-        widget.bind("<Enter>", lambda e, w=widget: self._ui_show_tooltip(w), add="+")
-        widget.bind("<Leave>", lambda e: self._ui_hide_tooltip(), add="+")
-        widget.bind("<ButtonPress>", lambda e: self._ui_hide_tooltip(), add="+")
-
-    def _ui_show_tooltip(self, widget):
-        """Affiche le tooltip UI près du widget."""
-        if widget is None:
-            return
-        text = str(getattr(widget, "_ui_tooltip_text", "") or "").strip()
-        if not text:
-            return
-
-        # créer si nécessaire
-        if not hasattr(self, "_ui_tooltip"):
-            self._ui_tooltip = None
-            self._ui_tooltip_label = None
-
-        if self._ui_tooltip is None or not self._ui_tooltip.winfo_exists():
-            self._ui_tooltip = tk.Toplevel(self)
-            self._ui_tooltip.wm_overrideredirect(True)
-            self._ui_tooltip.attributes("-topmost", True)
-            self._ui_tooltip_label = tk.Label(
-                self._ui_tooltip,
-                text=text,
-                bg="#ffffe0",
-                relief="solid",
-                borderwidth=1,
-                font=("Arial", 9),
-                justify="left",
-                anchor="w",
-            )
-            self._ui_tooltip_label.pack(ipadx=4, ipady=2)
-        else:
-            self._ui_tooltip_label.config(text=text, justify="left", anchor="w")
-
-        # placer près du widget (léger offset)
-        self._ui_tooltip.update_idletasks()
-        tw = max(1, int(self._ui_tooltip.winfo_width()))
-        th = max(1, int(self._ui_tooltip.winfo_height()))
-        x = int(widget.winfo_rootx() + 10)
-        y = int(widget.winfo_rooty() + widget.winfo_height() + 8)
-
-        # clamp dans l'écran courant (simple)
-        sw = int(self.winfo_screenwidth())
-        sh = int(self.winfo_screenheight())
-        x = max(0, min(x, sw - tw))
-        y = max(0, min(y, sh - th))
-
-        self._ui_tooltip.wm_geometry(f"+{x}+{y}")
-
-    def _ui_hide_tooltip(self):
-        if hasattr(self, "_ui_tooltip") and self._ui_tooltip is not None and self._ui_tooltip.winfo_exists():
-            self._ui_tooltip.destroy()
-        if hasattr(self, "_ui_tooltip"):
-            self._ui_tooltip = None
-            self._ui_tooltip_label = None
+            return None
+        return attach_tooltip(widget, text)
 
     def _ensure_canvas_tooltip(self, text: str) -> None:
         if self._tooltip is None or not self._tooltip.winfo_exists():
@@ -9833,7 +9845,10 @@ class TriangleViewerManual(
             return "break"
 
         # Validation d'une rotation en cours : le clic gauche sert à COMMIT, pas à re-sélectionner.
-        if self._deformation_state.active:
+        if (
+            self._deformation_state.active
+            and self._deformation_canvas_mode == "select"
+        ):
             return self._handle_deformation_left_down(event)
 
         if isinstance(self._sel, dict) and self._sel.get("mode") == "rotate_group":
@@ -10385,12 +10400,12 @@ class TriangleViewerManual(
                 final_core_group_id = world.get_group_of_element(mobile_element_id)
                 if final_core_group_id is None:
                     raise RuntimeError(
-                        "[MIG-ANCHOR-003] groupe Core final introuvable aprÃ¨s ancrage"
+                        "[MIG-ANCHOR-003] groupe Core final introuvable après ancrage"
                     )
                 self._project_core_group_to_last_drawn(world, str(final_core_group_id))
                 beacon_anchor_applied = True
                 self.status.config(
-                    text=f"Groupe ancrÃ© sur la balise {beacon_candidate['beacon_id']}."
+                    text=f"Groupe ancré sur la balise {beacon_candidate['beacon_id']}."
                 )
 
             # Commit exclusif : soit snap Core-first, soit translation

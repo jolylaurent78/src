@@ -20,6 +20,7 @@ from src.assembleur_geo_map_view import (
     GeoMapPolyline,
     GeoMapView,
 )
+from src.assembleur_tooltip import attach_tooltip
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,7 @@ class DeformationWindow(tk.Toplevel):
         on_delete_selected: Callable[[], None],
         on_map_pin_selected: Callable[[], None],
         on_view_mode_changed: Callable[[str], None],
+        on_canvas_mode_changed: Callable[[str], None],
         on_closed: Callable[[], None],
     ):
         super().__init__(parent)
@@ -80,13 +82,17 @@ class DeformationWindow(tk.Toplevel):
         self._on_delete_selected = on_delete_selected
         self._on_map_pin_selected = on_map_pin_selected
         self._on_view_mode_changed = on_view_mode_changed
+        self._on_canvas_mode_changed = on_canvas_mode_changed
         self._on_closed = on_closed
         self._element_id: str | None = None
         self._assembly_rotation_deg = 0.0
         self._view_mode = tk.StringVar(value="north")
+        self._canvas_mode = "select"
         self._closed = False
         self._occurrence_by_iid: dict[str, tuple[str, str]] = {}
         self._updating_occurrences = False
+        self._occurrences_update_generation = 0
+        self._occurrences_guard_after_id = None
 
         self._icon_compass = tk.PhotoImage(
             file=str(Path(__file__).resolve().parent.parent / "images" / "compass.png")
@@ -99,6 +105,12 @@ class DeformationWindow(tk.Toplevel):
         )
         self._icon_delete = tk.PhotoImage(
             file=str(Path(__file__).resolve().parent.parent / "images" / "scenario_delete.png")
+        )
+        self._icon_select = tk.PhotoImage(
+            file=str(Path(__file__).resolve().parent.parent / "images" / "click.png")
+        )
+        self._icon_move = tk.PhotoImage(
+            file=str(Path(__file__).resolve().parent.parent / "images" / "hand-click.png")
         )
 
         content = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
@@ -119,8 +131,24 @@ class DeformationWindow(tk.Toplevel):
             state=tk.DISABLED, relief=tk.FLAT, bd=1,
         )
         self._delete_button.pack(side=tk.LEFT, padx=(4, 0))
-        self._map_pin_button.bind("<Enter>", lambda _event: self._status.configure(text="Déplacer vers une ville..."))
-        self._delete_button.bind("<Enter>", lambda _event: self._status.configure(text="Supprimer la déformation"))
+        ttk.Separator(list_toolbar, orient=tk.VERTICAL).pack(
+            side=tk.LEFT, fill=tk.Y, padx=(10, 6)
+        )
+        self._select_canvas_button = tk.Button(
+            list_toolbar, image=self._icon_select,
+            command=lambda: self._set_canvas_mode("select"), relief=tk.SUNKEN, bd=1,
+        )
+        self._select_canvas_button.pack(side=tk.LEFT)
+        self._move_canvas_button = tk.Button(
+            list_toolbar, image=self._icon_move,
+            command=lambda: self._set_canvas_mode("move"), relief=tk.FLAT, bd=1,
+        )
+        self._move_canvas_button.pack(side=tk.LEFT, padx=(4, 0))
+        attach_tooltip(self._select_canvas_button, "Sélectionner un triangle à déformer")
+        attach_tooltip(self._move_canvas_button, "Déplacer ou faire pivoter un groupe")
+
+        attach_tooltip(self._map_pin_button, "Déplacer le point vers une ville")
+        attach_tooltip(self._delete_button, "Supprimer la déformation sélectionnée")
 
         occurrence_scrollbar = ttk.Scrollbar(occurrence_panel, orient=tk.VERTICAL)
         self._occurrence_tree = ttk.Treeview(occurrence_panel, show="tree", selectmode="browse", yscrollcommand=occurrence_scrollbar.set, height=12)
@@ -152,6 +180,8 @@ class DeformationWindow(tk.Toplevel):
             bd=1,
         )
         self._assembly_button.pack(side=tk.LEFT, padx=(4, 0))
+        attach_tooltip(self._north_button, "Afficher la carte orientée au nord")
+        attach_tooltip(self._assembly_button, "Orienter la carte comme l'assemblage")
         self._status = ttk.Label(view_toolbar, text="")
         self._status.pack(side=tk.RIGHT)
 
@@ -173,6 +203,27 @@ class DeformationWindow(tk.Toplevel):
     @property
     def view_mode(self) -> str:
         return self._view_mode.get()
+
+    @property
+    def canvas_mode(self) -> str:
+        return self._canvas_mode
+
+    def set_canvas_mode(self, mode: str) -> None:
+        if mode not in {"select", "move"}:
+            raise ValueError(f"Mode canvas DEFORM invalide: {mode!r}")
+        self._canvas_mode = mode
+        self._select_canvas_button.configure(
+            relief=tk.SUNKEN if mode == "select" else tk.FLAT
+        )
+        self._move_canvas_button.configure(
+            relief=tk.SUNKEN if mode == "move" else tk.FLAT
+        )
+
+    def _set_canvas_mode(self, mode: str) -> None:
+        if mode == self._canvas_mode:
+            return
+        self.set_canvas_mode(mode)
+        self._on_canvas_mode_changed(mode)
 
     def set_triangle(
         self,
@@ -228,6 +279,14 @@ class DeformationWindow(tk.Toplevel):
         occurrences: tuple[tuple[str, str, str], ...],
         selected_occurrence: tuple[str, str] | None,
     ) -> None:
+        if self._occurrences_guard_after_id is not None:
+            try:
+                self.after_cancel(self._occurrences_guard_after_id)
+            except tk.TclError:
+                pass
+            self._occurrences_guard_after_id = None
+        self._occurrences_update_generation += 1
+        generation = self._occurrences_update_generation
         self._updating_occurrences = True
         try:
             self._occurrence_tree.delete(*self._occurrence_tree.get_children())
@@ -248,7 +307,15 @@ class DeformationWindow(tk.Toplevel):
             self._map_pin_button.configure(state=state)
             self._delete_button.configure(state=state)
         finally:
-            self._updating_occurrences = False
+            self._occurrences_guard_after_id = self.after_idle(
+                lambda: self._release_occurrences_update_guard(generation)
+            )
+
+    def _release_occurrences_update_guard(self, generation: int) -> None:
+        if generation != self._occurrences_update_generation:
+            return
+        self._occurrences_guard_after_id = None
+        self._updating_occurrences = False
 
     def _place_initial_sash(self, _event=None) -> None:
         if not self._initial_sash_pending or self._content.winfo_width() <= 250:

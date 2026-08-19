@@ -156,7 +156,7 @@ def test_vertex_edge_mutation_also_invalidates_precomputed_boundary():
     world.ensureBoundary(group_t02)
 
     group_id = world.apply_attachment(
-        TopologyVertexEdgeAttachment("A01", "T01", "O", "LO", "T02", "O", "LO")
+        TopologyVertexEdgeAttachment("A01", "T01", "O", "LO", "T02", "O", "LO", "CW", "CCW")
     )
 
     cache = world._concept_cache(group_id)

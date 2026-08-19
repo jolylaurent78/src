@@ -10,7 +10,7 @@ def build_attachment_signature(attachment) -> tuple:
     if isinstance(attachment, TopologyEdgeEdgeAttachment):
         return ("edge-edge", tuple(sorted(((attachment.mob_element_id, attachment.mob_edge), (attachment.dest_element_id, attachment.dest_edge)))))
     if isinstance(attachment, TopologyVertexEdgeAttachment):
-        return ("vertex-edge", tuple(sorted(((attachment.mob_element_id, attachment.mob_vertex, attachment.mob_edge), (attachment.dest_element_id, attachment.dest_vertex, attachment.dest_edge)))))
+        return ("vertex-edge", tuple(sorted(((attachment.mob_element_id, attachment.mob_vertex, attachment.mob_orientation), (attachment.dest_element_id, attachment.dest_vertex, attachment.dest_orientation)))))
     raise TypeError(f"Attachment V2 attendu, reçu: {type(attachment)!r}")
 
 
@@ -45,7 +45,7 @@ def build_oriented_step_attachment_signature(attachment, element_a, element_b) -
         sides = {attachment.mob_element_id: (attachment.mob_element_id, attachment.mob_edge), attachment.dest_element_id: (attachment.dest_element_id, attachment.dest_edge)}
         return ("edge-edge", sides[element_a], sides[element_b])
     if isinstance(attachment, TopologyVertexEdgeAttachment):
-        sides = {attachment.mob_element_id: (attachment.mob_element_id, attachment.mob_vertex, attachment.mob_edge), attachment.dest_element_id: (attachment.dest_element_id, attachment.dest_vertex, attachment.dest_edge)}
+        sides = {attachment.mob_element_id: (attachment.mob_element_id, attachment.mob_vertex, attachment.mob_orientation), attachment.dest_element_id: (attachment.dest_element_id, attachment.dest_vertex, attachment.dest_orientation)}
         return ("vertex-edge", sides[element_a], sides[element_b])
     raise TypeError(f"Attachment V2 attendu, reçu: {type(attachment)!r}")
 

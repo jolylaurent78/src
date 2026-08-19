@@ -8,6 +8,7 @@ from src.assembleur_core import (
     TopologyEdgeEdgeAttachment,
     TopologyVertexEdgeAttachment,
     TopologyWorld,
+    compute_vertex_edge_attachment_orientation,
 )
 from src.assembleur_deformation import (
     simulate_city_deformation,
@@ -51,11 +52,17 @@ def _catalogue_and_v2_chain():
     vertex_edge = TopologyVertexEdgeAttachment(
         "A002",
         third_element.element_id,
-        "L",
+        "O",
         "LO",
         second_element.element_id,
         "L",
         "LO",
+        compute_vertex_edge_attachment_orientation(
+            world, third_element.element_id, "O", "LO"
+        ),
+        compute_vertex_edge_attachment_orientation(
+            world, second_element.element_id, "L", "LO"
+        ),
     )
     world.apply_attachment(edge_edge)
     group_id = world.apply_attachment(vertex_edge)
@@ -135,7 +142,35 @@ def test_deformation_topodump_keeps_attachment_intentions(tmp_path):
     assert _attachment_dump_signature(result.world, tmp_path / "after.xml") == attachment_dump_before
 
 
-def test_city_deformation_updates_all_shared_base_occurrences_atomically():
+def test_triangle_deformation_replays_from_the_group_anchor_owner(monkeypatch):
+    catalogue, world, element_id, triangle_id, anchor = _catalogue_and_v2_chain()
+    light_city_id = catalogue.get_triangle(triangle_id).light_city_id
+    light_before = np.asarray(catalogue.get_city_lambert(light_city_id))
+    calls = []
+    original_replay = TopologyWorld.replay_group_attachment_poses
+
+    def record_replay(self, group_id, root_element_id, *args, **kwargs):
+        calls.append((self, group_id, root_element_id))
+        return original_replay(self, group_id, root_element_id, *args, **kwargs)
+
+    monkeypatch.setattr(TopologyWorld, "replay_group_attachment_poses", record_replay)
+    result = simulate_triangle_deformation(
+        catalogue=catalogue,
+        initial_world=world,
+        element_id=element_id,
+        vertex_lambert_overrides={"L": tuple(light_before + np.asarray((1000.0, 0.0)))},
+    )
+
+    assert result.accepted
+    assert len(calls) == 1
+    anchor_owner = world.getElementVertexFromAnyNodeId(
+        anchor.node_id, world.get_group_of_element(element_id)
+    )["elementId"]
+    assert calls[0][2] == anchor_owner
+    assert calls[0][2] != element_id
+
+
+def test_city_deformation_replays_all_shared_occurrences_once_from_the_anchor(monkeypatch):
     catalogue, world, _element_id, _triangle_id, _anchor = _catalogue_and_v2_chain()
     base_city_id = next(
         triangle.base_city_id
@@ -147,6 +182,14 @@ def test_city_deformation_updates_all_shared_base_occurrences_atomically():
         for element_id, element in world.elements.items()
     }
 
+    calls = []
+    original_replay = TopologyWorld.replay_group_attachment_poses
+
+    def record_replay(self, group_id, root_element_id, *args, **kwargs):
+        calls.append((self, group_id, root_element_id))
+        return original_replay(self, group_id, root_element_id, *args, **kwargs)
+
+    monkeypatch.setattr(TopologyWorld, "replay_group_attachment_poses", record_replay)
     result = simulate_city_deformation(
         catalogue=catalogue,
         initial_world=world,
@@ -157,6 +200,11 @@ def test_city_deformation_updates_all_shared_base_occurrences_atomically():
 
     assert result.accepted
     assert result.world is not None
+    assert len(calls) == 1
+    root_element = world.getElementVertexFromAnyNodeId(
+        _anchor.node_id, world.get_group_of_element(_element_id)
+    )["elementId"]
+    assert calls[0][2] == root_element
     assert all(
         tuple(result.world.elements[element_id].edge_lengths_km)
         != elements_before[element_id]

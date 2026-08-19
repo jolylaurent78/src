@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from src.assembleur_deformation_ui import DeformationUiState
+from src.assembleur_core import TopologyEdgeEdgeAttachment, TopologyElement, TopologyWorld
 from src.assembleur_tk import TriangleViewerManual
 
 
@@ -24,6 +25,48 @@ class _WindowStub:
     def destroy(self):
         self.calls.append("destroy")
         self.exists = False
+
+
+class _BeaconResolver:
+    def contains(self, beacon_id):
+        return beacon_id == "BEA-0001"
+
+    def get_world(self, beacon_id):
+        if not self.contains(beacon_id):
+            raise KeyError(beacon_id)
+        return (0.0, 0.0)
+
+
+def _anchorable_world(*, with_anchor: bool) -> TopologyWorld:
+    world = TopologyWorld(beacon_resolver=_BeaconResolver())
+    element = TopologyElement(
+        element_id="T01", name="T01", source_triangle_id="TRI-0001",
+        vertex_labels=["O", "B", "L"], vertex_types=["O", "B", "L"],
+        edge_lengths_km=[3.0, 4.0, 5.0],
+    )
+    group_id = world.add_element_as_new_group(element)
+    if with_anchor:
+        world.createGroupAnchor(
+            group_id, "BEA-0001", world.get_element_vertex_node_id_by_type("T01", "O")
+        )
+    return world
+
+
+def _anchorable_three_triangle_group() -> TopologyWorld:
+    world = TopologyWorld(beacon_resolver=_BeaconResolver())
+    for element_id in ("T1", "T2", "T3"):
+        world.add_element_as_new_group(TopologyElement(
+            element_id=element_id, name=element_id, source_triangle_id=element_id,
+            vertex_labels=["O", "B", "L"], vertex_types=["O", "B", "L"],
+            edge_lengths_km=[3.0, 4.0, 5.0],
+        ))
+    world.apply_attachment(TopologyEdgeEdgeAttachment("A1", "T1", "OB", "T2", "OB"))
+    world.apply_attachment(TopologyEdgeEdgeAttachment("A2", "T2", "BL", "T3", "BL"))
+    group_id = world.get_group_of_element("T1")
+    world.createGroupAnchor(
+        group_id, "BEA-0001", world.get_element_vertex_node_id_by_type("T1", "O")
+    )
+    return world
 
 
 def test_deformation_state_accumulates_two_drags_without_mutating_reference():
@@ -104,6 +147,202 @@ def test_deformation_state_exit_discards_all_temporary_data():
     assert state.last_accepted_world is None
     assert state.modified_occurrences == []
     assert state.selected_occurrence is None
+
+
+def test_deformation_canvas_mode_defaults_to_select_and_preserves_session():
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer._sel = None
+    viewer._reset_assist = lambda: None
+    viewer._deformation_state.enter()
+    reference = object()
+    accepted = object()
+    viewer._deformation_state.select("T01", reference)
+    viewer._deformation_state.last_accepted_world = accepted
+    viewer._deformation_state.city_lambert_overrides["CITY-L"] = (1.0, 2.0)
+
+    assert viewer._deformation_canvas_mode == "select"
+    viewer._deformation_canvas_mode_changed("move")
+    viewer._deformation_canvas_mode_changed("select")
+
+    assert viewer._deformation_canvas_mode == "select"
+    assert viewer._deformation_state.reference_world is reference
+    assert viewer._deformation_state.last_accepted_world is accepted
+    assert viewer._deformation_state.city_lambert_overrides == {"CITY-L": (1.0, 2.0)}
+
+
+def _configure_deformation_canvas_cleanup(viewer):
+    viewer._sel = None
+    viewer._drag = None
+    viewer._pan_anchor = None
+    viewer._offset_anchor = None
+    viewer._reset_assist = lambda: setattr(viewer, "_assist_reset", True)
+    viewer._discard_manual_move_preview = lambda: setattr(viewer, "_move_discarded", True)
+    viewer._discard_manual_rotate_preview = lambda: setattr(viewer, "_rotate_discarded", True)
+    viewer._discard_auto_transform_preview = lambda: setattr(viewer, "_auto_discarded", True)
+
+
+def test_move_to_select_cleans_canvas_interaction_then_selects_another_triangle():
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    _configure_deformation_canvas_cleanup(viewer)
+    state = viewer._deformation_state
+    state.enter()
+    state.select("T1", object())
+    state.city_lambert_overrides["CITY-L"] = (1.0, 2.0)
+    state.modified_occurrences.append(("T1", "L"))
+
+    viewer._deformation_canvas_mode_changed("move")
+    viewer._sel = {"mode": "move_group", "core_group_id": "G1"}
+    viewer._drag = {"list_drag": True}
+    viewer._pan_anchor = object()
+    viewer._offset_anchor = object()
+    viewer._deformation_canvas_mode_changed("select")
+
+    viewer._ensure_pick_cache = lambda: None
+    viewer._hit_test = lambda _x, _y: ("center", 1, None)
+    viewer._last_drawn = [{"topoElementId": "T1"}, {"topoElementId": "T2"}]
+    viewer._select_deformation_element = lambda element_id: setattr(
+        state, "element_id", element_id
+    ) or True
+
+    assert viewer._handle_deformation_left_down(SimpleNamespace(x=10, y=20)) == "break"
+    assert state.element_id == "T2"
+    assert state.city_lambert_overrides == {"CITY-L": (1.0, 2.0)}
+    assert state.modified_occurrences == [("T1", "L")]
+    assert viewer._move_discarded is True
+    assert viewer._sel is None
+    assert viewer._drag is None
+    assert viewer._pan_anchor is None
+    assert viewer._offset_anchor is None
+
+
+def test_deformation_canvas_mode_cycles_leave_no_residual_interaction():
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    _configure_deformation_canvas_cleanup(viewer)
+    state = viewer._deformation_state
+    state.enter()
+    state.select("T1", object())
+
+    viewer._deformation_canvas_mode_changed("move")
+    viewer._deformation_canvas_mode_changed("select")
+    assert viewer._sel is None
+    assert state.element_id == "T1"
+
+    for mode in ("move", "select", "move", "select"):
+        if viewer._deformation_canvas_mode == "move":
+            viewer._sel = {"mode": "move_group", "core_group_id": "G1"}
+            viewer._drag = {"list_drag": True}
+            viewer._pan_anchor = object()
+            viewer._offset_anchor = object()
+        viewer._deformation_canvas_mode_changed(mode)
+        assert viewer._sel is None
+        assert viewer._drag is None
+        assert viewer._pan_anchor is None
+        assert viewer._offset_anchor is None
+        assert state.element_id == "T1"
+
+
+def test_deformation_selection_refuses_a_group_without_anchor_without_state_change():
+    world = _anchorable_world(with_anchor=False)
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer._deformation_state.enter()
+    previous_world = world.clonePhysicalState()
+    viewer._deformation_state.select("T01", previous_world)
+    viewer._get_active_scenario = lambda: SimpleNamespace(topoWorld=world)
+    viewer.status = SimpleNamespace(config=lambda **kwargs: setattr(viewer, "_status", kwargs["text"]))
+    viewer._show_deformation_preview = lambda _world: (_ for _ in ()).throw(
+        AssertionError("preview interdit")
+    )
+    viewer._refresh_deformation_window = lambda: (_ for _ in ()).throw(
+        AssertionError("fenêtre interdite")
+    )
+
+    assert viewer._select_deformation_element("T01") is False
+    assert viewer._deformation_state.element_id == "T01"
+    assert viewer._deformation_state.reference_world is previous_world
+    assert "aucune balise" in viewer._status
+
+
+def test_deformation_selection_accepts_a_group_with_a_resolvable_anchor():
+    world = _anchorable_world(with_anchor=True)
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer._deformation_state.enter()
+    viewer._get_active_scenario = lambda: SimpleNamespace(topoWorld=world)
+    viewer.status = SimpleNamespace(config=lambda **_kwargs: None)
+    viewer._show_deformation_preview = lambda preview: setattr(viewer, "_shown_world", preview)
+    viewer._refresh_deformation_window = lambda: None
+
+    assert viewer._select_deformation_element("T01") is True
+    assert viewer._deformation_state.element_id == "T01"
+    assert viewer._shown_world is not world
+    assert viewer._shown_world.elements["T01"].element_id == "T01"
+
+
+def test_deformation_candidate_projection_invalidates_pick_cache_before_next_selection():
+    world = _anchorable_world(with_anchor=True)
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer._pick_cache_valid = True
+    viewer._deformation_projection_from_world = lambda _world: [{
+        "topoElementId": "T01",
+        "pts": {"O": (0.0, 0.0), "B": (1.0, 0.0), "L": (0.0, 1.0)},
+    }]
+    viewer._redraw_from = lambda _entries: None
+
+    viewer._show_deformation_preview(world)
+
+    assert viewer._pick_cache_valid is False
+    assert viewer._last_drawn[0]["topoElementId"] == "T01"
+
+
+def test_deformation_selection_continues_after_an_accepted_candidate_world():
+    reference_world = _anchorable_three_triangle_group()
+    candidate_world = reference_world.clonePhysicalState()
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer._get_active_scenario = lambda: SimpleNamespace(topoWorld=reference_world)
+    viewer.status = SimpleNamespace(config=lambda **_kwargs: None)
+    viewer._show_deformation_preview = lambda world: setattr(viewer, "_shown_world", world)
+    viewer._refresh_deformation_window = lambda: None
+    state = viewer._deformation_state
+    state.enter()
+
+    assert viewer._select_deformation_element("T1") is True
+    assert viewer._select_deformation_element("T2") is True
+    state.begin_drag("L", "CITY-L")
+    state.accept_candidate((10.0, 20.0), candidate_world)
+    assert state.end_drag((("T2", "L"),)) is True
+    viewer._show_deformation_preview(candidate_world)
+
+    assert viewer._select_deformation_element("T3") is True
+    assert state.element_id == "T3"
+    assert viewer._shown_world is candidate_world
+
+
+def test_deformation_selection_survives_multiple_accepted_candidates():
+    reference_world = _anchorable_three_triangle_group()
+    first_candidate = reference_world.clonePhysicalState()
+    second_candidate = reference_world.clonePhysicalState()
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer._get_active_scenario = lambda: SimpleNamespace(topoWorld=reference_world)
+    viewer.status = SimpleNamespace(config=lambda **_kwargs: None)
+    viewer._show_deformation_preview = lambda world: setattr(viewer, "_shown_world", world)
+    viewer._refresh_deformation_window = lambda: None
+    state = viewer._deformation_state
+    state.enter()
+
+    assert viewer._select_deformation_element("T1") is True
+    state.begin_drag("L", "CITY-T1")
+    state.accept_candidate((10.0, 20.0), first_candidate)
+    assert state.end_drag((("T1", "L"),)) is True
+    viewer._show_deformation_preview(first_candidate)
+
+    assert viewer._select_deformation_element("T2") is True
+    state.begin_drag("B", "CITY-T2")
+    state.accept_candidate((30.0, 40.0), second_candidate)
+    assert state.end_drag((("T2", "B"),)) is True
+    viewer._show_deformation_preview(second_candidate)
+
+    assert viewer._select_deformation_element("T3") is True
+    assert state.element_id == "T3"
+    assert viewer._shown_world is second_candidate
 
 
 def test_deformation_state_records_each_modified_occurrence_once_in_order():

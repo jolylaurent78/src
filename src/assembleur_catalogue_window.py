@@ -12,6 +12,7 @@ from tkinter import font as tkfont
 from tkinter import filedialog, messagebox, ttk
 from src.assembleur_catalogue import Catalogue, CatalogueCity, CatalogueTriangle as ModelCatalogueTriangle, HypothesisTemplate
 from src.assembleur_catalogue_io import save_catalogue
+from src.assembleur_tooltip import attach_tooltip
 
 from src.assembleur_dms_editor import DmsCoordinateEditor
 from src.assembleur_geo_map_view import CalibratedGeoMap, GeoMapMarker, GeoMapPolyline, GeoMapView
@@ -438,8 +439,6 @@ class CatalogueWindow(tk.Toplevel):
         self._updating_detail = False
         self._updating_template_detail = False
         self._is_dirty = False
-        self._tooltip_window: tk.Toplevel | None = None
-        self._tooltip_after_id: str | None = None
 
         self._search_var = tk.StringVar()
         self._show_archived_var = tk.BooleanVar(value=False)
@@ -480,41 +479,15 @@ class CatalogueWindow(tk.Toplevel):
         self._icon_template_default = tk.PhotoImage(file=images_dir / "checkbox.png")
 
     def _attach_tooltip(self, widget, text: str):
-        widget._catalogue_tooltip_text = text
-        widget.bind("<Enter>", lambda _event: self._schedule_tooltip(widget), add="+")
-        widget.bind("<Leave>", lambda _event: self._hide_tooltip(), add="+")
-        widget.bind("<ButtonPress>", lambda _event: self._hide_tooltip(), add="+")
+        return attach_tooltip(widget, text)
 
     @staticmethod
     def _set_tooltip_text(widget, text: str):
-        widget._catalogue_tooltip_text = text
-
-    def _schedule_tooltip(self, widget):
-        self._hide_tooltip()
-        self._tooltip_after_id = self.after(350, lambda: self._show_tooltip(widget))
-
-    def _show_tooltip(self, widget):
-        self._tooltip_after_id = None
-        if not widget.winfo_exists():
-            return
-        text = getattr(widget, "_catalogue_tooltip_text", "")
-        if not text:
-            return
-        if self._tooltip_window is None or not self._tooltip_window.winfo_exists():
-            self._tooltip_window = tk.Toplevel(self)
-            self._tooltip_window.overrideredirect(True)
-            ttk.Label(self._tooltip_window, padding=(6, 3)).pack()
-        label = self._tooltip_window.winfo_children()[0]
-        label.configure(text=text)
-        self._tooltip_window.geometry(f"+{widget.winfo_pointerx() + 12}+{widget.winfo_pointery() + 16}")
-        self._tooltip_window.deiconify()
-
-    def _hide_tooltip(self):
-        if self._tooltip_after_id is not None:
-            self.after_cancel(self._tooltip_after_id)
-            self._tooltip_after_id = None
-        if self._tooltip_window is not None and self._tooltip_window.winfo_exists():
-            self._tooltip_window.withdraw()
+        tooltip = getattr(widget, "_tooltip", None)
+        if tooltip is None:
+            attach_tooltip(widget, text)
+        else:
+            tooltip.set_text(text)
 
     def _build_ui(self):
         root = ttk.Frame(self, padding=10)
@@ -2233,7 +2206,7 @@ class CatalogueWindow(tk.Toplevel):
         if self._is_beacon_referenced is not None and self._is_beacon_referenced(beacon.beacon_id):
             messagebox.showerror(
                 "Supprimer la balise",
-                "Cette balise est utilisÃ©e par un ancrage de scÃ©nario. Archivez-la plutÃ´t que de la supprimer.",
+                "Cette balise est utilisée par un ancrage de scénario. Archivez-la plutôt que de la supprimer.",
                 parent=self,
             )
             return

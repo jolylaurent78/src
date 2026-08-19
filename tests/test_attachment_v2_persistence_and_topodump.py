@@ -1,5 +1,7 @@
 import xml.etree.ElementTree as ET
 
+import pytest
+
 from src.assembleur_core import (
     ResolvedEdgeEdgeAttachment,
     ResolvedVertexEdgeAttachment,
@@ -36,7 +38,7 @@ def _world_with_edge_edge_and_vertex_edge() -> TopologyWorld:
     world.replay_group_attachment_poses(world.get_group_of_element("T01"), "T01")
 
     ve = TopologyVertexEdgeAttachment(
-        "A002", "T03", "L", "LO", "T02", "L", "LO"
+        "A002", "T03", "L", "LO", "T02", "O", "LO", "CCW", "CW"
     )
     group_id = world.apply_attachment(ve)
     world.replay_group_attachment_poses(group_id, "T02")
@@ -61,10 +63,12 @@ def test_v2_snapshot_round_trip_rebuilds_resolved_attachments_and_replays(tmp_pa
             "attachment_id": "A002",
             "mob_element_id": "T03",
             "mob_vertex": "L",
-            "mob_edge": "LO",
+            "creation_mob_edge": "LO",
             "dest_element_id": "T02",
-            "dest_vertex": "L",
-            "dest_edge": "LO",
+            "dest_vertex": "O",
+            "creation_dest_edge": "LO",
+            "mob_orientation": "CCW",
+            "dest_orientation": "CW",
         },
     ]
     assert "resolved_attachments" not in snapshot
@@ -116,8 +120,17 @@ def test_topodump_exposes_v2_intentions_resolutions_split_points_and_coverages(t
 
     vertex_edge = attachments.find("VertexEdgeAttachment[@id='A002']")
     assert vertex_edge is not None
-    assert vertex_edge.find("Resolved[@status='ok']") is not None
-    assert vertex_edge.find("Resolved").get("positionFromAnchor") is not None
+    assert vertex_edge.get("mobOrientation") == "CCW"
+    assert vertex_edge.get("destOrientation") == "CW"
+    assert vertex_edge.get("creationMobEdge") == "LO"
+    assert vertex_edge.get("creationDestEdge") == "LO"
+    assert vertex_edge.get("mobEdge") is None
+    assert vertex_edge.get("destEdge") is None
+    resolved_vertex_edge = vertex_edge.find("Resolved[@status='ok']")
+    assert resolved_vertex_edge is not None
+    assert resolved_vertex_edge.get("mobEffectiveEdge") is not None
+    assert resolved_vertex_edge.get("destEffectiveEdge") is not None
+    assert resolved_vertex_edge.get("positionFromAnchor") is not None
 
     edges = root.findall("./Elements/Element/Edges/Edge")
     assert any(edge.find("Coverages/C") is not None for edge in edges)
@@ -129,3 +142,21 @@ def test_topodump_exposes_v2_intentions_resolutions_split_points_and_coverages(t
     assert root.find("Groups/Group") is not None
     assert root.find("Nodes/Node") is not None
     assert root.find("ConceptModels/ConceptModel") is not None
+
+
+def test_snapshot_vertex_edge_without_orientations_fails_explicitly():
+    snapshot = _world_with_edge_edge_and_vertex_edge()._exportPhysicalSnapshot()
+    vertex_edge = next(item for item in snapshot["attachments"] if item["kind"] == "vertex-edge")
+    del vertex_edge["mob_orientation"]
+
+    with pytest.raises(ValueError, match="missing VE orientation"):
+        TopologyWorld()._importPhysicalSnapshot(snapshot)
+
+
+def test_snapshot_vertex_edge_requires_renamed_creation_edge_fields():
+    snapshot = _world_with_edge_edge_and_vertex_edge()._exportPhysicalSnapshot()
+    vertex_edge = next(item for item in snapshot["attachments"] if item["kind"] == "vertex-edge")
+    vertex_edge["mob_edge"] = vertex_edge.pop("creation_mob_edge")
+
+    with pytest.raises(ValueError, match="creation_mob_edge"):
+        TopologyWorld()._importPhysicalSnapshot(snapshot)

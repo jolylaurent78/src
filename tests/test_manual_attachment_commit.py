@@ -41,7 +41,7 @@ def _world(*, same_shape: bool = False) -> TopologyWorld:
 
 
 def _ve_intent(mob="T01", dest="T02") -> ManualAttachmentIntent:
-    return ManualAttachmentIntent("vertex-edge", mob, "O", "LO", dest, "O", "LO")
+    return ManualAttachmentIntent("vertex-edge", mob, "O", "OB", dest, "B", "OB")
 
 
 def _pose(world: TopologyWorld, element_id: str):
@@ -94,7 +94,7 @@ def test_topological_preview_rejects_an_invalid_existing_mobile_group_without_co
     world.add_element_as_new_group(_triangle("T03", (3.0, 4.0)))
     world.setElementPose("T01", np.eye(2), np.zeros(2), mirrored=True)
     world.apply_attachment(
-        TopologyVertexEdgeAttachment("A001", "T01", "O", "LO", "T02", "O", "LO")
+        TopologyVertexEdgeAttachment("A001", "T01", "O", "OB", "T02", "B", "OB", "CCW", "CW")
     )
     world.replay_group_attachment_poses(world.get_group_of_element("T01"), "T02")
     world.setElementPose("T02", np.eye(2), np.zeros(2), mirrored=True)

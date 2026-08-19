@@ -7,6 +7,7 @@ from src.assembleur_core import (
     TopologyConstraintGeometryError,
     TopologyEdgeEdgeAttachment,
     TopologyVertexEdgeAttachment,
+    compute_vertex_edge_attachment_orientation,
 )
 
 
@@ -205,6 +206,7 @@ def buildTopologyAttachmentFromManualIntent(
     intent: ManualAttachmentIntent,
     *,
     attachment_id: str,
+    world,
 ) -> TopologyVertexEdgeAttachment | TopologyEdgeEdgeAttachment:
     """Matérialise une intention manuelle sans aucune résolution géométrique."""
     if not isinstance(intent, ManualAttachmentIntent):
@@ -217,10 +219,16 @@ def buildTopologyAttachmentFromManualIntent(
             attachment_id=normalized_id,
             mob_element_id=intent.mob_element_id,
             mob_vertex=intent.mob_vertex,
-            mob_edge=intent.mob_edge,
+            creation_mob_edge=intent.mob_edge,
             dest_element_id=intent.dest_element_id,
             dest_vertex=intent.dest_vertex,
-            dest_edge=intent.dest_edge,
+            creation_dest_edge=intent.dest_edge,
+            mob_orientation=compute_vertex_edge_attachment_orientation(
+                world, intent.mob_element_id, intent.mob_vertex, intent.mob_edge
+            ),
+            dest_orientation=compute_vertex_edge_attachment_orientation(
+                world, intent.dest_element_id, intent.dest_vertex, intent.dest_edge
+            ),
         )
     if intent.kind == "edge-edge":
         return TopologyEdgeEdgeAttachment(
@@ -250,6 +258,7 @@ def previewManualAttachment(
     attachment = buildTopologyAttachmentFromManualIntent(
         intent,
         attachment_id=attachment_id,
+        world=real_world,
     )
 
     mob_group_id = preview_world.get_group_of_element(attachment.mob_element_id)
@@ -326,6 +335,7 @@ def commitManualAttachment(
     attachment = buildTopologyAttachmentFromManualIntent(
         intent,
         attachment_id=real_world.new_attachment_id(),
+        world=real_world,
     )
     merged_group_id = real_world.apply_attachment(attachment)
     real_world.replay_group_attachment_poses(

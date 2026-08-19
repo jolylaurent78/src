@@ -49,10 +49,10 @@ def _ve_intent(mob_element_id="T01", dest_element_id="T02") -> ManualAttachmentI
         kind="vertex-edge",
         mob_element_id=mob_element_id,
         mob_vertex="O",
-        mob_edge="LO",
+        mob_edge="OB",
         dest_element_id=dest_element_id,
-        dest_vertex="O",
-        dest_edge="LO",
+        dest_vertex="B",
+        dest_edge="OB",
     )
 
 
@@ -68,24 +68,71 @@ def _assert_pose_equal(before, after) -> None:
 
 
 def test_manual_intent_builder_materializes_vertex_edge_without_resolution_fields():
+    world = _world_with_two_elements()
     attachment = buildTopologyAttachmentFromManualIntent(
-        _ve_intent(), attachment_id="PREVIEW_MANUAL"
+        _ve_intent(), attachment_id="PREVIEW_MANUAL", world=world
     )
 
     assert attachment == TopologyVertexEdgeAttachment(
         attachment_id="PREVIEW_MANUAL",
         mob_element_id="T01",
         mob_vertex="O",
-        mob_edge="LO",
+        creation_mob_edge="OB",
         dest_element_id="T02",
-        dest_vertex="O",
-        dest_edge="LO",
+        dest_vertex="B",
+        creation_dest_edge="OB",
+        mob_orientation="CCW",
+        dest_orientation="CW",
     )
     assert not hasattr(attachment, "t")
     assert not hasattr(attachment, "edgeFrom")
 
 
+def test_vertex_edge_preview_uses_dynamic_short_long_resolution():
+    world = _world_with_two_elements(same_shape=True)
+    intent = ManualAttachmentIntent(
+        kind="vertex-edge",
+        mob_element_id="T01",
+        mob_vertex="O",
+        mob_edge="OB",
+        dest_element_id="T02",
+        dest_vertex="O",
+        dest_edge="LO",
+    )
+
+    preview = previewManualAttachment(world, intent)
+
+    assert preview.accepted is True
+    resolved = preview.world.getResolvedAttachment(preview.attachment.attachment_id)
+    assert resolved.vertex_element_id == "T02"
+    assert resolved.edge_element_id == "T01"
+    assert resolved.position_from_anchor == 0.5
+
+
+def test_t3_t4_light_to_light_vertex_edge_preview_is_accepted():
+    world = TopologyWorld()
+    world.add_element_as_new_group(_triangle("T3", (3.0, -4.0)))
+    world.add_element_as_new_group(_triangle("T4", (6.0, 8.0)))
+    intent = ManualAttachmentIntent(
+        kind="vertex-edge",
+        mob_element_id="T3",
+        mob_vertex="L",
+        mob_edge="LO",
+        dest_element_id="T4",
+        dest_vertex="L",
+        dest_edge="LO",
+    )
+
+    preview = previewManualAttachment(world, intent)
+
+    assert preview.accepted is True
+    assert preview.attachment.mob_orientation == "CW"
+    assert preview.attachment.dest_orientation == "CCW"
+    assert preview.world.getResolvedAttachment(preview.attachment.attachment_id).position_from_anchor <= 1.0
+
+
 def test_manual_intent_builder_materializes_edge_edge_without_mapping():
+    world = _world_with_two_elements()
     intent = ManualAttachmentIntent(
         kind="edge-edge",
         mob_element_id="T01",
@@ -96,7 +143,7 @@ def test_manual_intent_builder_materializes_edge_edge_without_mapping():
         dest_edge="LO",
     )
     attachment = buildTopologyAttachmentFromManualIntent(
-        intent, attachment_id="PREVIEW_MANUAL"
+        intent, attachment_id="PREVIEW_MANUAL", world=world
     )
 
     assert attachment == TopologyEdgeEdgeAttachment(
@@ -147,7 +194,7 @@ def test_vertex_edge_preview_uses_resolver_when_destination_carries_the_vertex_s
         mob_edge="OB",
         dest_element_id="T02",
         dest_vertex="B",
-        dest_edge="BL",
+        dest_edge="OB",
     )
 
     preview = previewManualAttachment(world, intent)
@@ -198,7 +245,7 @@ def test_edge_edge_preview_keeps_destination_fixed_and_uses_resolved_edge_edge()
 def test_preview_rejects_elements_already_in_the_same_group_without_mutating_real_world():
     world = _world_with_two_elements()
     world.apply_attachment(
-        TopologyVertexEdgeAttachment("A001", "T01", "O", "LO", "T02", "O", "LO")
+        TopologyVertexEdgeAttachment("A001", "T01", "O", "OB", "T02", "B", "OB", "CCW", "CW")
     )
     real_attachments = dict(world.attachments)
 
@@ -226,7 +273,7 @@ def test_topological_preview_rejection_is_deterministic_and_leaves_real_world_un
     world.add_element_as_new_group(_triangle("T03", (3.0, 4.0)))
     world.setElementPose("T01", np.eye(2), np.zeros(2), mirrored=True)
     world.apply_attachment(
-        TopologyVertexEdgeAttachment("A001", "T01", "O", "LO", "T02", "O", "LO")
+        TopologyVertexEdgeAttachment("A001", "T01", "O", "OB", "T02", "B", "OB", "CCW", "CW")
     )
     world.replay_group_attachment_poses(
         world.get_group_of_element("T01"), "T02"

@@ -101,6 +101,27 @@ def _require_selected_group_anchor(
     return anchor
 
 
+def _root_element_from_group_anchor(
+    world: TopologyWorld,
+    group_id: str,
+    anchor,
+) -> str:
+    """Resolve the replay root from the anchor's durable physical node ID."""
+    owner = world.getElementVertexFromAnyNodeId(anchor.node_id, group_id)
+    if owner is None:
+        raise ValueError(
+            f"Ancre {anchor.anchor_id!r}: node_id non r\u00e9soluble "
+            f"{anchor.node_id!r}"
+        )
+    root_element_id = owner["elementId"]
+    if root_element_id not in world.getGroupElementIds(group_id):
+        raise ValueError(
+            f"Ancre {anchor.anchor_id!r}: propri\u00e9taire hors groupe "
+            f"{root_element_id!r}"
+        )
+    return root_element_id
+
+
 def _rejected(
     element_id: str,
     vertex_lambert_overrides: Mapping[str, tuple[float, float]],
@@ -182,9 +203,14 @@ def simulate_triangle_deformation(
         )
 
     try:
+        root_element_id = _root_element_from_group_anchor(
+            working_world,
+            candidate_group_id,
+            candidate_anchor,
+        )
         working_world.replay_group_attachment_poses(
             candidate_group_id,
-            element_id,
+            root_element_id,
         )
         working_world.reconcileGroupAnchorsByNode()
         working_world.applyGroupAnchor(candidate_anchor.anchor_id)
@@ -265,17 +291,26 @@ def simulate_city_deformation(
     working_world.rebuild_from_attachments()
     working_world.reconcileGroupAnchorsByNode()
 
-    replay_element_by_group: dict[str, str] = {}
     anchor_id_by_group: dict[str, str] = {}
     for element_id in changed_element_ids:
         group_id = working_world.get_group_of_element(element_id)
-        replay_element_by_group.setdefault(group_id, element_id)
         source_group_id = initial_world.get_group_of_element(element_id)
-        anchor_id_by_group[group_id] = source_anchor_id_by_group[source_group_id]
+        source_anchor_id = source_anchor_id_by_group[source_group_id]
+        existing = anchor_id_by_group.setdefault(group_id, source_anchor_id)
+        if existing != source_anchor_id:
+            raise ValueError(
+                f"Plusieurs ancres source pour le groupe reconstruit {group_id!r}"
+            )
 
     try:
-        for group_id, replay_element_id in replay_element_by_group.items():
-            working_world.replay_group_attachment_poses(group_id, replay_element_id)
+        for group_id, anchor_id in anchor_id_by_group.items():
+            anchor = working_world.groupAnchors.get(anchor_id)
+            if anchor is None:
+                raise ValueError(f"Ancre perdue pendant la reconstruction: {anchor_id!r}")
+            working_world.replay_group_attachment_poses(
+                group_id,
+                _root_element_from_group_anchor(working_world, group_id, anchor),
+            )
         working_world.reconcileGroupAnchorsByNode()
         for group_id, anchor_id in anchor_id_by_group.items():
             anchor = working_world.groupAnchors.get(anchor_id)

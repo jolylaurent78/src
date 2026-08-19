@@ -1,4 +1,5 @@
 import math
+import inspect
 
 import numpy as np
 import pytest
@@ -12,7 +13,11 @@ from src.assembleur_core import (
     TopologyEdgeEdgeAttachment,
     TopologyElement,
     TopologyVertexEdgeAttachment,
+    TopologyAttachmentResolver,
     TopologyWorld,
+    compute_triangle_intrinsic_orientation,
+    compute_vertex_edge_attachment_orientation,
+    resolve_vertex_edge_effective_edge,
 )
 
 
@@ -49,10 +54,12 @@ def _vertex_edge_attachment(attachment_id: str = "A001") -> TopologyVertexEdgeAt
         attachment_id=attachment_id,
         mob_element_id="T01",
         mob_vertex="O",
-        mob_edge="LO",
+        creation_mob_edge="OB",
         dest_element_id="T02",
         dest_vertex="O",
-        dest_edge="LO",
+        creation_dest_edge="LO",
+        mob_orientation="CCW",
+        dest_orientation="CW",
     )
 
 
@@ -69,10 +76,12 @@ def _vertex_edge_from_light_anchor(
         attachment_id=attachment_id,
         mob_element_id=mob_element_id,
         mob_vertex="L",
-        mob_edge="LO",
+        creation_mob_edge="LO",
         dest_element_id=dest_element_id,
-        dest_vertex="L",
-        dest_edge="LO",
+        dest_vertex="O",
+        creation_dest_edge="LO",
+        mob_orientation="CCW",
+        dest_orientation="CW",
     )
 
 
@@ -107,14 +116,35 @@ def _pose_signature(world: TopologyWorld, element_id: str) -> tuple[np.ndarray, 
     return (rotation.copy(), translation.copy(), mirrored)
 
 
+def _world_attachment_side(
+    world: TopologyWorld,
+    element_id: str,
+    anchor_vertex: str,
+    edge: str,
+) -> str:
+    endpoints = {"OB": ("O", "B"), "BL": ("B", "L"), "LO": ("L", "O")}[edge]
+    other = endpoints[1] if anchor_vertex == endpoints[0] else endpoints[0]
+    third = next(vertex for vertex in ("O", "B", "L") if vertex not in endpoints)
+
+    def point(vertex: str) -> np.ndarray:
+        return world.elementLocalToWorld(
+            element_id, world._local_vertex_point_by_type(element_id, vertex)
+        )
+
+    anchor = point(anchor_vertex)
+    ray = point(other) - anchor
+    third_vector = point(third) - anchor
+    cross = float(ray[0] * third_vector[1] - ray[1] * third_vector[0])
+    return "CCW" if cross > 0.0 else "CW"
+
+
 @pytest.mark.parametrize(
     "attachment",
     [
-        TopologyVertexEdgeAttachment("", "T01", "O", "LO", "T02", "O", "LO"),
-        TopologyVertexEdgeAttachment("A001", "T01", "L", "OB", "T02", "O", "LO"),
-        TopologyVertexEdgeAttachment("A001", "T99", "O", "LO", "T02", "O", "LO"),
-        TopologyVertexEdgeAttachment("A001", "T01", "O", "LO", "T01", "O", "LO"),
-        TopologyVertexEdgeAttachment("A001", "T01", "O", "XX", "T02", "O", "LO"),
+        TopologyVertexEdgeAttachment("", "T01", "O", "LO", "T02", "O", "LO", "CW", "CW"),
+        TopologyVertexEdgeAttachment("A001", "T99", "O", "LO", "T02", "O", "LO", "CW", "CW"),
+        TopologyVertexEdgeAttachment("A001", "T01", "O", "LO", "T01", "O", "LO", "CW", "CW"),
+        TopologyVertexEdgeAttachment("A001", "T01", "O", "XX", "T02", "O", "LO", "CW", "CW"),
     ],
 )
 def test_v2_attachment_validation_rejects_invalid_structure(attachment):
@@ -122,6 +152,102 @@ def test_v2_attachment_validation_rejects_invalid_structure(attachment):
 
     with pytest.raises(TopologyAttachmentValidationError):
         world.apply_attachment(attachment)
+
+
+@pytest.mark.parametrize(
+    ("vertex", "edge", "orientation"),
+    [
+        ("O", "OB", "CCW"), ("B", "OB", "CW"),
+        ("B", "BL", "CCW"), ("L", "BL", "CW"),
+        ("L", "LO", "CCW"), ("O", "LO", "CW"),
+    ],
+)
+def test_vertex_edge_orientation_uses_anchor_to_edge_and_third_vertex(vertex, edge, orientation):
+    world = _world_with_two_triangles()
+    assert compute_vertex_edge_attachment_orientation(world, "T01", vertex, edge) == orientation
+    world.replace_element_intrinsic_geometry("T01", _triangle("T01", (3.0, -4.0)))
+    assert compute_vertex_edge_attachment_orientation(world, "T01", vertex, edge) != orientation
+
+
+@pytest.mark.parametrize(("vertex", "edge"), [("L", "OB"), ("O", "XX")])
+def test_vertex_edge_orientation_rejects_non_incident_or_unknown(vertex, edge):
+    with pytest.raises(TopologyAttachmentResolutionError):
+        compute_vertex_edge_attachment_orientation(
+            _world_with_two_triangles(), "T01", vertex, edge
+        )
+
+
+@pytest.mark.parametrize(
+    "attachment",
+    [
+        TopologyVertexEdgeAttachment("A001", "T01", "O", "OB", "T02", "O", "LO", "NOPE", "CW"),
+        TopologyVertexEdgeAttachment("A001", "T01", "O", "OB", "T02", "O", "LO", "NOPE", "CCW"),
+    ],
+)
+def test_vertex_edge_validation_rejects_invalid_or_inconsistent_orientations(attachment):
+    with pytest.raises(TopologyAttachmentValidationError):
+        _world_with_two_triangles().apply_attachment(attachment)
+
+
+@pytest.mark.parametrize(
+    ("vertex", "intrinsic", "pose", "expected"),
+    [
+        ("O", "CCW", "CCW", "OB"), ("O", "CCW", "CW", "LO"),
+        ("O", "CW", "CW", "OB"), ("O", "CW", "CCW", "LO"),
+        ("B", "CCW", "CCW", "BL"), ("B", "CCW", "CW", "OB"),
+        ("B", "CW", "CW", "BL"), ("B", "CW", "CCW", "OB"),
+        ("L", "CCW", "CCW", "LO"), ("L", "CCW", "CW", "BL"),
+        ("L", "CW", "CW", "LO"), ("L", "CW", "CCW", "BL"),
+    ],
+)
+def test_vertex_edge_effective_edge_matrix(vertex, intrinsic, pose, expected):
+    assert resolve_vertex_edge_effective_edge(vertex, intrinsic, pose) == expected
+
+
+def test_triangle_intrinsic_orientation_uses_only_current_local_geometry():
+    world = _world_with_two_triangles((3.0, 4.0), (3.0, -4.0))
+    assert compute_triangle_intrinsic_orientation(world.elements["T01"]) == "CCW"
+    assert compute_triangle_intrinsic_orientation(world.elements["T02"]) == "CW"
+
+
+def test_vertex_edge_resolution_ignores_creation_edges():
+    world = _world_with_two_triangles()
+    first = TopologyVertexEdgeAttachment(
+        "A001", "T01", "O", "OB", "T02", "B", "BL", "CCW", "CW"
+    )
+    second = TopologyVertexEdgeAttachment(
+        "A001", "T01", "O", "LO", "T02", "B", "OB", "CCW", "CW"
+    )
+
+    first_resolved = TopologyAttachmentResolver.resolve(world, first)
+    second_resolved = TopologyAttachmentResolver.resolve(world, second)
+
+    assert first_resolved == second_resolved
+
+
+def test_vertex_edge_runtime_resolver_source_does_not_read_creation_edges():
+    source = inspect.getsource(TopologyAttachmentResolver._resolve_vertex_edge)
+    assert "creation_mob_edge" not in source
+    assert "creation_dest_edge" not in source
+
+
+def test_vertex_edge_recomputes_short_long_after_an_effective_edge_switch():
+    world = _world_with_two_triangles((10.0, 30.0), (0.0, 20.0))
+    attachment = TopologyVertexEdgeAttachment(
+        "A001", "T01", "B", "BL", "T02", "O", "LO", "CCW", "CW"
+    )
+    world.apply_attachment(attachment)
+    before = world.getResolvedAttachment("A001")
+
+    world.replace_element_intrinsic_geometry("T01", _triangle("T01", (10.0, -30.0)))
+    after = world.getResolvedAttachment("A001")
+
+    assert (before.mob_effective_edge, before.dest_effective_edge) == ("BL", "LO")
+    assert (before.vertex_element_id, before.edge_element_id) == ("T02", "T01")
+    assert before.position_from_anchor == pytest.approx(20.0 / 30.0)
+    assert (after.mob_effective_edge, after.dest_effective_edge) == ("OB", "LO")
+    assert (after.vertex_element_id, after.edge_element_id) == ("T01", "T02")
+    assert after.position_from_anchor == pytest.approx(10.0 / 20.0)
 
 
 def test_vertex_edge_resolver_uses_mobile_as_vertex_when_mobile_edge_is_shorter():
@@ -132,14 +258,14 @@ def test_vertex_edge_resolver_uses_mobile_as_vertex_when_mobile_edge_is_shorter(
 
     assert isinstance(resolved, ResolvedVertexEdgeAttachment)
     assert resolved.vertex_element_id == "T01"
-    assert resolved.vertex == "L"
+    assert resolved.vertex == "B"
     assert resolved.edge_element_id == "T02"
     assert resolved.edge == "LO"
     assert resolved.edge_anchor_vertex == "O"
-    assert resolved.position_from_anchor == pytest.approx(0.5)
+    assert resolved.position_from_anchor == pytest.approx(1.0)
 
 
-def test_vertex_edge_resolver_uses_destination_as_vertex_when_destination_edge_is_shorter():
+def test_vertex_edge_resolver_does_not_switch_when_intrinsic_lengths_cross():
     world = _world_with_two_triangles((6.0, 8.0), (3.0, 4.0))
     world.apply_attachment(_vertex_edge_attachment())
 
@@ -149,9 +275,178 @@ def test_vertex_edge_resolver_uses_destination_as_vertex_when_destination_edge_i
     assert resolved.vertex_element_id == "T02"
     assert resolved.vertex == "L"
     assert resolved.edge_element_id == "T01"
-    assert resolved.edge == "LO"
+    assert resolved.edge == "OB"
     assert resolved.edge_anchor_vertex == "O"
     assert resolved.position_from_anchor == pytest.approx(0.5)
+
+
+def test_vertex_edge_roles_follow_current_lengths_after_an_intrinsic_side_flip():
+    world = _world_with_two_triangles((0.0, 20.0), (0.0, 30.0))
+    attachment = TopologyVertexEdgeAttachment(
+        "A001", "T01", "O", "OB", "T02", "O", "LO", "CCW", "CW"
+    )
+    world.apply_attachment(attachment)
+    before = world.getResolvedAttachment("A001")
+
+    world.replace_element_intrinsic_geometry("T02", _triangle("T02", (0.0, -5.0)))
+    after = world.getResolvedAttachment("A001")
+
+    assert (before.vertex_element_id, before.vertex, before.edge_element_id, before.edge) == (
+        "T01", "B", "T02", "LO"
+    )
+    assert (after.vertex_element_id, after.vertex, after.edge_element_id, after.edge) == (
+        "T01", "B", "T02", "OB"
+    )
+    assert after.dest_effective_edge == "OB"
+    assert before.position_from_anchor == pytest.approx(10.0 / 30.0)
+    assert after.position_from_anchor == pytest.approx(1.0)
+    assert attachment.dest_orientation == "CW"
+
+    world.replay_group_attachment_poses(
+        world.get_group_of_element("T02"), root_element_id="T02"
+    )
+
+    assert world._resolved_attachment_geometry_is_satisfied(after, tolerance=1e-8)
+
+
+def test_vertex_edge_replay_accepts_an_intrinsic_side_flip_without_rewriting_intent():
+    world = _world_with_two_triangles((0.0, 5.0), (0.0, 10.0))
+    attachment = TopologyVertexEdgeAttachment(
+        "A001", "T01", "O", "OB", "T02", "O", "LO", "CCW", "CW"
+    )
+    world.apply_attachment(attachment)
+    before = world.getResolvedAttachment("A001")
+
+    world.replace_element_intrinsic_geometry("T01", _triangle("T01", (0.0, -5.0)))
+    after = world.getResolvedAttachment("A001")
+
+    assert attachment.mob_orientation == "CCW"
+    assert attachment.dest_orientation == "CW"
+    assert before.mob_effective_edge == "OB"
+    assert after.mob_effective_edge == "LO"
+    assert (after.vertex_element_id, after.vertex, after.edge_element_id, after.edge) == (
+        "T01", "L", "T02", "LO"
+    )
+    deformed_pose = _pose_signature(world, "T01")
+    world.replay_group_attachment_poses(
+        world.get_group_of_element("T01"), root_element_id="T01"
+    )
+
+    assert world._resolved_attachment_geometry_is_satisfied(after, tolerance=1e-8)
+    replayed_deformed_pose = _pose_signature(world, "T01")
+    assert np.array_equal(replayed_deformed_pose[0], deformed_pose[0])
+    assert np.array_equal(replayed_deformed_pose[1], deformed_pose[1])
+    assert replayed_deformed_pose[2] is deformed_pose[2]
+    assert _world_attachment_side(world, "T02", "O", "LO") == "CW"
+    assert np.linalg.det(world.getElementPose("T02")[0]) == pytest.approx(1.0)
+
+
+def test_vertex_edge_replay_keeps_a_ccw_neighbour_around_a_deformed_target():
+    world = _world_with_two_triangles((3.0, -4.0), (3.0, 4.0))
+    attachment = TopologyVertexEdgeAttachment(
+        "A001", "T01", "O", "OB", "T02", "O", "OB", "CW", "CCW"
+    )
+    world.apply_attachment(attachment)
+    world.replace_element_intrinsic_geometry("T01", _triangle("T01", (3.0, 4.0)))
+    deformed_pose = _pose_signature(world, "T01")
+
+    world.replay_group_attachment_poses(
+        world.get_group_of_element("T01"), root_element_id="T01"
+    )
+
+    resolved = world.getResolvedAttachment("A001")
+    replayed_deformed_pose = _pose_signature(world, "T01")
+    assert world._resolved_attachment_geometry_is_satisfied(resolved, tolerance=1e-8)
+    assert np.array_equal(replayed_deformed_pose[0], deformed_pose[0])
+    assert np.array_equal(replayed_deformed_pose[1], deformed_pose[1])
+    assert _world_attachment_side(world, "T02", "O", "OB") == "CCW"
+    assert np.linalg.det(world.getElementPose("T02")[0]) == pytest.approx(1.0)
+
+
+def test_vertex_edge_chain_replays_after_the_middle_triangle_crosses_its_axes():
+    world = _world_with_two_triangles((3.0, 4.0), (3.0, 4.0))
+    world.add_element_as_new_group(_triangle("T03", (0.0, 10.0)))
+    attachments = (
+        TopologyVertexEdgeAttachment(
+            "A001", "T01", "L", "LO", "T02", "O", "LO",
+            compute_vertex_edge_attachment_orientation(world, "T01", "L", "LO"),
+            compute_vertex_edge_attachment_orientation(world, "T02", "O", "LO"),
+        ),
+        TopologyVertexEdgeAttachment(
+            "A002", "T02", "L", "LO", "T03", "O", "LO",
+            compute_vertex_edge_attachment_orientation(world, "T02", "L", "LO"),
+            compute_vertex_edge_attachment_orientation(world, "T03", "O", "LO"),
+        ),
+    )
+    group_id = world.apply_attachments(attachments)
+
+    world.replace_element_intrinsic_geometry("T02", _triangle("T02", (3.0, -4.0)))
+    world.replay_group_attachment_poses(group_id, root_element_id="T02")
+
+    assert tuple(world.attachments.values()) == attachments
+    assert all(
+        world._resolved_attachment_geometry_is_satisfied(
+            world.getResolvedAttachment(attachment.attachment_id), tolerance=1e-8
+        )
+        for attachment in attachments
+    )
+
+
+def test_edge_edge_then_vertex_edge_replays_with_current_effective_edge():
+    """Regression: T01 -- EE -- T02 -- VE -- T03 after T02 flips intrinsically."""
+    world = TopologyWorld()
+    for element_id in ("T01", "T02", "T03"):
+        world.add_element_as_new_group(_triangle(element_id, (3.0, 4.0)))
+    ee = TopologyEdgeEdgeAttachment("A001", "T01", "OB", "T02", "OB")
+    ve = TopologyVertexEdgeAttachment(
+        "A002", "T02", "O", "OB", "T03", "B", "OB", "CCW", "CW"
+    )
+    group_id = world.apply_attachments([ee, ve])
+    before = world.getResolvedAttachment("A002")
+
+    world.replace_element_intrinsic_geometry("T02", _triangle("T02", (3.0, -4.0)))
+    after = world.getResolvedAttachment("A002")
+    world.replay_group_attachment_poses(group_id, root_element_id="T01")
+
+    assert isinstance(before, ResolvedVertexEdgeAttachment)
+    assert isinstance(after, ResolvedVertexEdgeAttachment)
+    assert before.mob_effective_edge == "OB"
+    assert after.mob_effective_edge == "LO"
+    assert after.edge == "OB"
+    assert world._resolved_attachment_geometry_is_satisfied(
+        world.getResolvedAttachment("A001"), tolerance=1e-8
+    )
+    assert world._resolved_attachment_geometry_is_satisfied(after, tolerance=1e-8)
+    assert world.is_group_contour_valid(group_id)
+
+
+def test_vertex_edge_five_triangle_chain_replays_outward_from_the_deformed_middle():
+    world = TopologyWorld()
+    for index in range(1, 6):
+        world.add_element_as_new_group(_triangle(f"T{index:02d}", (3.0, 4.0)))
+    attachments = [
+        TopologyVertexEdgeAttachment(
+            f"A{index:03d}", f"T{index:02d}", "O", "OB",
+            f"T{index + 1:02d}", "B", "OB", "CCW", "CW",
+        )
+        for index in range(1, 5)
+    ]
+    group_id = world.apply_attachments(attachments)
+    world.replace_element_intrinsic_geometry("T04", _triangle("T04", (3.0, -4.0)))
+    deformed_pose = _pose_signature(world, "T04")
+
+    world.replay_group_attachment_poses(group_id, root_element_id="T04")
+
+    replayed_pose = _pose_signature(world, "T04")
+    assert np.array_equal(replayed_pose[0], deformed_pose[0])
+    assert np.array_equal(replayed_pose[1], deformed_pose[1])
+    assert all(
+        world._resolved_attachment_geometry_is_satisfied(
+            world.getResolvedAttachment(attachment.attachment_id), tolerance=1e-8
+        )
+        for attachment in attachments
+    )
+    assert all(world.getElementPose(f"T{index:02d}")[2] is False for index in range(1, 6))
 
 
 def test_vertex_edge_equal_lengths_remains_vertex_edge():
@@ -161,7 +456,7 @@ def test_vertex_edge_equal_lengths_remains_vertex_edge():
     resolved = world.getResolvedAttachment("A001")
 
     assert isinstance(resolved, ResolvedVertexEdgeAttachment)
-    assert resolved.position_from_anchor == pytest.approx(1.0)
+    assert resolved.position_from_anchor == pytest.approx(0.5)
 
 
 @pytest.mark.parametrize(
@@ -195,15 +490,7 @@ def test_resolved_attachment_cache_is_lazy_and_invalidated_only_for_incident_ele
     world = _world_with_two_triangles()
     world.add_element_as_new_group(_triangle("T03", (4.0, 7.0)))
     world.apply_attachment(_vertex_edge_attachment("A001"))
-    world.apply_attachment(TopologyVertexEdgeAttachment(
-        attachment_id="A002",
-        mob_element_id="T02",
-        mob_vertex="O",
-        mob_edge="LO",
-        dest_element_id="T03",
-        dest_vertex="O",
-        dest_edge="LO",
-    ))
+    world.apply_attachment(_vertex_edge_from_light_anchor("A002", "T02", "T03"))
 
     first = world.getResolvedAttachment("A001")
     assert world.getResolvedAttachment("A001") is first
@@ -219,7 +506,7 @@ def test_resolved_attachment_cache_is_lazy_and_invalidated_only_for_incident_ele
 
 def test_resolution_error_for_missing_intrinsic_coordinates_is_explicit():
     world = _world_with_two_triangles()
-    del world.elements["T01"].vertex_local_xy[2]
+    del world.elements["T01"].vertex_local_xy[1]
 
     with pytest.raises(TopologyAttachmentResolutionError, match="coordonnées locales absentes"):
         world.apply_attachment(_vertex_edge_attachment())
@@ -246,7 +533,7 @@ def test_v2_vertex_edge_equal_lengths_unions_only_the_anchor():
 
     resolved = world.getResolvedAttachment("A001")
     assert isinstance(resolved, ResolvedVertexEdgeAttachment)
-    assert resolved.position_from_anchor == pytest.approx(1.0)
+    assert resolved.position_from_anchor == pytest.approx(0.5)
     assert world.find_node(world.get_element_vertex_node_id_by_type("T01", "O")) == (
         world.find_node(world.get_element_vertex_node_id_by_type("T02", "O"))
     )
@@ -285,16 +572,10 @@ def test_v2_attachment_chain_builds_one_group_of_three_elements():
     world = _world_with_two_triangles()
     world.add_element_as_new_group(_triangle("T03", (4.0, 7.0)))
     attachments = [
-        _vertex_edge_attachment("A001"),
+            _vertex_edge_attachment("A001"),
         TopologyVertexEdgeAttachment(
-            attachment_id="A002",
-            mob_element_id="T02",
-            mob_vertex="O",
-            mob_edge="LO",
-            dest_element_id="T03",
-            dest_vertex="O",
-            dest_edge="LO",
-        ),
+            "A002", "T02", "L", "LO", "T03", "O", "LO", "CCW", "CW"
+            ),
     ]
 
     world.apply_attachments(attachments)
@@ -310,15 +591,7 @@ def test_v2_rebuild_is_deterministic_without_attachment_duplication():
     world.add_element_as_new_group(_triangle("T03", (4.0, 7.0)))
     world.apply_attachments([
         _vertex_edge_attachment("A001"),
-        TopologyVertexEdgeAttachment(
-            attachment_id="A002",
-            mob_element_id="T02",
-            mob_vertex="O",
-            mob_edge="LO",
-            dest_element_id="T03",
-            dest_vertex="O",
-            dest_edge="LO",
-        ),
+        _vertex_edge_from_light_anchor("A002", "T02", "T03"),
     ])
 
     def topology_state() -> tuple[list[str], list[str], list[str]]:
@@ -351,15 +624,7 @@ def test_v2_intrinsic_invalidation_is_selective_across_rebuild():
     world.add_element_as_new_group(_triangle("T03", (4.0, 7.0)))
     world.apply_attachments([
         _vertex_edge_attachment("A001"),
-        TopologyVertexEdgeAttachment(
-            attachment_id="A002",
-            mob_element_id="T02",
-            mob_vertex="O",
-            mob_edge="LO",
-            dest_element_id="T03",
-            dest_vertex="O",
-            dest_edge="LO",
-        ),
+        _vertex_edge_from_light_anchor("A002", "T02", "T03"),
     ])
     first = world.getResolvedAttachment("A001")
     second = world.getResolvedAttachment("A002")
@@ -382,9 +647,9 @@ def test_v2_split_point_uses_resolved_mobile_shorter_vertex_edge():
 
     split_points = _edge_split_points(world, "T02", "LO")
 
-    assert [point["t"] for point in split_points] == pytest.approx([0.0, 0.6, 1.0])
+    assert [point["t"] for point in split_points] == pytest.approx([0.0, 0.4, 1.0])
     assert split_points[1] == {
-        "t": pytest.approx(0.6),
+        "t": pytest.approx(0.4),
         "nodeCanon": world.find_node(
             world.get_element_vertex_node_id_by_type("T01", "O")
         ),
@@ -404,7 +669,7 @@ def test_v2_split_point_uses_resolved_destination_shorter_vertex_edge():
 
     assert [point["t"] for point in split_points] == pytest.approx([0.0, 0.6, 1.0])
     assert split_points[1]["nodeCanon"] == world.find_node(
-        world.get_element_vertex_node_id_by_type("T02", "O")
+        world.get_element_vertex_node_id_by_type("T02", "L")
     )
 
 
@@ -416,14 +681,14 @@ def test_v2_split_point_converts_anchor_at_physical_edge_end():
 
     split_points = _edge_split_points(world, "T02", "LO")
 
-    assert [point["t"] for point in split_points] == pytest.approx([0.0, 0.4, 1.0])
+    assert [point["t"] for point in split_points] == pytest.approx([0.0, 0.9, 1.0])
 
 
 def test_v2_equal_vertex_edge_has_no_interior_split_or_endpoint_union():
     world = _world_with_two_triangles((0.0, 60.0), (0.0, 60.0))
     world.apply_attachment(_vertex_edge_attachment())
 
-    assert [point["t"] for point in _edge_split_points(world, "T02", "LO")] == [0.0, 1.0]
+    assert [point["t"] for point in _edge_split_points(world, "T02", "LO")] == pytest.approx([0.0, 5.0 / 6.0, 1.0])
     assert world.find_node(world.get_element_vertex_node_id_by_type("T01", "L")) != (
         world.find_node(world.get_element_vertex_node_id_by_type("T02", "L"))
     )
@@ -595,7 +860,7 @@ def test_v2_replay_equal_vertex_edge_remains_vertex_edge():
 
     resolved = world.getResolvedAttachment("A001")
     assert isinstance(resolved, ResolvedVertexEdgeAttachment)
-    assert resolved.position_from_anchor == pytest.approx(1.0)
+    assert resolved.position_from_anchor == pytest.approx(1.0 / 6.0)
     world.replay_group_attachment_poses(
         world.get_group_of_element("T02"),
         root_element_id="T02",
@@ -627,7 +892,9 @@ def test_v2_replay_chain_is_deterministic_and_validates_all_constraints():
     world.add_element_as_new_group(_triangle("T03", (4.0, 7.0)))
     world.apply_attachments([
         TopologyEdgeEdgeAttachment("A001", "T01", "OB", "T02", "OB"),
-        TopologyVertexEdgeAttachment("A002", "T02", "O", "LO", "T03", "O", "LO"),
+            TopologyVertexEdgeAttachment(
+                "A002", "T02", "L", "LO", "T03", "O", "LO", "CW", "CCW"
+        ),
     ])
     _set_pose(world, "T01", 0.29, (10.0, 5.0))
     _set_pose(world, "T02", -0.8, (61.0, 77.0))

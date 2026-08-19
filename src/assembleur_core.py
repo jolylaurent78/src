@@ -157,15 +157,17 @@ class TopologyAttachmentResolutionError(ValueError):
 
 @dataclass(frozen=True)
 class TopologyVertexEdgeAttachment:
-    """Intention topologique persistante d'un raccord vertex-edge."""
+    """Intention persistante VE; les arêtes de création sont diagnostiques."""
 
     attachment_id: str
     mob_element_id: str
     mob_vertex: str
-    mob_edge: str
+    creation_mob_edge: str
     dest_element_id: str
     dest_vertex: str
-    dest_edge: str
+    creation_dest_edge: str
+    mob_orientation: str
+    dest_orientation: str
 
 
 @dataclass(frozen=True)
@@ -188,6 +190,8 @@ class ResolvedVertexEdgeAttachment:
     anchor_mob_vertex: str
     anchor_dest_element_id: str
     anchor_dest_vertex: str
+    mob_effective_edge: str
+    dest_effective_edge: str
     vertex_element_id: str
     vertex: str
     edge_element_id: str
@@ -213,6 +217,110 @@ class ResolvedEdgeEdgeAttachment:
 
 ResolvedAttachment = ResolvedVertexEdgeAttachment | ResolvedEdgeEdgeAttachment
 TopologyAttachmentV2 = TopologyVertexEdgeAttachment | TopologyEdgeEdgeAttachment
+
+
+_VERTEX_EDGE_CANONICAL_ENDPOINTS = {
+    "OB": ("O", "B"),
+    "BL": ("B", "L"),
+    "LO": ("L", "O"),
+}
+_VERTEX_EDGE_ORIENTATIONS = frozenset({"CW", "CCW"})
+_VERTEX_EDGE_FORWARD_BY_VERTEX = {"O": "OB", "B": "BL", "L": "LO"}
+_VERTEX_EDGE_BACKWARD_BY_VERTEX = {"O": "LO", "B": "OB", "L": "BL"}
+
+
+def compute_triangle_intrinsic_orientation(element) -> str:
+    """Return the current intrinsic orientation of an O/B/L triangle.
+
+    This pure helper reads only ``vertex_local_xy``.  It deliberately ignores
+    world pose, mirroring and attachment history.
+    """
+    def _point(vertex: str) -> np.ndarray:
+        try:
+            index = element.vertex_types.index(vertex)
+            raw = element.vertex_local_xy[index]
+        except (ValueError, KeyError) as exc:
+            raise TopologyAttachmentResolutionError(
+                f"Triangle intrinsic orientation: coordonnées locales absentes pour "
+                f"{element.element_id}.{vertex}"
+            ) from exc
+        point = np.asarray(raw, dtype=float)
+        if point.shape != (2,) or not np.all(np.isfinite(point)):
+            raise TopologyAttachmentResolutionError(
+                f"Triangle intrinsic orientation: invalid local coordinates for "
+                f"{element.element_id}.{vertex}"
+            )
+        return point
+
+    origin = _point("O")
+    ob = _point("B") - origin
+    ol = _point("L") - origin
+    cross = float(ob[0] * ol[1] - ob[1] * ol[0])
+    if cross > 0.0:
+        return "CCW"
+    if cross < 0.0:
+        return "CW"
+    raise TopologyAttachmentResolutionError(
+        f"Triangle intrinsic orientation: degenerate triangle for {element.element_id!r}"
+    )
+
+
+def resolve_vertex_edge_effective_edge(
+    vertex: str,
+    intrinsic_orientation: str,
+    pose_orientation: str,
+) -> str:
+    """Resolve the current incident edge from intrinsic geometry and VE intent."""
+    if vertex not in _VERTEX_EDGE_FORWARD_BY_VERTEX:
+        raise TopologyAttachmentResolutionError(
+            f"Vertex-edge effective edge: invalid vertex {vertex!r}"
+        )
+    if intrinsic_orientation not in _VERTEX_EDGE_ORIENTATIONS:
+        raise TopologyAttachmentResolutionError(
+            f"Vertex-edge effective edge: invalid intrinsic orientation "
+            f"{intrinsic_orientation!r}"
+        )
+    if pose_orientation not in _VERTEX_EDGE_ORIENTATIONS:
+        raise TopologyAttachmentResolutionError(
+            f"Vertex-edge effective edge: invalid pose orientation {pose_orientation!r}"
+        )
+    return (
+        _VERTEX_EDGE_FORWARD_BY_VERTEX[vertex]
+        if intrinsic_orientation == pose_orientation
+        else _VERTEX_EDGE_BACKWARD_BY_VERTEX[vertex]
+    )
+
+
+def compute_vertex_edge_attachment_orientation(
+    world,
+    element_id: str,
+    anchor_vertex: str,
+    edge: str,
+) -> str:
+    """Materialize the persisted VE pose orientation at creation time.
+
+    The selected creation edge is used only here to record which side was
+    chosen.  Runtime resolution later uses the persisted result together with
+    current intrinsic geometry, never this historical edge.
+    """
+    element = world.elements.get(element_id)
+    if element is None:
+        raise TopologyAttachmentResolutionError(
+            f"Vertex-edge orientation: unknown element {element_id!r}"
+        )
+    endpoints = _VERTEX_EDGE_CANONICAL_ENDPOINTS.get(edge)
+    if endpoints is None or anchor_vertex not in endpoints:
+        raise TopologyAttachmentResolutionError(
+            f"Vertex-edge orientation: invalid anchor {anchor_vertex!r}/{edge!r}"
+        )
+    intrinsic_orientation = compute_triangle_intrinsic_orientation(element)
+    if edge == _VERTEX_EDGE_FORWARD_BY_VERTEX[anchor_vertex]:
+        return intrinsic_orientation
+    if edge == _VERTEX_EDGE_BACKWARD_BY_VERTEX[anchor_vertex]:
+        return "CW" if intrinsic_orientation == "CCW" else "CCW"
+    raise TopologyAttachmentResolutionError(
+        f"Vertex-edge orientation: invalid edge {edge!r} for {anchor_vertex!r}"
+    )
 
 
 class TopologyConstraintGeometryError(ValueError):
@@ -1638,11 +1746,7 @@ class TopologyChemins:
 class TopologyAttachmentResolver:
     """Interprète exclusivement les intentions d'attachments V2."""
 
-    _EDGE_VERTICES = {
-        "OB": ("O", "B"),
-        "BL": ("B", "L"),
-        "LO": ("L", "O"),
-    }
+    _EDGE_VERTICES = _VERTEX_EDGE_CANONICAL_ENDPOINTS
     _VERTICES = frozenset({"O", "B", "L"})
 
     @classmethod
@@ -1673,26 +1777,39 @@ class TopologyAttachmentResolver:
                 f"Attachment {attachment.attachment_id}: mobile et destination identiques"
             )
 
-        cls._validate_edge(mob_element, attachment.mob_edge, attachment.attachment_id)
-        cls._validate_edge(dest_element, attachment.dest_edge, attachment.attachment_id)
         if isinstance(attachment, TopologyVertexEdgeAttachment):
+            # Creation edges are retained for persistence/debug only.  They
+            # intentionally do not constrain the current VE resolution.
+            cls._validate_historical_edge(
+                attachment.creation_mob_edge, attachment.attachment_id
+            )
+            cls._validate_historical_edge(
+                attachment.creation_dest_edge, attachment.attachment_id
+            )
             cls._validate_vertex(
                 mob_element, attachment.mob_vertex, attachment.attachment_id
             )
             cls._validate_vertex(
                 dest_element, attachment.dest_vertex, attachment.attachment_id
             )
-            if attachment.mob_vertex not in cls._EDGE_VERTICES[attachment.mob_edge]:
+            if attachment.mob_orientation not in _VERTEX_EDGE_ORIENTATIONS:
                 raise TopologyAttachmentValidationError(
-                    f"Attachment {attachment.attachment_id}: sommet mobile "
-                    "non incident à son arête"
+                    f"Attachment {attachment.attachment_id}: invalid mobile orientation "
+                    f"{attachment.mob_orientation!r}"
                 )
-            if attachment.dest_vertex not in cls._EDGE_VERTICES[attachment.dest_edge]:
+            if attachment.dest_orientation not in _VERTEX_EDGE_ORIENTATIONS:
                 raise TopologyAttachmentValidationError(
-                    f"Attachment {attachment.attachment_id}: sommet destination "
-                    "non incident à son arête"
+                    f"Attachment {attachment.attachment_id}: invalid destination orientation "
+                    f"{attachment.dest_orientation!r}"
                 )
-
+            if attachment.mob_orientation == attachment.dest_orientation:
+                raise TopologyAttachmentValidationError(
+                    f"Attachment {attachment.attachment_id}: Vertex-Edge orientations "
+                    "must be opposite"
+                )
+        else:
+            cls._validate_edge(mob_element, attachment.mob_edge, attachment.attachment_id)
+            cls._validate_edge(dest_element, attachment.dest_edge, attachment.attachment_id)
     @classmethod
     def resolve(cls, world, attachment: TopologyAttachmentV2) -> ResolvedAttachment:
         cls.validate(world, attachment)
@@ -1718,6 +1835,13 @@ class TopologyAttachmentResolver:
             )
         for vertex in cls._EDGE_VERTICES[edge]:
             cls._validate_vertex(element, vertex, attachment_id)
+
+    @classmethod
+    def _validate_historical_edge(cls, edge: str, attachment_id: str) -> None:
+        if edge not in cls._EDGE_VERTICES:
+            raise TopologyAttachmentValidationError(
+                f"Attachment {attachment_id}: arête historique invalide {edge!r}"
+            )
 
     @classmethod
     def _other_vertex(cls, edge: str, anchor_vertex: str) -> str:
@@ -1770,10 +1894,18 @@ class TopologyAttachmentResolver:
         dest_anchor = cls._local_point(
             dest_element, attachment.dest_vertex, attachment.attachment_id
         )
-        mob_other_vertex = cls._other_vertex(attachment.mob_edge, attachment.mob_vertex)
-        dest_other_vertex = cls._other_vertex(
-            attachment.dest_edge, attachment.dest_vertex
+        mob_effective_edge = resolve_vertex_edge_effective_edge(
+            attachment.mob_vertex,
+            compute_triangle_intrinsic_orientation(mob_element),
+            attachment.mob_orientation,
         )
+        dest_effective_edge = resolve_vertex_edge_effective_edge(
+            attachment.dest_vertex,
+            compute_triangle_intrinsic_orientation(dest_element),
+            attachment.dest_orientation,
+        )
+        mob_other_vertex = cls._other_vertex(mob_effective_edge, attachment.mob_vertex)
+        dest_other_vertex = cls._other_vertex(dest_effective_edge, attachment.dest_vertex)
         mob_other = cls._local_point(
             mob_element, mob_other_vertex, attachment.attachment_id
         )
@@ -1791,14 +1923,14 @@ class TopologyAttachmentResolver:
             vertex_element_id = attachment.mob_element_id
             vertex = mob_other_vertex
             edge_element_id = attachment.dest_element_id
-            edge = attachment.dest_edge
+            edge = dest_effective_edge
             edge_anchor_vertex = attachment.dest_vertex
             position_from_anchor = mob_length / dest_length
         else:
             vertex_element_id = attachment.dest_element_id
             vertex = dest_other_vertex
             edge_element_id = attachment.mob_element_id
-            edge = attachment.mob_edge
+            edge = mob_effective_edge
             edge_anchor_vertex = attachment.mob_vertex
             position_from_anchor = dest_length / mob_length
 
@@ -1808,6 +1940,8 @@ class TopologyAttachmentResolver:
             anchor_mob_vertex=attachment.mob_vertex,
             anchor_dest_element_id=attachment.dest_element_id,
             anchor_dest_vertex=attachment.dest_vertex,
+            mob_effective_edge=mob_effective_edge,
+            dest_effective_edge=dest_effective_edge,
             vertex_element_id=vertex_element_id,
             vertex=vertex,
             edge_element_id=edge_element_id,
@@ -2130,7 +2264,7 @@ class TopologyWorld:
                 resolved.attachment_id,
                 )
             if t_phys < 0.0 - eps_t or t_phys > 1.0 + eps_t:
-                raise ValueError(
+                raise TopologyConstraintGeometryError(
                     f"[DP][{edge.edge_id()}] vertex-edge t out of [0,1] "
                     f"(t={t_phys:.6f}) id={resolved.attachment_id}"
                 )
@@ -2896,11 +3030,19 @@ class TopologyWorld:
         else:
             return True, []
         try:
-            R, T = self.compute_rigid_transform_from_two_point_correspondences(
-                j0["mobPt"],
-                j1["mobPt"],
-                j0["destPt"],
-                j1["destPt"],
+            R, T = self.compute_vertex_edge_attachment_rigid_transform(
+                attachment,
+                resolved,
+                mobile_element_id=(
+                    resolved.edge_element_id
+                    if edge_group_id == gid_mob
+                    else resolved.vertex_element_id
+                ),
+                target_element_id=(
+                    resolved.vertex_element_id
+                    if edge_group_id == gid_mob
+                    else resolved.edge_element_id
+                ),
             )
         except TopologyConstraintGeometryError:
             return True, []
@@ -3520,7 +3662,7 @@ class TopologyWorld:
             attachment_id,
         )
         if t_phys < 0.0 or t_phys > 1.0:
-            raise ValueError(
+            raise TopologyConstraintGeometryError(
                 f"Attachment {attachment_id}: position résolue hors [0,1] "
                 f"({t_phys:.6f})"
             )
@@ -3926,6 +4068,91 @@ class TopologyWorld:
         translation = p0t - (rotation @ p0m)
         return rotation, translation
 
+    def compute_vertex_edge_attachment_rigid_transform(
+        self,
+        attachment: TopologyVertexEdgeAttachment,
+        resolved: ResolvedVertexEdgeAttachment,
+        mobile_element_id: str,
+        target_element_id: str,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return the proper world-space displacement prescribed by a VE intent.
+
+        The frozen CW/CCW intent has already validated the attachment.  A VE
+        has two exact point correspondences, therefore it has one proper
+        rotation: no extra CW/CCW branch exists here.  The intent is realised
+        by replaying outward from the authoritative root (the group-anchor
+        owner during a deformation), so this helper receives the already
+        placed element as ``target_element_id`` and repositions only its
+        neighbour.
+
+        The returned ``R, T`` maps the *current world points* of the mobile
+        element to the target.  This makes the result directly usable by both
+        OVL (which moves a boundary ring) and replay (which composes it with
+        the current element pose).
+        """
+        if attachment.attachment_id != resolved.attachment_id:
+            raise TopologyAttachmentResolutionError(
+                "Attachment VE/r\u00e9solution incoh\u00e9rents"
+            )
+        endpoints = {
+            resolved.anchor_mob_element_id,
+            resolved.anchor_dest_element_id,
+        }
+        if {mobile_element_id, target_element_id} != endpoints:
+            raise ValueError(
+                f"Attachment {resolved.attachment_id}: \u00e9l\u00e9ments incoh\u00e9rents"
+            )
+
+        if mobile_element_id == attachment.mob_element_id:
+            mobile_anchor_vertex = attachment.mob_vertex
+            target_anchor_vertex = attachment.dest_vertex
+        elif mobile_element_id == attachment.dest_element_id:
+            mobile_anchor_vertex = attachment.dest_vertex
+            target_anchor_vertex = attachment.mob_vertex
+        else:
+            raise ValueError(
+                f"Attachment {resolved.attachment_id}: mobile VE incoh\u00e9rent"
+            )
+
+        mobile_point_0 = self.elementLocalToWorld(
+            mobile_element_id,
+            self._local_vertex_point_by_type(mobile_element_id, mobile_anchor_vertex),
+        )
+        target_point_0 = self.elementLocalToWorld(
+            target_element_id,
+            self._local_vertex_point_by_type(target_element_id, target_anchor_vertex),
+        )
+        edge_point = self._resolved_edge_local_point(
+            resolved.edge_element_id,
+            resolved.edge,
+            resolved.edge_anchor_vertex,
+            resolved.position_from_anchor,
+            resolved.attachment_id,
+        )
+        if mobile_element_id == resolved.vertex_element_id:
+            mobile_point_1 = self.elementLocalToWorld(
+                mobile_element_id,
+                self._local_vertex_point_by_type(resolved.vertex_element_id, resolved.vertex),
+            )
+            target_point_1 = self.elementLocalToWorld(target_element_id, edge_point)
+        elif mobile_element_id == resolved.edge_element_id:
+            mobile_point_1 = self.elementLocalToWorld(mobile_element_id, edge_point)
+            target_point_1 = self.elementLocalToWorld(
+                target_element_id,
+                self._local_vertex_point_by_type(resolved.vertex_element_id, resolved.vertex),
+            )
+        else:
+            raise ValueError(
+                f"Attachment {resolved.attachment_id}: point r\u00e9solu incoh\u00e9rent"
+            )
+
+        # The two VE correspondences determine one proper rotation. The replay
+        # direction, rather than a reversed duplicate correspondence, selects
+        # which triangle is repositioned around the already placed target.
+        return self.compute_rigid_transform_from_two_point_correspondences(
+            mobile_point_0, mobile_point_1, target_point_0, target_point_1
+        )
+
     def _local_vertex_point_by_type(
         self,
         element_id: str,
@@ -3999,72 +4226,27 @@ class TopologyWorld:
                 self._local_vertex_point_by_type(target_element_id, target_vertices[1]),
             )
         elif isinstance(resolved, ResolvedVertexEdgeAttachment):
-            endpoints = {
-                resolved.anchor_mob_element_id,
-                resolved.anchor_dest_element_id,
-            }
-            if {mobile_element_id, target_element_id} != endpoints:
-                raise ValueError(
-                    f"Attachment {resolved.attachment_id}: éléments incohérents"
+            attachment = self.attachments.get(resolved.attachment_id)
+            if not isinstance(attachment, TopologyVertexEdgeAttachment):
+                raise TopologyAttachmentResolutionError(
+                    f"Attachment {resolved.attachment_id}: missing VE intention"
                 )
-
-            if mobile_element_id == resolved.anchor_mob_element_id:
-                mobile_anchor_vertex = resolved.anchor_mob_vertex
-                target_anchor_vertex = resolved.anchor_dest_vertex
-            else:
-                mobile_anchor_vertex = resolved.anchor_dest_vertex
-                target_anchor_vertex = resolved.anchor_mob_vertex
-
-            mobile_point_0 = self._effective_mobile_local_point(
+            rotation, translation = self.compute_vertex_edge_attachment_rigid_transform(
+                attachment,
+                resolved,
                 mobile_element_id,
-                self._local_vertex_point_by_type(
-                    mobile_element_id,
-                    mobile_anchor_vertex,
-                ),
-        )
-            target_point_0 = self.elementLocalToWorld(
                 target_element_id,
-                self._local_vertex_point_by_type(
-                    target_element_id,
-                    target_anchor_vertex,
-                ),
-        )
-
-            edge_point = self._resolved_edge_local_point(
-                resolved.edge_element_id,
-                resolved.edge,
-                resolved.edge_anchor_vertex,
-                resolved.position_from_anchor,
-                resolved.attachment_id,
-        )
-            if mobile_element_id == resolved.vertex_element_id:
-                mobile_point_1 = self._effective_mobile_local_point(
-                    mobile_element_id,
-                    self._local_vertex_point_by_type(
-                        resolved.vertex_element_id,
-                        resolved.vertex,
-                    ),
-        )
-                target_point_1 = self.elementLocalToWorld(
-                    target_element_id,
-                    edge_point,
-                )
-            elif mobile_element_id == resolved.edge_element_id:
-                mobile_point_1 = self._effective_mobile_local_point(
-                    mobile_element_id,
-                    edge_point,
-                )
-                target_point_1 = self.elementLocalToWorld(
-                    target_element_id,
-                    self._local_vertex_point_by_type(
-                        resolved.vertex_element_id,
-                        resolved.vertex,
-                    ),
-                )
-            else:
-                raise ValueError(
-                    f"Attachment {resolved.attachment_id}: point résolu incohérent"
-                )
+            )
+            old_rotation, old_translation, mirrored = self.getElementPose(
+                mobile_element_id
+            )
+            self.setElementPose(
+                mobile_element_id,
+                R=rotation @ old_rotation,
+                T=(rotation @ old_translation) + translation,
+                mirrored=mirrored,
+            )
+            return
         else:
             raise TypeError(f"Type d'attachment résolu inconnu: {type(resolved)!r}")
 
@@ -4756,10 +4938,12 @@ class TopologyWorld:
                     "attachment_id": att.attachment_id,
                     "mob_element_id": att.mob_element_id,
                     "mob_vertex": att.mob_vertex,
-                    "mob_edge": att.mob_edge,
+                    "creation_mob_edge": att.creation_mob_edge,
                     "dest_element_id": att.dest_element_id,
                     "dest_vertex": att.dest_vertex,
-                    "dest_edge": att.dest_edge,
+                    "creation_dest_edge": att.creation_dest_edge,
+                    "mob_orientation": att.mob_orientation,
+                    "dest_orientation": att.dest_orientation,
                 })
             elif isinstance(att, TopologyEdgeEdgeAttachment):
                 attachments_payload.append({
@@ -4845,14 +5029,30 @@ class TopologyWorld:
         for att in attachments_payload:
             kind = att.get("kind")
             if kind == "vertex-edge":
+                missing = [
+                    key for key in (
+                        "creation_mob_edge",
+                        "creation_dest_edge",
+                        "mob_orientation",
+                        "dest_orientation",
+                    )
+                    if key not in att
+                ]
+                if missing:
+                    raise ValueError(
+                        "TopologyWorld._importPhysicalSnapshot: missing VE orientation "
+                        f"fields: {', '.join(missing)}"
+                    )
                 attachment = TopologyVertexEdgeAttachment(
                     attachment_id=att.get("attachment_id"),
                     mob_element_id=att.get("mob_element_id"),
                     mob_vertex=att.get("mob_vertex"),
-                    mob_edge=att.get("mob_edge"),
+                    creation_mob_edge=att.get("creation_mob_edge"),
                     dest_element_id=att.get("dest_element_id"),
                     dest_vertex=att.get("dest_vertex"),
-                    dest_edge=att.get("dest_edge"),
+                    creation_dest_edge=att.get("creation_dest_edge"),
+                    mob_orientation=att.get("mob_orientation"),
+                    dest_orientation=att.get("dest_orientation"),
             )
             elif kind == "edge-edge":
                 attachment = TopologyEdgeEdgeAttachment(
@@ -5486,10 +5686,12 @@ class TopologyWorld:
                     "id": a.attachment_id,
                     "mobElement": a.mob_element_id,
                     "mobVertex": a.mob_vertex,
-                    "mobEdge": a.mob_edge,
+                    "creationMobEdge": a.creation_mob_edge,
                     "destElement": a.dest_element_id,
                     "destVertex": a.dest_vertex,
-                    "destEdge": a.dest_edge,
+                    "creationDestEdge": a.creation_dest_edge,
+                    "mobOrientation": a.mob_orientation,
+                    "destOrientation": a.dest_orientation,
                 })
             elif isinstance(a, TopologyEdgeEdgeAttachment):
                 att = _ET.SubElement(atts_el, "EdgeEdgeAttachment", {
@@ -5525,6 +5727,8 @@ class TopologyWorld:
                     "anchorMobVertex": resolved.anchor_mob_vertex,
                     "anchorDestElement": resolved.anchor_dest_element_id,
                     "anchorDestVertex": resolved.anchor_dest_vertex,
+                    "mobEffectiveEdge": resolved.mob_effective_edge,
+                    "destEffectiveEdge": resolved.dest_effective_edge,
                     "vertexElement": resolved.vertex_element_id,
                     "vertex": resolved.vertex,
                     "edgeElement": resolved.edge_element_id,

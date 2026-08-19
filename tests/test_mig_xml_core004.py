@@ -258,7 +258,7 @@ def test_v5_round_trip_preserves_v2_edge_edge_and_vertex_edge_attachments(tmp_pa
     world.apply_attachment(TopologyEdgeEdgeAttachment("A001", "T01", "OB", "T02", "OB"))
     world.replay_group_attachment_poses(world.get_group_of_element("T01"), "T01")
     group_id = world.apply_attachment(
-        TopologyVertexEdgeAttachment("A002", "T03", "L", "LO", "T02", "L", "LO")
+            TopologyVertexEdgeAttachment("A002", "T03", "L", "LO", "T02", "O", "LO", "CCW", "CW")
     )
     world.replay_group_attachment_poses(group_id, "T02")
 

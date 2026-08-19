@@ -76,10 +76,12 @@ def _attach_lo_vertex_edge(world, first_element_id, second_element_id):
             attachment_id=world.new_attachment_id(),
             mob_element_id=first_element_id,
             mob_vertex="L",
-            mob_edge="LO",
+            creation_mob_edge="LO",
             dest_element_id=second_element_id,
-            dest_vertex="L",
-            dest_edge="LO",
+            dest_vertex="O",
+            creation_dest_edge="LO",
+            mob_orientation="CCW",
+            dest_orientation="CW",
         )
     )
 

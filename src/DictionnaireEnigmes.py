@@ -256,7 +256,7 @@ class DictionnaireEnigmes:
                     yield (rowExt, colExt)
                 continue
 
-            # MIRRORING / EXTENDED: nÃ©gatifs puis positifs
+            # MIRRORING / EXTENDED: négatifs puis positifs
             for colExt in range(-max_col, 0):
                 yield (rowExt, colExt)
             for colExt in range(1, max_col + 1):
@@ -315,7 +315,7 @@ class DictionnaireEnigmes:
         if nrow <= 0:
             raise ValueError("Ligne vide")
 
-        # mapping Extended -> index interne 0-based (mÃªme convention que getMotExtended)
+        # mapping Extended -> index interne 0-based (même convention que getMotExtended)
         motIndex0 = (colExt - 1) if colExt > 0 else colExt
         motIndex0Real = motIndex0 % nrow
         colReal = motIndex0Real + 1
