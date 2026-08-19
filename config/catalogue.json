@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "defaultTemplateId": "TPL-0001",
+  "defaultTemplateId": "TPL-0002",
   "cities": [
     {
       "cityId": "CITY-0001",
@@ -666,6 +666,20 @@
       "latitude": 49.49805555555556,
       "longitude": 5.930000000000001,
       "archived": false
+    },
+    {
+      "cityId": "CITY-0096",
+      "name": "Côme",
+      "latitude": 45.81666666666667,
+      "longitude": 9.083333333333334,
+      "archived": false
+    },
+    {
+      "cityId": "CITY-0097",
+      "name": "Le Bec-Hellouin",
+      "latitude": 49.2325,
+      "longitude": 0.7216666666666667,
+      "archived": false
     }
   ],
   "beacons": [
@@ -957,6 +971,46 @@
       "baseCityId": "CITY-0041",
       "lightCityId": "CITY-0074",
       "archived": false
+    },
+    {
+      "triangleId": "TRI-0035",
+      "note": "MI",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0037",
+      "lightCityId": "CITY-0096",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-0036",
+      "note": "MI",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0036",
+      "lightCityId": "CITY-0097",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-0037",
+      "note": "SOL",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0032",
+      "lightCityId": "CITY-0060",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-0038",
+      "note": "SOL",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0033",
+      "lightCityId": "CITY-0058",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-0039",
+      "note": "SOL",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0033",
+      "lightCityId": "CITY-0057",
+      "archived": false
     }
   ],
   "templates": [
@@ -984,6 +1038,46 @@
         "TRI-0016",
         "TRI-0017",
         "TRI-0018",
+        "TRI-0019",
+        "TRI-0020",
+        "TRI-0021",
+        "TRI-0022",
+        "TRI-0023",
+        "TRI-0024",
+        "TRI-0025",
+        "TRI-0026",
+        "TRI-0027",
+        "TRI-0028",
+        "TRI-0029",
+        "TRI-0030",
+        "TRI-0031",
+        "TRI-0032"
+      ]
+    },
+    {
+      "templateId": "TPL-0002",
+      "name": "Hypothese Côme",
+      "description": "",
+      "archived": false,
+      "triangleIdsByRank": [
+        "TRI-0001",
+        "TRI-0002",
+        "TRI-0003",
+        "TRI-0004",
+        "TRI-0005",
+        "TRI-0006",
+        "TRI-0007",
+        "TRI-0008",
+        "TRI-0009",
+        "TRI-0010",
+        "TRI-0017",
+        "TRI-0037",
+        "TRI-0035",
+        "TRI-0015",
+        "TRI-0014",
+        "TRI-0036",
+        "TRI-0039",
+        "TRI-0038",
         "TRI-0019",
         "TRI-0020",
         "TRI-0021",

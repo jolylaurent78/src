@@ -2294,7 +2294,7 @@ class TriangleViewerManual(
             )
         catalogue_btn.pack(side=tk.LEFT, padx=1)
         self._ui_attach_tooltip(catalogue_btn, "Gestion du catalogue")
-        self.icon_hypothesis_props = self._load_icon("scenario_props.png")
+        self.icon_hypothesis_props = self._load_icon("props.png")
         hypothesis_btn = tk.Button(
             triangles_toolbar,
             image=self.icon_hypothesis_props,
@@ -2862,12 +2862,12 @@ class TriangleViewerManual(
         toolbar.pack(anchor="w", padx=6, pady=(0, 2), fill="x")
 
         # Chargement des icônes (tu peux adapter les noms de fichiers PNG)
-        self.icon_scen_new = self._load_icon("scenario_new.png")
-        self.icon_scen_open = self._load_icon("scenario_open.png")
-        self.icon_scen_props = self._load_icon("scenario_props.png")
-        self.icon_scen_save = self._load_icon("scenario_save.png")
-        self.icon_scen_dup = self._load_icon("scenario_duplicate.png")
-        self.icon_scen_del = self._load_icon("scenario_delete.png")
+        self.icon_scen_new = self._load_icon("new.png")
+        self.icon_scen_open = self._load_icon("open.png")
+        self.icon_scen_props = self._load_icon("props.png")
+        self.icon_scen_save = self._load_icon("save.png")
+        self.icon_scen_dup = self._load_icon("duplicate.png")
+        self.icon_scen_del = self._load_icon("delete.png")
 
         # Icônes de type (affichées dans la Treeview)
         self.icon_scen_manual = self._load_icon("scenario_manual.png")

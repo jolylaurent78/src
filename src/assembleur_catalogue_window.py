@@ -477,6 +477,7 @@ class CatalogueWindow(tk.Toplevel):
         self._icon_archive_off = tk.PhotoImage(file=images_dir / "archive-off.png")
         self._icon_trash = tk.PhotoImage(file=images_dir / "trash.png")
         self._icon_template_default = tk.PhotoImage(file=images_dir / "checkbox.png")
+        self._icon_duplicate = tk.PhotoImage(file=images_dir / "duplicate.png")
 
     def _attach_tooltip(self, widget, text: str):
         return attach_tooltip(widget, text)
@@ -592,7 +593,14 @@ class CatalogueWindow(tk.Toplevel):
         ttk.Label(usage, text="Référencée par :").pack(side=tk.LEFT, padx=(0, 8))
         self._city_triangle_count_label = ttk.Label(usage, text="Triangles : 0")
         self._city_triangle_count_label.pack(side=tk.LEFT)
-        ttk.Button(usage, text="...", width=3, state=tk.DISABLED).pack(side=tk.LEFT, padx=(4, 14))
+        self._city_triangle_references_button = ttk.Button(
+            usage,
+            text="...",
+            width=3,
+            state=tk.DISABLED,
+            command=self._show_city_triangle_references,
+        )
+        self._city_triangle_references_button.pack(side=tk.LEFT, padx=(4, 14))
         self._city_beacon_count_label = ttk.Label(usage, text="Balises : 0")
         self._city_beacon_count_label.pack(side=tk.LEFT)
         self._city_beacon_references_button = ttk.Button(
@@ -922,9 +930,23 @@ class CatalogueWindow(tk.Toplevel):
         self._template_selector.bind("<ButtonPress-1>", lambda _event: self._commit_template_name(), add="+")
         self._template_selector.bind("<Return>", lambda _event: self._commit_template_name())
         self._template_selector.bind("<FocusOut>", lambda _event: self._commit_template_name(), add="+")
+
         self._template_add_button = ttk.Button(template_header, image=self._icon_hexagon_plus, command=self._add_template)
         self._template_add_button.pack(side=tk.LEFT)
         self._attach_tooltip(self._template_add_button, "Ajouter un template")
+
+        self._template_duplicate_button = ttk.Button(
+            template_header,
+            image=self._icon_duplicate,
+            command=self._duplicate_selected_template,
+            state=tk.DISABLED,
+        )
+        self._template_duplicate_button.pack(side=tk.LEFT, padx=(4, 0))
+        self._attach_tooltip(
+            self._template_duplicate_button,
+            "Dupliquer le template",
+        )        
+
         self._template_default_button = ttk.Button(
             template_header,
             image=self._icon_template_default,
@@ -933,11 +955,13 @@ class CatalogueWindow(tk.Toplevel):
         )
         self._template_default_button.pack(side=tk.LEFT, padx=(4, 0))
         self._attach_tooltip(self._template_default_button, "Définir comme template par défaut")
+
         self._template_archive_button = ttk.Button(
             template_header, image=self._icon_archive, command=self._toggle_archive_selected_template, state=tk.DISABLED
         )
         self._template_archive_button.pack(side=tk.LEFT, padx=4)
         self._attach_tooltip(self._template_archive_button, "Archiver le template")
+
         self._template_delete_button = ttk.Button(
             template_header, image=self._icon_trash, command=self._delete_selected_template, state=tk.DISABLED
         )
@@ -1126,6 +1150,41 @@ class CatalogueWindow(tk.Toplevel):
         self._update_context_actions()
         self._mark_dirty()
 
+    def _duplicate_selected_template(self):
+        source = self._get_selected_template()
+        if source is None:
+            return
+
+        existing_names = {
+            template.name.casefold()
+            for template in self.catalogue.iter_templates()
+        }
+
+        base_name = f"{source.name} - copie"
+        new_name = base_name
+
+        number = 2
+        while new_name.casefold() in existing_names:
+            new_name = f"{base_name} {number}"
+            number += 1
+
+        duplicate = self.catalogue.add_template(
+            new_name,
+            description=source.description,
+        )
+
+        self.catalogue.set_template_ranks(
+            duplicate.template_id,
+            list(source.triangle_ids_by_rank),
+        )
+
+        self._selected_template_id = duplicate.template_id
+        self._selected_template_rank_slot = None
+
+        self._refresh_templates()
+        self._update_context_actions()
+        self._mark_dirty()
+
     def _toggle_archive_selected_template(self):
         template = self._get_selected_template()
         if template is None:
@@ -1147,6 +1206,7 @@ class CatalogueWindow(tk.Toplevel):
     def _update_template_action_buttons(self):
         template = self._get_selected_template()
         state = tk.NORMAL if template is not None else tk.DISABLED
+        self._template_duplicate_button.configure(state=state)
         self._template_default_button.configure(
             state=tk.NORMAL if template is not None and template.template_id != self.catalogue.default_template_id else tk.DISABLED
         )
@@ -2094,8 +2154,13 @@ class CatalogueWindow(tk.Toplevel):
 
     def _visible_cities(self) -> list[CatalogueCity]:
         search = self._search_var.get().strip().casefold()
-        return [city for city in self.catalogue.iter_cities() if (self._show_archived_var.get() or not city.archived)
-                and (not search or search in city.name.casefold())]
+        cities = [
+            city
+            for city in self.catalogue.iter_cities()
+            if (self._show_archived_var.get() or not city.archived)
+            and (not search or search in city.name.casefold())
+        ]
+        return sorted(cities, key=lambda city: city.name.casefold())
 
     def _visible_beacons(self):
         search = self._beacon_search_var.get().strip().casefold()
@@ -2273,14 +2338,103 @@ class CatalogueWindow(tk.Toplevel):
         self._latitude_editor.set_decimal(city.latitude if city else 0.0)
         self._longitude_editor.set_decimal(city.longitude if city else 0.0)
         self._archived_var.set(city.archived if city else False)
-        triangle_count = len(self.catalogue.get_triangles_referencing_city(city.city_id)) if city else 0
-        beacon_references = self.catalogue.get_beacons_referencing_city(city.city_id) if city else ()
-        self._city_triangle_count_label.configure(text=f"Triangles : {triangle_count}")
+
+        triangle_references = (
+            self.catalogue.get_triangles_referencing_city(city.city_id)
+            if city else ()
+        )
+
+        beacon_references = (
+            self.catalogue.get_beacons_referencing_city(city.city_id)
+            if city else ()
+        )
+
+        self._city_triangle_count_label.configure(
+            text=f"Triangles : {len(triangle_references)}"
+        )
+
+        self._city_triangle_references_button.configure(
+            state=tk.NORMAL if triangle_references else tk.DISABLED,
+        )
         self._city_beacon_count_label.configure(text=f"Balises : {len(beacon_references)}")
         self._city_beacon_references_button.configure(
             state=tk.NORMAL if beacon_references else tk.DISABLED,
         )
         self._updating_detail = False
+
+    def _show_city_triangle_references(self):
+        if self._selected_city_id is None:
+            return
+
+        references = self.catalogue.get_triangles_referencing_city(
+            self._selected_city_id
+        )
+        if not references:
+            return
+
+        city = self.catalogue.get_city(self._selected_city_id)
+
+        window = tk.Toplevel(self)
+        window.title(f"Triangles utilisant {city.name}")
+        window.transient(self)
+        window.resizable(True, True)
+        window.geometry("650x300")
+
+        root = ttk.Frame(window, padding=10)
+        root.pack(fill=tk.BOTH, expand=True)
+
+        columns = ("note", "opening", "base", "light")
+
+        tree = ttk.Treeview(
+            root,
+            columns=columns,
+            show="headings",
+            selectmode="browse",
+        )
+
+        tree.heading("note", text="Note")
+        tree.heading("opening", text="Ouverture")
+        tree.heading("base", text="Base")
+        tree.heading("light", text="Lumière")
+
+        tree.column("note", width=70, stretch=False)
+        tree.column("opening", width=160)
+        tree.column("base", width=160)
+        tree.column("light", width=160)
+
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(
+            root,
+            orient=tk.VERTICAL,
+            command=tree.yview,
+        )
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        tree.configure(yscrollcommand=scrollbar.set)
+
+        for triangle in references:
+            opening = self.catalogue.get_city(
+                triangle.opening_city_id
+            )
+            base = self.catalogue.get_city(
+                triangle.base_city_id
+            )
+            light = self.catalogue.get_city(
+                triangle.light_city_id
+            )
+
+            tree.insert(
+                "",
+                tk.END,
+                values=(
+                    triangle.note,
+                    opening.name,
+                    base.name,
+                    light.name,
+                ),
+            )
+
+        window.bind("<Escape>", lambda _event: window.destroy())
 
     def _show_city_beacon_references(self):
         if self._selected_city_id is None:

@@ -1,0 +1,271 @@
+## Contexte
+
+Le dégroupage fonctionne correctement côté Core, mais un bug apparaît lorsqu’un groupe initialement ancré à une balise est scindé.
+
+Exemple fonctionnel :
+
+* le groupe courant est ancré à une balise via T1 ;
+* on déclenche `Dégrouper` à un endroit plus loin dans la chaîne, par exemple T11 ;
+* `TopologyWorld.degrouperAtNode(...)` produit correctement plusieurs groupes ;
+* l’un des groupes résultants conserve la `GroupAnchor` ;
+* l’UI applique ensuite son petit décalage visuel automatique post-dégroupage ;
+* ce décalage passe aujourd’hui par `TopologyWorld.move_group(...)` ;
+* si le groupe à décaler est précisément le groupe qui conserve l’ancre, le Core refuse légitimement le MOVE.
+
+Erreur observée :
+
+```text
+ValueError: TopologyWorld: MOVE interdit pour le groupe ancré 'G033' (ancre AN001)
+```
+
+Le Core est correct et ne doit pas être assoupli.
+
+## Zone concernée
+
+Principalement :
+
+```text
+src/assembleur_tk.py
+```
+
+Méthodes concernées :
+
+```python
+_ctx_degrouper()
+_applyDegrouperResultToTk()
+_move_core_group_by_screen_delta()
+```
+
+Le chemin actuel est :
+
+```text
+_ctx_degrouper()
+    ↓
+world.degrouperAtNode(...)
+    ↓
+_applyDegrouperResultToTk(...)
+    ↓
+layout visuel post-dégroupage
+    ↓
+_move_core_group_by_screen_delta(...)
+    ↓
+world.move_group(...)
+```
+
+Aujourd’hui `_applyDegrouperResultToTk()` suppose implicitement que les groupes contenus dans `newGroupIds` peuvent être déplacés pour le layout visuel.
+
+Cette hypothèse est fausse : après le dégroupage, un `newGroupId` peut être le groupe qui conserve la `GroupAnchor`.
+
+## Contrat fonctionnel attendu
+
+Après un dégroupage d’un groupe ancré :
+
+1. identifier les groupes Core résultants ;
+2. déterminer lesquels possèdent une `GroupAnchor` via l’API Core existante ;
+3. tout groupe ancré doit rester strictement immobile ;
+4. le petit décalage automatique de séparation visuelle ne doit s’appliquer qu’aux groupes non ancrés ;
+5. le groupe contenant encore T1 / le propriétaire physique de la balise reste donc exactement en place ;
+6. peu importe qu’il soit retourné comme `mainGroupId` ou comme membre de `newGroupIds`.
+
+La notion pertinente est :
+
+```text
+groupe ancré
+vs
+groupe non ancré
+```
+
+et non :
+
+```text
+mainGroupId
+vs
+newGroupIds
+```
+
+## Contrat Core à préserver
+
+NE PAS modifier :
+
+```python
+TopologyWorld.move_group(...)
+TopologyWorld._reject_transform_of_anchored_group(...)
+```
+
+L’interdiction d’un MOVE sur un groupe ancré est un invariant volontaire et correct.
+
+NE PAS ajouter de fallback qui contournerait cette interdiction.
+
+NE PAS détacher automatiquement la balise.
+
+NE PAS faire de `try/except` autour de `move_group()` pour ignorer l’erreur.
+
+Le correctif doit éviter l’appel invalide, pas masquer l’exception.
+
+## Implémentation attendue
+
+Dans `_applyDegrouperResultToTk()` :
+
+* conserver la reconstruction/projection Core actuelle ;
+* lors du layout visuel post-dégroupage, tester explicitement :
+
+```python
+world.getAnchorForGroup(core_gid)
+```
+
+avant tout appel à :
+
+```python
+_move_core_group_by_screen_delta(...)
+```
+
+Si le groupe est ancré :
+
+```text
+ne pas le déplacer
+```
+
+Si le groupe n’est pas ancré :
+
+```text
+le comportement historique de décalage visuel peut être conservé
+```
+
+Attention : ne pas limiter la logique à `newGroupIds`.
+
+Le groupe fixe doit être déterminé selon la présence réelle de la `GroupAnchor`.
+
+Si nécessaire pour conserver un layout cohérent, le groupe ancré peut servir de référence fixe pour les calculs de séparation visuelle.
+
+## Invariants
+
+Après le correctif :
+
+```text
+GroupAnchor présente
+    ⇒ aucun MOVE Core du groupe ancré
+```
+
+```text
+Dégroupage
+    ⇒ topologie scindée normalement
+```
+
+```text
+Groupe portant la balise
+    ⇒ position inchangée
+```
+
+```text
+Groupes détachés non ancrés
+    ⇒ peuvent recevoir le décalage visuel historique
+```
+
+```text
+Aucune exception Tkinter
+```
+
+## Tests à ajouter
+
+Ajouter des tests ciblés couvrant au minimum :
+
+### Cas 1 — groupe non ancré
+
+Dégroupage historique sans balise :
+
+```text
+dégroupage OK
+layout visuel OK
+aucune régression
+```
+
+### Cas 2 — groupe ancré, groupe ancré = mainGroupId
+
+```text
+dégroupage OK
+mainGroupId ancré reste fixe
+groupes non ancrés peuvent être décalés
+```
+
+### Cas 3 — groupe ancré, groupe ancré dans newGroupIds
+
+Cas reproduisant le bug observé :
+
+```text
+groupe initial ancré via T1
+dégroupage plus loin, par exemple au niveau de T11
+le groupe résultant contenant T1 conserve l’ancre
+ce groupe apparaît parmi les groupes nouvellement produits
+```
+
+Vérifier :
+
+```text
+aucun appel MOVE sur le groupe ancré
+aucune exception
+groupe ancré inchangé
+autres groupes décalés si nécessaire
+```
+
+### Cas 4 — invariant Core
+
+Vérifier qu’un appel direct volontaire à :
+
+```python
+world.move_group(anchored_group_id, ...)
+```
+
+continue bien d’être refusé.
+
+Le fix UI ne doit surtout pas affaiblir ce comportement Core.
+
+## Style de code
+
+Respecter la baseline du projet :
+
+* pas de `try/except` générique ;
+* pas d’exception silencieusement ignorée ;
+* pas de `getattr` défensif sur des attributs obligatoires ;
+* pas de compatibilité legacy inutile ;
+* privilégier les invariants explicites ;
+* garder le correctif petit et localisé.
+
+## Validation
+
+Exécuter les tests ciblés relatifs :
+
+```text
+dégroupage
+GroupAnchor
+MOVE groupe
+projection post-dégroupage
+```
+
+Puis :
+
+```text
+python -m compileall ...
+git diff --check
+```
+
+Ne pas corriger spontanément d’autres tests historiques hors périmètre.
+
+## Résultat attendu
+
+Le scénario manuel suivant doit fonctionner sans erreur :
+
+```text
+charger le scénario de référence
+groupe connecté à une balise via T1
+clic droit plus loin dans le groupe, par exemple T11
+Dégrouper
+```
+
+Résultat :
+
+```text
+le groupe contenant T1 reste fixé à la balise
+le reste du groupe est détaché normalement
+aucune exception Tkinter
+aucun MOVE interdit envoyé au Core
+```
