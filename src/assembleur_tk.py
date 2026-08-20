@@ -5383,6 +5383,7 @@ class TriangleViewerManual(
         # Menu contextuel
         self._ctx_menu = tk.Menu(self, tearoff=0)
         self._ctx_degrouper_label = "Dégrouper"
+        self._ctx_pivot_attachment_label = "Pivoter l'attache"
         self._ctx_menu.add_command(label="Supprimer",
                                    command=self._ctx_delete_group)
         self._ctx_menu.add_command(label="Pivoter",
@@ -5564,7 +5565,7 @@ class TriangleViewerManual(
         self.status.config(
             text=f"Balise {city.name} ({beacon.beacon_id}) centrée."
         )
-        
+
     def _on_toggle_guides_layer(self):
         self._layerGuidesVisible = bool(self._layerGuidesVisibleVar.get())
         self.setAppConfigValue("uiShowGuidesLayer", bool(self._layerGuidesVisible))
@@ -7807,6 +7808,59 @@ class TriangleViewerManual(
 
         self._ctx_refresh_menu_runtime_indexes()
 
+    def _ctx_update_pivot_attachment_menu_entry(self) -> None:
+        menu = getattr(self, "_ctx_menu", None)
+        if menu is None:
+            return
+
+        label = str(
+            getattr(
+                self,
+                "_ctx_pivot_attachment_label",
+                "Pivoter l'attache",
+            )
+        )
+        idx = self._ctx_find_menu_index_by_label(label)
+
+        show_pivot = False
+
+        scen = self._get_active_scenario()
+        world = scen.topoWorld
+
+        gid = str(getattr(self, "ctxGroupId", "") or "")
+        nid = str(getattr(self, "ctxStartNodeId", "") or "")
+
+        if gid and nid:
+            show_pivot = bool(
+                world.canPivotVertexEdgeAtNode(
+                    gid,
+                    nid,
+                )
+            )
+
+        if show_pivot and idx is None:
+            degrouper_idx = self._ctx_find_menu_index_by_label(
+                self._ctx_degrouper_label
+            )
+
+            # Doit apparaître juste après "Dégrouper".
+            insert_idx = (
+                int(degrouper_idx) + 1
+                if degrouper_idx is not None
+                else 1
+            )
+
+            menu.insert_command(
+                insert_idx,
+                label=label,
+                command=self._ctx_pivot_attachment,
+            )
+
+        elif (not show_pivot) and idx is not None:
+            menu.delete(idx)
+
+        self._ctx_refresh_menu_runtime_indexes()
+
     def _ctx_update_beacon_detach_menu_entry(self) -> None:
         """Affiche l'action de décrochage seulement pour un groupe ancré."""
         menu = self._ctx_menu
@@ -7933,8 +7987,9 @@ class TriangleViewerManual(
             except (ValueError, RuntimeError):
                 self._ctx_clear_chemin_context()
 
-            # "Dégrouper" est conditionnel selon les attachments incident au node cliqué.
+            # Actions topologiques conditionnelles selon le node cliqué.
             self._ctx_update_degrouper_menu_entry()
+            self._ctx_update_pivot_attachment_menu_entry()
             self._ctx_update_beacon_detach_menu_entry()
             self._ctx_update_anchor_rotation_menu_state()
 
@@ -8063,6 +8118,49 @@ class TriangleViewerManual(
         res = world.degrouperAtNode(core_gid, nodeId)
         self._applyDegrouperResultToTk(res)
 
+    def _ctx_pivot_attachment(self) -> None:
+        if self._deformation_state.active:
+            self.status.config(
+                text="Pivot d'attache indisponible en mode deformation."
+            )
+            return
+
+        core_gid = self.ctxGroupId
+        node_id = self.ctxStartNodeId
+
+        if not core_gid or not node_id:
+            raise RuntimeError(
+                "Pivot d'attache impossible : contexte de clic droit invalide"
+            )
+
+        scen = self._get_active_scenario()
+        world = scen.topoWorld
+
+        new_world = world.pivotVertexEdgeAtNode(
+            core_gid,
+            node_id,
+        )
+
+        scen.topoWorld = new_world
+        world = new_world
+
+        new_group_id = world.get_group_of_element(
+            self._ctx_target_element_id
+        )
+
+        # Le Core est l'autorité : on reconstruit intégralement la projection.
+        self._rebuild_active_projection_from_core()
+
+        self._sel = None
+        self._reset_assist()
+        self._invalidate_pick_cache()
+        self._redraw_from(self._last_drawn)
+        self.refreshCheminTreeView()
+
+        self.status.config(
+            text=f"Attache Vertex-Edge pivotée ({new_group_id})."
+        )
+
     def _degrouperGroupScreenBBox(self, core_group_id: str) -> Optional[Tuple[float, float, float, float]]:
         projected_elements = self._get_projected_elements_for_core_group(core_group_id)
         if not projected_elements:
@@ -8160,6 +8258,9 @@ class TriangleViewerManual(
             )
 
             for core_gid in ordered_new_core_gids:
+                if world.getAnchorForGroup(core_gid) is not None:
+                    continue
+
                 bbox_group = self._degrouperGroupScreenBBox(core_gid)
                 if bbox_group is None:
                     continue

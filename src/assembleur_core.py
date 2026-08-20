@@ -1810,6 +1810,7 @@ class TopologyAttachmentResolver:
         else:
             cls._validate_edge(mob_element, attachment.mob_edge, attachment.attachment_id)
             cls._validate_edge(dest_element, attachment.dest_edge, attachment.attachment_id)
+
     @classmethod
     def resolve(cls, world, attachment: TopologyAttachmentV2) -> ResolvedAttachment:
         cls.validate(world, attachment)
@@ -2858,6 +2859,7 @@ class TopologyWorld:
             return True, []
         pts_mob, nodes_mob, index_mob = ring_mob
         pts_dest, nodes_dest, index_dest = ring_dest
+
         def _node(element_id: str, vertex: str) -> str:
             return self.find_node(self.get_element_vertex_node_id_by_type(element_id, vertex))
 
@@ -2889,6 +2891,7 @@ class TopologyWorld:
         i_d0, i_d1 = index_dest[j0["destId"]], index_dest[j1["destId"]]
         if i_m0 == i_m1 or i_d0 == i_d1:
             return True, []
+
         def _arc(pts, i0, i1):
             if i1 == (i0 + 1) % len(pts):
                 return self._arcReverse(pts, i0, i1)
@@ -2929,6 +2932,7 @@ class TopologyWorld:
             return True, []
         pts_mob, nodes_mob, index_mob = ring_mob
         pts_dest, nodes_dest, index_dest = ring_dest
+
         def _node(element_id: str, vertex: str) -> str:
             return self.find_node(
                 self.get_element_vertex_node_id_by_type(element_id, vertex)
@@ -3084,6 +3088,7 @@ class TopologyWorld:
         i_d0, i_d1 = index_dest[j0["destId"]], index_dest[j1["destId"]]
         if i_m0 == i_m1 or i_d0 == i_d1:
             return True, []
+
         def _arc(pts: list[np.ndarray], i0: int, i1: int) -> list[np.ndarray]:
             if i1 == (i0 + 1) % len(pts):
                 return self._arcReverse(pts, i0, i1)
@@ -3115,7 +3120,6 @@ class TopologyWorld:
                 attachment,
             )[0]
         raise TypeError(f"Attachment topologique V2 non supporté: {type(attachment).__name__}")
-
 
     def getConceptEdgesForNode(self, node_id: str, group_id: str | None = None) -> list[dict]:
         """Liste des edges conceptuels incidentes à un concept node (par groupe)."""
@@ -4206,13 +4210,11 @@ class TopologyWorld:
                 mobile_vertices = (resolved.dest_vertex_1, resolved.dest_vertex_2)
                 target_vertices = (resolved.mob_vertex_1, resolved.mob_vertex_2)
             else:
-                raise ValueError(
-                    f"Attachment {resolved.attachment_id}: éléments incohérents"
-        )
+                raise ValueError(f"Attachment {resolved.attachment_id}: éléments incohérents")
             mobile_point_0 = self._effective_mobile_local_point(
                 mobile_element_id,
                 self._local_vertex_point_by_type(mobile_element_id, mobile_vertices[0]),
-        )
+            )
             mobile_point_1 = self._effective_mobile_local_point(
                 mobile_element_id,
                 self._local_vertex_point_by_type(mobile_element_id, mobile_vertices[1]),
@@ -4282,14 +4284,14 @@ class TopologyWorld:
                             resolved.mob_element_id,
                             mob_vertex,
                         ),
-            )
+                    )
                     - self.elementLocalToWorld(
                         resolved.dest_element_id,
                         self._local_vertex_point_by_type(
                             resolved.dest_element_id,
                             dest_vertex,
                         ),
-            )
+                    )
                 )) <= tolerance
                 for mob_vertex, dest_vertex in pairs
             )
@@ -4718,7 +4720,7 @@ class TopologyWorld:
                     resolved.vertex_element_id,
                     resolved.vertex,
                 ),
-        )
+            )
         elif isinstance(resolved, ResolvedEdgeEdgeAttachment):
             incident_node_ids = (
                 self.get_element_vertex_node_id_by_type(
@@ -4737,10 +4739,311 @@ class TopologyWorld:
                     resolved.dest_element_id,
                     resolved.dest_vertex_2,
                 ),
-        )
+            )
         else:
             raise TypeError(f"Type d'attachment résolu inconnu: {type(resolved)!r}")
         return any(self.find_node(incident_node_id) == node_id for incident_node_id in incident_node_ids)
+
+    def _split_group_components_after_attachment_removal(
+        self,
+        source_group_id: str,
+        source_element_ids: list[str],
+        kept_attachments: list[TopologyAttachmentV2],
+    ) -> dict | None:
+        """Scinde un groupe selon les composantes induites par les attachments conservés."""
+        source_group_id = self.find_group(source_group_id)
+        source_element_ids = sorted(set(source_element_ids))
+        source_set = set(source_element_ids)
+
+        if source_group_id not in self.groups:
+            raise ValueError(
+                f"[split-group] groupe source introuvable: {source_group_id}"
+            )
+        if not source_element_ids:
+            raise ValueError("[split-group] groupe source vide")
+
+        # A) Composantes connexes element <-> element.
+        adjacency: dict[str, set[str]] = {
+            element_id: set()
+            for element_id in source_element_ids
+        }
+
+        for attachment in kept_attachments:
+            element_a, element_b = self._degrouper_attachment_element_pair(
+                attachment
+            )
+            if element_a in source_set and element_b in source_set:
+                adjacency[element_a].add(element_b)
+                adjacency[element_b].add(element_a)
+
+        components: list[list[str]] = []
+        visited: set[str] = set()
+
+        for seed in source_element_ids:
+            if seed in visited:
+                continue
+
+            stack = [seed]
+            visited.add(seed)
+            component: list[str] = []
+
+            while stack:
+                current = stack.pop()
+                component.append(current)
+
+                for neighbor in sorted(
+                    adjacency[current],
+                    reverse=True,
+                ):
+                    if neighbor in visited:
+                        continue
+                    visited.add(neighbor)
+                    stack.append(neighbor)
+
+            components.append(sorted(component))
+
+        components = sorted(
+            components,
+            key=lambda component: (-len(component), component),
+        )
+
+        if len(components) < 2:
+            return None
+
+        # B) La plus grande composante conserve le groupId historique.
+        main_group_id = source_group_id
+
+        for element_id in components[0]:
+            self.element_to_group[element_id] = main_group_id
+
+        # C) Les autres composantes reçoivent un nouveau groupe atomique.
+        new_group_ids: list[str] = []
+        moved_element_ids_by_group: dict[str, list[str]] = {}
+
+        for component in components[1:]:
+            new_group_id = self.createAtomicGroup()
+            new_group_ids.append(new_group_id)
+
+            moved = sorted(component)
+            moved_element_ids_by_group[new_group_id] = moved
+
+            for element_id in moved:
+                self.element_to_group[element_id] = new_group_id
+
+        # D) Reconstruction complète depuis les attachments conservés.
+        self.rebuild_from_attachments(kept_attachments)
+        self.rebuildGroupElementLists()
+        self.pruneOrphanGroups()
+        self._reconcile_group_anchors()
+
+        return {
+            "mainGroupId": main_group_id,
+            "newGroupIds": list(new_group_ids),
+            "movedElementIdsByGroup": {
+                group_id: list(element_ids)
+                for group_id, element_ids in moved_element_ids_by_group.items()
+            },
+            "allResultGroupIds": [
+                main_group_id,
+                *new_group_ids,
+            ],
+        }
+
+    def _get_single_vertex_edge_attachment_at_node(
+        self,
+        groupId: str,
+        nodeId: str,
+    ) -> TopologyVertexEdgeAttachment | None:
+        """Retourne l'unique attachment VE incident au node, sinon None."""
+        gid = self.find_group(groupId)
+        nid = self.find_node(nodeId)
+
+        self.rebuildGroupElementLists()
+        group = self.groups.get(gid)
+        if group is None:
+            return None
+
+        element_ids = set(group.element_ids)
+        if not element_ids:
+            return None
+
+        candidates = [
+            attachment
+            for attachment in self._degrouper_iter_group_scoped_attachments(element_ids)
+            if isinstance(attachment, TopologyVertexEdgeAttachment)
+            and self._degrouper_attachment_is_incident_at_node(attachment, nid)
+        ]
+
+        if len(candidates) != 1:
+            return None
+
+        return candidates[0]
+
+    @staticmethod
+    def _build_pivoted_vertex_edge_attachment(
+        attachment: TopologyVertexEdgeAttachment,
+    ) -> TopologyVertexEdgeAttachment:
+        """Inverse le sens VE sans modifier la relation Vertex-Vertex."""
+        return TopologyVertexEdgeAttachment(
+            attachment_id=attachment.attachment_id,
+            mob_element_id=attachment.mob_element_id,
+            mob_vertex=attachment.mob_vertex,
+            creation_mob_edge=attachment.creation_mob_edge,
+            dest_element_id=attachment.dest_element_id,
+            dest_vertex=attachment.dest_vertex,
+            creation_dest_edge=attachment.creation_dest_edge,
+            mob_orientation=(
+                "CCW" if attachment.mob_orientation == "CW" else "CW"
+            ),
+            dest_orientation=(
+                "CCW" if attachment.dest_orientation == "CW" else "CW"
+            ),
+        )
+
+    def _build_pivot_vertex_edge_candidate(
+        self,
+        groupId: str,
+        nodeId: str,
+    ) -> "TopologyWorld | None":
+        """Construit un candidat de pivot VE validé par l'anti-overlap topologique."""
+        attachment = self._get_single_vertex_edge_attachment_at_node(
+            groupId,
+            nodeId,
+        )
+        if attachment is None:
+            return None
+
+        candidate = self.clonePhysicalState()
+
+        # 1) Construire l'intention VE pivotée.
+        pivoted = candidate._build_pivoted_vertex_edge_attachment(
+            candidate.attachments[attachment.attachment_id]
+        )
+
+        # 2) Retirer uniquement l'attache que l'on veut pivoter.
+        remaining_attachments = [
+            current
+            for current in candidate.attachments.values()
+            if current.attachment_id != attachment.attachment_id
+        ]
+
+        # 3) Scinder réellement le groupe selon les attachments restants.
+        source_group_id = candidate.get_group_of_element(
+            pivoted.mob_element_id
+        )
+
+        candidate.rebuildGroupElementLists()
+        source_group = candidate.groups.get(source_group_id)
+        if source_group is None:
+            raise RuntimeError(
+                f"Pivot VE: groupe source introuvable: {source_group_id}"
+            )
+
+        source_element_ids = sorted(set(source_group.element_ids))
+        if not source_element_ids:
+            raise RuntimeError(
+                f"Pivot VE: groupe source vide: {source_group_id}"
+            )
+
+        split_result = candidate._split_group_components_after_attachment_removal(
+            source_group_id,
+            source_element_ids,
+            remaining_attachments,
+        )
+        if split_result is None:
+            return None
+
+        # Les deux côtés du VE retiré sont désormais deux groupes physiques distincts.
+        group_mob_id = candidate.get_group_of_element(
+            pivoted.mob_element_id
+        )
+        group_dest_id = candidate.get_group_of_element(
+            pivoted.dest_element_id
+        )
+
+        if group_mob_id == group_dest_id:
+            # L'attache n'est pas un pont entre deux composantes :
+            # pivoter localement cette liaison est ambigu dans ce contrat.
+            return None
+
+        # 4) Autorité unique d'anti-overlap : le simulateur topologique existant.
+        overlap = candidate.simulate_topological_overlap(
+            group_dest_id,
+            group_mob_id,
+            pivoted,
+        )
+        if overlap:
+            return None
+
+        # 5) Le raccord est géométriquement admissible.
+        candidate.apply_attachment(pivoted)
+
+        merged_group_id = candidate.get_group_of_element(
+            pivoted.dest_element_id
+        )
+
+        # 6) Déterminer la racine physique du replay.
+        anchor = candidate.getAnchorForGroup(merged_group_id)
+
+        if anchor is not None:
+            root_element_id = candidate._element_id_from_atomic_node_id(
+                anchor.node_id
+            )
+            if root_element_id is None:
+                raise RuntimeError(
+                    f"Pivot VE: node d'ancre invalide: {anchor.node_id!r}"
+                )
+        else:
+            root_element_id = pivoted.dest_element_id
+
+        # 7) Réaliser physiquement le nouvel attachment.
+        candidate.replay_group_attachment_poses(
+            merged_group_id,
+            root_element_id,
+        )
+
+        # 8) Restaurer exactement l'ancrage éventuel sur la balise.
+        anchor = candidate.getAnchorForGroup(merged_group_id)
+        if anchor is not None:
+            candidate.applyGroupAnchor(anchor.anchor_id)
+
+        return candidate
+
+    def canPivotVertexEdgeAtNode(
+        self,
+        groupId: str,
+        nodeId: str,
+    ) -> bool:
+        """Indique si l'unique VE incident peut être pivoté sans overlap."""
+        try:
+            return self._build_pivot_vertex_edge_candidate(
+                groupId,
+                nodeId,
+            ) is not None
+        except TopologyConstraintGeometryError:
+            return False
+
+    def pivotVertexEdgeAtNode(
+        self,
+        groupId: str,
+        nodeId: str,
+    ) -> "TopologyWorld":
+        """Pivote l'unique attachment VE incident au node."""
+        if self._topoTxDepth > 0:
+            raise ValueError(
+                "TopologyWorld.pivotVertexEdgeAtNode: transaction ouverte"
+            )
+
+        candidate = self._build_pivot_vertex_edge_candidate(
+            groupId,
+            nodeId,
+        )
+        if candidate is None:
+            raise TopologyConstraintGeometryError(
+                "Pivot VE impossible : aucun candidat topologique valide"
+            )
+
+        return candidate
 
     def canDegrouperAtNode(self, groupId: str, nodeId: str) -> bool:
         gid = self.find_group(groupId)
@@ -4809,67 +5112,26 @@ class TopologyWorld:
             )
 
         toRemove = {attachment.attachment_id for attachment in incidentAttachments}
-        self._remove_attachments(toRemove)
         keptAttachments = [
-            self.attachments[attachment_id]
-            for attachment_id in sorted(self.attachments)
+            attachment
+            for attachment_id, attachment in sorted(self.attachments.items())
+            if attachment_id not in toRemove
         ]
 
-        # C) Rebuild conceptuel intermédiaire
-        self.rebuild_from_attachments()
-        self.rebuildGroupElementLists()
+        split_result = self._split_group_components_after_attachment_removal(
+            gid,
+            sourceElementIds,
+            keptAttachments,
+        )
+        if split_result is None:
+            raise RuntimeError(
+                "[degrouper] moins de deux composantes après suppression des attachments"
+            )
 
-        # D) Composantes connexes triangle<->triangle sur les éléments du groupe source
-        adjacency: dict[str, set[str]] = {eid: set() for eid in sourceElementIds}
-        for att in keptAttachments:
-            eA, eB = self._degrouper_attachment_element_pair(att)
-            if eA in sourceSet and eB in sourceSet:
-                adjacency[eA].add(eB)
-                adjacency[eB].add(eA)
-
-        components: list[list[str]] = []
-        visited: set[str] = set()
-        for seed in sourceElementIds:
-            if seed in visited:
-                continue
-            stack: list[str] = [seed]
-            visited.add(seed)
-            comp: list[str] = []
-            while stack:
-                cur = stack.pop()
-                comp.append(cur)
-                for nxt in sorted(adjacency.get(cur, set()), reverse=True):
-                    if nxt in visited:
-                        continue
-                    visited.add(nxt)
-                    stack.append(nxt)
-            components.append(sorted(comp))
-
-        components = sorted(components, key=lambda c: (-len(c), c))
-        assert len(components) >= 2, "[degrouper] K<2 apres suppression d'attachments"
-
-        # E) Réassignation des groupes : la plus grande composante garde gid
-        mainGroupId = gid
-        mainComponent = components[0]
-        for eid in mainComponent:
-            self.element_to_group[eid] = mainGroupId
-
-        newGroupIds: list[str] = []
-        movedElementIdsByGroup: dict[str, list[str]] = {}
-        for comp in components[1:]:
-            newGid = self.createAtomicGroup()
-            newGroupIds.append(newGid)
-            moved = sorted({eid for eid in comp})
-            movedElementIdsByGroup[newGid] = moved
-            for eid in moved:
-                self.element_to_group[eid] = newGid
-
-        self.rebuild_from_attachments()
-        self.rebuildGroupElementLists()
-        self.pruneOrphanGroups()
-        self._reconcile_group_anchors()
-
-        allResultGroupIds = [mainGroupId] + list(newGroupIds)
+        mainGroupId = split_result["mainGroupId"]
+        newGroupIds = split_result["newGroupIds"]
+        movedElementIdsByGroup = split_result["movedElementIdsByGroup"]
+        allResultGroupIds = split_result["allResultGroupIds"]
 
         # Invariant: aucune attache ne relie 2 groupes différents.
         for att in self.attachments.values():
@@ -5053,7 +5315,7 @@ class TopologyWorld:
                     creation_dest_edge=att.get("creation_dest_edge"),
                     mob_orientation=att.get("mob_orientation"),
                     dest_orientation=att.get("dest_orientation"),
-            )
+                )
             elif kind == "edge-edge":
                 attachment = TopologyEdgeEdgeAttachment(
                     attachment_id=att.get("attachment_id"),
@@ -5061,12 +5323,12 @@ class TopologyWorld:
                     mob_edge=att.get("mob_edge"),
                     dest_element_id=att.get("dest_element_id"),
                     dest_edge=att.get("dest_edge"),
-            )
+                )
             else:
                 raise ValueError(
                     "TopologyWorld._importPhysicalSnapshot: kind d'attachment V2 "
                     f"invalide {kind!r}"
-            )
+                )
             self.apply_attachment(attachment)
             m = re.search(r"(?:^A|:A)(\d+)$", attachment.attachment_id)
             if m:
