@@ -72,7 +72,7 @@ from src.assembleur_catalogue_window import CatalogueWindow, CitySelectionDialog
 from src.assembleur_hypothesis_window import ScenarioHypothesisDialog
 from src.assembleur_catalogue import Catalogue
 from src.assembleur_catalogue_io import load_catalogue
-from src.assembleur_deformation import simulate_city_deformation
+from src.assembleur_deformation import simulate_city_deformation, simulate_deformation_session
 from src.assembleur_deformation_ui import DeformationUiState
 from src.assembleur_deformation_window import (
     DeformationVertex,
@@ -82,7 +82,6 @@ from src.assembleur_deformation_window import (
 from src.assembleur_tooltip import attach_tooltip
 from src.assembleur_geo_map_view import CalibratedGeoMap
 from src.assembleur_scenario import (
-    HypothesisImpact,
     ScenarioHypothesis,
     ScenarioHypothesisChangePlan,
     analyze_hypothesis_change,
@@ -358,6 +357,7 @@ class TriangleViewerManual(
         instance._deformation_drag_after_id = None
         instance._deformation_drag_pending_role = None
         instance._deformation_drag_pending_point = None
+        instance._deformation_status_text = ""
         return instance
 
     def __init__(self):
@@ -404,6 +404,7 @@ class TriangleViewerManual(
         self._deformation_drag_after_id = None
         self._deformation_drag_pending_role = None
         self._deformation_drag_pending_point = None
+        self._deformation_status_text = ""
         self._deformation_window: DeformationWindow | None = None
         self._deformation_map: CalibratedGeoMap | None = None
         self.ctxGroupId = None         # contexte chemin: groupId Core canonique (clic droit)
@@ -1553,6 +1554,8 @@ class TriangleViewerManual(
             on_vertex_selected=self._deformation_window_vertex_selected,
             on_occurrence_selected=self._deformation_window_occurrence_selected,
             on_delete_selected=self._deformation_delete_selected,
+            on_restore_selected=self._deformation_restore_selected,
+            on_pivot_attachment_selected=self._deformation_pivot_attachment_selected,
             on_map_pin_selected=self._deformation_map_pin_selected,
             on_view_mode_changed=self._deformation_window_view_mode_changed,
             on_canvas_mode_changed=self._deformation_canvas_mode_changed,
@@ -1595,19 +1598,29 @@ class TriangleViewerManual(
     def _refresh_deformation_window(
         self,
         *,
-        status_text: str = "",
+        status_text: str | None = None,
         refresh_occurrences: bool = True,
     ) -> None:
         window = self._ensure_deformation_window()
         state = self._deformation_state
+        if status_text is None:
+            status_text = self._deformation_status_text
         if refresh_occurrences:
             window.set_occurrences(
-                tuple(
-                    (element_id, role, self._deformation_occurrence_label(element_id, role))
-                    for element_id, role in state.modified_occurrences
-                ),
+                self._deformation_display_occurrences(),
                 state.selected_occurrence,
             )
+        pivot_attachment_id = None
+        if state.selected_occurrence is not None:
+            element_id, role = state.selected_occurrence
+            world = state.last_accepted_world or state.reference_world
+            if world is not None:
+                group_id = world.get_group_of_element(element_id)
+                node_id = world.get_element_vertex_node_id_by_type(element_id, role)
+                pivot_attachment_id = world.getSingleVertexEdgeAttachmentIdAtNode(
+                    group_id, node_id
+                )
+        window.set_pivot_attachment_enabled(pivot_attachment_id is not None)
         if state.element_id is None:
             return
         window.set_triangle(
@@ -1622,6 +1635,26 @@ class TriangleViewerManual(
             ),
             status_text=status_text,
         )
+
+    def _deformation_display_occurrences(self) -> tuple[tuple[str, str, str, bool, bool], ...]:
+        state = self._deformation_state
+        world = state.last_accepted_world or state.reference_world
+        if world is None:
+            return ()
+        displays = []
+        for element_id, role in sorted(set(state.modified_occurrences)):
+                city_id = self._deformation_city_id_for_occurrence(element_id, role, world)
+                moved = city_id in state.city_lambert_overrides
+                group_id = world.get_group_of_element(element_id)
+                node_id = world.get_element_vertex_node_id_by_type(element_id, role)
+                attachment_id = world.getSingleVertexEdgeAttachmentIdAtNode(group_id, node_id)
+                pivoted = attachment_id in state.pivoted_attachment_ids if attachment_id else False
+                displays.append((
+                    element_id, role,
+                    self._deformation_occurrence_label(element_id, role),
+                    moved, pivoted,
+                ))
+        return tuple(displays)
 
     def _deformation_occurrence_label(self, element_id: str, role: str) -> str:
         state = self._deformation_state
@@ -1815,16 +1848,22 @@ class TriangleViewerManual(
         state = self._deformation_state
         if state.reference_world is None:
             raise RuntimeError("World de reference DEFORM absent")
-        if not candidate_overrides:
+        if not candidate_overrides and not state.pivoted_attachment_ids:
+            self._deformation_status_text = ""
             return state.reference_world
-        result = simulate_city_deformation(
+        result = simulate_deformation_session(
             catalogue=self.catalogue,
-            initial_world=state.reference_world,
+            reference_world=state.reference_world,
+            pivoted_attachment_ids=state.pivoted_attachment_ids,
             city_lambert_overrides=candidate_overrides,
         )
         if not result.accepted or result.world is None:
+            self._deformation_status_text = ""
             self.status.config(text=result.rejection_reason or "Candidat de deformation impossible")
             return None
+        self._deformation_status_text = result.warning_reason or ""
+        if result.warning_reason is not None:
+            self.status.config(text=result.warning_reason)
         return result.world
 
     def _deformation_delete_selected(self) -> None:
@@ -1846,6 +1885,55 @@ class TriangleViewerManual(
         ]
         state.selected_occurrence = None
         self._show_deformation_preview(candidate_world)
+        self._refresh_deformation_window()
+
+    def _deformation_restore_selected(self) -> None:
+        """Restaure la ville sélectionnée à ses coordonnées Catalogue."""
+        state = self._deformation_state
+        occurrence = state.selected_occurrence
+        if occurrence is None:
+            return
+        city_id = self._deformation_city_id_for_occurrence(*occurrence)
+        candidate_overrides = dict(state.city_lambert_overrides)
+        candidate_overrides.pop(city_id, None)
+        candidate_world = self._apply_deformation_city_overrides(candidate_overrides)
+        if candidate_world is None:
+            return
+        state.city_lambert_overrides = candidate_overrides
+        state.last_accepted_world = candidate_world
+        self._show_deformation_preview(candidate_world)
+        self._refresh_deformation_window()
+
+    def _deformation_pivot_attachment_selected(self) -> None:
+        state = self._deformation_state
+        if state.selected_occurrence is None or state.reference_world is None:
+            return
+        element_id, role = state.selected_occurrence
+        world = state.last_accepted_world or state.reference_world
+        group_id = world.get_group_of_element(element_id)
+        node_id = world.get_element_vertex_node_id_by_type(element_id, role)
+        attachment_id = world.getSingleVertexEdgeAttachmentIdAtNode(group_id, node_id)
+        if attachment_id is None:
+            return
+        previous_ids = set(state.pivoted_attachment_ids)
+        state.toggle_pivoted_attachment(attachment_id)
+        result = simulate_deformation_session(
+            catalogue=self.catalogue,
+            reference_world=state.reference_world,
+            pivoted_attachment_ids=state.pivoted_attachment_ids,
+            city_lambert_overrides=state.city_lambert_overrides,
+        )
+        if not result.accepted or result.world is None:
+            state.pivoted_attachment_ids = previous_ids
+            self.status.config(text=result.rejection_reason or "Pivot VE DEFORM impossible")
+            return
+        state.last_accepted_world = result.world
+        if state.selected_occurrence not in state.modified_occurrences:
+            state.modified_occurrences.append(state.selected_occurrence)
+        self._deformation_status_text = result.warning_reason or ""
+        if result.warning_reason is not None:
+            self.status.config(text=result.warning_reason)
+        self._show_deformation_preview(result.world)
         self._refresh_deformation_window()
 
     def _deformation_map_pin_selected(self) -> None:
@@ -1968,6 +2056,9 @@ class TriangleViewerManual(
             raise RuntimeError(
                 "Les overrides de deformation ne peuvent pas etre rejoues apres rotation"
             )
+        self._deformation_status_text = result.warning_reason or ""
+        if result.warning_reason is not None:
+            self.status.config(text=result.warning_reason)
         state.last_accepted_world = result.world
         self._show_deformation_preview(result.world)
         self._refresh_deformation_window()
@@ -1996,6 +2087,9 @@ class TriangleViewerManual(
             city_lambert_overrides=state.city_lambert_overrides,
         )
         if result.accepted and result.world is not None:
+            self._deformation_status_text = result.warning_reason or ""
+            if result.warning_reason is not None:
+                self.status.config(text=result.warning_reason)
             state.last_accepted_world = result.world
             self._show_deformation_preview(result.world)
             self._refresh_deformation_window()

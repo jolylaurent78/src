@@ -5,6 +5,7 @@ import numpy as np
 from src.assembleur_catalogue import Catalogue
 from src.assembleur_core import (
     ResolvedVertexEdgeAttachment,
+    TopologyConstraintGeometryError,
     TopologyEdgeEdgeAttachment,
     TopologyVertexEdgeAttachment,
     TopologyWorld,
@@ -101,6 +102,7 @@ def test_deformation_keeps_v2_chain_intentions_and_rebuilds_derived_state():
     )
 
     assert result.accepted
+    assert result.warning_reason is None
     assert tuple(result.world.attachments.values()) == attachments_before
     assert set(result.world.attachments) == {"A001", "A002"}
     assert isinstance(result.world.attachments["A001"], TopologyEdgeEdgeAttachment)
@@ -123,6 +125,47 @@ def test_deformation_keeps_v2_chain_intentions_and_rebuilds_derived_state():
         restored_anchor.node_id, restored_anchor.group_id
     ) == (500.0, -200.0)
     assert result.world.is_group_contour_valid(restored_anchor.group_id)
+
+
+def test_triangle_deformation_accepts_an_invalid_contour_with_a_warning(monkeypatch):
+    catalogue, world, element_id, triangle_id, _anchor = _catalogue_and_v2_chain()
+    light_city_id = catalogue.get_triangle(triangle_id).light_city_id
+    light_before = np.asarray(catalogue.get_city_lambert(light_city_id))
+    monkeypatch.setattr(TopologyWorld, "is_group_contour_valid", lambda *_args: False)
+
+    result = simulate_triangle_deformation(
+        catalogue=catalogue,
+        initial_world=world,
+        element_id=element_id,
+        vertex_lambert_overrides={"L": tuple(light_before + np.asarray((1000.0, 0.0)))},
+    )
+
+    assert result.accepted
+    assert result.world is not None
+    assert result.rejection_reason is None
+    assert result.warning_reason == "Attention : chevauchement détecté."
+
+
+def test_triangle_deformation_rejects_a_replay_error_without_warning(monkeypatch):
+    catalogue, world, element_id, triangle_id, _anchor = _catalogue_and_v2_chain()
+    light_city_id = catalogue.get_triangle(triangle_id).light_city_id
+    light_before = np.asarray(catalogue.get_city_lambert(light_city_id))
+
+    def reject_replay(*_args, **_kwargs):
+        raise TopologyConstraintGeometryError("replay impossible")
+
+    monkeypatch.setattr(TopologyWorld, "replay_group_attachment_poses", reject_replay)
+    result = simulate_triangle_deformation(
+        catalogue=catalogue,
+        initial_world=world,
+        element_id=element_id,
+        vertex_lambert_overrides={"L": tuple(light_before + np.asarray((1000.0, 0.0)))},
+    )
+
+    assert not result.accepted
+    assert result.world is None
+    assert result.rejection_reason == "replay impossible"
+    assert result.warning_reason is None
 
 
 def test_deformation_topodump_keeps_attachment_intentions(tmp_path):

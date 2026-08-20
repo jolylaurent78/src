@@ -14,7 +14,7 @@ class _Tree:
             self.items.pop(iid, None)
         self.selected_iid = None
 
-    def insert(self, _parent, _index, *, iid, text):
+    def insert(self, _parent, _index, *, iid, text, values=()):
         self.items[iid] = text
 
     def selection_set(self, iid):
@@ -31,8 +31,11 @@ class _Tree:
 
 
 class _Button:
-    def configure(self, **_kwargs):
-        pass
+    def __init__(self):
+        self.options = {}
+
+    def configure(self, **kwargs):
+        self.options.update(kwargs)
 
 
 def _window_stub(callback):
@@ -44,6 +47,7 @@ def _window_stub(callback):
     window._occurrences_guard_after_id = None
     window._map_pin_button = _Button()
     window._delete_button = _Button()
+    window._restore_button = _Button()
     window._on_occurrence_selected = callback
     window.idle_callbacks = []
     window.cancelled = []
@@ -56,7 +60,7 @@ def test_delayed_programmatic_treeview_selection_cannot_restore_old_deform_occur
     selected_element = {"id": "T03"}
     window = _window_stub(lambda element_id, _role: selected_element.update(id=element_id))
 
-    window.set_occurrences((("T02", "L", "T02:L"),), ("T02", "L"))
+    window.set_occurrences((("T02", "L", "T02:L", True, False),), ("T02", "L"))
     assert window._updating_occurrences is True
 
     # T03 vient d'être sélectionné au canvas ; Tk livre seulement maintenant
@@ -72,7 +76,7 @@ def test_treeview_user_selection_is_forwarded_after_programmatic_update_stabiliz
     selected = []
     window = _window_stub(lambda element_id, role: selected.append((element_id, role)))
 
-    window.set_occurrences((("T02", "L", "T02:L"),), ("T02", "L"))
+    window.set_occurrences((("T02", "L", "T02:L", True, False),), ("T02", "L"))
     window.idle_callbacks.pop()()
     window._occurrence_tree_selected()
 
@@ -82,9 +86,9 @@ def test_treeview_user_selection_is_forwarded_after_programmatic_update_stabiliz
 def test_new_occurrence_update_replaces_the_previous_idle_guard_release():
     window = _window_stub(lambda *_args: None)
 
-    window.set_occurrences((("T02", "L", "T02:L"),), ("T02", "L"))
+    window.set_occurrences((("T02", "L", "T02:L", True, False),), ("T02", "L"))
     first_release = window.idle_callbacks[-1]
-    window.set_occurrences((("T03", "B", "T03:B"),), ("T03", "B"))
+    window.set_occurrences((("T03", "B", "T03:B", True, False),), ("T03", "B"))
     second_release = window.idle_callbacks[-1]
 
     first_release()
@@ -92,3 +96,13 @@ def test_new_occurrence_update_replaces_the_previous_idle_guard_release():
     second_release()
     assert window._updating_occurrences is False
     assert window.cancelled == ["idle-1"]
+
+
+def test_restore_button_tracks_the_selected_deformation_occurrence():
+    window = _window_stub(lambda *_args: None)
+
+    window.set_occurrences((('T02', 'L', 'T02:L', True, False),), None)
+    assert window._restore_button.options['state'] == 'disabled'
+
+    window.set_occurrences((('T02', 'L', 'T02:L', True, False),), ('T02', 'L'))
+    assert window._restore_button.options['state'] == 'normal'

@@ -30,6 +30,7 @@ class DeformationUiState:
     last_accepted_world: TopologyWorld | None = None
     modified_occurrences: list[DeformationOccurrence] = field(default_factory=list)
     selected_occurrence: DeformationOccurrence | None = None
+    pivoted_attachment_ids: set[str] = field(default_factory=set)
     _drag_last_accepted_point: VertexLambertPoint | None = None
 
     def enter(self) -> None:
@@ -46,6 +47,16 @@ class DeformationUiState:
         self._drag_last_accepted_point = None
         self.modified_occurrences.clear()
         self.selected_occurrence = None
+        self.pivoted_attachment_ids.clear()
+
+    def toggle_pivoted_attachment(self, attachment_id: str) -> None:
+        attachment_id = str(attachment_id)
+        if not attachment_id:
+            raise ValueError("attachment_id vide")
+        if attachment_id in self.pivoted_attachment_ids:
+            self.pivoted_attachment_ids.remove(attachment_id)
+        else:
+            self.pivoted_attachment_ids.add(attachment_id)
 
     def clear_selection(self) -> None:
         """Compatibilite locale : vider toute la session de deformation."""

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
@@ -25,6 +25,7 @@ class DeformationSimulationResult:
     element_id: str
     vertex_lambert_overrides: Mapping[str, tuple[float, float]]
     rejection_reason: str | None = None
+    warning_reason: str | None = None
 
 
 def _normalize_lambert_point(value) -> tuple[float, float] | None:
@@ -133,6 +134,7 @@ def _rejected(
         element_id=element_id,
         vertex_lambert_overrides=MappingProxyType(dict(vertex_lambert_overrides)),
         rejection_reason=reason,
+        warning_reason=None,
     )
 
 
@@ -177,6 +179,7 @@ def simulate_triangle_deformation(
     group_id = initial_world.get_group_of_element(element_id)
     anchor = _require_selected_group_anchor(initial_world, group_id)
 
+    warning_reason = None
     try:
         replacement = materialize_catalogue_triangle(
             catalogue,
@@ -215,11 +218,7 @@ def simulate_triangle_deformation(
         working_world.reconcileGroupAnchorsByNode()
         working_world.applyGroupAnchor(candidate_anchor.anchor_id)
         if not working_world.is_group_contour_valid(candidate_group_id):
-            return _rejected(
-                element_id,
-                normalized_overrides,
-                "Contour du groupe invalide",
-            )
+            warning_reason = "Attention : chevauchement détecté."
     except TopologyConstraintGeometryError as exc:
         return _rejected(element_id, normalized_overrides, str(exc))
 
@@ -228,6 +227,7 @@ def simulate_triangle_deformation(
         world=working_world,
         element_id=element_id,
         vertex_lambert_overrides=MappingProxyType(dict(normalized_overrides)),
+        warning_reason=warning_reason,
     )
 
 
@@ -302,6 +302,7 @@ def simulate_city_deformation(
                 f"Plusieurs ancres source pour le groupe reconstruit {group_id!r}"
             )
 
+    warning_reason = None
     try:
         for group_id, anchor_id in anchor_id_by_group.items():
             anchor = working_world.groupAnchors.get(anchor_id)
@@ -322,7 +323,7 @@ def simulate_city_deformation(
                 )
             working_world.applyGroupAnchor(anchor_id)
             if not working_world.is_group_contour_valid(group_id):
-                return _rejected("", {}, "Contour du groupe invalide")
+                warning_reason = "Attention : chevauchement détecté."
     except TopologyConstraintGeometryError as exc:
         return _rejected("", {}, str(exc))
 
@@ -331,4 +332,47 @@ def simulate_city_deformation(
         world=working_world,
         element_id="",
         vertex_lambert_overrides=MappingProxyType({}),
+        warning_reason=warning_reason,
+    )
+
+
+def simulate_deformation_session(
+    *,
+    catalogue: Catalogue,
+    reference_world: TopologyWorld,
+    pivoted_attachment_ids: Collection[str],
+    city_lambert_overrides: Mapping[str, tuple[float, float]],
+) -> DeformationSimulationResult:
+    """Reconstruit le preview DEFORM depuis ses seules intentions temporaires."""
+    working_world = reference_world
+    overlap_detected = False
+    for attachment_id in sorted(pivoted_attachment_ids):
+        try:
+            result = working_world._build_pivot_vertex_edge_candidate_for_attachment(
+                str(attachment_id), reject_overlap=False
+            )
+        except TopologyConstraintGeometryError as exc:
+            return _rejected("", {}, str(exc))
+        if result is None:
+            return _rejected("", {}, f"Pivot VE DEFORM impossible: {attachment_id}")
+        working_world, _attachment_id, overlap = result
+        overlap_detected = overlap_detected or overlap
+
+    if city_lambert_overrides:
+        result = simulate_city_deformation(
+            catalogue=catalogue,
+            initial_world=working_world,
+            city_lambert_overrides=city_lambert_overrides,
+        )
+        if not result.accepted or result.world is None:
+            return result
+        working_world = result.world
+        overlap_detected = overlap_detected or result.warning_reason is not None
+
+    return DeformationSimulationResult(
+        accepted=True,
+        world=working_world,
+        element_id="",
+        vertex_lambert_overrides=MappingProxyType({}),
+        warning_reason=("Attention : chevauchement détecté." if overlap_detected else None),
     )

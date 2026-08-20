@@ -65,6 +65,8 @@ class DeformationWindow(tk.Toplevel):
         on_vertex_selected: Callable[[str], None],
         on_occurrence_selected: Callable[[str, str], None],
         on_delete_selected: Callable[[], None],
+        on_restore_selected: Callable[[], None],
+        on_pivot_attachment_selected: Callable[[], None],
         on_map_pin_selected: Callable[[], None],
         on_view_mode_changed: Callable[[str], None],
         on_canvas_mode_changed: Callable[[str], None],
@@ -80,6 +82,8 @@ class DeformationWindow(tk.Toplevel):
         self._on_vertex_selected = on_vertex_selected
         self._on_occurrence_selected = on_occurrence_selected
         self._on_delete_selected = on_delete_selected
+        self._on_restore_selected = on_restore_selected
+        self._on_pivot_attachment_selected = on_pivot_attachment_selected
         self._on_map_pin_selected = on_map_pin_selected
         self._on_view_mode_changed = on_view_mode_changed
         self._on_canvas_mode_changed = on_canvas_mode_changed
@@ -106,6 +110,12 @@ class DeformationWindow(tk.Toplevel):
         self._icon_delete = tk.PhotoImage(
             file=str(Path(__file__).resolve().parent.parent / "images" / "delete.png")
         )
+        self._icon_restore = tk.PhotoImage(
+            file=str(Path(__file__).resolve().parent.parent / "images" / "restore.png")
+        )
+        self._icon_pivot_attachment = tk.PhotoImage(
+            file=str(Path(__file__).resolve().parent.parent / "images" / "rotate.png")
+        )
         self._icon_select = tk.PhotoImage(
             file=str(Path(__file__).resolve().parent.parent / "images" / "click.png")
         )
@@ -121,16 +131,36 @@ class DeformationWindow(tk.Toplevel):
         ttk.Label(occurrence_panel, text="Points déformés").pack(anchor=tk.W, pady=(0, 4))
         list_toolbar = ttk.Frame(occurrence_panel)
         list_toolbar.pack(fill=tk.X, pady=(0, 4))
+
         self._map_pin_button = tk.Button(
             list_toolbar, image=self._icon_map_pin, command=self._on_map_pin_selected,
             state=tk.DISABLED, relief=tk.FLAT, bd=1,
         )
         self._map_pin_button.pack(side=tk.LEFT)
+
+        self._restore_button = tk.Button(
+            list_toolbar,
+            image=self._icon_restore,
+            command=self._on_restore_selected,
+            state=tk.DISABLED,
+            relief=tk.FLAT,
+            bd=1,
+        )
+        self._restore_button.pack(side=tk.LEFT, padx=(4, 0))
+
+        self._pivot_attachment_button = tk.Button(
+            list_toolbar, image=self._icon_pivot_attachment,
+            command=self._on_pivot_attachment_selected, state=tk.DISABLED,
+            relief=tk.FLAT, bd=1,
+        )
+        self._pivot_attachment_button.pack(side=tk.LEFT, padx=(4, 0))
+
         self._delete_button = tk.Button(
             list_toolbar, image=self._icon_delete, command=self._on_delete_selected,
             state=tk.DISABLED, relief=tk.FLAT, bd=1,
         )
         self._delete_button.pack(side=tk.LEFT, padx=(4, 0))
+
         ttk.Separator(list_toolbar, orient=tk.VERTICAL).pack(
             side=tk.LEFT, fill=tk.Y, padx=(10, 6)
         )
@@ -144,14 +174,20 @@ class DeformationWindow(tk.Toplevel):
             command=lambda: self._set_canvas_mode("move"), relief=tk.FLAT, bd=1,
         )
         self._move_canvas_button.pack(side=tk.LEFT, padx=(4, 0))
+
         attach_tooltip(self._select_canvas_button, "Sélectionner un triangle à déformer")
         attach_tooltip(self._move_canvas_button, "Déplacer ou faire pivoter un groupe")
+        attach_tooltip(self._restore_button, "Restaurer la ville à ses coordonnées initiales")
+        attach_tooltip(self._pivot_attachment_button, "Inverser l'orientation de l'attache Vertex-Edge")
 
         attach_tooltip(self._map_pin_button, "Déplacer le point vers une ville")
         attach_tooltip(self._delete_button, "Supprimer la déformation sélectionnée")
 
         occurrence_scrollbar = ttk.Scrollbar(occurrence_panel, orient=tk.VERTICAL)
-        self._occurrence_tree = ttk.Treeview(occurrence_panel, show="tree", selectmode="browse", yscrollcommand=occurrence_scrollbar.set, height=12)
+        self._occurrence_tree = ttk.Treeview(
+            occurrence_panel, show="tree", selectmode="browse",
+            yscrollcommand=occurrence_scrollbar.set, height=12,
+        )
         occurrence_scrollbar.configure(command=self._occurrence_tree.yview)
         occurrence_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self._occurrence_tree.pack(fill=tk.BOTH, expand=True)
@@ -274,9 +310,14 @@ class DeformationWindow(tk.Toplevel):
                 )
             )
 
+    def set_pivot_attachment_enabled(self, enabled: bool) -> None:
+        self._pivot_attachment_button.configure(
+            state=tk.NORMAL if enabled else tk.DISABLED
+        )
+
     def set_occurrences(
         self,
-        occurrences: tuple[tuple[str, str, str], ...],
+        occurrences: tuple[tuple[str, str, str, bool, bool], ...],
         selected_occurrence: tuple[str, str] | None,
     ) -> None:
         if self._occurrences_guard_after_id is not None:
@@ -292,9 +333,10 @@ class DeformationWindow(tk.Toplevel):
             self._occurrence_tree.delete(*self._occurrence_tree.get_children())
             self._occurrence_by_iid.clear()
             selected_iid = None
-            for index, (element_id, role, label) in enumerate(occurrences):
+            for index, (element_id, role, label, moved, pivoted) in enumerate(occurrences):
                 iid = f"occurrence-{index}"
-                self._occurrence_tree.insert("", tk.END, iid=iid, text=label)
+                display_label = f"{'◆' if moved else ' '} {'↻' if pivoted else ' '}  {label}"
+                self._occurrence_tree.insert("", tk.END, iid=iid, text=display_label)
                 occurrence = (element_id, role)
                 self._occurrence_by_iid[iid] = occurrence
                 if occurrence == selected_occurrence:
@@ -303,9 +345,17 @@ class DeformationWindow(tk.Toplevel):
                 self._occurrence_tree.selection_set(selected_iid)
                 self._occurrence_tree.focus(selected_iid)
                 self._occurrence_tree.see(selected_iid)
+            moved = False
+            if selected_occurrence is not None:
+                moved = any(
+                    (element_id, role) == selected_occurrence and is_moved
+                    for element_id, role, _label, is_moved, _pivoted in occurrences
+                )
             state = tk.NORMAL if selected_occurrence is not None else tk.DISABLED
             self._map_pin_button.configure(state=state)
             self._delete_button.configure(state=state)
+            moved_state = tk.NORMAL if moved else tk.DISABLED
+            self._restore_button.configure(state=moved_state)
         finally:
             self._occurrences_guard_after_id = self.after_idle(
                 lambda: self._release_occurrences_update_guard(generation)

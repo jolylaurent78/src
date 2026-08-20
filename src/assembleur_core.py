@@ -4900,17 +4900,15 @@ class TopologyWorld:
             ),
         )
 
-    def _build_pivot_vertex_edge_candidate(
+    def _build_pivot_vertex_edge_candidate_for_attachment(
         self,
-        groupId: str,
-        nodeId: str,
-    ) -> "TopologyWorld | None":
+        attachment_id: str,
+        *,
+        reject_overlap: bool,
+    ) -> tuple["TopologyWorld", str, bool] | None:
         """Construit un candidat de pivot VE validé par l'anti-overlap topologique."""
-        attachment = self._get_single_vertex_edge_attachment_at_node(
-            groupId,
-            nodeId,
-        )
-        if attachment is None:
+        attachment = self.attachments.get(attachment_id)
+        if not isinstance(attachment, TopologyVertexEdgeAttachment):
             return None
 
         candidate = self.clonePhysicalState()
@@ -4972,7 +4970,7 @@ class TopologyWorld:
             group_mob_id,
             pivoted,
         )
-        if overlap:
+        if overlap and reject_overlap:
             return None
 
         # 5) Le raccord est géométriquement admissible.
@@ -5007,7 +5005,7 @@ class TopologyWorld:
         if anchor is not None:
             candidate.applyGroupAnchor(anchor.anchor_id)
 
-        return candidate
+        return candidate, attachment_id, overlap
 
     def canPivotVertexEdgeAtNode(
         self,
@@ -5044,6 +5042,19 @@ class TopologyWorld:
             )
 
         return candidate
+
+    def _build_pivot_vertex_edge_candidate(self, groupId: str, nodeId: str) -> "TopologyWorld | None":
+        attachment = self._get_single_vertex_edge_attachment_at_node(groupId, nodeId)
+        if attachment is None:
+            return None
+        result = self._build_pivot_vertex_edge_candidate_for_attachment(
+            attachment.attachment_id, reject_overlap=True
+        )
+        return None if result is None else result[0]
+
+    def getSingleVertexEdgeAttachmentIdAtNode(self, groupId: str, nodeId: str) -> str | None:
+        attachment = self._get_single_vertex_edge_attachment_at_node(groupId, nodeId)
+        return None if attachment is None else attachment.attachment_id
 
     def canDegrouperAtNode(self, groupId: str, nodeId: str) -> bool:
         gid = self.find_group(groupId)

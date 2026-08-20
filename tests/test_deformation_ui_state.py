@@ -149,6 +149,28 @@ def test_deformation_state_exit_discards_all_temporary_data():
     assert state.selected_occurrence is None
 
 
+def test_deformation_state_tracks_pivoted_attachments_for_the_session():
+    state = DeformationUiState()
+
+    state.toggle_pivoted_attachment("A001")
+    assert state.pivoted_attachment_ids == {"A001"}
+
+    state.toggle_pivoted_attachment("A001")
+    assert state.pivoted_attachment_ids == set()
+
+    state.toggle_pivoted_attachment("A002")
+    state.enter()
+    assert state.pivoted_attachment_ids == set()
+
+    state.toggle_pivoted_attachment("A003")
+    state.clear_session()
+    assert state.pivoted_attachment_ids == set()
+
+    state.toggle_pivoted_attachment("A003")
+    state.exit()
+    assert state.pivoted_attachment_ids == set()
+
+
 def test_deformation_canvas_mode_defaults_to_select_and_preserves_session():
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer._sel = None
@@ -430,6 +452,9 @@ def test_drag_preview_does_not_rebuild_the_occurrence_list():
         def set_triangle(self, **_kwargs):
             self.triangle_calls += 1
 
+        def set_pivot_attachment_enabled(self, _enabled):
+            pass
+
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer._deformation_state.enter()
     viewer._deformation_state.select("T08", object())
@@ -465,7 +490,7 @@ def test_deformation_triangle_navigation_does_not_simulate(monkeypatch):
         raise AssertionError("La navigation ne doit pas simuler une deformation")
 
     monkeypatch.setattr(
-        "src.assembleur_tk.simulate_city_deformation",
+        "src.assembleur_tk.simulate_deformation_session",
         fail_if_simulated,
     )
 
@@ -537,6 +562,42 @@ def test_delete_last_city_override_restores_the_reference_world():
     assert viewer._deformation_state.selected_occurrence is None
     assert viewer._deformation_state.last_accepted_world is reference_world
     assert viewer._shown_world is reference_world
+
+
+def test_restore_selected_does_not_delegate_to_delete():
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    calls = []
+    viewer._deformation_delete_selected = lambda: calls.append('delete')
+
+    viewer._deformation_restore_selected()
+
+    assert calls == []
+
+
+def test_city_deformation_warning_is_accepted_and_kept_for_refresh(monkeypatch):
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    reference_world = object()
+    candidate_world = object()
+    statuses = []
+    viewer._deformation_state.enter()
+    viewer._deformation_state.select("T04", reference_world)
+    viewer.catalogue = object()
+    viewer.status = SimpleNamespace(
+        config=lambda **kwargs: statuses.append(kwargs["text"])
+    )
+
+    monkeypatch.setattr(
+        "src.assembleur_tk.simulate_deformation_session",
+        lambda **_kwargs: SimpleNamespace(
+            accepted=True,
+            world=candidate_world,
+            warning_reason="Attention : chevauchement détecté.",
+        ),
+    )
+
+    assert viewer._apply_deformation_city_overrides({"CITY-L": (1.0, 2.0)}) is candidate_world
+    assert viewer._deformation_status_text == "Attention : chevauchement détecté."
+    assert statuses == ["Attention : chevauchement détecté."]
 
 
 def test_map_pin_commits_source_city_override_without_changing_its_occurrence(monkeypatch):
