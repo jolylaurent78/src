@@ -104,7 +104,7 @@ class DeformationWindow(tk.Toplevel):
             file=str(Path(__file__).resolve().parent.parent / "images" / "map-pin.png")
         )
         self._icon_delete = tk.PhotoImage(
-            file=str(Path(__file__).resolve().parent.parent / "images" / "scenario_delete.png")
+            file=str(Path(__file__).resolve().parent.parent / "images" / "delete.png")
         )
         self._icon_select = tk.PhotoImage(
             file=str(Path(__file__).resolve().parent.parent / "images" / "click.png")

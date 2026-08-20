@@ -449,6 +449,7 @@ class TriangleViewerManual(
         self.show_map_layer = tk.BooleanVar(value=True)
         self.show_triangles_layer = tk.BooleanVar(value=True)
         self.show_balises_layer = tk.BooleanVar(value=False)
+        self._beacon_navigation_index: int | None = None
         self._layerGuidesVisible: bool = True
         self._layerGuidesVisibleVar = tk.BooleanVar(value=True)
         # Opacité du layer "carte" (0..100). 100 = opaque, 0 = invisible.
@@ -2612,7 +2613,19 @@ class TriangleViewerManual(
         row_balises_right = tk.Frame(row_balises, width=rightColWidth)
         row_balises_right.grid(row=0, column=2, sticky="e")
         row_balises_right.grid_propagate(False)
+        tk.Button(
+            row_balises_right,
+            text=">",
+            width=2,
+            command=lambda: self._navigate_beacon(+1),
+        ).pack(side=tk.RIGHT, padx=(0, 2))
 
+        tk.Button(
+            row_balises_right,
+            text="<",
+            width=2,
+            command=lambda: self._navigate_beacon(-1),
+        ).pack(side=tk.RIGHT, padx=(4, 0))
         pw.add(layer_frame, minsize=layer_minsize_expanded)
 
         # Si on démarre "déplié", on force une hauteur qui montre tous les widgets du panneau.
@@ -5509,6 +5522,49 @@ class TriangleViewerManual(
         """Redessine le canvas suite à un changement de visibilité d'un layer."""
         self._redraw_from(self._last_drawn)
 
+    def _navigate_beacon(self, direction: int) -> None:
+        """Centre la vue sur la balise Catalogue précédente ou suivante."""
+        if direction not in (-1, 1):
+            raise ValueError(f"Direction de navigation balise invalide: {direction!r}")
+
+        beacons = [
+            beacon
+            for beacon in self.catalogue.iter_beacons()
+            if not beacon.archived
+        ]
+        if not beacons:
+            self.status.config(text="Aucune balise disponible.")
+            return
+
+        if self._beacon_navigation_index is None:
+            index = 0 if direction > 0 else len(beacons) - 1
+        else:
+            index = (self._beacon_navigation_index + direction) % len(beacons)
+
+        beacon = beacons[index]
+        wx, wy = self._beacon_world_resolver.get_world(beacon.beacon_id)
+
+        canvas_width = self.canvas.winfo_width()
+        canvas_height = self.canvas.winfo_height()
+
+        self.offset = np.array(
+            [
+                canvas_width / 2.0 - float(wx) * self.zoom,
+                canvas_height / 2.0 + float(wy) * self.zoom,
+            ],
+            dtype=float,
+        )
+
+        self._beacon_navigation_index = index
+
+        self._invalidate_pick_cache()
+        self._redraw_from(self._last_drawn)
+
+        city = self.catalogue.get_city(beacon.city_id)
+        self.status.config(
+            text=f"Balise {city.name} ({beacon.beacon_id}) centrée."
+        )
+        
     def _on_toggle_guides_layer(self):
         self._layerGuidesVisible = bool(self._layerGuidesVisibleVar.get())
         self.setAppConfigValue("uiShowGuidesLayer", bool(self._layerGuidesVisible))

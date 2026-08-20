@@ -680,6 +680,13 @@
       "latitude": 49.2325,
       "longitude": 0.7216666666666667,
       "archived": false
+    },
+    {
+      "cityId": "CITY-0098",
+      "name": "Lons-le-Saunier",
+      "latitude": 46.675,
+      "longitude": 5.554444444444444,
+      "archived": false
     }
   ],
   "beacons": [
@@ -1011,6 +1018,22 @@
       "baseCityId": "CITY-0033",
       "lightCityId": "CITY-0057",
       "archived": false
+    },
+    {
+      "triangleId": "TRI-0040",
+      "note": "MI",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0036",
+      "lightCityId": "CITY-0079",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-0041",
+      "note": "SOL",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0033",
+      "lightCityId": "CITY-0098",
+      "archived": false
     }
   ],
   "templates": [
@@ -1075,9 +1098,9 @@
         "TRI-0035",
         "TRI-0015",
         "TRI-0014",
-        "TRI-0036",
+        "TRI-0040",
+        "TRI-0041",
         "TRI-0039",
-        "TRI-0038",
         "TRI-0019",
         "TRI-0020",
         "TRI-0021",
