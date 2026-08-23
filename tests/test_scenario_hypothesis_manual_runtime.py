@@ -144,6 +144,7 @@ def test_manual_preview_and_placement_use_catalogue_triangle_id_only():
 
     viewer._place_dragged_triangle()
 
+    assert scenario.is_placeholder is False
     element = next(iter(scenario.topoWorld.elements.values()))
     assert element.source_triangle_id == triangle_id
     assert "triRank" not in element.meta

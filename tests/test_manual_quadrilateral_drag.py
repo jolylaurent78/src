@@ -197,6 +197,7 @@ def test_manual_quadrilateral_commit_matches_core_preview_and_groups_both_triang
 
     viewer._place_dragged_quadrilateral()
 
+    assert scenario.is_placeholder is False
     world = scenario.topoWorld
     assert len(world.elements) == 2
     assert world.get_used_source_triangle_ids() == frozenset({first_id, second_id})

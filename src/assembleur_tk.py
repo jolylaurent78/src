@@ -589,6 +589,7 @@ class TriangleViewerManual(
             source_type="manual",
             algo_id=None,
             hypothesis=self._create_manual_scenario_hypothesis(),
+            is_placeholder=True,
         )
         manual.last_drawn = self._last_drawn
         manual.view_state = self._capture_view_state()
@@ -1270,7 +1271,8 @@ class TriangleViewerManual(
         menubar.add_cascade(label="Scénario", menu=self.menu_scenario)
         self.menu_scenario.add_command(label="Nouveau", command=self._new_empty_scenario)
         self.menu_scenario.add_command(label="Charger…", command=self._scenario_load_dialog)
-        self.menu_scenario.add_command(label="Enregistrer…", command=self._scenario_save_dialog)
+        self.menu_scenario.add_command(label="Enregistrer", command=self._scenario_save)
+        self.menu_scenario.add_command(label="Enregistrer sous…", command=self._scenario_save_as_dialog)
         self.menu_scenario.add_separator()
         # placeholder pour la liste des .xml du dossier 'scenario'
         self._menu_scenario_files_anchor = self.menu_scenario.index("end")
@@ -3100,8 +3102,8 @@ class TriangleViewerManual(
                   "Charger...").pack(side=tk.LEFT, padx=1)
         _make_btn(toolbar, self.icon_scen_props, "P", self._scenario_edit_properties,
                   "Propriétés...").pack(side=tk.LEFT, padx=1)
-        _make_btn(toolbar, self.icon_scen_save,  "S", self._scenario_save_dialog,
-                  "Enregistrer...").pack(side=tk.LEFT, padx=1)
+        _make_btn(toolbar, self.icon_scen_save,  "S", self._scenario_save,
+                  "Enregistrer").pack(side=tk.LEFT, padx=1)
         _make_btn(toolbar, self.icon_scen_dup,   "D", self._scenario_duplicate,
                   "Dupliquer").pack(side=tk.LEFT, padx=1)
         _make_btn(toolbar, self.icon_scen_del,   "X", self._scenario_delete,
@@ -5426,6 +5428,8 @@ class TriangleViewerManual(
         self._attach_beacon_resolver_to_world(scen.topoWorld)
         # Scénario vide : nouvelles structures indépendantes
         scen.last_drawn = []
+        scen.view_state = self._capture_view_state()
+        scen.map_state = self._capture_map_state()
 
         self.scenarios.append(scen)
         # Bascule sur ce nouveau scénario
@@ -5499,6 +5503,10 @@ class TriangleViewerManual(
         dup.clockRefNodeId = src.clockRefNodeId
         dup.clockRefTopoGroupId = src.clockRefTopoGroupId
         dup.clockAzimuthTraits = copy.deepcopy(src.clockAzimuthTraits)
+        # Le duplicat devient actif immédiatement : capturer le contexte
+        # runtime courant plutôt que les snapshots potentiellement périmés de src.
+        dup.view_state = self._capture_view_state()
+        dup.map_state = self._capture_map_state()
 
         self.scenarios.append(dup)
         self._refresh_scenario_listbox()
@@ -5525,9 +5533,14 @@ class TriangleViewerManual(
         if self.ref_scenario_token is not None and id(scen) == self.ref_scenario_token:
             self.ref_scenario_token = None
 
-        if idx == 0 and scen.source_type == "manual":
+        manual_count = sum(
+            1
+            for scenario in self.scenarios
+            if scenario.source_type == "manual"
+        )
+        if scen.source_type == "manual" and manual_count <= 1:
             messagebox.showinfo("Supprimer le scénario",
-                                "Le scénario manuel ne peut pas être supprimé.")
+                                "Impossible de supprimer le dernier scénario manuel.")
             return
 
         if not messagebox.askyesno(
@@ -5537,13 +5550,19 @@ class TriangleViewerManual(
         ):
             return
 
-        # Retirer le scénario
-        self.scenarios.pop(idx)
-        # Choisir le nouveau scénario actif (celui d'avant si possible)
-        if idx >= len(self.scenarios):
-            idx = len(self.scenarios) - 1
+        # Activer le remplaçant tant que le scénario courant est encore dans
+        # la collection. Cela évite tout état observable où l'index actif
+        # désigne un scénario déjà supprimé.
+        replacement_index = idx - 1 if idx == len(self.scenarios) - 1 else idx + 1
+        self._set_active_scenario(replacement_index)
 
-        self._set_active_scenario(idx)
+        # Anticiper le décalage avant la mutation de liste : après ``pop``,
+        # cet index désignera encore le remplaçant, y compris s'il était situé
+        # après le scénario supprimé.
+        self.active_scenario_index = (
+            replacement_index - 1 if replacement_index > idx else replacement_index
+        )
+        self.scenarios.pop(idx)
         self._refresh_scenario_listbox()
         self.status.config(text=f"Scénario supprimé : {scen.name}")
 
@@ -5927,8 +5946,30 @@ class TriangleViewerManual(
     #  SCENARIO: SAVE / LOAD
     # =========================
 
-    def _scenario_save_dialog(self):
-        """Boîte de dialogue pour enregistrer un scénario en XML."""
+    def _save_active_scenario_to_path(self, path: str) -> None:
+        """Sauvegarde le scénario actif et publie son identité de fichier runtime."""
+        self.save_scenario_xml(path)
+        scenario = self._get_active_scenario()
+        if scenario is None:
+            raise RuntimeError("Sauvegarde scénario: scénario actif absent après export")
+        scenario.file_path = str(path)
+        scenario.name = os.path.splitext(os.path.basename(str(path)))[0] or scenario.name
+        scenario.is_placeholder = False
+        self._refresh_scenario_listbox()
+        self.status.config(text=f"Scénario enregistré dans {path}")
+
+    def _scenario_save(self):
+        """Enregistre directement le scénario associé à un fichier, sinon délègue à « sous »."""
+        scenario = self._get_active_scenario()
+        if scenario is None:
+            return
+        if scenario.file_path:
+            self._save_active_scenario_to_path(scenario.file_path)
+            return
+        self._scenario_save_as_dialog()
+
+    def _scenario_save_as_dialog(self):
+        """Boîte de dialogue « Enregistrer sous » pour le scénario actif."""
         # nom par défaut daté dans le dossier 'scenario'
         ts = _dt.datetime.now().strftime("scenario-%Y%m%d-%H%M.xml")
         initial = os.path.join(self.scenario_dir, ts)
@@ -5942,15 +5983,10 @@ class TriangleViewerManual(
         if not path:
             return
 
-        # Si scénario AUTO : le figer en MANUEL (snapshot) avant export
-        if self._is_active_auto_scenario():
-            new_idx = self._convertActiveAutoToManualSnapshot()
-            if new_idx is not None:
-                self._refresh_scenario_listbox()
-                self._set_active_scenario(int(new_idx))
+        self._save_active_scenario_to_path(path)
 
-        self.save_scenario_xml(path)
-        self.status.config(text=f"Scénario enregistré dans {path}")
+    # Compatibilité interne pour les anciens appels non UI.
+    _scenario_save_dialog = _scenario_save_as_dialog
 
     def _load_scenario_into_new_scenario(self, path: str):
         """
@@ -5965,6 +6001,7 @@ class TriangleViewerManual(
         if not name:
             name = base
 
+        previous_scenario = self._get_active_scenario()
         new_index = len(self.scenarios)
 
         scen = ScenarioAssemblage(
@@ -5984,6 +6021,19 @@ class TriangleViewerManual(
         # ainsi load_scenario_xml() écrit bien dans ses structures.
         self._set_active_scenario(new_index)
         self.load_scenario_xml(path)
+        scen.file_path = str(path)
+        scen.name = name
+        scen.is_placeholder = False
+
+        # Le canevas initial ne doit pas rester comme scénario utilisateur
+        # après le chargement réussi d'un fichier. Les autres scénarios sont
+        # conservés sans exception.
+        if previous_scenario is not None and previous_scenario.is_placeholder:
+            self.scenarios.remove(previous_scenario)
+            # ``scen`` est déjà affiché : corriger l'index sans repasser par
+            # _set_active_scenario(), qui lirait l'ancien index devenu hors
+            # bornes après le retrait du placeholder.
+            self.active_scenario_index = self.scenarios.index(scen)
 
         # On se ajoute un fit to screen
         self._fit_to_view(self._last_drawn)
@@ -7898,6 +7948,7 @@ class TriangleViewerManual(
             self.listbox.selection_clear(0, tk.END)
         self._last_triangle_selection = None
         self._in_triangle_select_guard = False
+        scen.is_placeholder = False
         return
 
     def _place_dragged_quadrilateral(self):
@@ -7938,6 +7989,7 @@ class TriangleViewerManual(
 
         # Aucun état réel n'est touché avant cette unique publication.
         scen.topoWorld = candidate_world
+        scen.is_placeholder = False
         self._rebuild_active_projection_from_core()
         self._redraw_from(self._last_drawn)
         self.status.config(text=f"Quadrilatère placé : groupe Core {group_id} créé.")

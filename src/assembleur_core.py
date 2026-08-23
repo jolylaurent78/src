@@ -71,10 +71,15 @@ class ScenarioAssemblage:
     Pour les scénarios automatiques, on utilisera plutôt des copies.
     """
     def __init__(self, name: str, source_type: str = "manual", algo_id: Optional[str] = None,
-                 traversal_direction: Optional[str] = None, hypothesis: "ScenarioHypothesis | None" = None):
+                 traversal_direction: Optional[str] = None, hypothesis: "ScenarioHypothesis | None" = None,
+                 *, file_path: str | None = None, is_placeholder: bool = False):
         self.name: str = name
         self.source_type: str = source_type      # "manual" ou "auto"
         self.algo_id: Optional[str] = algo_id    # id de l'algo (pour les auto)
+        # État runtime de l'onglet scénario ; il ne fait pas partie du
+        # snapshot XML. Le placeholder n'est que le canevas initial vide.
+        self.file_path: str | None = file_path
+        self.is_placeholder: bool = bool(is_placeholder)
         self.traversal_direction: Optional[str] = (
             traversal_direction.lower() if traversal_direction else None
         )
