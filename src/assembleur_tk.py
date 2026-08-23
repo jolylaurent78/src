@@ -1644,6 +1644,7 @@ class TriangleViewerManual(
         window = self._deformation_window
         if window is not None and window.winfo_exists():
             return window
+
         if self._deformation_map is None:
             self._deformation_map = CalibratedGeoMap.load_map(
                 "france_michelin",
@@ -1748,17 +1749,17 @@ class TriangleViewerManual(
             return ()
         displays = []
         for element_id, role in sorted(set(state.modified_occurrences)):
-                city_id = self._deformation_city_id_for_occurrence(element_id, role, world)
-                moved = city_id in state.city_lambert_overrides
-                group_id = world.get_group_of_element(element_id)
-                node_id = world.get_element_vertex_node_id_by_type(element_id, role)
-                attachment_id = world.getSingleVertexEdgeAttachmentIdAtNode(group_id, node_id)
-                pivoted = attachment_id in state.pivoted_attachment_ids if attachment_id else False
-                displays.append((
-                    element_id, role,
-                    self._deformation_occurrence_label(element_id, role),
-                    moved, pivoted,
-                ))
+            city_id = self._deformation_city_id_for_occurrence(element_id, role, world)
+            moved = city_id in state.city_lambert_overrides
+            group_id = world.get_group_of_element(element_id)
+            node_id = world.get_element_vertex_node_id_by_type(element_id, role)
+            attachment_id = world.getSingleVertexEdgeAttachmentIdAtNode(group_id, node_id)
+            pivoted = attachment_id in state.pivoted_attachment_ids if attachment_id else False
+            displays.append((
+                element_id, role,
+                self._deformation_occurrence_label(element_id, role),
+                moved, pivoted,
+            ))
         return tuple(displays)
 
     def _deformation_occurrence_label(self, element_id: str, role: str) -> str:
@@ -7225,7 +7226,11 @@ class TriangleViewerManual(
         if self._drag["kind"] == "quadrilateral":
             self._drag.update(self._build_quadrilateral_drag_geometry(triangle_ids))
         self.canvas.configure(cursor="hand2")
-        message = "Déplacez le quadrilatère puis cliquez pour le déposer." if len(selection) == 2 else "Déplacez le triangle puis cliquez pour le déposer."
+        message = (
+            "Déplacez le quadrilatère puis cliquez pour le déposer."
+            if len(selection) == 2
+            else "Déplacez le triangle puis cliquez pour le déposer."
+        )
         self.status.config(text=message)
 
     def _commit_list_placement_at_canvas_event(self, event) -> None:
@@ -9796,7 +9801,12 @@ class TriangleViewerManual(
                 ),
                 "auto_geom": False,
             }
-        self.status.config(text=f"Mode pivoter GROUPE #{core_group_id} : bouge la souris pour tourner, clic gauche pour valider, ESC pour annuler.")
+        self.status.config(
+            text=(
+                f"Mode pivoter GROUPE #{core_group_id} : bouge la souris pour tourner, "
+                "clic gauche pour valider, ESC pour annuler."
+            )
+        )
         return
 
     def _ctx_orient_segment_north(self, from_key: str, to_key: str, status_label: str):
@@ -10077,7 +10087,13 @@ class TriangleViewerManual(
             MIG_GEO_LOGGER.warning("[%s] groupe Core introuvable topoElementId=%s", operation_name, topo_element_id or "(absent)")
             return result
         entries = list(self._get_projected_elements_for_core_group(core_group_id))
-        MIG_GEO_LOGGER.debug("[%s] topoElementId=%s CoreGroupId=%s Members=%s", operation_name, topo_element_id or "(absent)", core_group_id, ",".join(str(e.get("topoElementId", "")) for e in entries) or "(aucun)")
+        MIG_GEO_LOGGER.debug(
+            "[%s] topoElementId=%s CoreGroupId=%s Members=%s",
+            operation_name,
+            topo_element_id or "(absent)",
+            core_group_id,
+            ",".join(str(e.get("topoElementId", "")) for e in entries) or "(aucun)",
+        )
         if not entries:
             MIG_GEO_LOGGER.warning("[%s] aucun membre projete CoreGroupId=%s", operation_name, core_group_id)
         return {"core_group_id": core_group_id, "entries": entries}
@@ -10582,7 +10598,6 @@ class TriangleViewerManual(
                     if not is_auto_move else {}
                 )
 
-                anchor_world = np.array(P[vkey], dtype=float)
                 self._sel = {
                     "mode": "move_group",
                     "core_group_id": move_members["core_group_id"],
@@ -10616,7 +10631,6 @@ class TriangleViewerManual(
                     if not is_auto_move else {}
                 )
 
-                anchor_world = np.array(P[vkey], dtype=float)
                 self._sel = {
                     "mode": "move_group",
                     "core_group_id": move_members["core_group_id"],

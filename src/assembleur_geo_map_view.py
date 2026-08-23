@@ -128,6 +128,7 @@ class GeoMapView(tk.Frame):
         on_marker_drag_released: Callable[[object], None] | None = None,
         initial_fit_zoom: float = 1.0,
         minimum_fit_zoom: float = 1.0,
+        maximum_zoom: float = 0.5,
         **kwargs,
     ):
         super().__init__(parent, **kwargs)
@@ -150,6 +151,7 @@ class GeoMapView(tk.Frame):
         self._offset_y = 0.0
         self._initial_fit_zoom = max(0.01, float(initial_fit_zoom))
         self._minimum_fit_zoom = max(0.01, float(minimum_fit_zoom))
+        self._maximum_zoom = max(0.01, float(maximum_zoom))
         self._initial_fit_applied = False
         self._press_position: tuple[int, int] | None = None
         self._pan_last_position: tuple[int, int] | None = None
@@ -262,7 +264,10 @@ class GeoMapView(tk.Frame):
         if bounds_height < 1.0:
             bounds_height = max(20.0, self.map.image_size[1] * 0.01)
         requested_scale = min(available_width / bounds_width, available_height / bounds_height)
-        self._view_scale = min(max(requested_scale, self._minimum_scale()), max(0.5, self._minimum_scale()))
+        self._view_scale = min(
+            max(requested_scale, self._minimum_scale()),
+            max(self._maximum_zoom, self._minimum_scale()),
+        )
         center_x, center_y = (min_x + max_x) / 2, (min_y + max_y) / 2
         self._offset_x = canvas_width / 2 - center_x * self._view_scale
         self._offset_y = canvas_height / 2 - center_y * self._view_scale
@@ -281,7 +286,7 @@ class GeoMapView(tk.Frame):
         initial_factor = self._initial_fit_zoom if not self._initial_fit_applied else 1.0
         self._view_scale = min(
             max(self._fit_scale * initial_factor, self._minimum_scale()),
-            max(0.5, self._minimum_scale()),
+            max(self._maximum_zoom, self._minimum_scale()),
         )
         if not self._initial_fit_applied:
             self._initial_fit_applied = True
@@ -405,7 +410,7 @@ class GeoMapView(tk.Frame):
         old_scale = self._view_scale
         new_scale = min(
             max(old_scale * factor, self._minimum_scale()),
-            max(0.5, self._minimum_scale()),
+            max(self._maximum_zoom, self._minimum_scale()),
         )
         map_x, map_y = self._screen_to_map(x_screen, y_screen)
         self._view_scale = new_scale

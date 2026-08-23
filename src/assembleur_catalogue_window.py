@@ -623,6 +623,7 @@ class CatalogueWindow(tk.Toplevel):
             on_marker_selected=self._on_map_marker_selected,
             initial_fit_zoom=2.25,
             minimum_fit_zoom=2.25,
+            maximum_zoom=1.0,
         )
         self._map_view.grid(row=4, column=0, columnspan=2, sticky="nsew")
 
@@ -694,6 +695,7 @@ class CatalogueWindow(tk.Toplevel):
             on_marker_selected=self._on_beacon_map_marker_selected,
             initial_fit_zoom=2.25,
             minimum_fit_zoom=2.25,
+            maximum_zoom=1.0,
         )
         self._beacon_map_view.grid(row=3, column=0, columnspan=2, sticky="nsew")
 
@@ -923,6 +925,7 @@ class CatalogueWindow(tk.Toplevel):
             detail,
             initial_fit_zoom=2.25,
             minimum_fit_zoom=2.25,
+            maximum_zoom=1.0,
         )
         self._triangle_map_view.grid(row=4, column=0, sticky="nsew")
 

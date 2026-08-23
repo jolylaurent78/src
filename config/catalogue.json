@@ -694,6 +694,13 @@
       "latitude": 50.948055555555555,
       "longitude": 1.856388888888889,
       "archived": false
+    },
+    {
+      "cityId": "CITY-0100",
+      "name": "Châlons-en-Champagne",
+      "latitude": 48.9575,
+      "longitude": 4.3647222222222215,
+      "archived": false
     }
   ],
   "beacons": [
@@ -1081,6 +1088,14 @@
       "baseCityId": "CITY-0035",
       "lightCityId": "CITY-0083",
       "archived": false
+    },
+    {
+      "triangleId": "TRI-0047",
+      "note": "MI",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0037",
+      "lightCityId": "CITY-0100",
+      "archived": false
     }
   ],
   "templates": [
@@ -1143,7 +1158,7 @@
         "TRI-0017",
         "TRI-0037",
         "TRI-0035",
-        "TRI-0015",
+        "TRI-0047",
         "TRI-0014",
         "TRI-0040",
         "TRI-0041",

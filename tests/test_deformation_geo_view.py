@@ -1,3 +1,4 @@
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -59,3 +60,45 @@ def test_assembly_view_rotation_uses_current_overridden_base_position():
     )
     assert original == pytest.approx(90.0)
     assert overridden == pytest.approx(0.0)
+
+
+def _zoom_limited_view(maximum_zoom: float) -> GeoMapView:
+    view = _rotated_view(0.0)
+    view.map = SimpleNamespace(
+        image_size=(100.0, 100.0),
+        geographic_to_pixel=lambda latitude, longitude: (longitude, latitude),
+    )
+    view._maximum_zoom = maximum_zoom
+    view._minimum_scale = lambda: 0.01
+    view._constrain_view_offsets = lambda: None
+    view._request_redraw = lambda: None
+    view._hide_tooltip = lambda: None
+    return view
+
+
+def test_geo_map_view_maximum_zoom_keeps_half_as_the_constructor_default():
+    assert inspect.signature(GeoMapView).parameters["maximum_zoom"].default == 0.5
+
+
+@pytest.mark.parametrize("method_name", ("_zoom_at", "fit_to_bounds", "fit_to_view"))
+def test_geo_map_view_uses_configured_maximum_zoom_for_all_zoom_paths(method_name):
+    view = _zoom_limited_view(1.0)
+    if method_name == "_zoom_at":
+        view._zoom_at(400.0, 300.0, 100.0)
+    elif method_name == "fit_to_bounds":
+        view.fit_to_bounds([(0.0, 0.0), (1.0, 1.0)])
+    else:
+        view._fit_scale = 1.0
+        view._initial_fit_zoom = 2.0
+        view._initial_fit_applied = False
+        view.fit_to_view()
+
+    assert view._view_scale == pytest.approx(1.0)
+
+
+def test_geo_map_view_default_maximum_zoom_remains_half_for_zoom_interaction():
+    view = _zoom_limited_view(0.5)
+
+    view._zoom_at(400.0, 300.0, 100.0)
+
+    assert view._view_scale == pytest.approx(0.5)
