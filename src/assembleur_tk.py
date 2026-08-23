@@ -893,6 +893,108 @@ class TriangleViewerManual(
             for element_id in element_ids
         )
 
+    def _preview_attachment_rotation_to_last_drawn(self, preview) -> None:
+        """Tourne le MOVE courant vers l'orientation V2, sans le translater.
+
+        Le clone V2 sert exclusivement à calculer l'angle compatible avec
+        l'attache. La pose de départ reste celle du drag libre, et le pivot est
+        le sommet actuellement saisi : aucun point de la projection n'est
+        déplacé vers la destination de l'attache.
+        """
+        if not preview.accepted or preview.world is None:
+            raise ValueError("[ATT-003D] preview Attachment V2 non accepté")
+        if not isinstance(self._sel, dict) or self._sel.get("mode") != "move_group":
+            raise RuntimeError("[ATT-003D] sélection MOVE absente pour la preview")
+        core_group_id = self._sel.get("core_group_id")
+        if not core_group_id:
+            raise RuntimeError("[ATT-003D] core_group_id absent pour la preview")
+        anchor = self._sel.get("anchor")
+        if not anchor or anchor.get("type") != "vertex":
+            return
+        intent = self._attachment_intent
+        mobile_element_id = intent.mob_element_id
+        edge_vertices = {
+            "OB": ("O", "B"),
+            "BL": ("B", "L"),
+            "LO": ("L", "O"),
+        }.get(intent.mob_edge)
+        if edge_vertices is None:
+            raise ValueError("[ATT-003D] arête mobile invalide pour la preview")
+
+        real_world = self._get_active_scenario().topoWorld
+        mobile_element_ids = tuple(real_world.getGroupElementIds(str(core_group_id)))
+        for element_id in mobile_element_ids:
+            if self.canvas_objects.get_by_topology_id(element_id) is None:
+                raise KeyError(
+                    "[ATT-003D] projection absente "
+                    f"pour topoElementId={element_id!r}"
+                )
+        mobile_entry = self.canvas_objects.get_by_topology_id(mobile_element_id)
+        if mobile_entry is None:
+            raise KeyError(
+                "[ATT-003D] projection absente "
+                f"pour topoElementId={mobile_element_id!r}"
+            )
+        edge_from, edge_to = edge_vertices
+        current_points = mobile_entry["pts"]
+        preview_points = self._get_core_triangle_world_points(
+            preview.world, mobile_element_id
+        )
+        current_vector = np.asarray(current_points[edge_to], dtype=float) - np.asarray(
+            current_points[edge_from], dtype=float
+        )
+        preview_vector = np.asarray(preview_points[edge_to], dtype=float) - np.asarray(
+            preview_points[edge_from], dtype=float
+        )
+        if np.linalg.norm(current_vector) <= EPS_WORLD or np.linalg.norm(preview_vector) <= EPS_WORLD:
+            raise ValueError("[ATT-003D] arête dégénérée pour la preview")
+        angle = math.atan2(
+            current_vector[0] * preview_vector[1] - current_vector[1] * preview_vector[0],
+            float(np.dot(current_vector, preview_vector)),
+        )
+        anchor_tid = int(anchor["tid"])
+        anchor_vkey = anchor["vkey"]
+        if not 0 <= anchor_tid < len(self._last_drawn):
+            raise IndexError("[ATT-003D] sommet pivot absent pour la preview")
+        pivot = np.asarray(self._last_drawn[anchor_tid]["pts"][anchor_vkey], dtype=float)
+        free_move_pts = self._capture_move_preview_initial_pts(
+            real_world, str(core_group_id)
+        )
+        self._preview_rotate_group_from_snapshot(free_move_pts, pivot, angle)
+        self._replace_mobile_attachment_highlight_with_current_edge(intent)
+
+    def _replace_mobile_attachment_highlight_with_current_edge(self, intent) -> None:
+        """Affiche l'arête mobile V2 dans la même pose que le preview CTRL."""
+        data = self._edge_highlights
+        if not data or data.get("best") is None:
+            return
+        edge_vertices = {
+            "OB": ("O", "B"),
+            "BL": ("B", "L"),
+            "LO": ("L", "O"),
+        }.get(intent.mob_edge)
+        if edge_vertices is None:
+            raise ValueError("[ATT-003D] arête mobile invalide pour le highlight")
+        entry = self.canvas_objects.get_by_topology_id(intent.mob_element_id)
+        if entry is None:
+            raise KeyError(
+                "[ATT-003D] projection absente "
+                f"pour topoElementId={intent.mob_element_id!r}"
+            )
+        edge_from, edge_to = edge_vertices
+        target_from, target_to = data["best"][2:]
+        points = entry["pts"]
+        data["best"] = (
+            tuple(points[edge_from]),
+            tuple(points[edge_to]),
+            target_from,
+            target_to,
+        )
+        # Les anciens contours mobiles seraient dessinés à la pose libre et
+        # donneraient l'impression d'un second triangle sous le preview CTRL.
+        data["mob_outline"] = []
+        data["mob_inc"] = []
+
     def _project_core_group_to_collection(
         self,
         world: TopologyWorld,
@@ -6559,16 +6661,17 @@ class TriangleViewerManual(
 
         if not showContoursMode:
             # — Recrée l'aide visuelle UNIQUEMENT si une sélection 'vertex' est encore active —
-            if self._sel and self._sel.get("mode") == "vertex":
+            if self._sel and self._sel.get("mode") in ("vertex", "move_group"):
                 # redessine candidates + best si on a des données
                 if self._edge_highlights:
                     self._redraw_edge_highlights()
-                # remet la ligne grise
-                idx = self._sel["idx"]
-                vkey = self._sel["vkey"]
-                P = self._last_drawn[idx]["pts"]
-                v_world = np.array(P[vkey], dtype=float)
-                self._update_nearest_line(v_world, exclude_idx=idx)
+                if self._sel.get("mode") == "vertex":
+                    # remet la ligne grise
+                    idx = self._sel["idx"]
+                    vkey = self._sel["vkey"]
+                    P = self._last_drawn[idx]["pts"]
+                    v_world = np.array(P[vkey], dtype=float)
+                    self._update_nearest_line(v_world, exclude_idx=idx)
             else:
                 # pas de sélection active -> pas d'aides persistantes
                 self._edge_highlights = None
@@ -6875,9 +6978,38 @@ class TriangleViewerManual(
             self._hide_tooltip()
             self.canvas.configure(cursor="X_cursor")
 
-            # ATT-003A : CTRL conserve son rôle de déconnexion mais ne fabrique
-            # plus de pose intermédiaire à partir de données EdgeChoice legacy.
-            # La preview géométrique V2 sera introduite en ATT-003B.
+            selection = self._sel if isinstance(self._sel, dict) else None
+            if (
+                selection is not None
+                and selection.get("mode") == "move_group"
+                and not self._is_active_auto_scenario()
+            ):
+                core_group_id = selection.get("core_group_id")
+                if not core_group_id:
+                    raise RuntimeError("[ATT-003D] core_group_id absent pour la preview")
+                anchor = selection.get("anchor")
+                if anchor and anchor.get("type") == "vertex":
+                    anchor_tid = int(anchor["tid"])
+                    anchor_vkey = anchor["vkey"]
+                    if 0 <= anchor_tid < len(self._last_drawn):
+                        anchor_world = np.asarray(
+                            self._last_drawn[anchor_tid]["pts"][anchor_vkey],
+                            dtype=float,
+                        )
+                        self._update_group_drag_snap_assist(
+                            anchor_world,
+                            anchor_tid,
+                            anchor_vkey,
+                            str(core_group_id),
+                        )
+                        if (
+                            self._attachment_preview is not None
+                            and self._attachment_preview.accepted
+                        ):
+                            self._preview_attachment_rotation_to_last_drawn(
+                                self._attachment_preview
+                            )
+                            self._redraw_from(self._last_drawn)
 
     def _on_ctrl_up(self, event=None):
         if self._ctrl_down:
@@ -6890,6 +7022,30 @@ class TriangleViewerManual(
             ):
                 self._clock_refresh_active_preview_under_pointer()
                 return
+            selection = self._sel if isinstance(self._sel, dict) else None
+            if (
+                selection is not None
+                and selection.get("mode") == "move_group"
+                and self._attachment_preview is not None
+                and self._attachment_preview.accepted
+                and not self._is_active_auto_scenario()
+            ):
+                self._restore_manual_move_group_preview()
+                anchor = selection.get("anchor")
+                if anchor and anchor.get("type") == "vertex":
+                    anchor_tid = int(anchor["tid"])
+                    anchor_vkey = anchor["vkey"]
+                    if 0 <= anchor_tid < len(self._last_drawn):
+                        self._update_group_drag_snap_assist(
+                            np.asarray(
+                                self._last_drawn[anchor_tid]["pts"][anchor_vkey],
+                                dtype=float,
+                            ),
+                            anchor_tid,
+                            anchor_vkey,
+                            str(selection["core_group_id"]),
+                        )
+                self._redraw_from(self._last_drawn)
             if self.canvas is not None:
                 self.canvas.configure(cursor="")
 
@@ -10057,6 +10213,22 @@ class TriangleViewerManual(
             }
         self._invalidate_pick_cache()
 
+    def _restore_manual_move_group_preview(self) -> None:
+        """Restaure la translation libre courante après une preview ATT-003D."""
+        if not isinstance(self._sel, dict) or self._sel.get("mode") != "move_group":
+            raise RuntimeError("[ATT-003D] sélection MOVE absente à la restauration")
+        initial_pts = self._sel.get("move_preview_initial_pts")
+        start = self._sel.get("mouse_world_start")
+        current = self._sel.get("last_mouse_world", start)
+        if not isinstance(initial_pts, dict) or start is None or current is None:
+            raise RuntimeError("[ATT-003D] état MOVE absent à la restauration")
+        delta = np.asarray(current, dtype=float) - np.asarray(start, dtype=float)
+        self._preview_move_group_from_snapshot(
+            initial_pts,
+            float(delta[0]),
+            float(delta[1]),
+        )
+
     @staticmethod
     def _normalize_rotation_angle(angle_rad: float) -> float:
         """Normalise un angle dans l'intervalle [-pi, pi[."""
@@ -10346,8 +10518,7 @@ class TriangleViewerManual(
                     world, core_group_id, anchor, event
                 )
 
-            # --- NOUVEAU (CTRL sans lien) : si CTRL est enfoncé mais que le sommet cliqué n'est PAS un lien,
-            #                                on déplace le GROUPE entier ancré sur ce sommet, SANS assist.
+            # CTRL active la preview géométrique V2 pendant le MOVE du groupe.
             if self._ctrl_down:
                 # Les membres proviennent du groupe résolu par le sommet Core.
                 move_members = vertex_move_members
@@ -10366,7 +10537,7 @@ class TriangleViewerManual(
                     "mouse_world_start": np.array([wx, wy], dtype=float),
                     "move_preview_initial_pts": preview_initial_pts,
                     "anchor": {"type": "vertex", "tid": idx, "vkey": vkey},
-                    "suppress_assist": True,  # pas d'aides visuelles en CTRL
+                    "suppress_assist": False,
                 }
                 if is_auto_move:
                     self._sel.update({
@@ -10374,15 +10545,14 @@ class TriangleViewerManual(
                         "auto_state0": dict(self.auto_rotation_state or {"thetaDeg": 0.0}),
                         "auto_move_preview_pts0": self._capture_active_auto_preview_pts(),
                     })
-                # nettoyer toute aide existante
+                # nettoyer toute aide existante avant de calculer le candidat.
                 self._reset_assist()
                 self.status.config(text=f"Déplacement du groupe Core {move_members['core_group_id']} par sommet {vkey}.")
 
                 self._redraw_from(self._last_drawn)
                 return
 
-            # --- NOUVEAU : si le triangle appartient à un groupe et qu'on NE tient PAS CTRL,
-            #               on déplace le **groupe entier** ancré sur ce sommet.
+            # Si CTRL n'est pas tenu, le MOVE reste une translation libre.
             if not self._ctrl_down:
                 # Les membres proviennent du groupe résolu par le sommet Core.
                 move_members = vertex_move_members
@@ -10531,8 +10701,10 @@ class TriangleViewerManual(
                     )
                 dx, dy = float(wx - start[0]), float(wy - start[1])
                 self._preview_move_group_from_snapshot(initial_pts, dx, dy)
+                self._sel["last_mouse_world"] = np.array([wx, wy], dtype=float)
             self._redraw_from(self._last_drawn)
-            # --- NOUVEAU : pendant un move_group ancré sur SOMMET, afficher l'aide de collage ---
+            # L'assistance Attachment est permanente pendant un MOVE manuel.
+            # CTRL ne contrôle que la projection temporaire du preview V2.
             if not self._sel.get("suppress_assist"):
                 anchor = self._sel.get("anchor")
                 if anchor and anchor.get("type") == "vertex":
@@ -10547,6 +10719,15 @@ class TriangleViewerManual(
                             anchor_vkey,
                             self._sel.get("core_group_id"),
                         )
+                        if (
+                            self._ctrl_down
+                            and self._attachment_preview is not None
+                            and self._attachment_preview.accepted
+                        ):
+                            self._preview_attachment_rotation_to_last_drawn(
+                                self._attachment_preview
+                            )
+                            self._redraw_from(self._last_drawn)
                     else:
                         self._reset_assist()
             self._clock_apply_auto_ref_sync()
@@ -10752,12 +10933,10 @@ class TriangleViewerManual(
             # On nettoie l'aide visuelle dans tous les cas
             self._clear_edge_highlights()
 
-            # ATT-003A : le release ne convertit plus une aide géométrique
-            # legacy en attachment. ATT-003B/003C consommeront l'intention
-            # métier puis laisseront le Core résoudre preview et commit.
+            # ATT-003D : seul l'intent V2 validé par son preview peut produire
+            # un raccord au release ; aucune donnée EdgeChoice n'est consultée.
             manual_attachment_attempted = bool(
                 not suppress
-                and not self._ctrl_down
                 and not beacon_anchor_applied
                 and attachment_intent is not None
             )

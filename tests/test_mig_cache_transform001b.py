@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from src.assembleur_core import TopologyElement, TopologyNodeType, TopologyWorld
 from src.assembleur_tk import TriangleViewerManual
@@ -198,45 +199,131 @@ def test_manual_move_preserves_rotation_mirror_and_local_coordinates():
             np.testing.assert_allclose(element.vertex_local_xy[index], local_xy)
 
 
-def test_legacy_snap_does_not_also_commit_a_core_translation():
+def test_ctrl_up_restores_the_current_free_move_preview():
+    viewer, world, group_id, first, second, _outsider = _viewer_with_group()
+    _prepare_manual_move(viewer, world, group_id)
+    viewer._sel["last_mouse_world"] = np.array((4.0, -1.0))
+    viewer._preview_move_group_from_snapshot(
+        viewer._sel["move_preview_initial_pts"], 4.0, -1.0
+    )
+    free_preview = {
+        element_id: {
+            vertex: np.array(point, copy=True)
+            for vertex, point in viewer.canvas_objects.get_by_topology_id(element_id)["pts"].items()
+        }
+        for element_id in ("T01", "T02")
+    }
+    viewer.canvas_objects.get_by_topology_id(first.element_id)["pts"] = {
+        vertex: np.array((99.0, 99.0)) for vertex in ("O", "B", "L")
+    }
+    viewer.canvas_objects.get_by_topology_id(second.element_id)["pts"] = {
+        vertex: np.array((98.0, 98.0)) for vertex in ("O", "B", "L")
+    }
+    viewer._ctrl_down = True
+    intent = object()
+    viewer._attachment_intent = intent
+    viewer._attachment_preview = SimpleNamespace(accepted=True)
+    viewer._clock_measure_active = False
+    viewer._clock_arc_active = False
+    viewer._clock_setref_active = False
+    viewer._clock_trace_active = False
+    viewer.canvas = SimpleNamespace(configure=lambda **_kwargs: None)
+    reset_calls = []
+    viewer._reset_assist = lambda: reset_calls.append(True)
+    redraw_calls = []
+    viewer._redraw_from = lambda entries: redraw_calls.append(entries)
+
+    viewer._on_ctrl_up()
+
+    assert reset_calls == []
+    assert redraw_calls == [viewer._last_drawn]
+    for element_id in ("T01", "T02"):
+        entry = viewer.canvas_objects.get_by_topology_id(element_id)
+        for vertex in ("O", "B", "L"):
+            np.testing.assert_allclose(entry["pts"][vertex], free_preview[element_id][vertex])
+    assert viewer._ctrl_down is False
+    assert viewer._attachment_intent is intent
+    assert viewer._attachment_preview.accepted is True
+
+
+def test_move_without_ctrl_keeps_attachment_assistance_without_projection():
     viewer, world, group_id, _first, _second, _outsider = _viewer_with_group()
     _prepare_manual_move(viewer, world, group_id)
-
-    class EdgeChoice:
-        kind = "vertex-edge"
-
-        @staticmethod
-        def computeRigidTransform():
-            return np.array(((0.0, -1.0), (1.0, 0.0))), np.array((2.0, 3.0))
-
-        @staticmethod
-        def createTopologyAttachments(**_kwargs):
-            return [object()]
-
     viewer._sel.update({
         "anchor": {"type": "vertex", "tid": 0, "vkey": "O"},
         "suppress_assist": False,
     })
-    viewer._edge_choice = (0, "O", 2, "O", EdgeChoice())
-    original_group_of_element = world.get_group_of_element
-    world.get_group_of_element = lambda element_id: (
-        "G-final" if str(element_id) == "T01" else original_group_of_element(element_id)
+    viewer._ctrl_down = False
+    intent = object()
+    preview = SimpleNamespace(accepted=True)
+    assist_calls = []
+
+    def update_assist(*args):
+        assist_calls.append(args)
+        viewer._attachment_intent = intent
+        viewer._attachment_preview = preview
+
+    viewer._update_group_drag_snap_assist = update_assist
+    viewer._preview_attachment_rotation_to_last_drawn = lambda _preview: pytest.fail(
+        "projection ATT-003D interdite sans CTRL"
     )
-    world.beginTopoTransaction = lambda: None
-    world.apply_attachments = lambda _attachments: "G-final"
-    world.commitTopoTransaction = lambda: None
-    rigid_transform_calls = []
-    world.apply_group_rigid_transform = lambda *args: rigid_transform_calls.append(args)
-    projected_group_ids = []
-    viewer._project_core_group_to_last_drawn = lambda _world, core_group_id: projected_group_ids.append(core_group_id)
+
+    viewer._on_canvas_left_move(SimpleNamespace(x=4.0, y=-1.0))
+
+    assert len(assist_calls) == 1
+    assert viewer._attachment_intent is intent
+    assert viewer._attachment_preview is preview
+
+
+def test_ctrl_candidate_disappearance_keeps_the_free_move_preview():
+    viewer, world, group_id, first, second, _outsider = _viewer_with_group()
+    _prepare_manual_move(viewer, world, group_id)
+    viewer._sel.update({
+        "anchor": {"type": "vertex", "tid": 0, "vkey": "O"},
+        "suppress_assist": False,
+    })
+    viewer._ctrl_down = True
+    viewer._attachment_intent = object()
+    viewer._attachment_preview = SimpleNamespace(accepted=True)
+    viewer._update_group_drag_snap_assist = lambda *_args: (
+        setattr(viewer, "_attachment_intent", None),
+        setattr(viewer, "_attachment_preview", None),
+    )
+
+    viewer._on_canvas_left_move(SimpleNamespace(x=4.0, y=-1.0))
+
+    for element in (first, second):
+        entry = viewer.canvas_objects.get_by_topology_id(element.element_id)
+        for vertex, expected in _expected_points(element).items():
+            np.testing.assert_allclose(entry["pts"][vertex], expected + np.array((4.0, -1.0)))
+    assert viewer._attachment_intent is None
+    assert viewer._attachment_preview is None
+
+
+def test_attachment_commit_does_not_also_commit_a_core_translation(monkeypatch):
+    viewer, world, group_id, _first, _second, _outsider = _viewer_with_group()
+    _prepare_manual_move(viewer, world, group_id)
+    viewer.status = SimpleNamespace(config=lambda **_kwargs: None)
+    viewer._sel.update({
+        "anchor": {"type": "vertex", "tid": 0, "vkey": "O"},
+        "suppress_assist": False,
+    })
+    intent = object()
+    viewer._attachment_intent = intent
+    viewer._attachment_preview = SimpleNamespace(accepted=True)
+    viewer._ctrl_down = True
+    attachment_calls = []
+    monkeypatch.setattr(
+        "src.assembleur_tk.commitManualAttachment",
+        lambda actual_world, actual_intent: attachment_calls.append((actual_world, actual_intent)),
+    )
+    rebuild_calls = []
+    viewer._rebuild_active_projection_from_core = lambda: rebuild_calls.append(True)
     viewer._commit_move_group_to_core = lambda *_args: (_ for _ in ()).throw(
-        AssertionError("free-move commit forbidden after a legacy snap")
+        AssertionError("free-move commit forbidden after an attachment")
     )
 
     viewer._on_canvas_left_up(SimpleNamespace(x=10.0, y=5.0))
 
-    assert len(rigid_transform_calls) == 1
-    assert rigid_transform_calls[0][0] == group_id
-    np.testing.assert_allclose(rigid_transform_calls[0][1], np.array(((0.0, -1.0), (1.0, 0.0))))
-    np.testing.assert_allclose(rigid_transform_calls[0][2], np.array((-3.0, 13.0)))
-    assert projected_group_ids == [group_id, "G-final"]
+    assert attachment_calls == [(world, intent)]
+    assert rebuild_calls == [True]

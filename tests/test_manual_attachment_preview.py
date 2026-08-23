@@ -1,11 +1,12 @@
 import math
-from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
 from src.assembleur_core import (
     ResolvedEdgeEdgeAttachment,
     ResolvedVertexEdgeAttachment,
+    TopologyAttachmentResolver,
     TopologyEdgeEdgeAttachment,
     TopologyElement,
     TopologyVertexEdgeAttachment,
@@ -16,6 +17,8 @@ from src.assembleur_edgechoice import (
     buildTopologyAttachmentFromManualIntent,
     previewManualAttachment,
 )
+from src.assembleur_tk import TriangleViewerManual
+from src.canvas_objects_collection import CanvasObjectsCollection
 
 
 def _triangle(element_id: str, light_xy: tuple[float, float]) -> TopologyElement:
@@ -41,6 +44,13 @@ def _world_with_two_elements(*, same_shape: bool = False) -> TopologyWorld:
     world.add_element_as_new_group(
         _triangle("T02", (3.0, 4.0) if same_shape else (6.0, 8.0))
     )
+    return world
+
+
+def _world_with_same_side_equal_length_overlap() -> TopologyWorld:
+    """Deux triangles égaux qui se recouvrent après la pose VE candidate."""
+    world = _world_with_two_elements(same_shape=True)
+    world.setElementPose("T01", np.eye(2), np.zeros(2), mirrored=True)
     return world
 
 
@@ -206,17 +216,30 @@ def test_vertex_edge_preview_uses_resolver_when_destination_carries_the_vertex_s
     )
 
 
-def test_equal_length_vertex_edge_preview_remains_vertex_edge():
-    world = _world_with_two_elements(same_shape=True)
-    world.setElementPose("T01", np.eye(2), np.zeros(2), mirrored=True)
+def test_equal_length_vertex_edge_resolution_remains_vertex_edge():
+    world = _world_with_same_side_equal_length_overlap()
+    attachment = buildTopologyAttachmentFromManualIntent(
+        _ve_intent(), attachment_id="RESOLVE_EQUAL_LENGTH", world=world
+    )
+
+    resolved = TopologyAttachmentResolver.resolve(world, attachment)
+
+    assert isinstance(resolved, ResolvedVertexEdgeAttachment)
+    assert resolved.mob_effective_edge == "OB"
+    assert resolved.dest_effective_edge == "OB"
+    assert resolved.vertex_element_id == "T01"
+    assert resolved.edge_element_id == "T02"
+    assert resolved.position_from_anchor == 1.0
+
+
+def test_equal_length_vertex_edge_same_side_overlap_is_rejected():
+    world = _world_with_same_side_equal_length_overlap()
 
     preview = previewManualAttachment(world, _ve_intent())
 
-    assert preview.accepted is True
-    assert isinstance(
-        preview.world.getResolvedAttachment(preview.attachment.attachment_id),
-        ResolvedVertexEdgeAttachment,
-    )
+    assert preview.accepted is False
+    assert preview.world is None
+    assert preview.rejection_reason == "Chevauchement géométrique incompatible."
 
 
 def test_edge_edge_preview_keeps_destination_fixed_and_uses_resolved_edge_edge():
@@ -258,7 +281,11 @@ def test_preview_rejects_elements_already_in_the_same_group_without_mutating_rea
 
 
 def test_preview_rejects_an_incompatible_overlap_without_mutating_real_world():
-    world = _world_with_two_elements()
+    world = _world_with_same_side_equal_length_overlap()
+    real_poses = {
+        element_id: _pose_signature(world, element_id)
+        for element_id in ("T01", "T02")
+    }
     preview = previewManualAttachment(world, _ve_intent())
 
     assert preview.accepted is False
@@ -266,6 +293,8 @@ def test_preview_rejects_an_incompatible_overlap_without_mutating_real_world():
     assert preview.rejection_reason == "Chevauchement géométrique incompatible."
     assert world.attachments == {}
     assert world.resolved_attachments == {}
+    for element_id in ("T01", "T02"):
+        _assert_pose_equal(real_poses[element_id], _pose_signature(world, element_id))
 
 
 def test_topological_preview_rejection_is_deterministic_and_leaves_real_world_unchanged():
@@ -284,6 +313,8 @@ def test_topological_preview_rejection_is_deterministic_and_leaves_real_world_un
         element_id: _pose_signature(world, element_id)
         for element_id in ("T01", "T02", "T03")
     }
+    real_attachments = dict(world.attachments)
+    real_resolved_attachments = dict(world.resolved_attachments)
 
     first = previewManualAttachment(world, preview_intent)
     second = previewManualAttachment(world, preview_intent)
@@ -292,6 +323,8 @@ def test_topological_preview_rejection_is_deterministic_and_leaves_real_world_un
     assert second.accepted is False
     assert first.rejection_reason == "Chevauchement géométrique incompatible."
     assert second.rejection_reason == first.rejection_reason
+    assert world.attachments == real_attachments
+    assert world.resolved_attachments == real_resolved_attachments
     for element_id in ("T01", "T02", "T03"):
         _assert_pose_equal(
             real_poses[element_id],
@@ -299,9 +332,102 @@ def test_topological_preview_rejection_is_deterministic_and_leaves_real_world_un
         )
 
 
-def test_tk_drag_preview_never_projects_the_preview_world():
-    """Le clone de preview peut différer, mais ne doit pas devenir la vue du drag."""
-    viewer_source = Path("src/assembleur_tk.py").read_text(encoding="utf-8")
+def test_tk_drag_projects_an_accepted_preview_world_without_installing_it():
+    world = _world_with_two_elements()
+    world.setElementPose("T01", np.eye(2), np.zeros(2), mirrored=True)
+    preview = previewManualAttachment(world, _ve_intent())
+    assert preview.accepted
+    real_pose = _pose_signature(world, "T01")
 
-    assert "_project_attachment_preview_to_last_drawn" not in viewer_source
-    assert "self._attachment_preview.world" not in viewer_source
+    entries = []
+    for element_id in ("T01", "T02"):
+        element = world.elements[element_id]
+        entries.append({
+            "topoElementId": element_id,
+            "pts": {
+                vertex: element.localToWorld(element.vertex_local_xy[index])
+                for index, vertex in enumerate(("O", "B", "L"))
+            },
+        })
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.canvas_objects = CanvasObjectsCollection(entries)
+    viewer._last_drawn = viewer.canvas_objects.entries
+    viewer.scenarios = [SimpleNamespace(topoWorld=world)]
+    viewer.active_scenario_index = 0
+    viewer._sel = {
+        "mode": "move_group",
+        "core_group_id": world.get_group_of_element("T01"),
+        "anchor": {"type": "vertex", "tid": 0, "vkey": "O"},
+    }
+    viewer._invalidate_pick_cache = lambda: None
+    viewer._attachment_intent = _ve_intent()
+    drag_delta = np.array((4.0, -1.0))
+    viewer._last_drawn[0]["pts"] = {
+        vertex: np.asarray(point, dtype=float) + drag_delta
+        for vertex, point in viewer._last_drawn[0]["pts"].items()
+    }
+    free_mobile_points = {
+        vertex: np.array(point, copy=True)
+        for vertex, point in viewer._last_drawn[0]["pts"].items()
+    }
+    viewer._edge_highlights = {
+        "best": ((-1.0, 0.0), (-2.0, 0.0), (20.0, 0.0), (30.0, 0.0)),
+        "mob_outline": [((-1.0, 0.0), (-2.0, 0.0))],
+        "mob_inc": [((-1.0, 0.0), (-2.0, 0.0))],
+        "all": [],
+        "tgt_inc": [],
+        "tgt_outline": [],
+    }
+
+    viewer._preview_attachment_rotation_to_last_drawn(preview)
+
+    np.testing.assert_allclose(viewer._last_drawn[0]["pts"]["O"], free_mobile_points["O"])
+    preview_points = viewer._get_core_triangle_world_points(preview.world, "T01")
+    mobile_edge = (
+        np.asarray(viewer._last_drawn[0]["pts"]["B"])
+        - np.asarray(viewer._last_drawn[0]["pts"]["O"])
+    )
+    preview_edge = np.asarray(preview_points["B"]) - np.asarray(preview_points["O"])
+    assert np.isclose(
+        mobile_edge[0] * preview_edge[1] - mobile_edge[1] * preview_edge[0], 0.0
+    )
+    highlighted_mobile_edge = viewer._edge_highlights["best"][:2]
+    np.testing.assert_allclose(highlighted_mobile_edge[0], viewer._last_drawn[0]["pts"]["O"])
+    np.testing.assert_allclose(highlighted_mobile_edge[1], viewer._last_drawn[0]["pts"]["B"])
+    assert viewer._edge_highlights["mob_outline"] == []
+    assert viewer._edge_highlights["mob_inc"] == []
+    _assert_pose_equal(real_pose, _pose_signature(world, "T01"))
+
+
+def test_tk_ctrl_preview_renders_the_current_mobile_candidate_edge_in_green():
+    class Canvas:
+        def __init__(self):
+            self.lines = []
+
+        def delete(self, _item):
+            pass
+
+        def create_line(self, *coords, **kwargs):
+            self.lines.append((coords, kwargs))
+            return len(self.lines)
+
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.canvas = Canvas()
+    viewer._world_to_screen = lambda point: point
+    viewer._edge_highlight_ids = []
+    viewer._attachment_preview = SimpleNamespace(accepted=True)
+    viewer._edge_highlights = {
+        "all": [],
+        "mob_inc": [],
+        "tgt_inc": [],
+        "mob_outline": [],
+        "tgt_outline": [],
+        "best": ((4.0, -1.0), (4.0, 9.0), (20.0, 0.0), (30.0, 0.0)),
+    }
+
+    viewer._redraw_edge_highlights()
+
+    green_lines = [
+        coords for coords, kwargs in viewer.canvas.lines if kwargs["fill"] == "#178C3A"
+    ]
+    assert (4.0, -1.0, 4.0, 9.0) in green_lines

@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from src.assembleur_core import ScenarioAssemblage, TopologyElement, TopologyNodeType
+from src.assembleur_edgechoice import ManualAttachmentIntent, previewManualAttachment
 from src.assembleur_tk import TriangleViewerManual
 from src.canvas_objects_collection import CanvasObjectsCollection
 
@@ -22,6 +23,7 @@ def _make_viewer_with_one_core_group():
     viewer.canvas_objects = CanvasObjectsCollection(viewer._last_drawn)
     viewer._last_drawn = viewer.canvas_objects.entries
     viewer.active_scenario_index = 0
+    viewer._ctrl_down = False
 
     scenario = ScenarioAssemblage(name="test")
     scenario.last_drawn = viewer._last_drawn
@@ -104,52 +106,122 @@ def _make_ctrl_move_group_viewer(*, include_second_member=True):
     return viewer, first, second, outsider, core_group_id
 
 
-def test_ctrl_move_group_rotates_core_members_without_legacy_groups():
-    viewer, first, second, outsider, core_group_id = _make_ctrl_move_group_viewer()
-    redraws = []
-    nearest_calls = []
-    highlight_calls = []
-    viewer._redraw_from = lambda entries: redraws.append(entries)
-    viewer._update_nearest_line = lambda *args, **kwargs: nearest_calls.append((args, kwargs))
-    viewer._update_edge_highlights = lambda *args: highlight_calls.append(args)
+def _make_attachment_preview_viewer():
+    def element(element_id, light_xy):
+        return TopologyElement(
+            element_id=element_id,
+            name=element_id,
+            vertex_labels=["O", "B", "L"],
+            vertex_types=[
+                TopologyNodeType.OUVERTURE,
+                TopologyNodeType.BASE,
+                TopologyNodeType.LUMIERE,
+            ],
+            edge_lengths_km=[10.0, float(np.hypot(10.0 - light_xy[0], light_xy[1])), float(np.hypot(*light_xy))],
+            vertex_local_xy={0: (0.0, 0.0), 1: (10.0, 0.0), 2: light_xy},
+        )
+
+    scenario = ScenarioAssemblage(name="attachment-preview")
+    world = scenario.topoWorld
+    mobile = element("T01", (3.0, 4.0))
+    target = element("T02", (6.0, 8.0))
+    core_group_id = world.add_element_as_new_group(mobile)
+    world.add_element_as_new_group(target)
+    world.setElementPose("T01", np.eye(2), np.zeros(2), mirrored=True)
+    entries = []
+    for element_id in ("T01", "T02"):
+        core_element = world.elements[element_id]
+        entries.append({
+            "topoElementId": element_id,
+            "pts": {
+                vertex: core_element.localToWorld(core_element.vertex_local_xy[index])
+                for index, vertex in enumerate(("O", "B", "L"))
+            },
+        })
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.canvas_objects = CanvasObjectsCollection(entries)
+    viewer._last_drawn = viewer.canvas_objects.entries
+    viewer.scenarios = [scenario]
+    viewer.active_scenario_index = 0
+    viewer._sel = {"mode": "move_group", "core_group_id": core_group_id}
+    viewer._invalidate_pick_cache = lambda: None
+    viewer._edge_highlights = None
+    return viewer, world, core_group_id
+
+
+def test_attachment_v2_preview_projects_temporary_rotation_without_mutating_core():
+    viewer, world, core_group_id = _make_attachment_preview_viewer()
+    first, second = viewer._last_drawn
+    intent = ManualAttachmentIntent("vertex-edge", "T01", "O", "OB", "T02", "B", "OB")
+    preview = previewManualAttachment(world, intent)
+    assert preview.accepted
+    real_pose = world.getElementPose("T01")
+    free_mobile_points = {
+        vertex: np.array(point, copy=True) for vertex, point in first["pts"].items()
+    }
+    viewer._sel["anchor"] = {"type": "vertex", "tid": 0, "vkey": "O"}
+    viewer._ctrl_down = False
+    viewer._clock_measure_active = False
+    viewer._clock_arc_active = False
+    viewer._clock_setref_active = False
+    viewer._clock_trace_active = False
+    viewer._hide_tooltip = lambda: None
+    viewer.canvas = SimpleNamespace(configure=lambda **_kwargs: None)
+    viewer._update_group_drag_snap_assist = lambda *_args: (
+        setattr(viewer, "_attachment_intent", intent),
+        setattr(viewer, "_attachment_preview", preview),
+    )
+    redraw_calls = []
+    viewer._redraw_from = lambda entries: redraw_calls.append(entries)
 
     viewer._on_ctrl_down()
 
-    assert np.allclose(first["pts"]["B"], [0.0, 3.0])
-    assert np.allclose(first["pts"]["L"], [-4.0, 0.0])
-    assert np.allclose(second["pts"]["O"], [0.0, 5.0])
-    assert np.allclose(second["pts"]["B"], [0.0, 8.0])
-    assert outsider["pts"] == {"O": [10.0, 0.0], "B": [13.0, 0.0], "L": [10.0, 4.0]}
-    assert redraws == [viewer._last_drawn]
-    assert nearest_calls[0][1]["exclude_core_group_id"] == core_group_id
-    assert highlight_calls == [(0, "O", 2, "O")]
+    np.testing.assert_allclose(first["pts"]["O"], free_mobile_points["O"])
+    np.testing.assert_allclose(world.getElementPose("T01")[0], real_pose[0])
+    np.testing.assert_allclose(world.getElementPose("T01")[1], real_pose[1])
+    assert world.getElementPose("T01")[2] is real_pose[2]
+    target_before = viewer._get_core_triangle_world_points(world, "T02")
+    for vertex in ("O", "B", "L"):
+        np.testing.assert_allclose(second["pts"][vertex], target_before[vertex])
+    mobile_edge = np.asarray(first["pts"]["B"]) - np.asarray(first["pts"]["O"])
+    preview_mobile = viewer._get_core_triangle_world_points(preview.world, "T01")
+    target_edge = np.asarray(preview_mobile["B"]) - np.asarray(preview_mobile["O"])
+    cross_product = mobile_edge[0] * target_edge[1] - mobile_edge[1] * target_edge[0]
+    assert np.isclose(cross_product, 0.0)
+    assert viewer._sel["core_group_id"] == core_group_id
+    assert viewer._ctrl_down is True
+    assert redraw_calls == [viewer._last_drawn]
 
 
-def test_ctrl_move_group_rejects_incomplete_projection_without_partial_rotation():
+def test_attachment_v2_preview_rejects_incomplete_projection_without_partial_rotation():
     viewer, first, _second, outsider, _core_group_id = _make_ctrl_move_group_viewer(
         include_second_member=False,
     )
+    world = viewer.scenarios[0].topoWorld
     first_before = {key: list(value) for key, value in first["pts"].items()}
     outsider_before = {key: list(value) for key, value in outsider["pts"].items()}
-    viewer._redraw_from = lambda _entries: pytest.fail("redraw interdit apres echec atomique")
-    viewer._update_nearest_line = lambda *_args, **_kwargs: pytest.fail("aide interdite apres echec")
-    viewer._update_edge_highlights = lambda *_args: pytest.fail("aide interdite apres echec")
+    viewer._invalidate_pick_cache = lambda: None
+    viewer._attachment_intent = SimpleNamespace(mob_element_id="T01", mob_edge="OB")
 
     with pytest.raises(KeyError, match="T02"):
-        viewer._on_ctrl_down()
+        viewer._preview_attachment_rotation_to_last_drawn(
+            SimpleNamespace(accepted=True, world=world.clonePhysicalState())
+        )
 
     assert first["pts"] == first_before
     assert outsider["pts"] == outsider_before
 
 
-def test_ctrl_move_group_requires_core_group_id_without_legacy_fallback():
+def test_attachment_v2_preview_requires_core_group_id_without_legacy_fallback():
     viewer, first, _second, outsider, _core_group_id = _make_ctrl_move_group_viewer()
     viewer._sel.pop("core_group_id")
     first_before = {key: list(value) for key, value in first["pts"].items()}
     outsider_before = {key: list(value) for key, value in outsider["pts"].items()}
 
     with pytest.raises(RuntimeError, match="core_group_id absent"):
-        viewer._on_ctrl_down()
+        viewer._preview_attachment_rotation_to_last_drawn(
+            SimpleNamespace(accepted=True, world=viewer.scenarios[0].topoWorld.clonePhysicalState())
+        )
 
     assert first["pts"] == first_before
     assert outsider["pts"] == outsider_before

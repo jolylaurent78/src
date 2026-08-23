@@ -855,8 +855,11 @@ class TopologyBoundaries:
         gid = world.find_group(gid)
         c = world.ensureConceptGeom(gid)
 
+        # ``c.edges`` is a dict and the adjacency itself is intentionally a
+        # set.  Neither must leak an incidental insertion/hash order into the
+        # boundary walk: the cyclic order below is defined by geometry only.
         neighbors: dict[str, set[str]] = {}
-        for (a, b) in c.edges.keys():
+        for (a, b) in sorted(c.edges.keys()):
             neighbors.setdefault(a, set()).add(b)
             neighbors.setdefault(b, set()).add(a)
 
@@ -867,7 +870,8 @@ class TopologyBoundaries:
             self.orientation = orient
             return
 
-        for n, adj in neighbors.items():
+        for n in sorted(neighbors):
+            adj = neighbors[n]
             if len(adj) < 2:
                 self.cycle = []
                 self.edges = set()
@@ -876,19 +880,53 @@ class TopologyBoundaries:
                 return
 
         coords = {}
-        for n in neighbors.keys():
+        for n in sorted(neighbors):
             coords[n] = world.getConceptNodeWorldXY(n, gid)
 
         sorted_neighbors: dict[str, list[str]] = {}
         pos_index: dict[str, dict[str, int]] = {}
-        for u, adj in neighbors.items():
+        radial_epsilon = 1e-12
+        for u in sorted(neighbors):
+            adj = neighbors[u]
             ux, uy = coords[u]
+            radial: list[tuple[str, float, float, float, float]] = []
+            for v in sorted(adj):
+                dx = float(coords[v][0]) - float(ux)
+                dy = float(coords[v][1]) - float(uy)
+                norm = math.hypot(dx, dy)
+                # A zero-length half-edge has no polar direction.  The
+                # embedding is therefore not a valid boundary embedding.
+                if norm <= radial_epsilon:
+                    self.cycle = []
+                    self.edges = set()
+                    self.index = {}
+                    self.orientation = orient
+                    return
+                radial.append((v, dx, dy, norm, math.atan2(dy, dx)))
+
+            # Two distinct half-edges on the same ray do not have a defined
+            # cyclic order.  Choosing an ID tie-breaker would manufacture a
+            # contour; reject the degenerate embedding instead.
+            for i, (_v, dx, dy, norm, _angle) in enumerate(radial):
+                for _other_v, other_dx, other_dy, other_norm, _other_angle in radial[i + 1:]:
+                    cross = (dx * other_dy) - (dy * other_dx)
+                    dot = (dx * other_dx) + (dy * other_dy)
+                    if (
+                        dot > 0.0
+                        and abs(cross) <= radial_epsilon * norm * other_norm
+                    ):
+                        self.cycle = []
+                        self.edges = set()
+                        self.index = {}
+                        self.orientation = orient
+                        return
             ordered = sorted(
-                list(adj),
-                key=lambda v: math.atan2(float(coords[v][1]) - float(uy), float(coords[v][0]) - float(ux))
+                radial,
+                key=lambda item: item[4],
             )
-            sorted_neighbors[u] = ordered
-            pos_index[u] = {v: i for i, v in enumerate(ordered)}
+            ordered_ids = [item[0] for item in ordered]
+            sorted_neighbors[u] = ordered_ids
+            pos_index[u] = {v: i for i, v in enumerate(ordered_ids)}
 
         def _next_dart(u: str, v: str) -> tuple[str, str]:
             nb = sorted_neighbors.get(v, [])
@@ -903,11 +941,12 @@ class TopologyBoundaries:
                 w = nb[(i + 1) % len(nb)]
             return (v, w)
 
-        darts = []
-        for u, adj in neighbors.items():
-            for v in adj:
-                if u != v:
-                    darts.append((u, v))
+        darts = [
+            (u, v)
+            for u in sorted(neighbors)
+            for v in sorted_neighbors[u]
+            if u != v
+        ]
 
         visited: set[tuple[str, str]] = set()
         faces: list[tuple[list[str], float]] = []

@@ -1,6 +1,7 @@
 import math
 
 import numpy as np
+import src.assembleur_edgechoice as attachment_api
 
 from src.assembleur_core import (
     ResolvedEdgeEdgeAttachment,
@@ -42,6 +43,12 @@ def _world(*, same_shape: bool = False) -> TopologyWorld:
 
 def _ve_intent(mob="T01", dest="T02") -> ManualAttachmentIntent:
     return ManualAttachmentIntent("vertex-edge", mob, "O", "OB", dest, "B", "OB")
+
+
+def _world_with_same_side_equal_length_overlap() -> TopologyWorld:
+    world = _world(same_shape=True)
+    world.setElementPose("T01", np.eye(2), np.zeros(2), mirrored=True)
+    return world
 
 
 def _pose(world: TopologyWorld, element_id: str):
@@ -99,20 +106,44 @@ def test_topological_preview_rejects_an_invalid_existing_mobile_group_without_co
     world.replay_group_attachment_poses(world.get_group_of_element("T01"), "T02")
     world.setElementPose("T02", np.eye(2), np.zeros(2), mirrored=True)
     intent = _ve_intent("T02", "T03")
+    real_attachments = dict(world.attachments)
+    real_resolved_attachments = dict(world.resolved_attachments)
     preview = previewManualAttachment(world, intent)
     assert preview.accepted is False
     assert preview.rejection_reason == "Chevauchement géométrique incompatible."
     assert world.get_group_of_element("T01") == world.get_group_of_element("T02")
     assert world.get_group_of_element("T02") != world.get_group_of_element("T03")
+    assert world.attachments == real_attachments
+    assert world.resolved_attachments == real_resolved_attachments
 
 
-def test_a_refused_preview_is_never_committed_by_the_orchestration_contract():
-    world = _world()
-    refused_preview = previewManualAttachment(world, _ve_intent())
+def test_a_refused_preview_is_never_committed_by_the_orchestration_contract(monkeypatch):
+    world = _world_with_same_side_equal_length_overlap()
+    intent = _ve_intent()
+    real_attachments = dict(world.attachments)
+    real_resolved_attachments = dict(world.resolved_attachments)
+    commit_calls = []
+    monkeypatch.setattr(
+        attachment_api,
+        "commitManualAttachment",
+        lambda actual_world, actual_intent: commit_calls.append((actual_world, actual_intent)),
+    )
+    orchestration_calls = []
+
+    def orchestrate_manual_attachment(actual_world, actual_intent):
+        orchestration_calls.append(actual_intent)
+        preview = attachment_api.previewManualAttachment(actual_world, actual_intent)
+        if preview.accepted:
+            attachment_api.commitManualAttachment(actual_world, actual_intent)
+        return preview
+
+    refused_preview = orchestrate_manual_attachment(world, intent)
 
     assert refused_preview.accepted is False
-    assert world.attachments == {}
-    assert world.resolved_attachments == {}
+    assert orchestration_calls == [intent]
+    assert commit_calls == []
+    assert world.attachments == real_attachments
+    assert world.resolved_attachments == real_resolved_attachments
 
 
 def test_commits_are_deterministic_on_independent_identical_worlds():

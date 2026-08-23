@@ -271,10 +271,37 @@ def previewManualAttachment(
             rejection_reason="Les éléments mobile et destination appartiennent déjà au même groupe.",
         )
     try:
+        boundary_available = bool(
+            preview_world.getBoundarySegments(mob_group_id)
+        ) and bool(preview_world.getBoundarySegments(dest_group_id))
+    except ValueError as exc:
+        if str(exc) != "[Boundary] not computed":
+            raise
+        boundary_available = False
+    if not boundary_available:
+        return ManualAttachmentPreview(
+            accepted=False,
+            attachment=attachment,
+            world=None,
+            rejection_reason="Chevauchement géométrique incompatible.",
+        )
+    try:
         overlap = preview_world.simulate_topological_overlap(
             dest_group_id,
             mob_group_id,
             attachment,
+        )
+    except ValueError as exc:
+        # Le cache de boundary peut être absent sur un groupe déjà invalide.
+        # Pour l'API de preview, cette impossibilité d'évaluer le candidat est
+        # un refus métier ; le monde réel n'a jamais été touché.
+        if str(exc) != "[Boundary] not computed":
+            raise
+        return ManualAttachmentPreview(
+            accepted=False,
+            attachment=attachment,
+            world=None,
+            rejection_reason="Chevauchement géométrique incompatible.",
         )
     except (
         TopologyAttachmentValidationError,
