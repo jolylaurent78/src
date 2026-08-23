@@ -77,6 +77,7 @@ def test_catalogue_publication_repositions_existing_anchored_groups():
     viewer._refreshCheminsBaliseRefCombo = lambda: None
     viewer._redraw_from = lambda _entries: None
     viewer._last_drawn = []
+    viewer._deformation_window = None
 
     viewer._publish_catalogue(published)
 

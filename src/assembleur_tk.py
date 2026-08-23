@@ -5121,7 +5121,7 @@ class TriangleViewerManual(
         if beacon_id not in self.catalogue.beacons:
             raise ValueError(f"Simulation AUTO: balise inconnue {beacon_id!r}")
         if self.catalogue.get_beacon(beacon_id).archived:
-            raise ValueError(f"Simulation AUTO: balise archivée {beacon_id!r}")
+            raise ValueError(f"Simulation AUTO: balise archiv\u00c3\u00a9e {beacon_id!r}")
         ordered_element_ids = scen.orderedElementIds
         if not ordered_element_ids:
             raise ValueError("Simulation AUTO: orderedElementIds vide")
@@ -10600,17 +10600,16 @@ class TriangleViewerManual(
             reference_id = self._drag["reference_triangle_id"]
             relative = self._drag["relative_world_pts"]
             reference_point = np.asarray(relative[reference_id]["O"], dtype=float)
-            if self._drag["grab_offset"] is None:
-                self._drag["grab_offset"] = mouse_world - reference_point
-            delta = (mouse_world - self._drag["grab_offset"]) - reference_point
+            delta = mouse_world - reference_point
             self._drag["world_pts_by_triangle"] = {
                 triangle_id: {key: np.asarray(point, dtype=float) + delta for key, point in points.items()}
                 for triangle_id, points in relative.items()
             }
             while len(self._drag_preview_ids) < 2:
-                self._drag_preview_ids.append(self.canvas.create_polygon(
+                item_id = self.canvas.create_polygon(
                     0, 0, 0, 0, 0, 0, outline="gray50", dash=(4, 2), fill="", width=2,
-                ))
+                )
+                self._drag_preview_ids.append(item_id)
             for item_id, triangle_id in zip(self._drag_preview_ids, self._drag["triangle_ids"]):
                 coords = []
                 for key in ("O", "B", "L"):

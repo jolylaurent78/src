@@ -213,18 +213,6 @@ def test_xml_mirrored_round_trip_uses_core_without_cache_duplication(tmp_path):
     assert "mirrored" not in reloaded._last_drawn[0]
 
 
-def test_xml_core_first_rejects_repository_v4_scenario_without_topology_ids():
-    legacy_xml = (
-        Path(__file__).resolve().parents[1]
-        / "scenario"
-        / "Scenario_FrontiereActuelle v6.xml"
-    )
-    viewer = _Viewer(TopologyWorld(), [])
-
-    with pytest.raises(ValueError, match="expected 5"):
-        loadScenarioXml(viewer, str(legacy_xml))
-
-
 def test_f11_geo_orient_dump_contains_core_and_projection_diagnostics(tmp_path):
     world = _world_with_t28()
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)

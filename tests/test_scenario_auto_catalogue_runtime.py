@@ -120,12 +120,19 @@ def test_auto_snapshot_manual_clones_its_hypothesis_independently():
     class Listbox:
         def __init__(self):
             self.items = []
+            self.scroll_position = 0.0
 
         def delete(self, _start, _end):
             self.items.clear()
 
         def insert(self, _position, value):
             self.items.append(value)
+
+        def yview(self):
+            return (self.scroll_position, 1.0)
+
+        def yview_moveto(self, position):
+            self.scroll_position = float(position)
 
     auto = ScenarioAssemblage(
         "Auto", source_type="auto", hypothesis=hypothesis

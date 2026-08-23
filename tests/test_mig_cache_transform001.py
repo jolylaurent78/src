@@ -47,6 +47,8 @@ def _viewer_with_group():
     viewer.active_scenario_index = 0
     viewer._is_active_auto_scenario = lambda: False
     viewer._group_drag_snap_candidate = None
+    viewer._attachment_intent = None
+    viewer._attachment_preview = None
     return viewer, world, group_id, first, second, outsider
 
 

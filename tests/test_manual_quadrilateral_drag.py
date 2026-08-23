@@ -129,6 +129,15 @@ def test_quad_preview_is_created_by_plain_canvas_motion_without_button():
     viewer._update_list_drag_preview_at_canvas_xy(10, 10)
     assert viewer._drag["kind"] == "quadrilateral"
     assert len(viewer._drag_preview_ids) == 2
+    reference_id = viewer._drag["reference_triangle_id"]
+    assert viewer._drag["world_pts_by_triangle"][reference_id]["O"] == pytest.approx((10.0, -10.0))
+
+    # Déplacements horizontal, vertical et diagonal : O suit toujours le curseur.
+    for canvas_x, canvas_y in ((20, 10), (20, 30), (40, 50)):
+        viewer._update_list_drag_preview_at_canvas_xy(canvas_x, canvas_y)
+        assert viewer._drag["world_pts_by_triangle"][reference_id]["O"] == pytest.approx(
+            (float(canvas_x), -float(canvas_y))
+        )
 
 
 def test_selection_cycles_and_invalid_base_preserve_controller_selection():

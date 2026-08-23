@@ -188,6 +188,7 @@ def test_scenario_activation_rebuilds_the_new_active_projection_from_core():
     viewer.auto_fit_scenario_select = SimpleNamespace(get=lambda: False)
     viewer.status = SimpleNamespace(config=lambda **_kwargs: None)
     viewer.scenario_tree = None
+    viewer._deformation_window = None
 
     viewer._set_active_scenario(1)
 
@@ -243,6 +244,7 @@ def test_scenario_activation_suppresses_map_redraw_until_new_projection_is_ready
     viewer.auto_fit_scenario_select = SimpleNamespace(get=lambda: False)
     viewer.status = SimpleNamespace(config=lambda **_kwargs: None)
     viewer.scenario_tree = None
+    viewer._deformation_window = None
 
     viewer._set_active_scenario(1)
 
