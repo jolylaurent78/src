@@ -687,6 +687,13 @@
       "latitude": 46.675,
       "longitude": 5.554444444444444,
       "archived": false
+    },
+    {
+      "cityId": "CITY-0099",
+      "name": "Calais",
+      "latitude": 50.948055555555555,
+      "longitude": 1.856388888888889,
+      "archived": false
     }
   ],
   "beacons": [
@@ -1034,6 +1041,46 @@
       "baseCityId": "CITY-0033",
       "lightCityId": "CITY-0098",
       "archived": false
+    },
+    {
+      "triangleId": "TRI-0042",
+      "note": "SOL",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0032",
+      "lightCityId": "CITY-0099",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-0043",
+      "note": "SOL",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0032",
+      "lightCityId": "CITY-0097",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-0044",
+      "note": "SI",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0028",
+      "lightCityId": "CITY-0052",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-0045",
+      "note": "SI",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0028",
+      "lightCityId": "CITY-0064",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-0046",
+      "note": "FA",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0035",
+      "lightCityId": "CITY-0083",
+      "archived": false
     }
   ],
   "templates": [
@@ -1100,17 +1147,17 @@
         "TRI-0014",
         "TRI-0040",
         "TRI-0041",
-        "TRI-0039",
-        "TRI-0019",
+        "TRI-0038",
+        "TRI-0018",
+        "TRI-0042",
         "TRI-0020",
-        "TRI-0021",
-        "TRI-0022",
         "TRI-0023",
-        "TRI-0024",
-        "TRI-0025",
-        "TRI-0026",
+        "TRI-0044",
+        "TRI-0045",
+        "TRI-0046",
         "TRI-0027",
-        "TRI-0028",
+        "TRI-0026",
+        "TRI-0025",
         "TRI-0029",
         "TRI-0030",
         "TRI-0031",

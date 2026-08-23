@@ -37,10 +37,16 @@ class _Listbox:
         self.selected = ()
 
     def selection_set(self, index):
-        self.selected = (index,)
+        self.selected = tuple(sorted(set(self.selected + (index,))))
 
     def nearest(self, _y):
         return 0
+
+    def yview(self):
+        return (0.0, 1.0)
+
+    def yview_moveto(self, _position):
+        pass
 
 
 class _Canvas:
@@ -85,6 +91,8 @@ def _viewer(catalogue, hypothesis):
     viewer.status = _Status()
     viewer._last_triangle_selection = None
     viewer._in_triangle_select_guard = False
+    viewer._drag = None
+    viewer._list_drag_pending = None
     viewer._get_active_scenario = lambda: scenario
     viewer._last_drawn = []
     viewer.canvas_objects = CanvasObjectsCollection(viewer._last_drawn)
@@ -163,8 +171,7 @@ def test_list_drag_keeps_only_the_catalogue_triangle_id_and_ui_state():
     )
 
     assert viewer._drag["triangle_id"] == hypothesis.triangle_ids_by_rank[0]
-    assert "triangle" not in viewer._drag
-    assert "mirrored" not in viewer._drag
+    assert viewer._drag["triangle_ids"] == (hypothesis.triangle_ids_by_rank[0],)
 
 
 def test_drag_world_points_are_resolved_from_the_catalogue_triangle_id():

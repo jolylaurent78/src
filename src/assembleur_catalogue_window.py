@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import csv
 import math
+import unicodedata
 from pathlib import Path
 from typing import Callable
 import tkinter as tk
@@ -72,6 +73,12 @@ class CityCsvImportResult:
     def updated_count(self) -> int:
         return len(self.updated_city_ids)
 
+def _normalize_search_text(value: str) -> str:
+    return "".join(
+        char
+        for char in unicodedata.normalize("NFD", value)
+        if unicodedata.category(char) != "Mn"
+    ).casefold()
 
 class CitySelectionDialog(tk.Toplevel):
     """Sélecteur générique d'un objet ville par recherche filtrante."""
@@ -118,8 +125,12 @@ class CitySelectionDialog(tk.Toplevel):
         return self.result
 
     def _visible_cities(self) -> list[CatalogueCity]:
-        search = self._search_var.get().strip().casefold()
-        return [city for city in self._cities if not search or search in city.name.casefold()]
+        search = _normalize_search_text(self._search_var.get().strip())
+        return [
+            city
+            for city in self._cities
+            if not search or search in _normalize_search_text(city.name)
+        ]
 
     def _refresh(self):
         visible = self._visible_cities()
@@ -2153,21 +2164,31 @@ class CatalogueWindow(tk.Toplevel):
         self._triangle_map_view.fit_to_bounds(coordinates, margin=_TRIANGLE_MAP_FIT_MARGIN)
 
     def _visible_cities(self) -> list[CatalogueCity]:
-        search = self._search_var.get().strip().casefold()
+        search = _normalize_search_text(self._search_var.get().strip())
         cities = [
             city
             for city in self.catalogue.iter_cities()
             if (self._show_archived_var.get() or not city.archived)
-            and (not search or search in city.name.casefold())
+            and (
+                not search
+                or search in _normalize_search_text(city.name)
+            )
         ]
         return sorted(cities, key=lambda city: city.name.casefold())
 
     def _visible_beacons(self):
-        search = self._beacon_search_var.get().strip().casefold()
+        search = _normalize_search_text(self._beacon_search_var.get().strip())
         return [
-            beacon for beacon in self.catalogue.iter_beacons()
+            beacon
+            for beacon in self.catalogue.iter_beacons()
             if (self._show_archived_beacons_var.get() or not beacon.archived)
-            and (not search or search in self.catalogue.get_city(beacon.city_id).name.casefold())
+            and (
+                not search
+                or search
+                in _normalize_search_text(
+                    self.catalogue.get_city(beacon.city_id).name
+                )
+            )
         ]
 
     def _refresh_beacon_list(self):

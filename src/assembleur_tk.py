@@ -21,7 +21,7 @@ from PIL import Image
 # === Modules externalisés (découpage maintenable) ===
 from src.assembleur_core import (
     ScenarioAssemblage,
-    TopologyWorld, TopologyCheminTriplet
+    TopologyWorld, TopologyCheminTriplet, TopologyEdgeEdgeAttachment
 )
 
 from src.assembleur_sim import (
@@ -380,7 +380,8 @@ class TriangleViewerManual(
         self.zoom = 1.0
         self.offset = np.array([400.0, 350.0], dtype=float)
         self._drag = None              # état de drag & drop depuis la liste
-        self._drag_preview_id = None   # id du polygone "fantôme" sur le canvas
+        self._drag_preview_id = None   # compatibilité avec les anciens chemins mono
+        self._drag_preview_ids = []    # un fantôme mono, deux pour un quadrilatère
         self._sel = None               # sélection sur canvas: {'mode': 'move'|'vertex', 'idx': int}
         self._hit_px = 12              # tolérance de hit (pixels) pour les sommets
         self._center_hit_px = 12       # même défaut que hit_px historique
@@ -2424,6 +2425,7 @@ class TriangleViewerManual(
         self.listbox = tk.Listbox(
             lb_frame,
             width=34,
+            selectmode=tk.EXTENDED,
             exportselection=False,
             relief=tk.FLAT,
             borderwidth=0,
@@ -4838,17 +4840,35 @@ class TriangleViewerManual(
         """Projette la selection du scenario dans la listbox, sans lire ``last_drawn``."""
         if not hasattr(self, "listbox"):
             return
+
+        scroll_position = self.listbox.yview()[0]
+
         scen = self._get_active_scenario()
         if scen.hypothesis is None:
             raise ValueError("ScenarioHypothesis absente du scénario actif")
-        self._triangle_list_triangle_ids = list(scen.hypothesis.triangle_ids_by_rank)
+
+        self._triangle_list_triangle_ids = list(
+            scen.hypothesis.triangle_ids_by_rank
+        )
+
         self.listbox.delete(0, tk.END)
-        for rank, triangle_id in enumerate(self._triangle_list_triangle_ids, start=1):
+
+        for rank, triangle_id in enumerate(
+            self._triangle_list_triangle_ids,
+            start=1,
+        ):
             triangle = self.catalogue.get_triangle(triangle_id)
             base = self.catalogue.get_city(triangle.base_city_id)
             light = self.catalogue.get_city(triangle.light_city_id)
-            self.listbox.insert(tk.END, f"{rank:02d}. B:{base.name}  L:{light.name}")
+
+            self.listbox.insert(
+                tk.END,
+                f"{rank:02d}. B:{base.name}  L:{light.name}",
+            )
+
         self._update_triangle_listbox_colors()
+
+        self.listbox.yview_moveto(scroll_position)
 
     def _get_triangle_id_from_listbox_index(self, idx: int) -> str:
         if not 0 <= int(idx) < len(self._triangle_list_triangle_ids):
@@ -6877,37 +6897,53 @@ class TriangleViewerManual(
     # Drag depuis la liste
 
     def _on_triangle_list_select(self, event=None):
-        """Empêche la sélection d'un triangle déjà utilisé dans le scénario courant."""
+        """Valide la sélection Catalogue (zéro, un ou deux triangles)."""
         # éviter la récursion quand on modifie la sélection nous-mêmes
         if self._in_triangle_select_guard:
             return
         if not hasattr(self, "listbox"):
             return
 
-        sel = self.listbox.curselection()
-        if not sel:
-            self._last_triangle_selection = None
-            return
+        sel = tuple(sorted(int(index) for index in self.listbox.curselection()))
+        valid, message = self._validate_triangle_list_selection(sel)
 
-        idx = int(sel[0])
-        scen = self._get_active_scenario()
-        world = scen.topoWorld
-        triangle_id = self._get_triangle_id_from_listbox_index(idx)
-        used = triangle_id in world.get_used_source_triangle_ids()
-        if used:
-            # Triangle déjà posé : on annule la sélection visuelle
-            self._in_triangle_select_guard = True
-            self.listbox.selection_clear(0, tk.END)
-            if (self._last_triangle_selection is not None and
-                    0 <= self._last_triangle_selection < self.listbox.size()):
-                self.listbox.selection_set(self._last_triangle_selection)
-            self._in_triangle_select_guard = False
+        if not valid:
+            self._set_triangle_list_selection(getattr(self, "_last_triangle_selection", ()) or ())
             if hasattr(self, "status"):
-                self.status.config(text=f"Triangle {triangle_id} déjà utilisé dans ce scénario.")
+                self.status.config(text=message)
             return
+        self._last_triangle_selection = sel
 
-        # Sélection valide
-        self._last_triangle_selection = idx
+    def _validate_triangle_list_selection(self, selection: tuple[int, ...]) -> tuple[bool, str]:
+        """Validation pure de la sélection Catalogue contrôlée par l'UI."""
+        normalized = tuple(sorted(set(int(index) for index in selection)))
+        if len(normalized) > 2:
+            return False, "Sélection multiple impossible : deux triangles maximum."
+        try:
+            triangle_ids = tuple(self._get_triangle_id_from_listbox_index(index) for index in normalized)
+        except IndexError:
+            return False, "Sélection Catalogue invalide."
+        used_ids = self._get_active_scenario().topoWorld.get_used_source_triangle_ids()
+        if any(triangle_id in used_ids for triangle_id in triangle_ids):
+            return False, "Triangle déjà utilisé dans ce scénario."
+        if len(triangle_ids) == 2:
+            first, second = (self.catalogue.get_triangle(triangle_id) for triangle_id in triangle_ids)
+            if first.base_city_id != second.base_city_id:
+                return False, "Sélection multiple impossible : les triangles doivent avoir la même base."
+            if first.opening_city_id != second.opening_city_id:
+                return False, "Sélection multiple impossible : les triangles doivent avoir la même ouverture."
+        return True, ""
+
+    def _set_triangle_list_selection(self, selection: tuple[int, ...]) -> None:
+        """Projette atomiquement l'état validé du contrôleur dans la Listbox."""
+        normalized = tuple(sorted(set(int(index) for index in selection)))
+        self._in_triangle_select_guard = True
+        self.listbox.selection_clear(0, tk.END)
+        for index in normalized:
+            if 0 <= index < self.listbox.size():
+                self.listbox.selection_set(index)
+        self._last_triangle_selection = normalized
+        self._in_triangle_select_guard = False
 
     # ---------- Mouse navigation ----------
     # Drag depuis la liste
@@ -6929,40 +6965,113 @@ class TriangleViewerManual(
         if i < 0:
             return
 
-        # Sélection visuelle
-        self.listbox.selection_clear(0, tk.END)
-        self.listbox.selection_set(i)
-
         triangle_id = self._get_triangle_id_from_listbox_index(i)
         used = triangle_id in scen.topoWorld.get_used_source_triangle_ids()
         # Si le triangle est déjà posé dans ce scénario, on bloque le drag
         if used:
             self.status.config(text=f"Triangle {triangle_id} déjà utilisé dans ce scénario.")
-            self._drag = None
-            return
+            self._prepare_list_placement((), i)
+            return "break"
 
-        # Préparation de la structure de drag pour le moteur commun
-        start_screen = np.array([event.x_root, event.y_root], dtype=float)
-        # NOTE : last_canvas n'est plus utilisé dans la nouvelle logique de drag & drop
-        # (tout est géré en coords monde/écran via _world_to_screen / _screen_to_world).
+        ctrl_pressed = bool(getattr(event, "state", 0) & 0x0004)
+        current = tuple(getattr(self, "_last_triangle_selection", ()) or ())
+        if ctrl_pressed:
+            requested = tuple(index for index in current if index != i) if i in current else current + (i,)
+            requested = tuple(sorted(requested))
+            valid, message = self._validate_triangle_list_selection(requested)
+            if valid:
+                self._set_triangle_list_selection(requested)
+                self._prepare_list_placement(requested, i)
+            else:
+                self._set_triangle_list_selection(current)
+                self.status.config(text=message)
+            return "break"
+
+        # Un clic sur un membre d'une paire validée conserve la paire.
+        if not (len(current) == 2 and i in current):
+            drag_selection = (i,)
+        else:
+            drag_selection = current
+        valid, message = self._validate_triangle_list_selection(drag_selection)
+        if not valid:
+            self._set_triangle_list_selection(current)
+            self.status.config(text=message)
+            return "break"
+        self._set_triangle_list_selection(drag_selection)
+        self._prepare_list_placement(drag_selection, i)
+        return "break"
+
+    def _prepare_list_placement(self, selection: tuple[int, ...], clicked_index: int) -> None:
+        """Attache immédiatement la sélection Catalogue validée au curseur."""
+        self._delete_drag_previews()
+        if not selection:
+            self._drag = None
+            self.canvas.configure(cursor="")
+            return
+        triangle_ids = tuple(self._get_triangle_id_from_listbox_index(index) for index in selection)
         self._drag = {
             "from": "list",
-            "triangle_id": triangle_id,
-            "list_index": i,
-            "start_screen": start_screen,
+            "kind": "triangle" if len(selection) == 1 else "quadrilateral",
+            "triangle_ids": triangle_ids,
+            "triangle_id": self._get_triangle_id_from_listbox_index(clicked_index),
+            "list_index": clicked_index,
         }
-
-        # Réinitialiser un éventuel fantôme existant
-        if self._drag_preview_id is not None:
-            self.canvas.delete(self._drag_preview_id)
-            self._drag_preview_id = None
-
-        # Forcer le focus sur le canvas pour recevoir les mouvements
-        self.canvas.focus_set()
-
-        # Curseur "main" pendant le drag
+        if self._drag["kind"] == "quadrilateral":
+            self._drag.update(self._build_quadrilateral_drag_geometry(triangle_ids))
         self.canvas.configure(cursor="hand2")
-        self.status.config(text="Glissez le triangle sur le canvas puis relâchez pour le déposer.")
+        message = "Déplacez le quadrilatère puis cliquez pour le déposer." if len(selection) == 2 else "Déplacez le triangle puis cliquez pour le déposer."
+        self.status.config(text=message)
+
+    def _commit_list_placement_at_canvas_event(self, event) -> None:
+        """Valide, au clic Canvas, l'objet Catalogue attaché au curseur."""
+        if not self._drag or self._drag.get("from") != "list":
+            return
+        self._update_list_drag_preview_at_canvas_xy(event.x, event.y)
+        kind = self._drag["kind"]
+        self._delete_drag_previews()
+        if kind == "quadrilateral":
+            self._place_dragged_quadrilateral()
+        else:
+            self._place_dragged_triangle()
+        self._drag = None
+        self._set_triangle_list_selection(())
+        self.canvas.configure(cursor="")
+
+    def _delete_drag_previews(self) -> None:
+        # ``__new__``-based tests intentionally do not initialise Tk itself;
+        # read the instance dictionary so Tk.__getattr__ is never involved.
+        preview_ids = list(self.__dict__.get("_drag_preview_ids", []))
+        for item_id in preview_ids:
+            self.canvas.delete(item_id)
+        self._drag_preview_ids = []
+        preview_id = self.__dict__.get("_drag_preview_id")
+        if preview_id is not None and preview_id not in preview_ids:
+            self.canvas.delete(preview_id)
+        self._drag_preview_id = None
+
+    def _build_quadrilateral_drag_geometry(self, triangle_ids: tuple[str, str]) -> dict:
+        """Construit la pose relative exclusivement via le resolver Core."""
+        first_id, second_id = triangle_ids
+        preview_world = TopologyWorld()
+        first = materialize_catalogue_triangle(self.catalogue, first_id)
+        second = materialize_catalogue_triangle(self.catalogue, second_id)
+        preview_world.add_element_as_new_group(first)
+        preview_world.add_element_as_new_group(second)
+        preview_world.setElementPose(str(first.element_id), np.eye(2), np.zeros(2), mirrored=False)
+        group_id = preview_world.apply_attachment(TopologyEdgeEdgeAttachment(
+            attachment_id=preview_world.new_attachment_id(),
+            mob_element_id=str(second.element_id), mob_edge="OB",
+            dest_element_id=str(first.element_id), dest_edge="OB",
+        ))
+        preview_world.replay_group_attachment_poses(group_id, str(first.element_id))
+        return {
+            "relative_world_pts": {
+                first_id: getCoreTriangleWorldPoints(preview_world, str(first.element_id)),
+                second_id: getCoreTriangleWorldPoints(preview_world, str(second.element_id)),
+            },
+            "reference_triangle_id": first_id,
+            "grab_offset": None,
+        }
 
     # ---------- Neighbours for tooltip ----------
 
@@ -7031,23 +7140,7 @@ class TriangleViewerManual(
 
         # 1) Drag & drop depuis la liste → fantôme
         if self._drag:
-            wx = (event.x - self.offset[0]) / self.zoom
-            wy = (self.offset[1] - event.y) / self.zoom
-            triangle_id = self._drag["triangle_id"]
-            self._drag["world_pts"] = self._build_drag_world_points(
-                triangle_id, (wx, wy),
-            )
-            O = self._drag["world_pts"]["O"]
-            B = self._drag["world_pts"]["B"]
-            L = self._drag["world_pts"]["L"]
-            coords = []
-            for pt in (O, B, L):
-                sx, sy = self._world_to_screen(pt)
-                coords += [sx, sy]
-            if self._drag_preview_id is None:
-                self._drag_preview_id = self.canvas.create_polygon(*coords, outline="gray50", dash=(4, 2), fill="", width=2)
-            else:
-                self.canvas.coords(self._drag_preview_id, *coords)
+            self._update_list_drag_preview_at_canvas_xy(event.x, event.y)
             return
 
         # 2) Mode rotation de GROUPE : suivre la souris (sans bouton appuyé)
@@ -7651,6 +7744,49 @@ class TriangleViewerManual(
         self._in_triangle_select_guard = False
         return
 
+    def _place_dragged_quadrilateral(self):
+        """Publie atomiquement deux triangles reliés OB<->OB dans le Core."""
+        if not self._drag or self._drag.get("kind") != "quadrilateral":
+            return
+        if "world_pts_by_triangle" not in self._drag:
+            return
+        first_id, second_id = self._drag["triangle_ids"]
+        scen = self._get_active_scenario()
+        if first_id in scen.topoWorld.get_used_source_triangle_ids() or second_id in scen.topoWorld.get_used_source_triangle_ids():
+            raise ValueError("Catalogue: triangle already used")
+        first_triangle = self.catalogue.get_triangle(first_id)
+        second_triangle = self.catalogue.get_triangle(second_id)
+        if first_triangle.base_city_id != second_triangle.base_city_id:
+            raise ValueError("Quadrilatère: bases Catalogue différentes")
+        if first_triangle.opening_city_id != second_triangle.opening_city_id:
+            raise ValueError("Quadrilatère: ouvertures Catalogue différentes")
+
+        candidate_world = scen.topoWorld.clonePhysicalState()
+        first = materialize_catalogue_triangle(self.catalogue, first_id)
+        second = materialize_catalogue_triangle(self.catalogue, second_id)
+        candidate_world.add_element_as_new_group(first)
+        candidate_world.add_element_as_new_group(second)
+        candidate_world.setElementPose(
+            str(first.element_id), np.eye(2),
+            np.asarray(self._drag["world_pts_by_triangle"][first_id]["O"], dtype=float),
+            mirrored=False,
+        )
+        group_id = candidate_world.apply_attachment(TopologyEdgeEdgeAttachment(
+            attachment_id=candidate_world.new_attachment_id(),
+            mob_element_id=str(second.element_id), mob_edge="OB",
+            dest_element_id=str(first.element_id), dest_edge="OB",
+        ))
+        candidate_world.replay_group_attachment_poses(group_id, str(first.element_id))
+        if candidate_world.get_group_of_element(str(first.element_id)) != candidate_world.get_group_of_element(str(second.element_id)):
+            raise RuntimeError("Quadrilatère: groupage Core incomplet")
+
+        # Aucun état réel n'est touché avant cette unique publication.
+        scen.topoWorld = candidate_world
+        self._rebuild_active_projection_from_core()
+        self._redraw_from(self._last_drawn)
+        self.status.config(text=f"Quadrilatère placé : groupe Core {group_id} créé.")
+        self._rebuild_triangle_listbox_from_core()
+
     # =============   Groupes : helpers   ====================
     def _group_nodes(self, gid: int) -> List[Dict]:
         g = self.groups.get(gid)
@@ -7680,9 +7816,7 @@ class TriangleViewerManual(
         drag_info = self._drag
         self._drag = None
 
-        if self._drag_preview_id is not None:
-            self.canvas.delete(self._drag_preview_id)
-            self._drag_preview_id = None
+        self._delete_drag_previews()
 
         # Toujours remettre le curseur normal quand on annule un drag (ESC ou autre)
         self.canvas.configure(cursor="")
@@ -10061,6 +10195,11 @@ class TriangleViewerManual(
             self._clock_setref_confirm(int(event.x), int(event.y))
             return "break"
 
+        # Catalogue : le clic Canvas valide l'objet qui suit déjà le curseur.
+        if self._drag and self._drag.get("from") == "list":
+            self._commit_list_placement_at_canvas_event(event)
+            return "break"
+
         # garantir un cache pick à jour avant tout hit-test
         self._ensure_pick_cache()
         # mémoriser l'ancre monde de la souris pour des déplacements "delta"
@@ -10411,7 +10550,6 @@ class TriangleViewerManual(
                     else:
                         self._reset_assist()
             self._clock_apply_auto_ref_sync()
-            return
 
         elif self._sel["mode"] == "move":
             idx = self._sel["idx"]
@@ -10452,6 +10590,45 @@ class TriangleViewerManual(
                 self._clear_nearest_line()
                 self._clear_edge_highlights()
             self._clock_apply_auto_ref_sync()
+
+    def _update_list_drag_preview_at_canvas_xy(self, canvas_x: float, canvas_y: float) -> None:
+        """Met à jour le fantôme actif depuis des coordonnées Canvas."""
+        wx = (canvas_x - self.offset[0]) / self.zoom
+        wy = (self.offset[1] - canvas_y) / self.zoom
+        if self._drag.get("kind") == "quadrilateral":
+            mouse_world = np.array([wx, wy], dtype=float)
+            reference_id = self._drag["reference_triangle_id"]
+            relative = self._drag["relative_world_pts"]
+            reference_point = np.asarray(relative[reference_id]["O"], dtype=float)
+            if self._drag["grab_offset"] is None:
+                self._drag["grab_offset"] = mouse_world - reference_point
+            delta = (mouse_world - self._drag["grab_offset"]) - reference_point
+            self._drag["world_pts_by_triangle"] = {
+                triangle_id: {key: np.asarray(point, dtype=float) + delta for key, point in points.items()}
+                for triangle_id, points in relative.items()
+            }
+            while len(self._drag_preview_ids) < 2:
+                self._drag_preview_ids.append(self.canvas.create_polygon(
+                    0, 0, 0, 0, 0, 0, outline="gray50", dash=(4, 2), fill="", width=2,
+                ))
+            for item_id, triangle_id in zip(self._drag_preview_ids, self._drag["triangle_ids"]):
+                coords = []
+                for key in ("O", "B", "L"):
+                    sx, sy = self._world_to_screen(self._drag["world_pts_by_triangle"][triangle_id][key])
+                    coords += [sx, sy]
+                self.canvas.coords(item_id, *coords)
+            return
+        triangle_id = self._drag["triangle_id"]
+        self._drag["world_pts"] = self._build_drag_world_points(triangle_id, (wx, wy))
+        coords = []
+        for key in ("O", "B", "L"):
+            sx, sy = self._world_to_screen(self._drag["world_pts"][key])
+            coords += [sx, sy]
+        if self._drag_preview_id is None:
+            self._drag_preview_id = self.canvas.create_polygon(*coords, outline="gray50", dash=(4, 2), fill="", width=2)
+            self._drag_preview_ids = [self._drag_preview_id]
+        else:
+            self.canvas.coords(self._drag_preview_id, *coords)
 
     def _on_canvas_left_up(self, event):
         # Horloge : fin de drag
@@ -10514,30 +10691,10 @@ class TriangleViewerManual(
             self._on_pan_end(event)
             return
 
-        """Fin du drag au clic gauche : dépôt de triangle (drag liste) OU fin d'une édition."""
-
-        # 0) Dépôt d'un triangle glissé depuis la liste
-        if self._drag:
-            # Si le fantôme existe, on le supprime
-            if self._drag_preview_id is not None:
-                self.canvas.delete(self._drag_preview_id)
-                self._drag_preview_id = None
-
-            # Sécurité : si world_pts n'a pas été posé (pas de <Motion>), le calculer ici
-            if "world_pts" not in self._drag:
-                wx = (event.x - self.offset[0]) / self.zoom
-                wy = (self.offset[1] - event.y) / self.zoom
-                self._drag["world_pts"] = self._build_drag_world_points(
-                    self._drag["triangle_id"], (wx, wy),
-                )
-
-            # Dépose réellement le triangle dans le document
-            self._place_dragged_triangle()
-            # Reset état de drag
-            self._drag = None
-            # Remettre le curseur normal en fin de drag
-            self.canvas.configure(cursor="")
-            return
+        # Le placement Catalogue est committé au ButtonPress Canvas. Un éventuel
+        # ButtonRelease ultérieur ne doit jamais déclencher un second commit.
+        if self._drag and self._drag.get("from") == "list":
+            return "break"
 
         # 1) Le reste est ton comportement existant (fin de drag/rotation/snap)
         if not self._sel:
