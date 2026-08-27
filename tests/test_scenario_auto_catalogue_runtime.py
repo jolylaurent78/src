@@ -5,6 +5,12 @@ import pytest
 
 from src.assembleur_catalogue import Catalogue
 from src.assembleur_core import ScenarioAssemblage
+from src.assembleur_geometry_reference import (
+    GeometryReferenceResolver,
+    ScenarioCity,
+    ScenarioReference,
+    ScenarioTriangle,
+)
 from src.assembleur_scenario import ScenarioHypothesis, materialize_catalogue_triangle
 from src.assembleur_sim import AlgoQuadrisParPaires, MoteurSimulationAssemblage
 from src.assembleur_tk import TriangleViewerManual
@@ -35,10 +41,34 @@ def _catalogue_and_hypothesis():
     return catalogue, ScenarioHypothesis(triangle_ids, "TPL-0001")
 
 
-def _engine(catalogue, hypothesis):
+def _engine(catalogue, hypothesis, reference=None):
     return MoteurSimulationAssemblage(
-        SimpleNamespace(catalogue=catalogue), source_hypothesis=hypothesis
+        SimpleNamespace(catalogue=catalogue),
+        source_hypothesis=hypothesis,
+        source_reference=reference,
     )
+
+
+def _reference_with_two_shared_stri(catalogue, hypothesis):
+    reference = ScenarioReference()
+    first = catalogue.get_triangle(hypothesis.triangle_ids_by_rank[0])
+    second = catalogue.get_triangle(hypothesis.triangle_ids_by_rank[1])
+    reference.add_city(ScenarioCity(
+        "SCITY-0001", "Base AUTO", 45.0, 2.0, first.base_city_id,
+    ))
+    reference.add_triangle(ScenarioTriangle(
+        "STRI-0001", first.note, first.opening_city_id, "SCITY-0001",
+        first.light_city_id, first.triangle_id,
+    ))
+    reference.add_triangle(ScenarioTriangle(
+        "STRI-0002", second.note, second.opening_city_id, "SCITY-0001",
+        second.light_city_id, second.triangle_id,
+    ))
+    effective = hypothesis.clone()
+    effective.triangle_ids_by_rank[0] = "STRI-0001"
+    effective.triangle_ids_by_rank[1] = "STRI-0002"
+    effective.validate(GeometryReferenceResolver(catalogue, reference))
+    return reference, effective
 
 
 def test_auto_build_local_triangle_uses_catalogue_factory_without_excel_dataframe():
@@ -72,11 +102,57 @@ def test_auto_simulation_uses_catalogue_ids_and_clones_the_source_hypothesis():
     assert hypothesis.triangle_ids_by_rank[0] != first.hypothesis.triangle_ids_by_rank[0]
     assert second.hypothesis.triangle_ids_by_rank[0] == hypothesis.triangle_ids_by_rank[0]
     for scenario in (first, second):
+        assert scenario.reference.cities == {}
         assert len(scenario.topoWorld.elements) == 2
         assert {
             element.source_triangle_id for element in scenario.topoWorld.elements.values()
         } == set(hypothesis.triangle_ids_by_rank[:2])
         assert all("triRank" not in element.meta for element in scenario.topoWorld.elements.values())
+    assert first.reference is not second.reference
+
+
+def test_auto_run_consumes_effective_stri_and_clones_its_reference():
+    catalogue, catalogue_hypothesis = _catalogue_and_hypothesis()
+    source_reference, hypothesis = _reference_with_two_shared_stri(
+        catalogue, catalogue_hypothesis
+    )
+    first = AlgoQuadrisParPaires(_engine(catalogue, hypothesis, source_reference)).run(
+        hypothesis.triangle_ids_by_rank[:2]
+    )[0]
+    second = AlgoQuadrisParPaires(_engine(catalogue, hypothesis, source_reference)).run(
+        hypothesis.triangle_ids_by_rank[:2]
+    )[0]
+
+    for scenario in (first, second):
+        resolver = GeometryReferenceResolver(catalogue, scenario.reference)
+        scenario.hypothesis.validate(resolver)
+        assert scenario.hypothesis.triangle_ids_by_rank[:2] == ["STRI-0001", "STRI-0002"]
+        assert set(scenario.reference.cities) == {"SCITY-0001"}
+        assert set(scenario.reference.triangles) == {"STRI-0001", "STRI-0002"}
+        assert {
+            element.source_triangle_id for element in scenario.topoWorld.elements.values()
+        } == {"STRI-0001", "STRI-0002"}
+        assert all(
+            element.vertex_business_ids[1] == "SCITY-0001"
+            and element.vertex_labels[1] == "Base AUTO"
+            for element in scenario.topoWorld.elements.values()
+        )
+
+    assert first.reference is not source_reference
+    assert second.reference is not source_reference
+    assert first.reference is not second.reference
+    first.reference.cities["SCITY-0001"].name = "Auto A"
+    assert source_reference.cities["SCITY-0001"].name == "Base AUTO"
+    assert second.reference.cities["SCITY-0001"].name == "Base AUTO"
+
+
+def test_auto_rejects_an_unknown_effective_stri_before_producing_a_scenario():
+    catalogue, hypothesis = _catalogue_and_hypothesis()
+    invalid = hypothesis.clone()
+    invalid.triangle_ids_by_rank[0] = "STRI-9999"
+
+    with pytest.raises(ValueError, match="STRI-9999"):
+        _engine(catalogue, invalid, ScenarioReference())
 
 
 def test_simulation_order_is_derived_from_the_hypothesis_not_the_listbox():

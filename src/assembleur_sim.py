@@ -28,7 +28,8 @@ from src.assembleur_edge_mapping import (
     compute_edge_edge_pose,
 )
 from src.assembleur_projection import buildLastDrawnFromTopology
-from src.assembleur_scenario import ScenarioHypothesis, materialize_catalogue_triangle
+from src.assembleur_geometry_reference import GeometryReferenceResolver, ScenarioReference
+from src.assembleur_scenario import ScenarioHypothesis, materialize_triangle
 
 EPS_WORLD = 1e-6
 
@@ -718,6 +719,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                     algo_id=self.id,
                     hypothesis=engine.source_hypothesis.clone(),
                 )
+                scen.reference = engine.source_reference.clone()
                 scen.status = "complete"
                 scen.topoScenarioId = topoScenarioId
 
@@ -1140,6 +1142,7 @@ class AlgoQuadrisParPaires(AlgorithmeAssemblage):
                 algo_id=self.id,
                 hypothesis=engine.source_hypothesis.clone(),
             )
+            scen.reference = engine.source_reference.clone()
             scen.status = "complete"
             scen.topoWorld = topoWorld_leaf
             scen.topoScenarioId = topoScenarioId
@@ -1169,9 +1172,20 @@ class MoteurSimulationAssemblage:
         self,
         viewer: "TriangleViewerManual",
         source_hypothesis: ScenarioHypothesis,
+        source_reference: ScenarioReference | None = None,
     ):
         self.viewer = viewer
         self.source_hypothesis = source_hypothesis.clone()
+        reference = source_reference
+        if reference is None:
+            reference = getattr(viewer, "reference", None)
+        if reference is None:
+            reference = ScenarioReference()
+        if not isinstance(reference, ScenarioReference):
+            raise TypeError("Simulation: source_reference doit être une ScenarioReference")
+        self.source_reference = reference.clone()
+        self.resolver = GeometryReferenceResolver(viewer.catalogue, self.source_reference)
+        self.source_hypothesis.validate(self.resolver)
         self.firstTriangleEdge = "OL"
         self.initialTriangleOrientation: InitialTriangleOrientation | None = None
         # --- DEBUG (instrumentation minimaliste, sans console spam) ---
@@ -1209,7 +1223,7 @@ class MoteurSimulationAssemblage:
         })
 
     def materialize_triangle(self, triangle_id: str):
-        return materialize_catalogue_triangle(self.viewer.catalogue, triangle_id)
+        return materialize_triangle(self.resolver, triangle_id)
 
     def build_local_triangle(self, triangle_id: str) -> Dict:
         """Construit la géométrie locale depuis la factory Catalogue/Core unique."""

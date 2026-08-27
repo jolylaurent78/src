@@ -701,6 +701,27 @@
       "latitude": 48.9575,
       "longitude": 4.3647222222222215,
       "archived": false
+    },
+    {
+      "cityId": "CITY-0101",
+      "name": "Jersey",
+      "latitude": 49.19,
+      "longitude": -2.11,
+      "archived": false
+    },
+    {
+      "cityId": "CITY-0102",
+      "name": "Barfleur",
+      "latitude": 49.67027777777778,
+      "longitude": -1.2647222222222223,
+      "archived": false
+    },
+    {
+      "cityId": "CITY-0103",
+      "name": "Fréteval",
+      "latitude": 47.88527777777778,
+      "longitude": 1.2113888888888888,
+      "archived": false
     }
   ],
   "beacons": [
@@ -1096,6 +1117,78 @@
       "baseCityId": "CITY-0037",
       "lightCityId": "CITY-0100",
       "archived": false
+    },
+    {
+      "triangleId": "TRI-0048",
+      "note": "SI",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0028",
+      "lightCityId": "CITY-0092",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-0049",
+      "note": "SI",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0029",
+      "lightCityId": "CITY-0101",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-0050",
+      "note": "FA",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0034",
+      "lightCityId": "CITY-0002",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-0051",
+      "note": "FA",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0034",
+      "lightCityId": "CITY-0052",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-0052",
+      "note": "FA",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0035",
+      "lightCityId": "CITY-0102",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-0053",
+      "note": "LA",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0030",
+      "lightCityId": "CITY-0071",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-0054",
+      "note": "FA",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0035",
+      "lightCityId": "CITY-0103",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-0055",
+      "note": "FA",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0035",
+      "lightCityId": "CITY-0064",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-0056",
+      "note": "LA",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0031",
+      "lightCityId": "CITY-0080",
+      "archived": false
     }
   ],
   "templates": [
@@ -1164,19 +1257,19 @@
         "TRI-0041",
         "TRI-0038",
         "TRI-0018",
-        "TRI-0042",
+        "TRI-0043",
         "TRI-0020",
-        "TRI-0023",
-        "TRI-0044",
-        "TRI-0045",
-        "TRI-0046",
-        "TRI-0027",
-        "TRI-0026",
-        "TRI-0025",
+        "TRI-0049",
+        "TRI-0048",
+        "TRI-0022",
+        "TRI-0050",
+        "TRI-0051",
+        "TRI-0055",
+        "TRI-0028",
         "TRI-0029",
         "TRI-0030",
-        "TRI-0031",
-        "TRI-0032"
+        "TRI-0056",
+        "TRI-0031"
       ]
     }
   ]

@@ -13,7 +13,10 @@ from src.assembleur_core import (
     ScenarioAssemblage,
     TopologyEdgeEdgeAttachment,
     TopologyElement,
-    build_topology_element_from_catalogue_triangle,
+)
+from src.assembleur_geometry_reference import (
+    GeometryReferenceResolver,
+    ScenarioReference,
 )
 
 
@@ -24,7 +27,13 @@ class ScenarioHypothesis:
     triangle_ids_by_rank: list[str]
     source_template_id: str | None = None
 
-    def validate(self, catalogue: Catalogue) -> None:
+    def validate(self, catalogue: Catalogue | GeometryReferenceResolver) -> None:
+        """Valide les rangs via un Catalogue ou un resolver geometrique."""
+        resolver = (
+            catalogue
+            if isinstance(catalogue, GeometryReferenceResolver)
+            else GeometryReferenceResolver(catalogue, ScenarioReference())
+        )
         ranks = self.triangle_ids_by_rank
         if len(ranks) != 32:
             raise ValueError("Une hypothèse de scénario doit contenir exactement 32 rangs.")
@@ -34,17 +43,17 @@ class ScenarioHypothesis:
             raise ValueError("Un triangle ne peut pas être utilisé dans plusieurs rangs.")
         for index in range(0, 32, 2):
             try:
-                odd = catalogue.get_triangle(ranks[index])
-                even = catalogue.get_triangle(ranks[index + 1])
+                odd = resolver.resolve_triangle(ranks[index])
+                even = resolver.resolve_triangle(ranks[index + 1])
             except KeyError as exc:
                 raise ValueError(
                     "L'hypothèse du scénario référence un triangle Catalogue absent : "
                     f"{exc.args[0]}"
                 ) from exc
-            if odd.base_city_id != even.base_city_id:
+            if odd.base_city_ref_id != even.base_city_ref_id:
                 raise ValueError(f"Les rangs {index + 1} et {index + 2} doivent utiliser la même base.")
 
-    def set_ranks(self, catalogue: Catalogue, triangle_ids_by_rank: list[str]) -> None:
+    def set_ranks(self, catalogue: Catalogue | GeometryReferenceResolver, triangle_ids_by_rank: list[str]) -> None:
         preview = list(triangle_ids_by_rank)
         candidate = ScenarioHypothesis(preview, self.source_template_id)
         candidate.validate(catalogue)
@@ -52,6 +61,19 @@ class ScenarioHypothesis:
 
     def clone(self) -> "ScenarioHypothesis":
         return ScenarioHypothesis(list(self.triangle_ids_by_rank), self.source_template_id)
+
+    def get_rank_for_triangle_ref(
+        self,
+        triangle_ref_id: str,
+    ) -> int:
+        """Résout directement le rang d'une référence effective TRI ou STRI."""
+        try:
+            return self.triangle_ids_by_rank.index(triangle_ref_id) + 1
+        except ValueError as exc:
+            raise ValueError(
+                "Référence effective absente de l'hypothèse : "
+                f"{triangle_ref_id!r}"
+            ) from exc
 
 
 class HypothesisImpact(Enum):
@@ -101,32 +123,41 @@ class _ReplacedElement:
     mirrored: bool
 
 
-def _rank_change_impact(catalogue: Catalogue, old_triangle_id: str, new_triangle_id: str) -> HypothesisImpact:
-    old_triangle = catalogue.get_triangle(old_triangle_id)
-    new_triangle = catalogue.get_triangle(new_triangle_id)
+def _rank_change_impact(
+    resolver: GeometryReferenceResolver,
+    old_triangle_id: str,
+    new_triangle_id: str,
+) -> HypothesisImpact:
+    old_triangle = resolver.resolve_triangle(old_triangle_id)
+    new_triangle = resolver.resolve_triangle(new_triangle_id)
     if (
-        old_triangle.opening_city_id == new_triangle.opening_city_id
-        and old_triangle.base_city_id == new_triangle.base_city_id
-        and old_triangle.light_city_id != new_triangle.light_city_id
+        old_triangle.opening_city_ref_id == new_triangle.opening_city_ref_id
+        and old_triangle.base_city_ref_id == new_triangle.base_city_ref_id
+        and old_triangle.light_city_ref_id != new_triangle.light_city_ref_id
     ):
         return HypothesisImpact.REPLAY
     return HypothesisImpact.DETACH
 
 
 def analyze_hypothesis_change(
-    catalogue: Catalogue,
+    catalogue: Catalogue | GeometryReferenceResolver,
     old_hypothesis: ScenarioHypothesis,
     new_hypothesis: ScenarioHypothesis,
 ) -> ScenarioHypothesisChangePlan:
     """Compare deux hypothèses validées sans muter ni Catalogue ni scénario."""
-    old_hypothesis.validate(catalogue)
-    new_hypothesis.validate(catalogue)
+    resolver = (
+        catalogue
+        if isinstance(catalogue, GeometryReferenceResolver)
+        else GeometryReferenceResolver(catalogue, ScenarioReference())
+    )
+    old_hypothesis.validate(resolver)
+    new_hypothesis.validate(resolver)
     changes = tuple(
         HypothesisRankChange(
             rank=index,
             old_triangle_id=old_triangle_id,
             new_triangle_id=new_triangle_id,
-            impact=_rank_change_impact(catalogue, old_triangle_id, new_triangle_id),
+            impact=_rank_change_impact(resolver, old_triangle_id, new_triangle_id),
         )
         for index, (old_triangle_id, new_triangle_id) in enumerate(
             zip(old_hypothesis.triangle_ids_by_rank, new_hypothesis.triangle_ids_by_rank),
@@ -156,49 +187,36 @@ def create_default_scenario_hypothesis(catalogue: Catalogue) -> ScenarioHypothes
     return create_hypothesis_from_template(catalogue, catalogue.require_valid_default_template())
 
 
+def materialize_triangle(
+    resolver: GeometryReferenceResolver,
+    triangle_ref_id: str,
+    *,
+    vertex_lambert_overrides: Mapping[str, tuple[float, float]] | None = None,
+) -> TopologyElement:
+    """Materialise une reference TRI ou STRI vers un TopologyElement.
+
+    ``source_triangle_id`` est desormais la reference effective du triangle,
+    sans que le Core connaisse son origine Catalogue ou scenario.
+    """
+    if not isinstance(resolver, GeometryReferenceResolver):
+        raise TypeError("materialize_triangle attend un GeometryReferenceResolver")
+    return resolver.materialize_triangle(
+        triangle_ref_id,
+        vertex_lambert_overrides=vertex_lambert_overrides,
+    )
+
+
 def materialize_catalogue_triangle(
     catalogue: Catalogue,
     triangle_id: str,
     *,
     vertex_lambert_overrides: Mapping[str, tuple[float, float]] | None = None,
 ) -> TopologyElement:
-    """Résout un triangle Catalogue vers son élément topologique.
-
-    Les overrides O/B/L sont strictement temporaires : ils permettent à une
-    simulation pure de matérialiser le même triangle source sans créer ni
-    modifier de ville Catalogue.
-    """
-    if vertex_lambert_overrides is None:
-        overrides = {}
-    elif not isinstance(vertex_lambert_overrides, Mapping):
-        raise ValueError("Les overrides Lambert doivent former une mapping O/B/L")
-    else:
-        overrides = dict(vertex_lambert_overrides)
-    unknown_roles = set(overrides) - {"O", "B", "L"}
-    if unknown_roles:
-        raise ValueError(
-            "Rôle d'override Lambert inconnu: "
-            + ", ".join(sorted(str(role) for role in unknown_roles))
-        )
-
-    triangle = catalogue.get_triangle(triangle_id)
-    opening = catalogue.get_city(triangle.opening_city_id)
-    base = catalogue.get_city(triangle.base_city_id)
-    light = catalogue.get_city(triangle.light_city_id)
-    lambert_by_role = {
-        "O": catalogue.get_city_lambert(opening.city_id),
-        "B": catalogue.get_city_lambert(base.city_id),
-        "L": catalogue.get_city_lambert(light.city_id),
-    }
-    lambert_by_role.update(overrides)
-    return build_topology_element_from_catalogue_triangle(
-        triangle_id=triangle.triangle_id,
-        opening_name=opening.name,
-        base_name=base.name,
-        light_name=light.name,
-        opening_lambert_xy=lambert_by_role["O"],
-        base_lambert_xy=lambert_by_role["B"],
-        light_lambert_xy=lambert_by_role["L"],
+    """Compatibilite : materialise un triangle Catalogue via le resolver."""
+    return materialize_triangle(
+        GeometryReferenceResolver(catalogue, ScenarioReference()),
+        triangle_id,
+        vertex_lambert_overrides=vertex_lambert_overrides,
     )
 
 
@@ -251,6 +269,7 @@ def apply_hypothesis_change_to_manual_scenario(
     catalogue: Catalogue,
     scenario: ScenarioAssemblage,
     draft_hypothesis: ScenarioHypothesis,
+    draft_reference: ScenarioReference | None = None,
 ) -> HypothesisTopologyApplyResult:
     """Applique une modification d'hypothèse à un manuel non vide, atomiquement.
 
@@ -264,9 +283,29 @@ def apply_hypothesis_change_to_manual_scenario(
         raise ValueError("ScenarioHypothesis absente du scénario manuel actif")
 
     candidate = draft_hypothesis.clone()
-    candidate.validate(catalogue)
-    plan = analyze_hypothesis_change(catalogue, scenario.hypothesis, candidate)
+    candidate_reference = (
+        scenario.reference if draft_reference is None else draft_reference.clone()
+    )
+    resolver = GeometryReferenceResolver(catalogue, candidate_reference)
+    candidate.validate(resolver)
+    plan = analyze_hypothesis_change(resolver, scenario.hypothesis, candidate)
     if not plan.rank_changes:
+        if draft_reference is not None:
+            candidate_world = scenario.topoWorld.clonePhysicalState()
+            for element_id, element in candidate_world.elements.items():
+                if element.source_triangle_id:
+                    candidate_world.replace_element_materialized_definition(
+                        element_id,
+                        materialize_triangle(resolver, element.source_triangle_id),
+                    )
+            errors = candidate_world.validate_world()
+            if errors:
+                raise ValueError(
+                    "Référentiel de scénario invalide : "
+                    + " ; ".join(str(error) for error in errors)
+                )
+            scenario.reference = candidate_reference
+            scenario.topoWorld = candidate_world
         scenario.hypothesis = candidate
         return HypothesisTopologyApplyResult(plan, (), 0)
 
@@ -333,8 +372,8 @@ def apply_hypothesis_change_to_manual_scenario(
 
     new_element_by_rank: dict[int, str] = {}
     for rank, replacement in replacements.items():
-        new_element = materialize_catalogue_triangle(
-            catalogue, candidate.triangle_ids_by_rank[rank - 1]
+        new_element = materialize_triangle(
+            resolver, candidate.triangle_ids_by_rank[rank - 1]
         )
         working_world.add_element_as_new_group(new_element)
         working_world.setElementPose(
@@ -386,6 +425,8 @@ def apply_hypothesis_change_to_manual_scenario(
             + " ; ".join(str(error) for error in errors)
         )
 
+    if draft_reference is not None:
+        scenario.reference = candidate_reference
     scenario.topoWorld = working_world
     scenario.hypothesis = candidate
     return HypothesisTopologyApplyResult(

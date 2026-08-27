@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from src.assembleur_catalogue import Catalogue
 from src.assembleur_core import ScenarioAssemblage, TopologyElement
+from src.assembleur_geometry_reference import GeometryReferenceResolver, ScenarioReference
 from src.assembleur_hypothesis_window import ScenarioHypothesisDialog
 from src.assembleur_scenario import (
     HypothesisImpact,
@@ -157,6 +158,7 @@ def test_hypothesis_dialog_ranks_view_uses_the_scenario_hypothesis_order():
 
     dialog = object.__new__(ScenarioHypothesisDialog)
     dialog.catalogue = catalogue
+    dialog.resolver = GeometryReferenceResolver(catalogue, ScenarioReference())
     dialog._draft = hypothesis.clone()
     dialog._pair_rows = [PairRow() for _ in range(16)]
     dialog._selected_slot = None
@@ -172,6 +174,7 @@ def test_hypothesis_dialog_drop_updates_only_its_valid_draft_preview():
     catalogue, original, replay_id, _detach = _catalogue_and_hypothesis()
     dialog = object.__new__(ScenarioHypothesisDialog)
     dialog.catalogue = catalogue
+    dialog.resolver = GeometryReferenceResolver(catalogue, ScenarioReference())
     dialog._draft = original.clone()
     target_slot = SimpleNamespace(rank_number=1)
 

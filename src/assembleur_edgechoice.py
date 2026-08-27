@@ -291,6 +291,17 @@ def previewManualAttachment(
             mob_group_id,
             attachment,
         )
+    except (
+        TopologyAttachmentValidationError,
+        TopologyAttachmentResolutionError,
+        TopologyConstraintGeometryError,
+    ) as exc:
+        return ManualAttachmentPreview(
+            accepted=False,
+            attachment=attachment,
+            world=None,
+            rejection_reason=str(exc),
+        )
     except ValueError as exc:
         # Le cache de boundary peut être absent sur un groupe déjà invalide.
         # Pour l'API de preview, cette impossibilité d'évaluer le candidat est
@@ -303,18 +314,6 @@ def previewManualAttachment(
             world=None,
             rejection_reason="Chevauchement géométrique incompatible.",
         )
-    except (
-        TopologyAttachmentValidationError,
-        TopologyAttachmentResolutionError,
-        TopologyConstraintGeometryError,
-    ) as exc:
-        return ManualAttachmentPreview(
-            accepted=False,
-            attachment=attachment,
-            world=None,
-            rejection_reason=str(exc),
-        )
-
     if overlap:
         return ManualAttachmentPreview(
             accepted=False,

@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from types import SimpleNamespace
 
 from src.assembleur_catalogue import Catalogue
 from src.assembleur_core import (
@@ -12,8 +13,12 @@ from src.assembleur_core import (
 from src.assembleur_scenario import (
     ScenarioHypothesis,
     apply_hypothesis_change_to_manual_scenario,
+    analyze_hypothesis_change,
     materialize_catalogue_triangle,
+    materialize_triangle,
 )
+from src.assembleur_geometry_reference import GeometryReferenceResolver, ScenarioReference
+from src.assembleur_hypothesis_window import ScenarioHypothesisDialog
 
 
 def _catalogue_with_hypothesis():
@@ -84,6 +89,31 @@ def _attach_lo_vertex_edge(world, first_element_id, second_element_id):
             dest_orientation="CW",
         )
     )
+
+
+def _scenario_with_local_triangle(catalogue, hypothesis, rank):
+    scenario = ScenarioAssemblage("Manuel", hypothesis=hypothesis.clone())
+    source_ref_id = scenario.hypothesis.triangle_ids_by_rank[rank - 1]
+    source = catalogue.get_triangle(source_ref_id)
+    local_city = scenario.reference.create_city(
+        f"Tmp {rank}",
+        50.0 + rank / 100,
+        3.0,
+        catalogue_source_city_id=source.light_city_id,
+    )
+    local_triangle = scenario.reference.create_triangle(
+        f"Local {rank}",
+        source.opening_city_id,
+        source.base_city_id,
+        local_city.city_ref_id,
+        catalogue_source_triangle_id=source.triangle_id,
+    )
+    scenario.hypothesis.triangle_ids_by_rank[rank - 1] = local_triangle.triangle_ref_id
+    resolver = GeometryReferenceResolver(catalogue, scenario.reference)
+    scenario.hypothesis.validate(resolver)
+    element = materialize_triangle(resolver, local_triangle.triangle_ref_id)
+    scenario.topoWorld.add_element_as_new_group(element)
+    return scenario, local_triangle, local_city
 
 
 def _assert_resolved_edge_edge_is_coincident(world, attachment):
@@ -265,3 +295,125 @@ def test_apply_rejects_a_direct_anchor_without_mutating_the_scenario():
 
     assert scenario.topoWorld is source_world
     assert scenario.hypothesis is source_hypothesis
+
+
+def test_effective_hypothesis_validation_analysis_and_apply_support_stri_to_tri():
+    catalogue, hypothesis, replay_id = _catalogue_with_hypothesis()
+    hypothesis.validate(GeometryReferenceResolver(catalogue, ScenarioReference()))
+    scenario, local_triangle, local_city = _scenario_with_local_triangle(
+        catalogue, hypothesis, 1,
+    )
+    companion = materialize_catalogue_triangle(
+        catalogue, scenario.hypothesis.triangle_ids_by_rank[1],
+    )
+    scenario.topoWorld.add_element_as_new_group(companion)
+    local_element_id = next(iter(scenario.topoWorld.elements))
+    _attach_ob_edge_edge(scenario.topoWorld, companion.element_id, local_element_id)
+    resolver = GeometryReferenceResolver(catalogue, scenario.reference)
+    draft = scenario.hypothesis.clone()
+    draft.triangle_ids_by_rank[0] = replay_id
+
+    draft.validate(resolver)
+    plan = analyze_hypothesis_change(resolver, scenario.hypothesis, draft)
+    assert plan.rank_changes[0].old_triangle_id == local_triangle.triangle_ref_id
+    assert plan.rank_changes[0].impact.name == "REPLAY"
+
+    result = apply_hypothesis_change_to_manual_scenario(catalogue, scenario, draft)
+
+    assert result.replayed_attachment_count == 1
+    assert scenario.hypothesis.triangle_ids_by_rank[0] == replay_id
+    assert any(
+        element.source_triangle_id == replay_id
+        for element in scenario.topoWorld.elements.values()
+    )
+    assert scenario.reference.cities[local_city.city_ref_id].name == "Tmp 1"
+    assert scenario.reference.triangles[local_triangle.triangle_ref_id] is local_triangle
+
+
+def test_effective_hypothesis_keeps_multiple_stri_when_another_rank_changes():
+    catalogue, hypothesis, _replay_id = _catalogue_with_hypothesis()
+    scenario, first_local, _first_city = _scenario_with_local_triangle(
+        catalogue, hypothesis, 1,
+    )
+    second_source = catalogue.get_triangle(hypothesis.triangle_ids_by_rank[2])
+    second_city = scenario.reference.create_city(
+        "Tmp 3", 50.3, 3.0, catalogue_source_city_id=second_source.light_city_id,
+    )
+    second_local = scenario.reference.create_triangle(
+        "Local 3",
+        second_source.opening_city_id,
+        second_source.base_city_id,
+        second_city.city_ref_id,
+        catalogue_source_triangle_id=second_source.triangle_id,
+    )
+    scenario.hypothesis.triangle_ids_by_rank[2] = second_local.triangle_ref_id
+    resolver = GeometryReferenceResolver(catalogue, scenario.reference)
+    scenario.hypothesis.validate(resolver)
+    scenario.topoWorld.add_element_as_new_group(
+        materialize_triangle(resolver, second_local.triangle_ref_id)
+    )
+    replacement = _replay_triangle_for_rank(
+        catalogue, scenario.hypothesis, 2, "Replay rank 2",
+    )
+    draft = scenario.hypothesis.clone()
+    draft.triangle_ids_by_rank[1] = replacement.triangle_id
+
+    apply_hypothesis_change_to_manual_scenario(catalogue, scenario, draft)
+
+    assert scenario.hypothesis.triangle_ids_by_rank[0] == first_local.triangle_ref_id
+    assert scenario.hypothesis.triangle_ids_by_rank[2] == second_local.triangle_ref_id
+    assert scenario.reference.triangles[first_local.triangle_ref_id] is first_local
+    assert scenario.reference.triangles[second_local.triangle_ref_id] is second_local
+
+
+def test_effective_hypothesis_rejects_an_unknown_reference_without_mutation():
+    catalogue, hypothesis, _replay_id = _catalogue_with_hypothesis()
+    scenario, local_triangle, _local_city = _scenario_with_local_triangle(
+        catalogue, hypothesis, 1,
+    )
+    before_world = scenario.topoWorld._exportPhysicalSnapshot()
+    before_hypothesis = scenario.hypothesis.clone()
+    draft = scenario.hypothesis.clone()
+    draft.triangle_ids_by_rank[0] = "STRI-9999"
+
+    with pytest.raises(ValueError):
+        apply_hypothesis_change_to_manual_scenario(catalogue, scenario, draft)
+
+    assert scenario.hypothesis.triangle_ids_by_rank == before_hypothesis.triangle_ids_by_rank
+    assert scenario.topoWorld._exportPhysicalSnapshot() == before_world
+    assert scenario.reference.triangles[local_triangle.triangle_ref_id] is local_triangle
+
+
+def test_hypothesis_dialog_renders_stri_and_preserves_it_when_dropping_catalogue_triangle():
+    catalogue, hypothesis, _replay_id = _catalogue_with_hypothesis()
+    scenario, local_triangle, _local_city = _scenario_with_local_triangle(
+        catalogue, hypothesis, 25,
+    )
+    dialog = ScenarioHypothesisDialog.__new__(ScenarioHypothesisDialog)
+    dialog.catalogue = catalogue
+    dialog.resolver = GeometryReferenceResolver(catalogue, scenario.reference)
+    dialog._draft = scenario.hypothesis.clone()
+    dialog._selected_slot = None
+
+    class _Row:
+        def __init__(self):
+            self.values = None
+
+        def set_triangles(self, *values):
+            self.values = values
+
+    dialog._pair_rows = [_Row() for _ in range(16)]
+    ScenarioHypothesisDialog._refresh_ranks(dialog)
+
+    assert dialog._pair_rows[12].values[0] == local_triangle.triangle_ref_id
+    assert dialog._pair_rows[12].values[1] == "Tmp 25"
+    assert dialog._draft.triangle_ids_by_rank[24] == local_triangle.triangle_ref_id
+    replacement = _replay_triangle_for_rank(
+        catalogue, scenario.hypothesis, 26, "Dialog replay rank 26",
+    )
+    action, valid, _message, preview = ScenarioHypothesisDialog._plan_drop(
+        dialog, replacement.triangle_id, SimpleNamespace(rank_number=26),
+    )
+    assert action == "replace"
+    assert valid is True
+    assert preview[24] == local_triangle.triangle_ref_id

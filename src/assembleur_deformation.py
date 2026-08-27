@@ -8,12 +8,17 @@ from types import MappingProxyType
 
 import numpy as np
 
-from src.assembleur_catalogue import Catalogue
 from src.assembleur_core import (
+    ScenarioAssemblage,
     TopologyConstraintGeometryError,
     TopologyWorld,
 )
-from src.assembleur_scenario import materialize_catalogue_triangle
+from src.assembleur_geometry_reference import GeometryReferenceResolver, ScenarioReference
+from src.assembleur_deformation_points import WorkingPoint
+from src.assembleur_scenario import (
+    ScenarioHypothesis,
+    materialize_triangle,
+)
 
 
 @dataclass(frozen=True)
@@ -28,6 +33,16 @@ class DeformationSimulationResult:
     warning_reason: str | None = None
 
 
+@dataclass(frozen=True)
+class DeformationCommitResult:
+    """Publication atomique réussie d'une déformation copy-on-write."""
+
+    world: TopologyWorld
+    reference: ScenarioReference
+    hypothesis: ScenarioHypothesis
+    changed_element_ids: tuple[str, ...]
+
+
 def _normalize_lambert_point(value) -> tuple[float, float] | None:
     try:
         point = np.asarray(value, dtype=float)
@@ -36,36 +51,6 @@ def _normalize_lambert_point(value) -> tuple[float, float] | None:
     if point.shape != (2,) or not np.all(np.isfinite(point)):
         return None
     return (float(point[0]), float(point[1]))
-
-
-def _normalize_vertex_lambert_overrides(
-    overrides: Mapping[str, tuple[float, float]],
-) -> dict[str, tuple[float, float]] | None:
-    if not isinstance(overrides, Mapping):
-        raise ValueError("Les overrides Lambert doivent former une mapping O/B/L")
-    normalized: dict[str, tuple[float, float]] = {}
-    for role, point in overrides.items():
-        if role not in {"O", "B", "L"}:
-            raise ValueError(f"Rôle d'override Lambert inconnu: {role!r}")
-        normalized_point = _normalize_lambert_point(point)
-        if normalized_point is None:
-            return None
-        normalized[role] = normalized_point
-    return normalized
-
-
-def _normalize_city_lambert_overrides(
-    overrides: Mapping[str, tuple[float, float]],
-) -> dict[str, tuple[float, float]] | None:
-    if not isinstance(overrides, Mapping):
-        raise ValueError("Les overrides Lambert de villes doivent former une mapping")
-    normalized: dict[str, tuple[float, float]] = {}
-    for city_id, point in overrides.items():
-        normalized_point = _normalize_lambert_point(point)
-        if normalized_point is None:
-            return None
-        normalized[str(city_id)] = normalized_point
-    return normalized
 
 
 def _require_selected_group_anchor(
@@ -138,163 +123,35 @@ def _rejected(
     )
 
 
-def simulate_triangle_deformation(
-    *,
-    catalogue: Catalogue,
+def _replay_changed_groups_from_anchors(
     initial_world: TopologyWorld,
-    element_id: str,
-    vertex_lambert_overrides: Mapping[str, tuple[float, float]],
-) -> DeformationSimulationResult:
-    """Simule des overrides O/B/L sans muter le Catalogue ni le World source.
+    working_world: TopologyWorld,
+    changed_element_ids: Collection[str],
+) -> str | None:
+    """Rejoue les poses V2 des groupes modifies depuis leurs ancres durables.
 
-    La déformation remplace uniquement la géométrie intrinsèque du triangle.
-    Les attachments V2 restent inchangés ; leurs résolutions et les états
-    géométriques dérivés sont reconstruits par le Core avant le replay.
-    Les coordonnées sont Lambert (mètres), soit le repère canonique utilisé
-    par la factory de matérialisation Catalogue.
+    ``working_world`` doit deja avoir ete reconstruit et ses ancres reconciliees.
+    La procedure est commune aux previews DEFORM Catalogue et COW.
     """
-    normalized_overrides = _normalize_vertex_lambert_overrides(
-        vertex_lambert_overrides
-    )
-    if normalized_overrides is None:
-        return _rejected(
-            element_id,
-            {},
-            "Override Lambert candidat invalide",
-        )
-
-    element = initial_world.elements.get(element_id)
-    if element is None:
-        raise ValueError(f"Élément topologique inconnu: {element_id!r}")
-    source_triangle_id = (element.source_triangle_id or "").strip()
-    if not source_triangle_id:
-        raise ValueError(
-            f"Élément topologique sans source_triangle_id: {element_id!r}"
-        )
-
-    # Valide d'abord la donnée Catalogue durable. Une géométrie catalogue
-    # incohérente est une erreur de contrat, pas un simple candidat refusé.
-    catalogue.get_triangle(source_triangle_id)
-    catalogue.get_triangle_geometry(source_triangle_id)
-    group_id = initial_world.get_group_of_element(element_id)
-    anchor = _require_selected_group_anchor(initial_world, group_id)
-
-    warning_reason = None
-    try:
-        replacement = materialize_catalogue_triangle(
-            catalogue,
-            source_triangle_id,
-            vertex_lambert_overrides=normalized_overrides,
-        )
-    except ValueError as exc:
-        return _rejected(element_id, normalized_overrides, str(exc))
-
-    working_world = initial_world.clonePhysicalState()
-    working_world.replace_element_intrinsic_geometry(element_id, replacement)
-    working_world.rebuild_from_attachments()
-    working_world.reconcileGroupAnchorsByNode()
-
-    candidate_group_id = working_world.get_group_of_element(element_id)
-    candidate_anchor = working_world.groupAnchors.get(anchor.anchor_id)
-    if candidate_anchor is None:
-        raise ValueError(f"Ancre perdue pendant la reconstruction: {anchor.anchor_id!r}")
-    if candidate_anchor.node_id != anchor.node_id or candidate_anchor.beacon_id != anchor.beacon_id:
-        raise ValueError(f"Ancre altérée pendant la reconstruction: {anchor.anchor_id!r}")
-    if candidate_anchor.group_id != candidate_group_id:
-        raise ValueError(
-            f"Ancre {anchor.anchor_id!r} hors du groupe reconstruit {candidate_group_id!r}"
-        )
-
-    try:
-        root_element_id = _root_element_from_group_anchor(
-            working_world,
-            candidate_group_id,
-            candidate_anchor,
-        )
-        working_world.replay_group_attachment_poses(
-            candidate_group_id,
-            root_element_id,
-        )
-        working_world.reconcileGroupAnchorsByNode()
-        working_world.applyGroupAnchor(candidate_anchor.anchor_id)
-        if not working_world.is_group_contour_valid(candidate_group_id):
-            warning_reason = "Attention : chevauchement détecté."
-    except TopologyConstraintGeometryError as exc:
-        return _rejected(element_id, normalized_overrides, str(exc))
-
-    return DeformationSimulationResult(
-        accepted=True,
-        world=working_world,
-        element_id=element_id,
-        vertex_lambert_overrides=MappingProxyType(dict(normalized_overrides)),
-        warning_reason=warning_reason,
-    )
-
-
-def simulate_city_deformation(
-    *,
-    catalogue: Catalogue,
-    initial_world: TopologyWorld,
-    city_lambert_overrides: Mapping[str, tuple[float, float]],
-) -> DeformationSimulationResult:
-    """Simule atomiquement les geometries de toutes les occurrences d'une ville.
-
-    Les ``city_lambert_overrides`` sont l'autorite temporaire DEFORM. Chaque
-    triangle concerne est rematerialise avant un unique rebuild/replay Core.
-    """
-    normalized_overrides = _normalize_city_lambert_overrides(city_lambert_overrides)
-    if normalized_overrides is None:
-        return _rejected("", {}, "Override Lambert de ville candidat invalide")
-
-    replacements: dict[str, object] = {}
-    changed_element_ids: list[str] = []
-    for element_id, element in initial_world.elements.items():
-        source_triangle_id = (element.source_triangle_id or "").strip()
-        if not source_triangle_id:
-            raise ValueError(
-                f"Element topologique sans source_triangle_id: {element_id!r}"
-            )
-        triangle = catalogue.get_triangle(source_triangle_id)
-        local_overrides = {
-            role: normalized_overrides[city_id]
-            for role, city_id in (
-                ("O", triangle.opening_city_id),
-                ("B", triangle.base_city_id),
-                ("L", triangle.light_city_id),
-            )
-            if city_id in normalized_overrides
-        }
-        if not local_overrides:
-            continue
-        replacements[element_id] = materialize_catalogue_triangle(
-            catalogue,
-            source_triangle_id,
-            vertex_lambert_overrides=local_overrides,
-        )
-        changed_element_ids.append(element_id)
-
-    if not changed_element_ids:
-        return _rejected("", {}, "Aucune occurrence de ville a deformer")
-
     source_anchor_id_by_group: dict[str, str] = {}
     for element_id in changed_element_ids:
         group_id = initial_world.get_group_of_element(element_id)
         if group_id not in source_anchor_id_by_group:
+            # Un triangle isole n'a ni pose d'attachment a rejouer ni contrat
+            # d'ancre DEFORM. Les groupes relies restent, eux, strictement
+            # ancres comme le pipeline historique.
+            if len(initial_world.getGroupElementIds(group_id)) <= 1:
+                continue
             source_anchor_id_by_group[group_id] = _require_selected_group_anchor(
-                initial_world,
-                group_id,
+                initial_world, group_id
             ).anchor_id
-
-    working_world = initial_world.clonePhysicalState()
-    for element_id, replacement in replacements.items():
-        working_world.replace_element_intrinsic_geometry(element_id, replacement)
-    working_world.rebuild_from_attachments()
-    working_world.reconcileGroupAnchorsByNode()
 
     anchor_id_by_group: dict[str, str] = {}
     for element_id in changed_element_ids:
         group_id = working_world.get_group_of_element(element_id)
         source_group_id = initial_world.get_group_of_element(element_id)
+        if source_group_id not in source_anchor_id_by_group:
+            continue
         source_anchor_id = source_anchor_id_by_group[source_group_id]
         existing = anchor_id_by_group.setdefault(group_id, source_anchor_id)
         if existing != source_anchor_id:
@@ -302,48 +159,38 @@ def simulate_city_deformation(
                 f"Plusieurs ancres source pour le groupe reconstruit {group_id!r}"
             )
 
-    warning_reason = None
-    try:
-        for group_id, anchor_id in anchor_id_by_group.items():
-            anchor = working_world.groupAnchors.get(anchor_id)
-            if anchor is None:
-                raise ValueError(f"Ancre perdue pendant la reconstruction: {anchor_id!r}")
-            working_world.replay_group_attachment_poses(
-                group_id,
-                _root_element_from_group_anchor(working_world, group_id, anchor),
-            )
-        working_world.reconcileGroupAnchorsByNode()
-        for group_id, anchor_id in anchor_id_by_group.items():
-            anchor = working_world.groupAnchors.get(anchor_id)
-            if anchor is None:
-                raise ValueError(f"Ancre perdue pendant la reconstruction: {anchor_id!r}")
-            if anchor.group_id != group_id:
-                raise ValueError(
-                    f"Ancre {anchor_id!r} hors du groupe reconstruit {group_id!r}"
-                )
-            working_world.applyGroupAnchor(anchor_id)
-            if not working_world.is_group_contour_valid(group_id):
-                warning_reason = "Attention : chevauchement détecté."
-    except TopologyConstraintGeometryError as exc:
-        return _rejected("", {}, str(exc))
+    for group_id, anchor_id in anchor_id_by_group.items():
+        anchor = working_world.groupAnchors.get(anchor_id)
+        if anchor is None:
+            raise ValueError(f"Ancre perdue pendant la reconstruction: {anchor_id!r}")
+        working_world.replay_group_attachment_poses(
+            group_id,
+            _root_element_from_group_anchor(working_world, group_id, anchor),
+        )
+    working_world.reconcileGroupAnchorsByNode()
 
-    return DeformationSimulationResult(
-        accepted=True,
-        world=working_world,
-        element_id="",
-        vertex_lambert_overrides=MappingProxyType({}),
-        warning_reason=warning_reason,
-    )
+    overlap_detected = False
+    for group_id, anchor_id in anchor_id_by_group.items():
+        anchor = working_world.groupAnchors.get(anchor_id)
+        if anchor is None:
+            raise ValueError(f"Ancre perdue pendant la reconstruction: {anchor_id!r}")
+        if anchor.group_id != group_id:
+            raise ValueError(
+                f"Ancre {anchor_id!r} hors du groupe reconstruit {group_id!r}"
+            )
+        working_world.applyGroupAnchor(anchor_id)
+        overlap_detected = overlap_detected or not working_world.is_group_contour_valid(
+            group_id
+        )
+    return "Attention : chevauchement détecté." if overlap_detected else None
 
 
 def simulate_deformation_session(
     *,
-    catalogue: Catalogue,
     reference_world: TopologyWorld,
     pivoted_attachment_ids: Collection[str],
-    city_lambert_overrides: Mapping[str, tuple[float, float]],
 ) -> DeformationSimulationResult:
-    """Reconstruit le preview DEFORM depuis ses seules intentions temporaires."""
+    """Construit le candidat DEFORM portant uniquement les pivots VE."""
     working_world = reference_world
     overlap_detected = False
     for attachment_id in sorted(pivoted_attachment_ids):
@@ -358,21 +205,240 @@ def simulate_deformation_session(
         working_world, _attachment_id, overlap = result
         overlap_detected = overlap_detected or overlap
 
-    if city_lambert_overrides:
-        result = simulate_city_deformation(
-            catalogue=catalogue,
-            initial_world=working_world,
-            city_lambert_overrides=city_lambert_overrides,
-        )
-        if not result.accepted or result.world is None:
-            return result
-        working_world = result.world
-        overlap_detected = overlap_detected or result.warning_reason is not None
-
     return DeformationSimulationResult(
         accepted=True,
         world=working_world,
         element_id="",
         vertex_lambert_overrides=MappingProxyType({}),
         warning_reason=("Attention : chevauchement détecté." if overlap_detected else None),
+    )
+
+
+def simulate_occurrence_deformation(
+    *,
+    resolver: GeometryReferenceResolver,
+    initial_world: TopologyWorld,
+    occurrence_lambert_overrides: Mapping[tuple[str, str], tuple[float, float]],
+) -> DeformationSimulationResult:
+    """Prévisualise des déplacements isolés par occurrence Core.
+
+    Les clés sont ``(element_id, role)`` : deux occurrences qui partagent une
+    ville Catalogue restent donc indépendantes tant qu'aucun point temporaire
+    commun ne les lie explicitement au commit.
+    """
+    if not isinstance(resolver, GeometryReferenceResolver):
+        raise TypeError("simulate_occurrence_deformation attend un GeometryReferenceResolver")
+    replacements: dict[str, object] = {}
+    for occurrence, point in occurrence_lambert_overrides.items():
+        if not isinstance(occurrence, tuple) or len(occurrence) != 2:
+            raise ValueError("Occurrence DEFORM invalide")
+        element_id, role = occurrence
+        if role not in {"O", "B", "L"}:
+            raise ValueError(f"Role de deformation inconnu: {role!r}")
+        normalized = _normalize_lambert_point(point)
+        if normalized is None:
+            return _rejected(element_id, {}, "Override Lambert candidat invalide")
+        element = initial_world.elements.get(element_id)
+        if element is None or not element.source_triangle_id:
+            raise ValueError(f"Element topologique sans source_triangle_id: {element_id!r}")
+        roles = replacements.setdefault(element_id, {})
+        roles[role] = normalized
+
+    if not replacements:
+        return _rejected("", {}, "Aucune occurrence de ville a deformer")
+
+    working_world = initial_world.clonePhysicalState()
+    changed_element_ids = []
+    for element_id, role_overrides in replacements.items():
+        source_triangle_id = working_world.elements[element_id].source_triangle_id
+        replacement = materialize_triangle(
+            resolver,
+            source_triangle_id,
+            vertex_lambert_overrides=role_overrides,
+        )
+        working_world.replace_element_intrinsic_geometry(element_id, replacement)
+        changed_element_ids.append(element_id)
+    working_world.rebuild_from_attachments()
+    working_world.reconcileGroupAnchorsByNode()
+    try:
+        warning_reason = _replay_changed_groups_from_anchors(
+            initial_world, working_world, changed_element_ids
+        )
+    except TopologyConstraintGeometryError as exc:
+        return _rejected("", {}, str(exc))
+    return DeformationSimulationResult(
+        accepted=True,
+        world=working_world,
+        element_id="",
+        vertex_lambert_overrides=MappingProxyType({}),
+        warning_reason=warning_reason,
+    )
+
+
+def commit_deformation_copy_on_write(
+    *,
+    catalogue: Catalogue,
+    scenario: ScenarioAssemblage,
+    preview_world: TopologyWorld,
+    working_points: Mapping[str, WorkingPoint],
+    base_reference: ScenarioReference | None = None,
+    base_hypothesis: ScenarioHypothesis | None = None,
+) -> DeformationCommitResult:
+    """Prépare puis publie conceptuellement une définition locale COW.
+
+    Cette fonction ne modifie aucun argument. Son résultat ne devient réel que
+    lorsque l'appelant affecte simultanément la référence, l'hypothèse et le
+    monde du scénario après retour sans exception.
+    """
+    if not isinstance(scenario.reference, ScenarioReference):
+        raise TypeError("Le scénario doit posséder un ScenarioReference")
+    if scenario.hypothesis is None:
+        raise ValueError("Le scénario doit posséder une ScenarioHypothesis")
+    if base_reference is not None and not isinstance(base_reference, ScenarioReference):
+        raise TypeError("base_reference DEFORM doit etre un ScenarioReference")
+    if base_hypothesis is not None and not isinstance(base_hypothesis, ScenarioHypothesis):
+        raise TypeError("base_hypothesis DEFORM doit etre une ScenarioHypothesis")
+    source_reference = base_reference or scenario.reference
+    source_hypothesis = base_hypothesis or scenario.hypothesis
+    reference = source_reference.clone()
+    hypothesis = source_hypothesis.clone()
+    source_resolver = GeometryReferenceResolver(catalogue, source_reference)
+    candidate_resolver = GeometryReferenceResolver(catalogue, reference)
+    normalized_points: dict[str, tuple[tuple[float, float], set[tuple[str, str]]] ] = {}
+    occurrence_point_ids: dict[tuple[str, str], str] = {}
+    for point_id, working_point in working_points.items():
+        if not isinstance(working_point, WorkingPoint):
+            raise TypeError(f"WorkingPoint DEFORM invalide : {point_id!r}")
+        if working_point.point_id != point_id:
+            raise ValueError(f"WorkingPoint DEFORM incoherent : {point_id!r}")
+        normalized = _normalize_lambert_point(working_point.lambert_xy)
+        if normalized is None:
+            raise ValueError(f"Point temporaire DEFORM invalide : {point_id!r}")
+        occurrences = set(working_point.occurrences)
+        if not occurrences:
+            raise ValueError(f"WorkingPoint DEFORM sans occurrence : {point_id!r}")
+        normalized_points[point_id] = (normalized, occurrences)
+        for occurrence in sorted(occurrences):
+            if occurrence in occurrence_point_ids:
+                raise ValueError(f"Occurrence DEFORM rattachee a deux points : {occurrence!r}")
+            occurrence_point_ids[occurrence] = point_id
+
+    occurrences_by_element: dict[str, dict[str, str]] = {}
+    for occurrence, point_id in occurrence_point_ids.items():
+        if not isinstance(occurrence, tuple) or len(occurrence) != 2:
+            raise ValueError("Occurrence DEFORM invalide")
+        element_id, role = occurrence
+        if role not in {"O", "B", "L"}:
+            raise ValueError(f"Role de deformation inconnu: {role!r}")
+        if point_id not in normalized_points:
+            raise ValueError(f"Point temporaire DEFORM inconnu : {point_id!r}")
+        if element_id not in preview_world.elements:
+            raise ValueError(f"Element topologique inconnu: {element_id!r}")
+        occurrences_by_element.setdefault(element_id, {})[role] = point_id
+
+    if not occurrences_by_element and not preview_world.elements:
+        raise ValueError("Aucune déformation à valider")
+
+    shared_city_by_point_id: dict[str, str] = {}
+    changed_element_ids = []
+    local_triangle_ref_id_by_element: dict[str, str] = {}
+    for element_id, role_point_ids in occurrences_by_element.items():
+        element = preview_world.elements[element_id]
+        triangle_ref_id = element.source_triangle_id
+        if not triangle_ref_id:
+            raise ValueError(f"Element topologique sans source_triangle_id: {element_id!r}")
+        triangle = candidate_resolver.resolve_triangle(triangle_ref_id)
+        if triangle.origin == "catalogue":
+            rank = hypothesis.get_rank_for_triangle_ref(triangle_ref_id)
+            local_triangle = reference.create_triangle(
+                triangle.note,
+                triangle.opening_city_ref_id,
+                triangle.base_city_ref_id,
+                triangle.light_city_ref_id,
+                catalogue_source_triangle_id=triangle.ref_id,
+            )
+            hypothesis.triangle_ids_by_rank[rank - 1] = local_triangle.triangle_ref_id
+        else:
+            local_triangle = reference.triangles[triangle.ref_id]
+        local_triangle_ref_id_by_element[element_id] = local_triangle.triangle_ref_id
+
+        role_city_attributes = {
+            "O": "opening_city_ref_id",
+            "B": "base_city_ref_id",
+            "L": "light_city_ref_id",
+        }
+        for role, point_id in role_point_ids.items():
+            current_city_ref_id = getattr(local_triangle, role_city_attributes[role])
+            shared_city_ref_id = shared_city_by_point_id.get(point_id)
+            if shared_city_ref_id is None:
+                point = normalized_points[point_id][0]
+                if current_city_ref_id in reference.cities:
+                    city = reference.cities[current_city_ref_id]
+                    latitude, longitude = candidate_resolver.lambert_to_geographic(*point)
+                    city.latitude = latitude
+                    city.longitude = longitude
+                    shared_city_ref_id = city.city_ref_id
+                else:
+                    source_city = source_resolver.resolve_city(current_city_ref_id)
+                    latitude, longitude = candidate_resolver.lambert_to_geographic(*point)
+                    city = reference.create_city(
+                        f"Temp {source_city.name}",
+                        latitude,
+                        longitude,
+                        catalogue_source_city_id=(
+                            source_city.catalogue_source_city_id or source_city.ref_id
+                        ),
+                    )
+                    shared_city_ref_id = city.city_ref_id
+                shared_city_by_point_id[point_id] = shared_city_ref_id
+            setattr(local_triangle, role_city_attributes[role], shared_city_ref_id)
+        changed_element_ids.append(element_id)
+
+    # Une ville scenario qui n'est plus referencee apres un changement de
+    # WorkingPoint ne constitue pas un historique : elle est retiree du nouvel
+    # etat de reference.
+    referenced_city_ids = {
+        city_ref_id
+        for triangle in reference.triangles.values()
+        for city_ref_id in (
+            triangle.opening_city_ref_id,
+            triangle.base_city_ref_id,
+            triangle.light_city_ref_id,
+        )
+    }
+    reference.cities = {
+        city_ref_id: city
+        for city_ref_id, city in reference.cities.items()
+        if city_ref_id in referenced_city_ids
+    }
+    hypothesis.validate(candidate_resolver)
+
+    working_world = preview_world.clonePhysicalState()
+    for element_id in changed_element_ids:
+        triangle_ref_id = working_world.elements[element_id].source_triangle_id
+        if element_id in local_triangle_ref_id_by_element:
+            # L'élément preview portait déjà STRI-*; il reste identique.
+            local_triangle_ref_id = local_triangle_ref_id_by_element[element_id]
+        else:
+            # Le seul STRI créé pour cet élément est celui qui porte la source TRI.
+            local_triangle_ref_id = next(
+                triangle.triangle_ref_id
+                for triangle in reference.triangles.values()
+                if triangle.catalogue_source_triangle_id == triangle_ref_id
+                and triangle.triangle_ref_id not in scenario.reference.triangles
+            )
+        replacement = materialize_triangle(candidate_resolver, local_triangle_ref_id)
+        working_world.replace_element_materialized_definition(element_id, replacement)
+    working_world.rebuild_from_attachments()
+    working_world.reconcileGroupAnchorsByNode()
+    for anchor in working_world.groupAnchors.values():
+        working_world.applyGroupAnchor(anchor.anchor_id)
+    errors = working_world.validate_world()
+    if errors:
+        raise ValueError("Commit DEFORM invalide : " + " ; ".join(str(error) for error in errors))
+    return DeformationCommitResult(
+        world=working_world,
+        reference=reference,
+        hypothesis=hypothesis,
+        changed_element_ids=tuple(changed_element_ids),
     )

@@ -14,16 +14,30 @@ CoordinateType = Literal["latitude", "longitude"]
 class DmsCoordinateEditor(ttk.Frame):
     """Édite une coordonnée DMS bornée et expose uniquement une valeur décimale."""
 
+    _HEMISPHERE_ALIASES = {
+        "n": "N",
+        "nord": "N",
+        "s": "S",
+        "sud": "S",
+        "e": "E",
+        "est": "E",
+        "w": "W",
+        "o": "W",
+        "ouest": "W",
+    }
+    _HEMISPHERE_RE = r"(?:nord|sud|ouest|est|[NSEWO])\b"
     _DMS_RE = re.compile(
         r"(?P<degrees>\d{1,3})\s*[°º]\s*"
         r"(?P<minutes>\d{1,2})\s*['′]\s*"
         r"(?P<seconds>\d{1,2}(?:[.,]\d+)?)\s*[\"″]?\s*"
-        r"(?P<hemisphere>[NSEW])",
+        rf"(?P<hemisphere>{_HEMISPHERE_RE})",
         re.IGNORECASE,
     )
     _SPACE_DMS_RE = re.compile(
-        r"^\s*(?P<degrees>\d{1,3})\s+(?P<minutes>\d{1,2})\s+"
-        r"(?P<seconds>\d{1,2}(?:[.,]\d+)?)\s*(?P<hemisphere>[NSEW])\s*$",
+        r"(?P<degrees>\d{1,3})\s+(?P<minutes>\d{1,2})\s+"
+        r"(?P<seconds>\d{1,2}(?:[.,]\d+)?)\s*(?P<hemisphere>"
+        + _HEMISPHERE_RE
+        + r")",
         re.IGNORECASE,
     )
     _DECIMAL_PAIR_RE = re.compile(
@@ -123,13 +137,13 @@ class DmsCoordinateEditor(ttk.Frame):
                 cls._validated_decimal(float(decimal_match["latitude"].replace(",", ".")), "latitude"),
                 cls._validated_decimal(float(decimal_match["longitude"].replace(",", ".")), "longitude"),
             )
-        matches = list(cls._DMS_RE.finditer(raw))
+        matches = list(cls._DMS_RE.finditer(raw)) or list(cls._SPACE_DMS_RE.finditer(raw))
         if len(matches) != 2:
             raise ValueError("Formats acceptés : DMS (N/S, E/W) ou latitude, longitude décimales.")
         values: dict[str, float] = {}
         for match in matches:
             parts = match.groupdict()
-            hemisphere = parts["hemisphere"].upper()
+            hemisphere = cls._normalize_hemisphere(parts["hemisphere"])
             coordinate_type: CoordinateType = "latitude" if hemisphere in ("N", "S") else "longitude"
             if coordinate_type in values:
                 raise ValueError("Une latitude et une longitude sont attendues.")
@@ -147,7 +161,7 @@ class DmsCoordinateEditor(ttk.Frame):
         degrees, minutes = int(degrees_raw), int(minutes_raw)
         seconds = int(float(seconds_raw.replace(",", ".")))  # troncature, jamais arrondi
         positive, negative = cls._hemispheres_for(coordinate_type)
-        hemisphere = hemisphere.upper()
+        hemisphere = cls._normalize_hemisphere(hemisphere)
         maximum = 90 if coordinate_type == "latitude" else 180
         if (
             hemisphere not in (positive, negative)
@@ -163,6 +177,10 @@ class DmsCoordinateEditor(ttk.Frame):
     @staticmethod
     def _hemispheres_for(coordinate_type: CoordinateType) -> tuple[str, str]:
         return ("N", "S") if coordinate_type == "latitude" else ("E", "W")
+
+    @classmethod
+    def _normalize_hemisphere(cls, hemisphere: str) -> str:
+        return cls._HEMISPHERE_ALIASES.get(hemisphere.lower(), "")
 
     @staticmethod
     def _validated_decimal(value: float, coordinate_type: CoordinateType) -> float:

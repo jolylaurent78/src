@@ -6,8 +6,9 @@ from types import SimpleNamespace
 
 from src.assembleur_catalogue import Catalogue
 from src.assembleur_core import ScenarioAssemblage, TopologyEdgeEdgeAttachment
+from src.assembleur_geometry_reference import GeometryReferenceResolver
 from src.assembleur_projection import getCoreTriangleWorldPoints
-from src.assembleur_scenario import ScenarioHypothesis
+from src.assembleur_scenario import ScenarioHypothesis, materialize_triangle
 from src.assembleur_tk import TriangleViewerManual
 
 
@@ -210,3 +211,49 @@ def test_manual_quadrilateral_commit_matches_core_preview_and_groups_both_triang
     for triangle_id, element_id in element_by_source.items():
         for key, point in preview[triangle_id].items():
             assert getCoreTriangleWorldPoints(world, element_id)[key] == pytest.approx(point)
+
+
+def test_manual_quadrilateral_accepts_a_mixed_effective_tri_and_stri_pair():
+    catalogue = Catalogue()
+    opening = catalogue.add_city("Opening", 1.0, 1.0)
+    base = catalogue.add_city("Base", 2.0, 2.0)
+    first_id = catalogue.add_triangle(
+        "A", opening.city_id, base.city_id, catalogue.add_city("L1", 3.0, 3.0).city_id,
+    ).triangle_id
+    second_id = catalogue.add_triangle(
+        "B", opening.city_id, base.city_id, catalogue.add_city("L2", 4.0, 4.0).city_id,
+    ).triangle_id
+    scenario = ScenarioAssemblage("Manual", hypothesis=ScenarioHypothesis([first_id, second_id], "TPL"))
+    local_light = scenario.reference.create_city("L1 local", 3.5, 3.5)
+    local_first = scenario.reference.create_triangle(
+        "A local", opening.city_id, base.city_id, local_light.city_ref_id,
+        catalogue_source_triangle_id=first_id,
+    )
+    scenario.hypothesis.triangle_ids_by_rank[0] = local_first.triangle_ref_id
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.catalogue = catalogue
+    viewer._get_active_scenario = lambda: scenario
+    viewer._last_drawn = []
+    viewer._rebuild_active_projection_from_core = lambda: None
+    viewer._redraw_from = lambda _entries: None
+    viewer._rebuild_triangle_listbox_from_core = lambda: None
+    viewer.status = _Status()
+
+    geometry = viewer._build_quadrilateral_drag_geometry((local_first.triangle_ref_id, second_id))
+    viewer._drag = {
+        "kind": "quadrilateral",
+        "triangle_ids": (local_first.triangle_ref_id, second_id),
+        "world_pts_by_triangle": geometry["relative_world_pts"],
+    }
+    viewer._place_dragged_quadrilateral()
+
+    sources = {element.source_triangle_id for element in scenario.topoWorld.elements.values()}
+    assert sources == {local_first.triangle_ref_id, second_id}
+    local_element = next(
+        element for element in scenario.topoWorld.elements.values()
+        if element.source_triangle_id == local_first.triangle_ref_id
+    )
+    expected = materialize_triangle(
+        GeometryReferenceResolver(catalogue, scenario.reference), local_first.triangle_ref_id,
+    )
+    assert local_element.vertex_business_ids == expected.vertex_business_ids

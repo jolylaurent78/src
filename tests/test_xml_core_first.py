@@ -150,7 +150,8 @@ def test_xml_v5_persists_only_the_core_and_rebuilds_projection(tmp_path):
 
     tree = ET.parse(source)
     root = tree.getroot()
-    assert root.get("version") == "5"
+    assert root.get("version") == "6"
+    assert root.find("scenarioReference") is not None
     assert root.find("triangles") is None
     assert root.find("topoSnapshot") is not None
     assert root.find("view") is not None
@@ -171,7 +172,7 @@ def test_xml_v5_persists_only_the_core_and_rebuilds_projection(tmp_path):
     saveScenarioXml(loaded, str(saved))
     saved_root = ET.parse(saved).getroot()
     saved_text = saved.read_text(encoding="utf-8")
-    assert saved_root.get("version") == "5"
+    assert saved_root.get("version") == "6"
     assert saved_root.find("triangles") is None
     assert saved_root.find("groups") is None
     assert saved_root.find("words") is None

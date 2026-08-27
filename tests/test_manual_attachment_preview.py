@@ -1,12 +1,17 @@
 import math
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
+import src.assembleur_edgechoice as edgechoice
 from src.assembleur_core import (
     ResolvedEdgeEdgeAttachment,
     ResolvedVertexEdgeAttachment,
+    TopologyAttachmentResolutionError,
     TopologyAttachmentResolver,
+    TopologyConstraintGeometryError,
     TopologyEdgeEdgeAttachment,
     TopologyElement,
     TopologyVertexEdgeAttachment,
@@ -240,6 +245,70 @@ def test_equal_length_vertex_edge_same_side_overlap_is_rejected():
     assert preview.accepted is False
     assert preview.world is None
     assert preview.rejection_reason == "Chevauchement géométrique incompatible."
+
+
+def test_preview_rejects_same_vertex_edge_orientation_without_mutating_real_world(monkeypatch):
+    world = _world_with_two_elements()
+    real_attachments = dict(world.attachments)
+    real_resolved = dict(world.resolved_attachments)
+    real_groups = dict(world.element_to_group)
+
+    original_builder = edgechoice.buildTopologyAttachmentFromManualIntent
+
+    def build_invalid_orientation(*args, **kwargs):
+        attachment = original_builder(*args, **kwargs)
+        return replace(attachment, dest_orientation=attachment.mob_orientation)
+
+    monkeypatch.setattr(
+        edgechoice, "buildTopologyAttachmentFromManualIntent", build_invalid_orientation,
+    )
+
+    preview = previewManualAttachment(world, _ve_intent())
+
+    assert preview.accepted is False
+    assert preview.world is None
+    assert preview.attachment.mob_orientation == preview.attachment.dest_orientation
+    assert "orientations must be opposite" in preview.rejection_reason
+    assert world.attachments == real_attachments
+    assert world.resolved_attachments == real_resolved
+    assert world.element_to_group == real_groups
+
+
+@pytest.mark.parametrize(
+    "expected_error",
+    [TopologyAttachmentResolutionError, TopologyConstraintGeometryError],
+)
+def test_preview_rejects_expected_core_errors_without_mutating_real_world(
+    monkeypatch, expected_error,
+):
+    world = _world_with_two_elements()
+    real_attachments = dict(world.attachments)
+    real_resolved = dict(world.resolved_attachments)
+
+    def reject_candidate(*_args):
+        raise expected_error("candidate impossible")
+
+    monkeypatch.setattr(TopologyWorld, "simulate_topological_overlap", reject_candidate)
+
+    preview = previewManualAttachment(world, _ve_intent())
+
+    assert preview.accepted is False
+    assert preview.world is None
+    assert preview.rejection_reason == "candidate impossible"
+    assert world.attachments == real_attachments
+    assert world.resolved_attachments == real_resolved
+
+
+def test_preview_does_not_absorb_unexpected_runtime_errors(monkeypatch):
+    world = _world_with_two_elements()
+
+    def broken_preview(*_args):
+        raise RuntimeError("unexpected preview bug")
+
+    monkeypatch.setattr(TopologyWorld, "simulate_topological_overlap", broken_preview)
+
+    with pytest.raises(RuntimeError, match="unexpected preview bug"):
+        previewManualAttachment(world, _ve_intent())
 
 
 def test_edge_edge_preview_keeps_destination_fixed_and_uses_resolved_edge_edge():

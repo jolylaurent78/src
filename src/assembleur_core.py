@@ -84,6 +84,11 @@ class ScenarioAssemblage:
             traversal_direction.lower() if traversal_direction else None
         )
         self.hypothesis: "ScenarioHypothesis | None" = hypothesis
+        # Overlay local, vide par defaut. Les definitions geometriques qui y
+        # vivent restent hors du Core topologique et sont resolues avant la
+        # materialisation des TopologyElement.
+        from src.assembleur_geometry_reference import ScenarioReference
+        self.reference = ScenarioReference()
         # Chronologie de construction des éléments du scénario automatique.
         # Cette information ne décrit ni la topologie ni la projection graphique.
         self.orderedElementIds: List[str] = []
@@ -346,12 +351,14 @@ class TopologyVertex:
 
     Les unions DSU opèrent au niveau ``TopologyWorld`` via ``node_id``.
     """
-    def __init__(self, element_id: str, vertex_index: int, label: str, node_id: str, node_type: str):
+    def __init__(self, element_id: str, vertex_index: int, label: str, node_id: str,
+                 node_type: str, business_id: str | None = None):
         self.element_id = element_id
         self.vertex_index = int(vertex_index)
         self.label = label
         self.node_id = node_id
         self.node_type = node_type
+        self.business_id = business_id
 
 
 class TopologyCoverageInterval:
@@ -504,6 +511,10 @@ class TopologyElement:
     - La pose monde (rotation + translation) permet de dériver des coordonnées monde si nécessaire.
     - Les coordonnées monde ne sont pas une vérité métier ; elles sont dérivées.
 
+    ``source_triangle_id`` est la référence géométrique effective ayant servi
+    à matérialiser l'élément (``TRI-*`` ou, à terme, ``STRI-*``). Le Core la
+    transporte comme une chaîne opaque et ne porte pas la provenance Catalogue.
+
     ``edge_lengths_km`` peut être fourni (recommandé). À défaut, une valeur
     par défaut est posée puis remplacée par la géométrie monde.
     """
@@ -515,7 +526,8 @@ class TopologyElement:
                  vertex_local_xy: dict[int, tuple[float, float]] | None = None,
                  meta: dict | None = None,
                  element_id: str | None = None,
-                 source_triangle_id: str | None = None):
+                 source_triangle_id: str | None = None,
+                 vertex_business_ids: list[str | None] | None = None):
         # L'identifiant d'instance est attribue par TopologyWorld lors de
         # l'insertion normale. Les imports/restaurations peuvent le fournir.
         self.element_id = None if element_id is None else element_id
@@ -534,7 +546,17 @@ class TopologyElement:
 
         self.vertex_labels = [x for x in vertex_labels]
         self.vertex_types = [x for x in vertex_types]
+        self.vertex_business_ids = (
+            [None] * len(vertex_labels)
+            if vertex_business_ids is None else [
+                str(value).strip() if value is not None else None
+                for value in vertex_business_ids
+            ]
+        )
         self.edge_lengths_km = [x for x in edge_lengths_km]
+
+        if len(self.vertex_business_ids) != len(self.vertex_labels):
+            raise ValueError("TopologyElement: vertex_business_ids doit avoir la même taille que vertex_labels")
 
         self.intrinsic_sides_km: dict[str, float] = dict(intrinsic_sides_km) if intrinsic_sides_km is not None else {}
 
@@ -650,6 +672,9 @@ def build_topology_element_from_catalogue_triangle(
     opening_lambert_xy: tuple[float, float],
     base_lambert_xy: tuple[float, float],
     light_lambert_xy: tuple[float, float],
+    opening_city_ref_id: str | None = None,
+    base_city_ref_id: str | None = None,
+    light_city_ref_id: str | None = None,
 ) -> TopologyElement:
     """Matérialise un triangle Catalogue à partir de ses seuls points Lambert.
 
@@ -698,6 +723,11 @@ def build_topology_element_from_catalogue_triangle(
         name=f"Triangle {source_triangle_id}",
         vertex_labels=[str(opening_name), str(base_name), str(light_name)],
         vertex_types=["O", "B", "L"],
+        vertex_business_ids=[
+            opening_city_ref_id,
+            base_city_ref_id,
+            light_city_ref_id,
+        ],
         edge_lengths_km=[
             distance_ob_m / 1000.0,
             distance_bl_m / 1000.0,
@@ -2113,7 +2143,7 @@ class TopologyWorld:
         self._beacon_resolver = beacon_resolver
 
     def get_used_source_triangle_ids(self) -> frozenset[str]:
-        """Business source IDs currently materialized in this physical world."""
+        """Références effectives de triangles matérialisées dans ce monde."""
         return frozenset(
             element.source_triangle_id
             for element in self.elements.values()
@@ -3590,10 +3620,14 @@ class TopologyWorld:
         self.groups[gid].element_ids.append(element.element_id)
 
         element.vertexes = []
-        for i, (lab, typ) in enumerate(zip(element.vertex_labels, element.vertex_types)):
+        for i, (lab, typ, business_id) in enumerate(zip(
+            element.vertex_labels, element.vertex_types, element.vertex_business_ids,
+        )):
             nid = self.format_node_id(element.element_id, i)
             self.create_node_atomic(nid, typ)
-            element.vertexes.append(TopologyVertex(element.element_id, i, lab, nid, typ))
+            element.vertexes.append(TopologyVertex(
+                element.element_id, i, lab, nid, typ, business_id,
+            ))
 
         n = element.n_vertices()
         element.edges = []
@@ -3605,6 +3639,32 @@ class TopologyWorld:
         self.invalidateConceptGraph(gid)
         self._markTopoTouched(gid)
         return gid
+
+    def install_element_vertex_business_ids(
+        self,
+        element_id: str,
+        vertex_business_ids: list[str],
+    ) -> None:
+        """Installe les identités métier d'un élément déjà matérialisé.
+
+        Cette primitive ne rematérialise pas l'élément : géométrie intrinsèque,
+        pose, nœuds, groupes et attachments restent strictement inchangés.
+        """
+        element = self.elements.get(element_id)
+        if element is None:
+            raise KeyError(f"TopologyWorld: élément inconnu: {element_id!r}")
+        expected = [str(value).strip() for value in vertex_business_ids]
+        if len(expected) != element.n_vertices() or any(not value for value in expected):
+            raise ValueError(
+                "TopologyWorld.install_element_vertex_business_ids: identités de sommets invalides"
+            )
+        if len(element.vertexes) != len(expected):
+            raise ValueError(
+                "TopologyWorld.install_element_vertex_business_ids: sommets physiques incohérents"
+            )
+        element.vertex_business_ids = list(expected)
+        for vertex, business_id in zip(element.vertexes, expected):
+            vertex.business_id = business_id
 
     def get_edge(self, element_id: str, edge_index: int) -> TopologyEdge:
         return self.elements[element_id].edges[int(edge_index)]
@@ -3648,19 +3708,27 @@ class TopologyWorld:
         if edge_name not in {"OB", "BL", "LO"}:
             raise ValueError(f"TopologyWorld: arête métier invalide: {edge!r}")
         physical_edge = self.get_element_edge_by_vertex_types(key, edge_name)
-        labels = []
+        business_ids = []
         for vertex in (physical_edge.v_start, physical_edge.v_end):
-            label = str(vertex.label or "").strip()
-            if not label:
+            business_id = getattr(vertex, "business_id", None)
+            if business_id is None:
+                # Compatibilité explicite des éléments/snapshots antérieurs à REF-001B.
+                business_id = str(vertex.label or "").strip()
+                if not business_id:
+                    raise ValueError(
+                        f"TopologyWorld: libellé de ville absent pour {key!r}/{edge_name}"
+                    )
+            business_id = str(business_id).strip()
+            if not business_id:
                 raise ValueError(
-                    f"TopologyWorld: libellé de ville absent pour {key!r}/{edge_name}"
+                    f"TopologyWorld: identité de ville absente pour {key!r}/{edge_name}"
                 )
-            labels.append(label)
-        if labels[0] == labels[1]:
+            business_ids.append(business_id)
+        if business_ids[0] == business_ids[1]:
             raise ValueError(
-                f"TopologyWorld: libellés d'extrémité incohérents pour {key!r}/{edge_name}"
+                f"TopologyWorld: identités d'extrémité incohérentes pour {key!r}/{edge_name}"
             )
-        return tuple(sorted(labels))
+        return tuple(sorted(business_ids))
 
     def are_same_business_edge(
         self,
@@ -3823,16 +3891,55 @@ class TopologyWorld:
         if replacement.source_triangle_id != element.source_triangle_id:
             raise ValueError("Géométrie de remplacement incompatible: triangle source")
 
+        self._replace_element_materialized_definition(element, replacement)
+
+    def replace_element_materialized_definition(
+        self,
+        element_id: str,
+        replacement: TopologyElement,
+    ) -> None:
+        """Remplace une définition matérialisée sans changer l'instance Core.
+
+        Cette primitive préserve nodes, edges, attachments et pose, mais accepte
+        une nouvelle référence de triangle et de nouvelles identités métier de
+        sommets. Elle est réservée aux commits copy-on-write de scénario.
+        """
+        element = self.elements.get(element_id)
+        if element is None:
+            raise ValueError(f"Element inconnu: {element_id}")
+        if replacement is None:
+            raise ValueError("Géométrie de remplacement absente")
+        if len(replacement.vertex_labels) != len(element.vertex_labels):
+            raise ValueError("Géométrie de remplacement incompatible: nombre de sommets")
+        if replacement.vertex_types != element.vertex_types:
+            raise ValueError("Géométrie de remplacement incompatible: types de sommets")
+
+        self._replace_element_materialized_definition(element, replacement)
+
+    def _replace_element_materialized_definition(
+        self,
+        element: TopologyElement,
+        replacement: TopologyElement,
+    ) -> None:
+
         element.name = replacement.name
         element.meta = dict(replacement.meta)
+        element.source_triangle_id = replacement.source_triangle_id
+        element.vertex_labels = list(replacement.vertex_labels)
+        element.vertex_business_ids = list(replacement.vertex_business_ids)
         element.edge_lengths_km = list(replacement.edge_lengths_km)
         element.intrinsic_sides_km = dict(replacement.intrinsic_sides_km)
         element.local_frame = dict(replacement.local_frame)
         element.vertex_local_xy = dict(replacement.vertex_local_xy)
         for edge, edge_length_km in zip(element.edges, element.edge_lengths_km):
             edge.edge_length_km = float(edge_length_km)
-        self.invalidateResolvedForElement(element_id)
-        self.invalidateConceptGeom(self.element_to_group.get(element_id))
+        for vertex, label, business_id in zip(
+            element.vertexes, element.vertex_labels, element.vertex_business_ids,
+        ):
+            vertex.label = label
+            vertex.business_id = business_id
+        self.invalidateResolvedForElement(element.element_id)
+        self.invalidateConceptGeom(self.element_to_group.get(element.element_id))
 
     def _require_live_group_element_ids(self, core_group_id: str) -> list[str]:
         """Retourne les éléments d'un groupe canonique ou échoue explicitement.
@@ -5233,6 +5340,7 @@ class TopologyWorld:
                 "name": el.name,
                 "vertex_labels": list(el.vertex_labels),
                 "vertex_types": list(el.vertex_types),
+                "vertex_business_ids": list(el.vertex_business_ids),
                 "edge_lengths_km": [float(x) for x in el.edge_lengths_km],
                 "intrinsic_sides_km": dict(getattr(el, "intrinsic_sides_km", {}) or {}),
                 "local_frame": dict(getattr(el, "local_frame", {}) or {}),
@@ -5324,6 +5432,7 @@ class TopologyWorld:
                 name=el.get("name", ""),
                 vertex_labels=list(el.get("vertex_labels", [])),
                 vertex_types=list(el.get("vertex_types", [])),
+                vertex_business_ids=el.get("vertex_business_ids"),
                 edge_lengths_km=list(el.get("edge_lengths_km", [])),
                 intrinsic_sides_km=dict(el.get("intrinsic_sides_km", {}) or {}),
                 local_frame=dict(el.get("local_frame", {}) or {}),

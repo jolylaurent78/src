@@ -7,7 +7,12 @@ import pytest
 
 from src.assembleur_catalogue import Catalogue
 from src.assembleur_core import ScenarioAssemblage, TopologyElement
-from src.assembleur_scenario import ScenarioHypothesis, materialize_catalogue_triangle
+from src.assembleur_geometry_reference import GeometryReferenceResolver
+from src.assembleur_scenario import (
+    ScenarioHypothesis,
+    materialize_catalogue_triangle,
+    materialize_triangle,
+)
 from src.assembleur_tk import TriangleViewerManual
 from src.canvas_objects_collection import CanvasObjectsCollection
 
@@ -208,6 +213,95 @@ def test_modern_display_label_does_not_infer_rank_from_element_id():
     scenario.topoWorld.add_element_as_new_group(element)
 
     assert viewer._build_triangle_display_label({"topoElementId": "T05"}) == "T6"
+
+
+def test_deformed_local_triangle_keeps_its_catalogue_rank_in_main_and_deform_labels():
+    catalogue, hypothesis = _catalogue_and_hypothesis()
+    viewer, scenario = _viewer(catalogue, hypothesis)
+    source = catalogue.get_triangle(hypothesis.triangle_ids_by_rank[24])
+    local_light = scenario.reference.create_city("Lumiere deformee", 49.0, 3.0)
+    local_triangle = scenario.reference.create_triangle(
+        "Do deforme", source.opening_city_id, source.base_city_id, local_light.city_ref_id,
+        catalogue_source_triangle_id=source.triangle_id,
+    )
+    hypothesis.triangle_ids_by_rank[24] = local_triangle.triangle_ref_id
+    element = materialize_triangle(
+        GeometryReferenceResolver(catalogue, scenario.reference),
+        local_triangle.triangle_ref_id,
+    )
+    element.element_id = "T25"
+    scenario.topoWorld.add_element_as_new_group(element)
+    viewer._deformation_state.enter()
+    viewer._deformation_state.select(element.element_id, scenario.topoWorld)
+
+    assert viewer._build_triangle_display_label({"topoElementId": element.element_id}) == "T25"
+    assert viewer._deformation_occurrence_label(element.element_id, "L") == "T25:L - Lumiere deformee"
+
+
+def test_deform_occurrences_sort_local_triangles_by_their_catalogue_rank():
+    catalogue, hypothesis = _catalogue_and_hypothesis()
+    viewer, scenario = _viewer(catalogue, hypothesis)
+    local_light = scenario.reference.create_city("Lumiere partagee", 49.0, 3.0)
+    resolver = GeometryReferenceResolver(catalogue, scenario.reference)
+    for rank, element_id in ((24, "T25"), (1, "T02")):
+        source = catalogue.get_triangle(hypothesis.triangle_ids_by_rank[rank])
+        local_triangle = scenario.reference.create_triangle(
+            f"Do local {rank}", source.opening_city_id, source.base_city_id,
+            local_light.city_ref_id, catalogue_source_triangle_id=source.triangle_id,
+        )
+        hypothesis.triangle_ids_by_rank[rank] = local_triangle.triangle_ref_id
+        element = materialize_triangle(resolver, local_triangle.triangle_ref_id)
+        element.element_id = element_id
+        scenario.topoWorld.add_element_as_new_group(element)
+    viewer._deformation_state.enter()
+    viewer._deformation_state.select("T25", scenario.topoWorld)
+
+    assert viewer._deformation_occurrences_for_city(local_light.city_ref_id) == (
+        ("T02", "L"), ("T25", "L"),
+    )
+
+
+def test_effective_local_reference_rebuilds_the_list_and_can_be_placed_again():
+    catalogue, hypothesis = _catalogue_and_hypothesis()
+    viewer, scenario = _viewer(catalogue, hypothesis)
+    source = catalogue.get_triangle(hypothesis.triangle_ids_by_rank[24])
+    local_light = scenario.reference.create_city("Lumiere validee", 49.0, 3.0)
+    local_triangle = scenario.reference.create_triangle(
+        "Do local", source.opening_city_id, source.base_city_id, local_light.city_ref_id,
+        catalogue_source_triangle_id=source.triangle_id,
+    )
+    hypothesis.triangle_ids_by_rank[24] = local_triangle.triangle_ref_id
+
+    TriangleViewerManual._rebuild_triangle_listbox_from_core(viewer)
+    assert viewer.listbox.entries[24] == "25. B:Base 12  L:Lumiere validee"
+    assert viewer.listbox.colours[24]["fg"] == "black"
+
+    used = materialize_triangle(
+        GeometryReferenceResolver(catalogue, scenario.reference), local_triangle.triangle_ref_id,
+    )
+    used.element_id = "T25"
+    scenario.topoWorld.add_element_as_new_group(used)
+    TriangleViewerManual._update_triangle_listbox_colors(viewer)
+    assert viewer.listbox.colours[24]["fg"] == "gray50"
+
+    scenario.topoWorld.removeElementsAndRebuild([used.element_id])
+    TriangleViewerManual._rebuild_triangle_listbox_from_core(viewer)
+    assert viewer.listbox.colours[24]["fg"] == "black"
+    assert TriangleViewerManual._validate_triangle_list_selection(viewer, (24,)) == (True, "")
+
+    viewer._drag = {
+        "triangle_id": local_triangle.triangle_ref_id,
+        "world_pts": {
+            "O": np.array([10.0, 20.0]),
+            "B": np.array([13.0, 20.0]),
+            "L": np.array([10.0, 24.0]),
+        },
+    }
+    viewer._place_dragged_triangle()
+
+    placed = next(iter(scenario.topoWorld.elements.values()))
+    assert placed.source_triangle_id == local_triangle.triangle_ref_id
+    assert placed.vertex_business_ids[2] == local_light.city_ref_id
 
 
 def test_modern_display_label_rejects_missing_or_unknown_source_triangle_id():

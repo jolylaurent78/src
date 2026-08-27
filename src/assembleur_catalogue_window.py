@@ -23,6 +23,7 @@ _TEMPLATE_BASE_COLUMN_WEIGHT = 2
 _TEMPLATE_RANK_COLUMN_WEIGHT = 3
 _TEMPLATE_DRAG_THRESHOLD = 6
 _TEMPLATE_BASE_COLUMN_WIDTH = 120
+_TRIANGLE_NOTE_VALUES = ("DO", "SI", "LA", "SOL", "FA", "MI", "RE", "ZONE")
 _TRIANGLE_MAP_FIT_MARGIN = 0.20
 
 
@@ -203,7 +204,6 @@ class TriangleEditorDialog(tk.Toplevel):
         self,
         parent,
         cities: list[CatalogueCity],
-        date_codes: list[str],
         triangle: ModelCatalogueTriangle | None = None,
     ):
         super().__init__(parent)
@@ -227,7 +227,7 @@ class TriangleEditorDialog(tk.Toplevel):
         root.columnconfigure(1, weight=1)
         ttk.Label(root, text="Triangle", font=(None, 10, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
         ttk.Label(root, text="Note").grid(row=1, column=0, sticky="w", pady=(0, 6))
-        ttk.Combobox(root, textvariable=self._date_code_var, values=sorted(set(date_codes), key=str.casefold), width=18).grid(
+        ttk.Combobox(root, textvariable=self._date_code_var, values=_TRIANGLE_NOTE_VALUES, width=18).grid(
             row=1, column=1, columnspan=2, sticky="ew", pady=(0, 6)
         )
         self._add_city_row(root, 2, "Ouverture", self._opening_var, "_opening_city_id")
@@ -1283,6 +1283,20 @@ class CatalogueWindow(tk.Toplevel):
         self._selected_template_rank_slot = slot
         slot.set_selected(True)
         slot.focus_set()
+        if slot.triangle_id is None:
+            return
+        iid = next(
+            (tree_iid for tree_iid, triangle_id in self._template_triangle_by_tree_iid.items() if triangle_id == slot.triangle_id),
+            None,
+        )
+        if iid is None:
+            return
+        parent_iid = self._template_triangle_tree.parent(iid)
+        if parent_iid:
+            self._template_triangle_tree.item(parent_iid, open=True)
+        self._template_triangle_tree.selection_set(iid)
+        self._template_triangle_tree.focus(iid)
+        self._template_triangle_tree.see(iid)
 
     def _delete_selected_template_rank(self, _event=None):
         slot = self._selected_template_rank_slot
@@ -2050,7 +2064,6 @@ class CatalogueWindow(tk.Toplevel):
         result = TriangleEditorDialog(
             self,
             list(self.catalogue.iter_cities()),
-            [item.note for item in self.catalogue.iter_triangles()],
             triangle=triangle,
         ).show()
         if result is None:

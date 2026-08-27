@@ -106,3 +106,25 @@ def test_restore_button_tracks_the_selected_deformation_occurrence():
 
     window.set_occurrences((('T02', 'L', 'T02:L', True, False),), ('T02', 'L'))
     assert window._restore_button.options['state'] == 'normal'
+
+
+def test_validate_button_tracks_the_session_dirty_state():
+    window = DeformationWindow.__new__(DeformationWindow)
+    window._validate_button = _Button()
+
+    window.set_validate_enabled(False)
+    assert window._validate_button.options["state"] == "disabled"
+
+    window.set_validate_enabled(True)
+    assert window._validate_button.options["state"] == "normal"
+
+
+def test_rename_button_tracks_the_local_scenario_city_state():
+    window = DeformationWindow.__new__(DeformationWindow)
+    window._rename_button = _Button()
+
+    window.set_rename_enabled(False)
+    assert window._rename_button.options["state"] == "disabled"
+
+    window.set_rename_enabled(True)
+    assert window._rename_button.options["state"] == "normal"

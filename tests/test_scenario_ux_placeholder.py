@@ -2,7 +2,11 @@ from types import SimpleNamespace
 
 import pytest
 
+import src.assembleur_tk as assembleur_tk_module
+from src.assembleur_catalogue import Catalogue
 from src.assembleur_core import ScenarioAssemblage, TopologyElement, TopologyWorld
+from src.assembleur_geometry_reference import GeometryReferenceResolver
+from src.assembleur_scenario import ScenarioHypothesis, materialize_triangle
 from src.assembleur_tk import TriangleViewerManual
 
 
@@ -109,10 +113,16 @@ def _load_viewer(active_scenario):
     return viewer
 
 
-def test_loading_replaces_only_the_active_placeholder(tmp_path):
+def test_loading_replaces_only_the_active_placeholder(monkeypatch, tmp_path):
     placeholder = ScenarioAssemblage("Initial", is_placeholder=True)
     viewer = _load_viewer(placeholder)
     source = tmp_path / "reference.xml"
+    monkeypatch.setattr(
+        assembleur_tk_module._assembleur_io, "_parse_loaded_scenario_xml", lambda *_args: object(),
+    )
+    monkeypatch.setattr(
+        assembleur_tk_module._assembleur_io, "_publish_loaded_scenario_xml", lambda *_args, **_kwargs: None,
+    )
 
     TriangleViewerManual._load_scenario_into_new_scenario(viewer, str(source))
 
@@ -123,16 +133,40 @@ def test_loading_replaces_only_the_active_placeholder(tmp_path):
     assert loaded.is_placeholder is False
 
 
-def test_loading_keeps_a_real_active_scenario(tmp_path):
+def test_loading_keeps_a_real_active_scenario(monkeypatch, tmp_path):
     manual = ScenarioAssemblage("Manuel", is_placeholder=False)
     viewer = _load_viewer(manual)
     source = tmp_path / "reference.xml"
+    monkeypatch.setattr(
+        assembleur_tk_module._assembleur_io, "_parse_loaded_scenario_xml", lambda *_args: object(),
+    )
+    monkeypatch.setattr(
+        assembleur_tk_module._assembleur_io, "_publish_loaded_scenario_xml", lambda *_args, **_kwargs: None,
+    )
 
     TriangleViewerManual._load_scenario_into_new_scenario(viewer, str(source))
 
     assert viewer.scenarios[0] is manual
     assert len(viewer.scenarios) == 2
     assert viewer._get_active_scenario().name == "reference"
+
+
+def test_invalid_new_scenario_load_does_not_publish_a_scenario(monkeypatch, tmp_path):
+    manual = ScenarioAssemblage("Manuel", is_placeholder=False)
+    viewer = _load_viewer(manual)
+    source = tmp_path / "invalid.xml"
+    monkeypatch.setattr(
+        assembleur_tk_module._assembleur_io,
+        "_parse_loaded_scenario_xml",
+        lambda *_args: (_ for _ in ()).throw(ValueError("XML invalide")),
+    )
+
+    with pytest.raises(ValueError, match="XML invalide"):
+        TriangleViewerManual._load_scenario_into_new_scenario(viewer, str(source))
+
+    assert viewer.scenarios == [manual]
+    assert viewer.active_scenario_index == 0
+    assert viewer._get_active_scenario() is manual
 
 
 def test_new_empty_scenario_keeps_current_map_and_view_context(tmp_path):
@@ -255,8 +289,62 @@ def test_duplicate_keeps_current_map_context_and_reapplies_group_anchor(tmp_path
     assert viewer._bg is not None
     assert resolver.anchor_reapplied is True
     assert duplicate.topoWorld is not source.topoWorld
+    assert duplicate.reference is not source.reference
+    assert duplicate.reference.cities == {}
+    assert duplicate.reference.triangles == {}
     duplicate.topoWorld.removeGroupAnchor("AN001")
     assert source.topoWorld.getGroupAnchor("AN001") is not None
+
+
+def test_duplicate_clones_local_triangle_and_city_references_independently():
+    catalogue = Catalogue()
+    opening = catalogue.add_city("Ouverture", 45.0, 2.0)
+    base = catalogue.add_city("Base", 46.0, 2.0)
+    light = catalogue.add_city("Lumiere", 47.0, 2.0)
+    source = ScenarioAssemblage(
+        "Source", hypothesis=ScenarioHypothesis(["TRI-0001"] * 24 + ["STRI-0001"] + ["TRI-0002"] * 7),
+    )
+    local_city = source.reference.create_city(
+        "Tmp", 48.0, 3.0, catalogue_source_city_id=light.city_id,
+    )
+    local_triangle = source.reference.create_triangle(
+        "Triangle local",
+        opening.city_id,
+        base.city_id,
+        local_city.city_ref_id,
+        catalogue_source_triangle_id="TRI-0025",
+    )
+    assert local_triangle.triangle_ref_id == "STRI-0001"
+    element = materialize_triangle(
+        GeometryReferenceResolver(catalogue, source.reference),
+        local_triangle.triangle_ref_id,
+    )
+    element.element_id = "T25"
+    source.topoWorld.add_element_as_new_group(element)
+
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.scenarios = [source]
+    viewer.active_scenario_index = 0
+    viewer.status = _Status()
+    viewer._capture_view_state = lambda: {}
+    viewer._capture_map_state = lambda: {}
+    viewer._refresh_scenario_listbox = lambda: None
+    viewer._set_active_scenario = lambda index: setattr(viewer, "active_scenario_index", index)
+
+    TriangleViewerManual._scenario_duplicate(viewer)
+
+    duplicate = viewer.scenarios[1]
+    assert duplicate.hypothesis.triangle_ids_by_rank[24] == "STRI-0001"
+    assert duplicate.topoWorld.elements["T25"].source_triangle_id == "STRI-0001"
+    assert duplicate.reference is not source.reference
+    resolver = GeometryReferenceResolver(catalogue, duplicate.reference)
+    assert resolver.resolve_triangle("STRI-0001").light_city_ref_id == "SCITY-0001"
+    assert resolver.resolve_city("SCITY-0001").name == "Tmp"
+
+    duplicate.reference.rename_city("SCITY-0001", "Scenario B")
+
+    assert duplicate.reference.cities["SCITY-0001"].name == "Scenario B"
+    assert source.reference.cities["SCITY-0001"].name == "Tmp"
 
 
 def _delete_viewer(scenarios, active_index):

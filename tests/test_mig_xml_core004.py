@@ -121,7 +121,8 @@ def test_v5_writer_ignores_projection_and_loader_rebuilds_manual_cache(tmp_path)
 
     root = ET.parse(source).getroot()
     xml_text = source.read_text(encoding="utf-8")
-    assert root.get("version") == "5"
+    assert root.get("version") == "6"
+    assert root.find("scenarioReference") is not None
     assert root.find("topoSnapshot") is not None
     assert root.find("triangles") is None
     assert "999" not in xml_text
@@ -146,7 +147,7 @@ def test_v5_loader_rejects_missing_snapshot_and_legacy_triangles(tmp_path):
 def test_v5_loader_rejects_version_4_without_legacy_fallback(tmp_path):
     path = tmp_path / "v4.xml"
     path.write_text('<scenario version="4" topo_tx_orientation="cw" />', encoding="utf-8")
-    with pytest.raises(ValueError, match="expected 5, got 4"):
+    with pytest.raises(ValueError, match="expected 5 or 6, got 4"):
         loadScenarioXml(_Viewer(TopologyWorld(), []), str(path))
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import tkinter as tk
+from dataclasses import dataclass
 from tkinter import messagebox, ttk
 
 from src.assembleur_catalogue import Catalogue, CatalogueTriangle
@@ -15,6 +16,9 @@ from src.assembleur_scenario import (
     analyze_hypothesis_change,
     create_hypothesis_from_template,
 )
+from src.assembleur_geometry_reference import GeometryReferenceResolver
+from src.assembleur_geometry_reference import ScenarioReference
+from src.assembleur_scenario_cities_view import ScenarioCitiesView
 
 
 _NOTE_ORDER = {"do": 0, "si": 1, "la": 2, "sol": 3, "fa": 4, "mi": 5, "re": 6, "zone": 7}
@@ -22,19 +26,38 @@ _BASE_COLUMN_WIDTH = 120
 _DRAG_THRESHOLD = 6
 
 
+@dataclass(frozen=True)
+class ScenarioHypothesisDialogResult:
+    hypothesis: ScenarioHypothesis
+    reference: ScenarioReference
+
+
 class ScenarioHypothesisDialog(tk.Toplevel):
     """Edite un draft indépendant, sans jamais toucher à la topologie."""
 
-    def __init__(self, parent, *, catalogue: Catalogue, hypothesis: ScenarioHypothesis):
+    def __init__(
+        self,
+        parent,
+        *,
+        catalogue: Catalogue,
+        hypothesis: ScenarioHypothesis,
+        resolver: GeometryReferenceResolver,
+        scenario_reference: ScenarioReference,
+        maps_dir: str,
+    ):
         super().__init__(parent)
         self.title("Modifier l'hypothèse du scénario")
         self.transient(parent)
         self.geometry("1450x780")
         self.minsize(1100, 620)
         self.catalogue = catalogue
+        self.resolver = resolver
+        self._original_reference = scenario_reference
+        self._reference_draft = scenario_reference.clone()
+        self.maps_dir = maps_dir
         self._original = hypothesis
         self._draft = hypothesis.clone()
-        self.result: ScenarioHypothesis | None = None
+        self.result: ScenarioHypothesisDialogResult | None = None
         self.change_plan: ScenarioHypothesisChangePlan | None = None
         self._template_ids: list[str] = []
         self._triangle_by_tree_iid: dict[str, str] = {}
@@ -56,17 +79,35 @@ class ScenarioHypothesisDialog(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self.grab_set()
 
-    def show(self) -> ScenarioHypothesis | None:
+    def show(self) -> ScenarioHypothesisDialogResult | None:
         self.wait_window()
         return self.result
 
     def _build_ui(self) -> None:
-        root = ttk.Frame(self, padding=10)
-        root.pack(fill=tk.BOTH, expand=True)
-        root.rowconfigure(2, weight=1)
-        root.columnconfigure(0, weight=1)
+        dialog_root = ttk.Frame(self, padding=10)
+        dialog_root.pack(fill=tk.BOTH, expand=True)
+        dialog_root.rowconfigure(0, weight=1)
+        dialog_root.columnconfigure(0, weight=1)
 
-        template_row = ttk.Frame(root)
+        self._notebook = ttk.Notebook(dialog_root)
+        self._notebook.grid(row=0, column=0, sticky="nsew")
+        self._cities_tab = ttk.Frame(self._notebook)
+        self._triangles_tab = ttk.Frame(self._notebook)
+        self._notebook.add(self._cities_tab, text="Villes")
+        self._notebook.add(self._triangles_tab, text="Liste des triangles")
+        self.cities_view = ScenarioCitiesView(
+            self._cities_tab,
+            scenario_reference=self._reference_draft,
+            maps_dir=self.maps_dir,
+            on_reference_changed=self._refresh_ranks,
+        )
+        self.cities_view.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        triangles_root = self._triangles_tab
+        triangles_root.rowconfigure(2, weight=1)
+        triangles_root.columnconfigure(0, weight=1)
+
+        template_row = ttk.Frame(triangles_root)
         template_row.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         template_row.columnconfigure(1, weight=1)
         ttk.Label(template_row, text="Repartir du template :").grid(row=0, column=0, sticky="w")
@@ -74,7 +115,7 @@ class ScenarioHypothesisDialog(tk.Toplevel):
         self._template_combo.grid(row=0, column=1, sticky="ew", padx=(8, 0))
         self._template_combo.bind("<<ComboboxSelected>>", self._on_template_selected)
 
-        filters = ttk.Frame(root)
+        filters = ttk.Frame(triangles_root)
         filters.grid(row=1, column=0, sticky="ew", pady=(0, 6))
         ttk.Label(filters, text="Note :").grid(row=0, column=0)
         self._note_combo = ttk.Combobox(
@@ -93,7 +134,7 @@ class ScenarioHypothesisDialog(tk.Toplevel):
         self._base_var.trace_add("write", lambda *_: self._refresh_triangle_tree())
         self._light_var.trace_add("write", lambda *_: self._refresh_triangle_tree())
 
-        content = ttk.Frame(root)
+        content = ttk.Frame(triangles_root)
         content.grid(row=2, column=0, sticky="nsew")
         content.rowconfigure(0, weight=1)
         content.columnconfigure(0, minsize=400, weight=0)
@@ -109,8 +150,8 @@ class ScenarioHypothesisDialog(tk.Toplevel):
         self._build_source(source)
         self._build_ranks(target)
 
-        buttons = ttk.Frame(root)
-        buttons.grid(row=3, column=0, sticky="e", pady=(10, 0))
+        buttons = ttk.Frame(dialog_root)
+        buttons.grid(row=1, column=0, sticky="e", pady=(10, 0))
         ttk.Button(buttons, text="Appliquer", command=self._apply).pack(side=tk.LEFT)
         ttk.Button(buttons, text="Annuler", command=self.destroy).pack(side=tk.LEFT, padx=(6, 0))
 
@@ -230,15 +271,29 @@ class ScenarioHypothesisDialog(tk.Toplevel):
                 self._triangle_by_tree_iid[leaf_id] = triangle.triangle_id
 
     def _refresh_ranks(self) -> None:
+        resolver = self._draft_resolver()
         ranks = self._draft.triangle_ids_by_rank
         for pair, row in enumerate(self._pair_rows):
-            odd, even = (self.catalogue.get_triangle(ranks[pair * 2]), self.catalogue.get_triangle(ranks[pair * 2 + 1]))
-            odd_light = self.catalogue.get_city(odd.light_city_id).name
-            even_light = self.catalogue.get_city(even.light_city_id).name
-            base = self.catalogue.get_city(odd.base_city_id).name if odd.base_city_id == even.base_city_id else "Bases différentes"
-            row.set_triangles(odd.triangle_id, odd_light, even.triangle_id, even_light, base)
+            odd, even = (
+                resolver.resolve_triangle(ranks[pair * 2]),
+                resolver.resolve_triangle(ranks[pair * 2 + 1]),
+            )
+            odd_light = resolver.resolve_city(odd.light_city_ref_id).name
+            even_light = resolver.resolve_city(even.light_city_ref_id).name
+            base = (
+                resolver.resolve_city(odd.base_city_ref_id).name
+                if odd.base_city_ref_id == even.base_city_ref_id
+                else "Bases différentes"
+            )
+            row.set_triangles(odd.ref_id, odd_light, even.ref_id, even_light, base)
         if self._selected_slot is not None:
             self._selected_slot.set_selected(True)
+
+    def _draft_resolver(self) -> GeometryReferenceResolver:
+        reference = getattr(self, "_reference_draft", None)
+        if reference is None:
+            return self.resolver
+        return GeometryReferenceResolver(self.catalogue, reference)
 
     def _select_slot(self, slot: TemplateRankSlot) -> None:
         if self._selected_slot is not None and self._selected_slot is not slot:
@@ -318,7 +373,9 @@ class ScenarioHypothesisDialog(tk.Toplevel):
             preview[target_index] = triangle_id
             action = "swap"
         try:
-            ScenarioHypothesis(preview, self._draft.source_template_id).validate(self.catalogue)
+            ScenarioHypothesis(preview, self._draft.source_template_id).validate(
+                self._draft_resolver()
+            )
         except ValueError as exc:
             return "invalid", False, str(exc), list(ranks)
         return action, True, None, preview
@@ -366,11 +423,20 @@ class ScenarioHypothesisDialog(tk.Toplevel):
         self._set_cursor("")
 
     def _apply(self) -> None:
+        if hasattr(self, "cities_view"):
+            if not self.cities_view._on_name_committed():
+                return
         try:
-            self._draft.validate(self.catalogue)
+            resolver = self._draft_resolver()
+            self._draft.validate(resolver)
         except ValueError as exc:
             messagebox.showerror("Hypothèse", str(exc), parent=self)
             return
-        self.change_plan = analyze_hypothesis_change(self.catalogue, self._original, self._draft)
-        self.result = self._draft.clone()
+        self.change_plan = analyze_hypothesis_change(
+            resolver, self._original, self._draft
+        )
+        self.result = ScenarioHypothesisDialogResult(
+            hypothesis=self._draft.clone(),
+            reference=self._reference_draft.clone(),
+        )
         self.destroy()

@@ -67,9 +67,11 @@ class DeformationWindow(tk.Toplevel):
         on_delete_selected: Callable[[], None],
         on_restore_selected: Callable[[], None],
         on_pivot_attachment_selected: Callable[[], None],
+        on_rename_selected: Callable[[], None],
         on_map_pin_selected: Callable[[], None],
         on_view_mode_changed: Callable[[str], None],
         on_canvas_mode_changed: Callable[[str], None],
+        on_validate: Callable[[], None],
         on_closed: Callable[[], None],
     ):
         super().__init__(parent)
@@ -84,9 +86,11 @@ class DeformationWindow(tk.Toplevel):
         self._on_delete_selected = on_delete_selected
         self._on_restore_selected = on_restore_selected
         self._on_pivot_attachment_selected = on_pivot_attachment_selected
+        self._on_rename_selected = on_rename_selected
         self._on_map_pin_selected = on_map_pin_selected
         self._on_view_mode_changed = on_view_mode_changed
         self._on_canvas_mode_changed = on_canvas_mode_changed
+        self._on_validate = on_validate
         self._on_closed = on_closed
         self._element_id: str | None = None
         self._assembly_rotation_deg = 0.0
@@ -112,6 +116,9 @@ class DeformationWindow(tk.Toplevel):
         )
         self._icon_restore = tk.PhotoImage(
             file=str(Path(__file__).resolve().parent.parent / "images" / "restore.png")
+        )
+        self._icon_rename = tk.PhotoImage(
+            file=str(Path(__file__).resolve().parent.parent / "images" / "rename.png")
         )
         self._icon_pivot_attachment = tk.PhotoImage(
             file=str(Path(__file__).resolve().parent.parent / "images" / "rotate.png")
@@ -155,6 +162,12 @@ class DeformationWindow(tk.Toplevel):
         )
         self._pivot_attachment_button.pack(side=tk.LEFT, padx=(4, 0))
 
+        self._rename_button = tk.Button(
+            list_toolbar, image=self._icon_rename, command=self._on_rename_selected,
+            state=tk.DISABLED, relief=tk.FLAT, bd=1,
+        )
+        self._rename_button.pack(side=tk.LEFT, padx=(4, 0))
+
         self._delete_button = tk.Button(
             list_toolbar, image=self._icon_delete, command=self._on_delete_selected,
             state=tk.DISABLED, relief=tk.FLAT, bd=1,
@@ -179,6 +192,7 @@ class DeformationWindow(tk.Toplevel):
         attach_tooltip(self._move_canvas_button, "Déplacer ou faire pivoter un groupe")
         attach_tooltip(self._restore_button, "Restaurer la ville à ses coordonnées initiales")
         attach_tooltip(self._pivot_attachment_button, "Inverser l'orientation de l'attache Vertex-Edge")
+        attach_tooltip(self._rename_button, "Renommer le point")
 
         attach_tooltip(self._map_pin_button, "Déplacer le point vers une ville")
         attach_tooltip(self._delete_button, "Supprimer la déformation sélectionnée")
@@ -233,7 +247,12 @@ class DeformationWindow(tk.Toplevel):
 
         footer = ttk.Frame(self, padding=(8, 0, 8, 8))
         footer.pack(fill=tk.X)
-        ttk.Button(footer, text="Fermer", command=self._close).pack(side=tk.RIGHT)
+        self._close_button = ttk.Button(footer, text="Fermer", command=self._close)
+        self._close_button.pack(side=tk.RIGHT)
+        self._validate_button = ttk.Button(
+            footer, text="Valider", command=self._on_validate, state=tk.DISABLED,
+        )
+        self._validate_button.pack(side=tk.RIGHT, padx=(0, 6))
         self.protocol("WM_DELETE_WINDOW", self._close)
 
     @property
@@ -312,6 +331,16 @@ class DeformationWindow(tk.Toplevel):
 
     def set_pivot_attachment_enabled(self, enabled: bool) -> None:
         self._pivot_attachment_button.configure(
+            state=tk.NORMAL if enabled else tk.DISABLED
+        )
+
+    def set_validate_enabled(self, enabled: bool) -> None:
+        self._validate_button.configure(
+            state=tk.NORMAL if enabled else tk.DISABLED
+        )
+
+    def set_rename_enabled(self, enabled: bool) -> None:
+        self._rename_button.configure(
             state=tk.NORMAL if enabled else tk.DISABLED
         )
 

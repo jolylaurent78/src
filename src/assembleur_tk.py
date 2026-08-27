@@ -21,7 +21,8 @@ from PIL import Image
 # === Modules externalisés (découpage maintenable) ===
 from src.assembleur_core import (
     ScenarioAssemblage,
-    TopologyWorld, TopologyCheminTriplet, TopologyEdgeEdgeAttachment
+    TopologyWorld, TopologyCheminTriplet, TopologyEdgeEdgeAttachment,
+    TopologyConstraintGeometryError,
 )
 
 from src.assembleur_sim import (
@@ -72,8 +73,13 @@ from src.assembleur_catalogue_window import CatalogueWindow, CitySelectionDialog
 from src.assembleur_hypothesis_window import ScenarioHypothesisDialog
 from src.assembleur_catalogue import Catalogue
 from src.assembleur_catalogue_io import load_catalogue
-from src.assembleur_deformation import simulate_city_deformation, simulate_deformation_session
+from src.assembleur_deformation import (
+    commit_deformation_copy_on_write,
+    simulate_deformation_session,
+    simulate_occurrence_deformation,
+)
 from src.assembleur_deformation_ui import DeformationUiState
+from src.assembleur_geometry_reference import GeometryReferenceResolver, ScenarioReference
 from src.assembleur_deformation_window import (
     DeformationVertex,
     DeformationWindow,
@@ -87,7 +93,7 @@ from src.assembleur_scenario import (
     analyze_hypothesis_change,
     apply_hypothesis_change_to_manual_scenario,
     create_default_scenario_hypothesis,
-    materialize_catalogue_triangle,
+    materialize_triangle,
 )
 
 DEFORMATION_DRAG_REFRESH_MS = 40
@@ -687,6 +693,23 @@ class TriangleViewerManual(
         self.canvas_objects = CanvasObjectsCollection(entries)
         self._last_drawn = self.canvas_objects.entries
 
+    def _get_canvas_display_world(self) -> TopologyWorld:
+        """Retourne le Core qui a produit les objets actuellement affiches."""
+        state = self._deformation_state
+        if state.active:
+            if state.last_accepted_world is not None:
+                return state.last_accepted_world
+            if state.reference_world is not None:
+                return state.reference_world
+        return self._get_active_scenario().topoWorld
+
+    def _get_canvas_display_hypothesis(self) -> ScenarioHypothesis | None:
+        """Retourne l'hypothese associee au Core actuellement affiche."""
+        state = self._deformation_state
+        if state.active and state.working_hypothesis is not None:
+            return state.working_hypothesis
+        return self._get_active_scenario().hypothesis
+
     @staticmethod
     def _strip_core_duplicates_from_last_drawn_entry(entry: Dict) -> None:
         """Retire les anciennes copies Core d'une entree de projection."""
@@ -793,8 +816,7 @@ class TriangleViewerManual(
         Core via ``topoElementId`` ; elles ne sont pas du cache graphique.
         """
         if world is None:
-            scen = self._get_active_scenario()
-            world = scen.topoWorld
+            world = self._get_canvas_display_world()
         element_id = entry["topoElementId"]
         if not element_id:
             return None
@@ -824,6 +846,7 @@ class TriangleViewerManual(
         self,
         entry: Dict,
         world: TopologyWorld | None = None,
+        hypothesis: ScenarioHypothesis | None = None,
     ) -> str:
         """Construit le label UX depuis l'hypothèse et la pose Core.
 
@@ -837,8 +860,8 @@ class TriangleViewerManual(
             raise KeyError(
                 f"[MIG-UX-LABEL-001] element Core absent: {element_id!r}"
             )
-        scen = self._get_active_scenario()
-        hypothesis = scen.hypothesis
+        if hypothesis is None:
+            hypothesis = self._get_canvas_display_hypothesis()
         if hypothesis is None:
             raise ValueError("[MIG-UX-LABEL-001] ScenarioHypothesis absente")
         triangle_id = element.source_triangle_id
@@ -848,7 +871,7 @@ class TriangleViewerManual(
                 f"element={element_id!r}"
             )
         try:
-            tri_rank = hypothesis.triangle_ids_by_rank.index(triangle_id) + 1
+            tri_rank = hypothesis.get_rank_for_triangle_ref(triangle_id)
         except ValueError as exc:
             raise ValueError(
                 "[MIG-UX-LABEL-001] triangle Catalogue absent de l'hypothèse: "
@@ -1402,7 +1425,9 @@ class TriangleViewerManual(
         active_scenario = self._get_active_scenario()
         if active_scenario is None or active_scenario.hypothesis is None:
             raise ValueError("Simulation: ScenarioHypothesis absente du scénario actif")
-        active_scenario.hypothesis.validate(self.catalogue)
+        active_scenario.hypothesis.validate(
+            GeometryReferenceResolver(self.catalogue, active_scenario.reference)
+        )
         n_max = len(active_scenario.hypothesis.triangle_ids_by_rank)
         if n_max < 2:
             messagebox.showwarning("Assembler", "Il faut au moins 2 triangles dans la liste.")
@@ -1499,7 +1524,9 @@ class TriangleViewerManual(
             triangle_ids = triangle_ids[:-1]
 
         engine = MoteurSimulationAssemblage(
-            self, source_hypothesis=active_scenario.hypothesis
+            self,
+            source_hypothesis=active_scenario.hypothesis,
+            source_reference=active_scenario.reference,
         )
         engine.firstTriangleEdge = str(first_edge_for_engine or "OL").upper()
         engine.initialTriangleOrientation = initial_orientation
@@ -1554,6 +1581,14 @@ class TriangleViewerManual(
         if self._deformation_state.active:
             self._exit_deformation_mode()
         self._deformation_state.enter()
+        self._deformation_state.working_reference = (
+            self._get_active_scenario().reference.clone()
+        )
+        self._deformation_state.working_hypothesis = (
+            self._get_active_scenario().hypothesis.clone()
+            if self._get_active_scenario().hypothesis is not None
+            else None
+        )
         self._deformation_canvas_mode = "select"
         window = self._ensure_deformation_window()
         window.set_canvas_mode(self._deformation_canvas_mode)
@@ -1587,6 +1622,42 @@ class TriangleViewerManual(
         self._rebuild_active_projection_from_core()
         self._redraw_from(self._last_drawn)
 
+    def _deformation_working_reference(self):
+        state = self._deformation_state
+        return state.working_reference or self._get_active_scenario().reference
+
+    def _deformation_working_hypothesis(self):
+        state = self._deformation_state
+        hypothesis = state.working_hypothesis or self._get_active_scenario().hypothesis
+        if hypothesis is None:
+            raise ValueError("ScenarioHypothesis absente")
+        return hypothesis
+
+    def _materialize_deformation_working_reference(
+        self, world: TopologyWorld
+    ) -> TopologyWorld:
+        """Projette les refs TRI/STRI effectives de session dans un world candidat."""
+        scenario = self._get_active_scenario()
+        if scenario.hypothesis is None:
+            raise ValueError("ScenarioHypothesis absente")
+        working_hypothesis = self._deformation_working_hypothesis()
+        resolver = GeometryReferenceResolver(
+            self.catalogue, self._deformation_working_reference()
+        )
+        candidate_world = world.clonePhysicalState()
+        for element_id, element in candidate_world.elements.items():
+            triangle_ref_id = element.source_triangle_id
+            if not triangle_ref_id:
+                raise ValueError("Triangle de deformation sans source Catalogue")
+            rank = scenario.hypothesis.get_rank_for_triangle_ref(triangle_ref_id)
+            effective_triangle_ref_id = working_hypothesis.triangle_ids_by_rank[rank - 1]
+            if effective_triangle_ref_id != triangle_ref_id:
+                candidate_world.replace_element_materialized_definition(
+                    element_id,
+                    materialize_triangle(resolver, effective_triangle_ref_id),
+                )
+        return candidate_world
+
     def _close_deformation_window(self) -> None:
         window = self._deformation_window
         self._deformation_window = None
@@ -1600,22 +1671,23 @@ class TriangleViewerManual(
         state = self._deformation_state
         if state.element_id is None or state.reference_world is None:
             raise RuntimeError("Triangle de deformation absent")
-        element = state.reference_world.elements.get(state.element_id)
+        world = state.last_accepted_world or state.reference_world
+        element = world.elements.get(state.element_id)
         if element is None or not element.source_triangle_id:
             raise ValueError("Triangle de deformation sans source Catalogue")
-        triangle = self.catalogue.get_triangle(element.source_triangle_id)
-        city_id_by_role = {
-            "O": triangle.opening_city_id,
-            "B": triangle.base_city_id,
-            "L": triangle.light_city_id,
-        }
-        visible_overrides = state.preview_city_overrides()
+        resolver = GeometryReferenceResolver(
+            self.catalogue, self._deformation_working_reference()
+        )
+        city_id_by_role = resolver.city_ref_ids_by_role(element.source_triangle_id)
         vertices = {}
         for role, city_id in city_id_by_role.items():
-            city = self.catalogue.get_city(city_id)
-            lambert_xy = visible_overrides.get(
-                city_id,
-                self.catalogue.get_city_lambert(city_id),
+            city = resolver.resolve_city(city_id)
+            working_point = state.working_point_for_occurrence(
+                (state.element_id, role)
+            )
+            lambert_xy = (
+                working_point.lambert_xy
+                if working_point is not None else resolver.get_city_lambert(city_id)
             )
             vertices[role] = DeformationVertex(
                 role=role,
@@ -1662,9 +1734,11 @@ class TriangleViewerManual(
             on_delete_selected=self._deformation_delete_selected,
             on_restore_selected=self._deformation_restore_selected,
             on_pivot_attachment_selected=self._deformation_pivot_attachment_selected,
+            on_rename_selected=self._deformation_rename_selected,
             on_map_pin_selected=self._deformation_map_pin_selected,
             on_view_mode_changed=self._deformation_window_view_mode_changed,
             on_canvas_mode_changed=self._deformation_canvas_mode_changed,
+            on_validate=self._validate_deformation_session,
             on_closed=self._on_deformation_window_closed,
         )
         self._deformation_window = window
@@ -1711,6 +1785,7 @@ class TriangleViewerManual(
         state = self._deformation_state
         if status_text is None:
             status_text = self._deformation_status_text
+        window.set_validate_enabled(state.dirty)
         if refresh_occurrences:
             window.set_occurrences(
                 self._deformation_display_occurrences(),
@@ -1727,6 +1802,7 @@ class TriangleViewerManual(
                     group_id, node_id
                 )
         window.set_pivot_attachment_enabled(pivot_attachment_id is not None)
+        window.set_rename_enabled(self._deformation_selected_occurrence_is_local_city())
         if state.element_id is None:
             return
         window.set_triangle(
@@ -1750,7 +1826,7 @@ class TriangleViewerManual(
         displays = []
         for element_id, role in sorted(set(state.modified_occurrences)):
             city_id = self._deformation_city_id_for_occurrence(element_id, role, world)
-            moved = city_id in state.city_lambert_overrides
+            moved = state.working_point_for_occurrence((element_id, role)) is not None
             group_id = world.get_group_of_element(element_id)
             node_id = world.get_element_vertex_node_id_by_type(element_id, role)
             attachment_id = world.getSingleVertexEdgeAttachmentIdAtNode(group_id, node_id)
@@ -1770,22 +1846,26 @@ class TriangleViewerManual(
         element = world.elements.get(element_id)
         if element is None or not element.source_triangle_id:
             raise ValueError("Triangle de deformation sans source Catalogue")
-        hypothesis = self._get_active_scenario().hypothesis
-        if hypothesis is None:
-            raise ValueError("ScenarioHypothesis absente")
+        hypothesis = self._deformation_working_hypothesis()
+        resolver = GeometryReferenceResolver(
+            self.catalogue, self._deformation_working_reference()
+        )
+        rank_prefix = "T{}".format(
+            hypothesis.get_rank_for_triangle_ref(element.source_triangle_id)
+        )
+        city_id = self._deformation_city_id_for_occurrence(element_id, role, world)
+        return f"{rank_prefix}:{role} - {resolver.resolve_city(city_id).name}"
+
+    def _deformation_selected_occurrence_is_local_city(self) -> bool:
+        state = self._deformation_state
+        occurrence = state.selected_occurrence
+        if occurrence is None:
+            return False
         try:
-            rank = hypothesis.triangle_ids_by_rank.index(element.source_triangle_id) + 1
-        except ValueError as exc:
-            raise ValueError(
-                f"Triangle Catalogue absent de l'hypothese: {element.source_triangle_id!r}"
-            ) from exc
-        triangle = self.catalogue.get_triangle(element.source_triangle_id)
-        city_id = {
-            "O": triangle.opening_city_id,
-            "B": triangle.base_city_id,
-            "L": triangle.light_city_id,
-        }[role]
-        return f"T{rank}:{role} - {self.catalogue.get_city(city_id).name}"
+            city_ref_id = self._deformation_city_id_for_occurrence(*occurrence)
+        except (RuntimeError, ValueError):
+            return False
+        return city_ref_id in self._deformation_working_reference().cities
 
     def _deformation_city_id_for_occurrence(
         self,
@@ -1802,12 +1882,10 @@ class TriangleViewerManual(
         element = source_world.elements.get(element_id)
         if element is None or not element.source_triangle_id:
             raise ValueError("Triangle de deformation sans source Catalogue")
-        triangle = self.catalogue.get_triangle(element.source_triangle_id)
-        return {
-            "O": triangle.opening_city_id,
-            "B": triangle.base_city_id,
-            "L": triangle.light_city_id,
-        }[role]
+        resolver = GeometryReferenceResolver(
+            self.catalogue, self._deformation_working_reference()
+        )
+        return resolver.city_ref_ids_by_role(element.source_triangle_id)[role]
 
     def _deformation_occurrences_for_city(
         self,
@@ -1818,29 +1896,25 @@ class TriangleViewerManual(
         source_world = world or state.last_accepted_world or state.reference_world
         if source_world is None:
             raise RuntimeError("World de deformation absent")
-        hypothesis = self._get_active_scenario().hypothesis
-        if hypothesis is None:
-            raise ValueError("ScenarioHypothesis absente")
-        rank_by_triangle_id = {
-            triangle_id: rank
-            for rank, triangle_id in enumerate(hypothesis.triangle_ids_by_rank)
-        }
+        hypothesis = self._deformation_working_hypothesis()
+        resolver = GeometryReferenceResolver(
+            self.catalogue, self._deformation_working_reference()
+        )
         occurrences = []
         for element_id, element in sorted(
             source_world.elements.items(),
             key=lambda item: (
-                rank_by_triangle_id.get(item[1].source_triangle_id, len(rank_by_triangle_id)),
+                hypothesis.get_rank_for_triangle_ref(
+                    item[1].source_triangle_id
+                ),
                 item[0],
             ),
         ):
             if not element.source_triangle_id:
                 raise ValueError("Triangle de deformation sans source Catalogue")
-            triangle = self.catalogue.get_triangle(element.source_triangle_id)
-            for role, occurrence_city_id in (
-                ("O", triangle.opening_city_id),
-                ("B", triangle.base_city_id),
-                ("L", triangle.light_city_id),
-            ):
+            for role, occurrence_city_id in resolver.city_ref_ids_by_role(
+                element.source_triangle_id
+            ).items():
                 if occurrence_city_id == city_id:
                     occurrences.append((element_id, role))
         return tuple(occurrences)
@@ -1850,9 +1924,15 @@ class TriangleViewerManual(
         state = self._deformation_state
         if state.element_id is None:
             raise RuntimeError("Triangle de deformation absent")
-        state.begin_drag(
-            role,
-            self._deformation_city_id_for_occurrence(state.element_id, role),
+        city_id = self._deformation_city_id_for_occurrence(state.element_id, role)
+        state.begin_drag(role)
+        resolver = GeometryReferenceResolver(
+            self.catalogue, self._deformation_working_reference()
+        )
+        state.ensure_working_point(
+            (state.element_id, role),
+            resolver.get_city_lambert(city_id),
+            self._deformation_occurrences_for_city(city_id),
         )
 
     def _deformation_window_dragged(self, role: str, lambert_xy: tuple[float, float]) -> None:
@@ -1880,8 +1960,8 @@ class TriangleViewerManual(
         state = self._deformation_state
         if state.dragging_role != role:
             return
-        candidate_world = self._apply_deformation_city_overrides(
-            state.candidate_city_overrides(point)
+        candidate_world = self._apply_deformation_occurrence_overrides(
+            state.candidate_occurrence_overrides(point)
         )
         if candidate_world is None:
             self._refresh_deformation_window(
@@ -1889,7 +1969,7 @@ class TriangleViewerManual(
                 refresh_occurrences=False,
             )
             return
-        state.accept_candidate(point, candidate_world)
+        state.accept_occurrence_candidate(point, candidate_world)
         self._show_deformation_preview(candidate_world)
         self._refresh_deformation_window(refresh_occurrences=False)
         if self._deformation_drag_pending_point is not None:
@@ -1913,12 +1993,9 @@ class TriangleViewerManual(
             self._deformation_drag_after_id = None
         if self._deformation_drag_pending_point is not None:
             self._process_pending_deformation_drag()
-        city_id = self._deformation_state.dragging_city_id
-        if city_id is None:
-            raise RuntimeError("Ville de deformation absente au release")
-        if self._deformation_state.end_drag(
-            self._deformation_occurrences_for_city(city_id)
-        ):
+        state = self._deformation_state
+        accepted = state.end_occurrence_drag()
+        if accepted:
             self.status.config(text="Deformation temporaire conservee.")
         else:
             self.status.config(text="Aucun candidat de deformation valide.")
@@ -1947,65 +2024,110 @@ class TriangleViewerManual(
                 return
         self._refresh_deformation_window()
 
-    def _apply_deformation_city_overrides(
+    def _apply_deformation_occurrence_overrides(
         self,
-        candidate_overrides: dict[str, tuple[float, float]],
+        candidate_overrides: dict[tuple[str, str], tuple[float, float]],
     ) -> TopologyWorld | None:
+        """Reconstruit le preview COW depuis le dernier rebase de session."""
         state = self._deformation_state
         if state.reference_world is None:
             raise RuntimeError("World de reference DEFORM absent")
-        if not candidate_overrides and not state.pivoted_attachment_ids:
-            self._deformation_status_text = ""
-            return state.reference_world
-        result = simulate_deformation_session(
-            catalogue=self.catalogue,
+        pivot_result = simulate_deformation_session(
             reference_world=state.reference_world,
             pivoted_attachment_ids=state.pivoted_attachment_ids,
-            city_lambert_overrides=candidate_overrides,
+        )
+        if not pivot_result.accepted or pivot_result.world is None:
+            self._deformation_status_text = ""
+            self.status.config(
+                text=pivot_result.rejection_reason or "Candidat de pivot impossible"
+            )
+            return None
+        if not candidate_overrides:
+            state.working_reference = self._get_active_scenario().reference.clone()
+            hypothesis = self._get_active_scenario().hypothesis
+            state.working_hypothesis = hypothesis.clone() if hypothesis is not None else None
+            self._deformation_status_text = pivot_result.warning_reason or ""
+            return pivot_result.world
+        working_pivot_world = self._materialize_deformation_working_reference(
+            pivot_result.world
+        )
+        resolver = GeometryReferenceResolver(
+            self.catalogue, self._deformation_working_reference()
+        )
+        result = simulate_occurrence_deformation(
+            resolver=resolver,
+            initial_world=working_pivot_world,
+            occurrence_lambert_overrides=candidate_overrides,
         )
         if not result.accepted or result.world is None:
             self._deformation_status_text = ""
             self.status.config(text=result.rejection_reason or "Candidat de deformation impossible")
             return None
-        self._deformation_status_text = result.warning_reason or ""
-        if result.warning_reason is not None:
-            self.status.config(text=result.warning_reason)
-        return result.world
+        candidate_points = {
+            point_id: type(working_point)(
+                point_id,
+                candidate_overrides.get(
+                    next(iter(working_point.occurrences)), working_point.lambert_xy
+                ),
+                set(working_point.occurrences),
+            )
+            for point_id, working_point in state.working_points.items()
+        }
+        # Le commit COW est aussi le constructeur Core-first de la reference
+        # temporaire : il materialise les STRI/SCITY candidates sans publier le
+        # scenario actif. Le world retourne porte donc deja les labels Temp.
+        scenario = self._get_active_scenario()
+        try:
+            preview_commit = commit_deformation_copy_on_write(
+                catalogue=self.catalogue,
+                scenario=scenario,
+                preview_world=result.world,
+                working_points=candidate_points,
+                base_reference=self._deformation_working_reference(),
+                base_hypothesis=self._deformation_working_hypothesis(),
+            )
+        except (TypeError, ValueError, TopologyConstraintGeometryError) as exc:
+            self._deformation_status_text = ""
+            self.status.config(text=f"Candidat de deformation impossible : {exc}")
+            return None
+        state.working_reference = preview_commit.reference
+        state.working_hypothesis = preview_commit.hypothesis
+        self._deformation_status_text = (
+            result.warning_reason or pivot_result.warning_reason or ""
+        )
+        return preview_commit.world
 
     def _deformation_delete_selected(self) -> None:
         state = self._deformation_state
         occurrence = state.selected_occurrence
         if occurrence is None:
             return
-        city_id = self._deformation_city_id_for_occurrence(*occurrence)
-        candidate_overrides = dict(state.city_lambert_overrides)
-        candidate_overrides.pop(city_id, None)
-        candidate_world = self._apply_deformation_city_overrides(candidate_overrides)
+        restored = state.restore_working_point(occurrence)
+        candidate_world = self._apply_deformation_occurrence_overrides(
+            state.occurrence_lambert_overrides()
+        )
         if candidate_world is None:
             return
-        state.city_lambert_overrides = candidate_overrides
         state.last_accepted_world = candidate_world
-        city_occurrences = set(self._deformation_occurrences_for_city(city_id, candidate_world))
         state.modified_occurrences = [
-            item for item in state.modified_occurrences if item not in city_occurrences
+            item for item in state.modified_occurrences if item not in restored
         ]
         state.selected_occurrence = None
         self._show_deformation_preview(candidate_world)
         self._refresh_deformation_window()
 
     def _deformation_restore_selected(self) -> None:
-        """Restaure la ville sélectionnée à ses coordonnées Catalogue."""
+        """Abandonne le WorkingPoint non validé depuis le dernier rebase."""
         state = self._deformation_state
         occurrence = state.selected_occurrence
         if occurrence is None:
             return
-        city_id = self._deformation_city_id_for_occurrence(*occurrence)
-        candidate_overrides = dict(state.city_lambert_overrides)
-        candidate_overrides.pop(city_id, None)
-        candidate_world = self._apply_deformation_city_overrides(candidate_overrides)
+        state.restore_working_point(occurrence)
+        candidate_world = self._apply_deformation_occurrence_overrides(
+            state.occurrence_lambert_overrides()
+        )
         if candidate_world is None:
             return
-        state.city_lambert_overrides = candidate_overrides
         state.last_accepted_world = candidate_world
         self._show_deformation_preview(candidate_world)
         self._refresh_deformation_window()
@@ -2023,24 +2145,123 @@ class TriangleViewerManual(
             return
         previous_ids = set(state.pivoted_attachment_ids)
         state.toggle_pivoted_attachment(attachment_id)
-        result = simulate_deformation_session(
-            catalogue=self.catalogue,
-            reference_world=state.reference_world,
-            pivoted_attachment_ids=state.pivoted_attachment_ids,
-            city_lambert_overrides=state.city_lambert_overrides,
+        result_world = self._apply_deformation_occurrence_overrides(
+            state.occurrence_lambert_overrides()
         )
-        if not result.accepted or result.world is None:
+        if result_world is None:
             state.pivoted_attachment_ids = previous_ids
-            self.status.config(text=result.rejection_reason or "Pivot VE DEFORM impossible")
+            state.dirty = bool(state.working_points or state.pivoted_attachment_ids)
             return
-        state.last_accepted_world = result.world
+        state.last_accepted_world = result_world
         if state.selected_occurrence not in state.modified_occurrences:
             state.modified_occurrences.append(state.selected_occurrence)
-        self._deformation_status_text = result.warning_reason or ""
-        if result.warning_reason is not None:
-            self.status.config(text=result.warning_reason)
-        self._show_deformation_preview(result.world)
+        self._show_deformation_preview(result_world)
         self._refresh_deformation_window()
+
+    def _commit_deformation_city_rename(
+        self,
+        city_ref_id: str,
+        new_name: str,
+    ) -> None:
+        """Publie atomiquement le nouveau nom d'une SCITY et ses labels Core."""
+        scenario = self._get_active_scenario()
+        candidate_reference = scenario.reference.clone()
+        candidate_reference.rename_city(city_ref_id, new_name)
+        resolver = GeometryReferenceResolver(self.catalogue, candidate_reference)
+        affected_triangle_ref_ids = {
+            triangle.triangle_ref_id
+            for triangle in candidate_reference.triangles.values()
+            if city_ref_id in {
+                triangle.opening_city_ref_id,
+                triangle.base_city_ref_id,
+                triangle.light_city_ref_id,
+            }
+        }
+        candidate_world = scenario.topoWorld.clonePhysicalState()
+        for element_id, element in candidate_world.elements.items():
+            if element.source_triangle_id in affected_triangle_ref_ids:
+                candidate_world.replace_element_materialized_definition(
+                    element_id,
+                    materialize_triangle(resolver, element.source_triangle_id),
+                )
+        errors = candidate_world.validate_world()
+        if errors:
+            raise ValueError(
+                "Renommage DEFORM invalide : "
+                + " ; ".join(str(error) for error in errors)
+            )
+        scenario.reference = candidate_reference
+        scenario.topoWorld = candidate_world
+
+    def _rename_working_deformation_city(self, city_ref_id: str, new_name: str) -> None:
+        """Renomme une SCITY du preview sans publier le scenario actif."""
+        state = self._deformation_state
+        if state.last_accepted_world is None:
+            raise RuntimeError("World de preview DEFORM absent")
+        candidate_reference = self._deformation_working_reference().clone()
+        candidate_reference.rename_city(city_ref_id, new_name)
+        resolver = GeometryReferenceResolver(self.catalogue, candidate_reference)
+        affected_triangle_ref_ids = {
+            triangle.triangle_ref_id
+            for triangle in candidate_reference.triangles.values()
+            if city_ref_id in {
+                triangle.opening_city_ref_id,
+                triangle.base_city_ref_id,
+                triangle.light_city_ref_id,
+            }
+        }
+        candidate_world = state.last_accepted_world.clonePhysicalState()
+        for element_id, element in candidate_world.elements.items():
+            if element.source_triangle_id in affected_triangle_ref_ids:
+                candidate_world.replace_element_materialized_definition(
+                    element_id,
+                    materialize_triangle(resolver, element.source_triangle_id),
+                )
+        errors = candidate_world.validate_world()
+        if errors:
+            raise ValueError(
+                "Renommage DEFORM invalide : "
+                + " ; ".join(str(error) for error in errors)
+            )
+        state.working_reference = candidate_reference
+        state.last_accepted_world = candidate_world
+
+    def _deformation_rename_selected(self) -> None:
+        state = self._deformation_state
+        occurrence = state.selected_occurrence
+        if occurrence is None:
+            return
+        scenario = self._get_active_scenario()
+        city_ref_id = self._deformation_city_id_for_occurrence(*occurrence)
+        city = self._deformation_working_reference().cities.get(city_ref_id)
+        if city is None:
+            return
+        new_name = simpledialog.askstring(
+            "Renommer le point",
+            "Nouveau nom :",
+            initialvalue=city.name,
+            parent=self,
+        )
+        if new_name is None:
+            return
+        try:
+            if state.dirty:
+                self._rename_working_deformation_city(city_ref_id, new_name)
+            else:
+                self._commit_deformation_city_rename(city_ref_id, new_name)
+        except ValueError as exc:
+            self.status.config(text=f"Renommage DEFORM refusé : {exc}")
+            return
+        if state.dirty:
+            self._show_deformation_preview(state.last_accepted_world)
+        else:
+            state.working_reference = scenario.reference.clone()
+            state.working_hypothesis = (
+                scenario.hypothesis.clone() if scenario.hypothesis is not None else None
+            )
+            self._restore_deformation_real_projection()
+        self._refresh_deformation_window()
+        self.status.config(text="Point DEFORM renommé.")
 
     def _deformation_map_pin_selected(self) -> None:
         state = self._deformation_state
@@ -2052,16 +2273,17 @@ class TriangleViewerManual(
         target_city_id = CitySelectionDialog(self, cities).show()
         if target_city_id is None:
             return
-        candidate_overrides = dict(state.city_lambert_overrides)
-        candidate_overrides[source_city_id] = self.catalogue.get_city_lambert(target_city_id)
-        candidate_world = self._apply_deformation_city_overrides(candidate_overrides)
+        occurrences = self._deformation_occurrences_for_city(source_city_id)
+        state.set_shared_working_point(
+            occurrences, self.catalogue.get_city_lambert(target_city_id)
+        )
+        candidate_world = self._apply_deformation_occurrence_overrides(
+            state.occurrence_lambert_overrides()
+        )
         if candidate_world is None:
+            state.restore_working_point(occurrence)
             return
-        state.city_lambert_overrides = candidate_overrides
         state.last_accepted_world = candidate_world
-        for item in self._deformation_occurrences_for_city(source_city_id, candidate_world):
-            if item not in state.modified_occurrences:
-                state.modified_occurrences.append(item)
         state.selected_occurrence = occurrence
         self._show_deformation_preview(candidate_world)
         self._refresh_deformation_window()
@@ -2080,6 +2302,59 @@ class TriangleViewerManual(
         self.canvas.configure(cursor="")
         self._restore_deformation_real_projection()
         self.status.config(text="Mode deformation abandonne.")
+
+    def _validate_deformation_session(self) -> None:
+        """Publie le candidat COW puis rebase la session sans fermer DEFORM."""
+        state = self._deformation_state
+        if not state.dirty:
+            self.status.config(text="Aucune modification DEFORM a valider.")
+            return
+        if state.last_accepted_world is None:
+            self.status.config(text="Aucun candidat DEFORM valide.")
+            return
+        scenario = self._get_active_scenario()
+        try:
+            if state.working_hypothesis is None:
+                committed = commit_deformation_copy_on_write(
+                    catalogue=self.catalogue,
+                    scenario=scenario,
+                    preview_world=state.last_accepted_world,
+                    working_points=state.working_points,
+                )
+                candidate_reference = committed.reference
+                candidate_hypothesis = committed.hypothesis
+                candidate_world = committed.world
+            else:
+                candidate_reference = (
+                    state.working_reference or scenario.reference
+                ).clone()
+                candidate_hypothesis = state.working_hypothesis.clone()
+                candidate_world = state.last_accepted_world.clonePhysicalState()
+                candidate_hypothesis.validate(
+                    GeometryReferenceResolver(self.catalogue, candidate_reference)
+                )
+                errors = candidate_world.validate_world()
+                if errors:
+                    raise ValueError(
+                        "Validation DEFORM invalide : "
+                        + " ; ".join(str(error) for error in errors)
+                    )
+        except (TypeError, ValueError, TopologyConstraintGeometryError) as exc:
+            self.status.config(text=f"Validation DEFORM refusee : {exc}")
+            return
+
+        # Les trois affectations sont consecutives et ne sont executees qu'apres
+        # construction/validation complete des trois candidats ci-dessus.
+        scenario.reference = candidate_reference
+        scenario.hypothesis = candidate_hypothesis
+        scenario.topoWorld = candidate_world
+        self._rebuild_triangle_listbox_from_core()
+        state.rebase_after_commit(
+            scenario.topoWorld, scenario.reference, scenario.hypothesis
+        )
+        self._show_deformation_preview(scenario.topoWorld)
+        self._refresh_deformation_window(status_text="Deformation validee.")
+        self.status.config(text="Deformation validee; session rebasee.")
 
     def _deformation_group_anchor_is_eligible(
         self, world: TopologyWorld, element_id: str
@@ -2153,20 +2428,15 @@ class TriangleViewerManual(
             raise RuntimeError("Triangle de deformation absent apres rotation")
         reference_world = state.last_accepted_world or self._get_active_scenario().topoWorld.clonePhysicalState()
         state.replace_reference_world(reference_world)
-        result = simulate_city_deformation(
-            catalogue=self.catalogue,
-            initial_world=reference_world,
-            city_lambert_overrides=state.city_lambert_overrides,
+        result_world = self._apply_deformation_occurrence_overrides(
+            state.occurrence_lambert_overrides()
         )
-        if not result.accepted or result.world is None:
+        if result_world is None:
             raise RuntimeError(
                 "Les overrides de deformation ne peuvent pas etre rejoues apres rotation"
             )
-        self._deformation_status_text = result.warning_reason or ""
-        if result.warning_reason is not None:
-            self.status.config(text=result.warning_reason)
-        state.last_accepted_world = result.world
-        self._show_deformation_preview(result.world)
+        state.last_accepted_world = result_world
+        self._show_deformation_preview(result_world)
         self._refresh_deformation_window()
 
     def _preview_deformation_rotation(self, event) -> None:
@@ -2187,17 +2457,13 @@ class TriangleViewerManual(
         )
         preview_reference = state.reference_world.clonePhysicalState()
         preview_reference.rotate_group(core_group_id, pivot_world, angle_delta)
-        result = simulate_city_deformation(
-            catalogue=self.catalogue,
-            initial_world=preview_reference,
-            city_lambert_overrides=state.city_lambert_overrides,
+        state.replace_reference_world(preview_reference)
+        result_world = self._apply_deformation_occurrence_overrides(
+            state.occurrence_lambert_overrides()
         )
-        if result.accepted and result.world is not None:
-            self._deformation_status_text = result.warning_reason or ""
-            if result.warning_reason is not None:
-                self.status.config(text=result.warning_reason)
-            state.last_accepted_world = result.world
-            self._show_deformation_preview(result.world)
+        if result_world is not None:
+            state.last_accepted_world = result_world
+            self._show_deformation_preview(result_world)
             self._refresh_deformation_window()
 
     def _handle_deformation_left_down(self, event):
@@ -2281,18 +2547,26 @@ class TriangleViewerManual(
         self,
         scenario: ScenarioAssemblage,
         draft: ScenarioHypothesis,
+        reference: ScenarioReference | None = None,
     ) -> ScenarioHypothesisChangePlan:
         """Analyse puis commit seulement si le monde physique reste cohérent."""
         if scenario.source_type != "manual":
             raise ValueError("Seul un scénario manuel peut recevoir une ScenarioHypothesis modifiée.")
         if scenario.hypothesis is None:
             raise ValueError("ScenarioHypothesis absente du scénario manuel actif")
-        draft.validate(self.catalogue)
+        candidate_reference = reference or scenario.reference.clone()
+        resolver = GeometryReferenceResolver(self.catalogue, candidate_reference)
+        draft.validate(resolver)
         if scenario.topoWorld.elements:
             return apply_hypothesis_change_to_manual_scenario(
-                self.catalogue, scenario, draft
+                self.catalogue, scenario, draft, candidate_reference
             ).plan
-        plan = analyze_hypothesis_change(self.catalogue, scenario.hypothesis, draft)
+        plan = analyze_hypothesis_change(
+            resolver,
+            scenario.hypothesis,
+            draft,
+        )
+        scenario.reference = candidate_reference.clone()
         scenario.hypothesis = draft.clone()
         return plan
 
@@ -2311,11 +2585,20 @@ class TriangleViewerManual(
             return
         if scenario.hypothesis is None:
             raise ValueError("ScenarioHypothesis absente du scénario manuel actif")
-        dialog = ScenarioHypothesisDialog(self, catalogue=self.catalogue, hypothesis=scenario.hypothesis)
-        draft = dialog.show()
-        if draft is None:
+        dialog = ScenarioHypothesisDialog(
+            self,
+            catalogue=self.catalogue,
+            hypothesis=scenario.hypothesis,
+            resolver=GeometryReferenceResolver(self.catalogue, scenario.reference),
+            scenario_reference=scenario.reference,
+            maps_dir=self.maps_dir,
+        )
+        result = dialog.show()
+        if result is None:
             return
-        plan = self._commit_manual_hypothesis_draft(scenario, draft)
+        plan = self._commit_manual_hypothesis_draft(
+            scenario, result.hypothesis, result.reference
+        )
         self._rebuild_active_projection_from_core()
         self._rebuild_triangle_listbox_from_core()
         self._redraw_from(self._last_drawn)
@@ -4957,14 +5240,15 @@ class TriangleViewerManual(
         )
 
         self.listbox.delete(0, tk.END)
+        resolver = GeometryReferenceResolver(self.catalogue, scen.reference)
 
         for rank, triangle_id in enumerate(
             self._triangle_list_triangle_ids,
             start=1,
         ):
-            triangle = self.catalogue.get_triangle(triangle_id)
-            base = self.catalogue.get_city(triangle.base_city_id)
-            light = self.catalogue.get_city(triangle.light_city_id)
+            triangle = resolver.resolve_triangle(triangle_id)
+            base = resolver.resolve_city(triangle.base_city_ref_id)
+            light = resolver.resolve_city(triangle.light_city_ref_id)
 
             self.listbox.insert(
                 tk.END,
@@ -5186,7 +5470,9 @@ class TriangleViewerManual(
                         f"référence {element_id}"
                     )
                 try:
-                    tri_rank = hypothesis.triangle_ids_by_rank.index(triangle_id) + 1
+                    tri_rank = hypothesis.get_rank_for_triangle_ref(
+                        triangle_id
+                    )
                 except ValueError as exc:
                     raise ValueError(
                         "Simulation: triangle Catalogue absent de l'hypothèse pour la "
@@ -5495,6 +5781,7 @@ class TriangleViewerManual(
             hypothesis=src.hypothesis.clone(),
         )
         # copies indépendantes
+        dup.reference = src.reference.clone()
         dup.last_drawn = copy.deepcopy(src.last_drawn)
         dup.groups = copy.deepcopy(src.groups)
         dup.status = src.status
@@ -6016,12 +6303,15 @@ class TriangleViewerManual(
         scen.view_state = self._capture_view_state()
         scen.map_state = self._capture_map_state()
 
+        loaded = _assembleur_io._parse_loaded_scenario_xml(self, path)
         self.scenarios.append(scen)
 
         # On bascule sur ce nouveau scénario AVANT de charger,
         # ainsi load_scenario_xml() écrit bien dans ses structures.
         self._set_active_scenario(new_index)
-        self.load_scenario_xml(path)
+        _assembleur_io._publish_loaded_scenario_xml(
+            self, scen, loaded, publish_ui=True,
+        )
         scen.file_path = str(path)
         scen.name = name
         scen.is_placeholder = False
@@ -6331,7 +6621,9 @@ class TriangleViewerManual(
         if scen.hypothesis is None:
             raise ValueError("ScenarioHypothesis absente du scénario actif")
         triangle_id = self._get_triangle_id_from_listbox_index(idx)
-        element = materialize_catalogue_triangle(self.catalogue, triangle_id)
+        element = materialize_triangle(
+            GeometryReferenceResolver(self.catalogue, scen.reference), triangle_id
+        )
         points = element.vertex_local_xy
         return {
             "labels": tuple(element.vertex_labels),
@@ -6349,8 +6641,11 @@ class TriangleViewerManual(
         triangle_id: str,
         mouse_world: tuple[float, float],
     ) -> dict[str, np.ndarray]:
-        """Construit le preview temporaire depuis la géométrie Catalogue canonique."""
-        element = materialize_catalogue_triangle(self.catalogue, triangle_id)
+        """Construit le preview temporaire depuis la référence effective."""
+        scen = self._get_active_scenario()
+        element = materialize_triangle(
+            GeometryReferenceResolver(self.catalogue, scen.reference), triangle_id
+        )
         local_points = element.vertex_local_xy
         origin = np.asarray(local_points[0], dtype=float)
         delta = np.asarray(mouse_world, dtype=float) - origin
@@ -6651,6 +6946,8 @@ class TriangleViewerManual(
 
     def _redraw_from(self, placed):
         self._update_current_scenario_differences()
+        canvas_world = self._get_canvas_display_world()
+        canvas_hypothesis = self._get_canvas_display_hypothesis()
 
         self.canvas.delete("all")
         # Fond carte (si layer visible)
@@ -6683,7 +6980,7 @@ class TriangleViewerManual(
         # 1) Triangles (toujours dessinés si layer actif) : on coupe juste les arêtes internes.
         if self.show_triangles_layer is None or self.show_triangles_layer.get():
             for i, t in enumerate(placed):
-                labels = self._get_core_vertex_labels(t)
+                labels = self._get_core_vertex_labels(t, canvas_world)
                 P = t["pts"]
                 fill = "#ffd6d6" if i in self._comparison_diff_indices else None
                 deform_outline = (
@@ -6694,7 +6991,9 @@ class TriangleViewerManual(
                 self._draw_triangle_screen(
                     P,
                     labels=[f"O:{labels[0]}", f"B:{labels[1]}", f"L:{labels[2]}"],
-                    tri_label=self._build_triangle_display_label(t),
+                    tri_label=self._build_triangle_display_label(
+                        t, canvas_world, canvas_hypothesis
+                    ),
                     fill=fill,
                     diff_outline=bool(fill),
                     drawEdges=(not onlyContours),
@@ -7134,10 +7433,14 @@ class TriangleViewerManual(
         if any(triangle_id in used_ids for triangle_id in triangle_ids):
             return False, "Triangle déjà utilisé dans ce scénario."
         if len(triangle_ids) == 2:
-            first, second = (self.catalogue.get_triangle(triangle_id) for triangle_id in triangle_ids)
-            if first.base_city_id != second.base_city_id:
+            scenario = self._get_active_scenario()
+            resolver = GeometryReferenceResolver(self.catalogue, scenario.reference)
+            first, second = (
+                resolver.resolve_triangle(triangle_id) for triangle_id in triangle_ids
+            )
+            if first.base_city_ref_id != second.base_city_ref_id:
                 return False, "Sélection multiple impossible : les triangles doivent avoir la même base."
-            if first.opening_city_id != second.opening_city_id:
+            if first.opening_city_ref_id != second.opening_city_ref_id:
                 return False, "Sélection multiple impossible : les triangles doivent avoir la même ouverture."
         return True, ""
 
@@ -7264,8 +7567,10 @@ class TriangleViewerManual(
         """Construit la pose relative exclusivement via le resolver Core."""
         first_id, second_id = triangle_ids
         preview_world = TopologyWorld()
-        first = materialize_catalogue_triangle(self.catalogue, first_id)
-        second = materialize_catalogue_triangle(self.catalogue, second_id)
+        scen = self._get_active_scenario()
+        resolver = GeometryReferenceResolver(self.catalogue, scen.reference)
+        first = materialize_triangle(resolver, first_id)
+        second = materialize_triangle(resolver, second_id)
         preview_world.add_element_as_new_group(first)
         preview_world.add_element_as_new_group(second)
         preview_world.setElementPose(str(first.element_id), np.eye(2), np.zeros(2), mirrored=False)
@@ -7401,8 +7706,7 @@ class TriangleViewerManual(
             P0 = self._last_drawn[idx]["pts"]
             v_world = np.array(P0[vkey], dtype=float) if vkey in ("O", "B", "L") else None
 
-            scen = self._get_active_scenario()
-            topoWorld = scen.topoWorld
+            topoWorld = self._get_canvas_display_world()
 
             tooltip_txt = ""
             if v_world is not None and vkey in ("O", "B", "L"):
@@ -7929,7 +8233,9 @@ class TriangleViewerManual(
 
         world.beginTopoTransaction()
         try:
-            el = materialize_catalogue_triangle(self.catalogue, triangle_id)
+            el = materialize_triangle(
+                GeometryReferenceResolver(self.catalogue, scen.reference), triangle_id
+            )
             core_gid = world.add_element_as_new_group(el)
             element_id = el.element_id
             if not element_id:
@@ -7966,16 +8272,17 @@ class TriangleViewerManual(
         scen = self._get_active_scenario()
         if first_id in scen.topoWorld.get_used_source_triangle_ids() or second_id in scen.topoWorld.get_used_source_triangle_ids():
             raise ValueError("Catalogue: triangle already used")
-        first_triangle = self.catalogue.get_triangle(first_id)
-        second_triangle = self.catalogue.get_triangle(second_id)
-        if first_triangle.base_city_id != second_triangle.base_city_id:
+        resolver = GeometryReferenceResolver(self.catalogue, scen.reference)
+        first_triangle = resolver.resolve_triangle(first_id)
+        second_triangle = resolver.resolve_triangle(second_id)
+        if first_triangle.base_city_ref_id != second_triangle.base_city_ref_id:
             raise ValueError("Quadrilatère: bases Catalogue différentes")
-        if first_triangle.opening_city_id != second_triangle.opening_city_id:
+        if first_triangle.opening_city_ref_id != second_triangle.opening_city_ref_id:
             raise ValueError("Quadrilatère: ouvertures Catalogue différentes")
 
         candidate_world = scen.topoWorld.clonePhysicalState()
-        first = materialize_catalogue_triangle(self.catalogue, first_id)
-        second = materialize_catalogue_triangle(self.catalogue, second_id)
+        first = materialize_triangle(resolver, first_id)
+        second = materialize_triangle(resolver, second_id)
         candidate_world.add_element_as_new_group(first)
         candidate_world.add_element_as_new_group(second)
         candidate_world.setElementPose(

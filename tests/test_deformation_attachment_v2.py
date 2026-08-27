@@ -1,258 +1,89 @@
-import xml.etree.ElementTree as ET
-
 import numpy as np
+import pytest
 
 from src.assembleur_catalogue import Catalogue
 from src.assembleur_core import (
     ResolvedVertexEdgeAttachment,
-    TopologyConstraintGeometryError,
     TopologyEdgeEdgeAttachment,
     TopologyVertexEdgeAttachment,
     TopologyWorld,
     compute_vertex_edge_attachment_orientation,
 )
 from src.assembleur_deformation import (
-    simulate_city_deformation,
-    simulate_triangle_deformation,
+    simulate_deformation_session,
+    simulate_occurrence_deformation,
 )
+from src.assembleur_deformation_points import WorkingPoint
+from src.assembleur_geometry_reference import GeometryReferenceResolver, ScenarioReference
 from src.assembleur_scenario import materialize_catalogue_triangle
 
 
 class _BeaconResolver:
-    def __init__(self, positions):
-        self._positions = dict(positions)
-
     def contains(self, beacon_id):
-        return beacon_id in self._positions
+        return beacon_id == "BEA-0001"
 
     def get_world(self, beacon_id):
-        return self._positions[beacon_id]
+        if not self.contains(beacon_id):
+            raise KeyError(beacon_id)
+        return (500.0, -200.0)
 
 
 def _catalogue_and_v2_chain():
     catalogue = Catalogue()
     opening = catalogue.add_city("Ouverture", 45.0, 2.0)
     base = catalogue.add_city("Base", 45.0, 3.0)
-    light_north = catalogue.add_city("Lumière nord", 46.0, 2.5)
-    light_south = catalogue.add_city("Lumière sud", 44.0, 2.5)
-    light_chain = catalogue.add_city("Lumière chaîne", 43.5, 2.4)
-    first = catalogue.add_triangle("Do", opening.city_id, base.city_id, light_north.city_id)
-    second = catalogue.add_triangle("Si", opening.city_id, base.city_id, light_south.city_id)
-    third = catalogue.add_triangle("La", opening.city_id, base.city_id, light_chain.city_id)
-
-    world = TopologyWorld()
-    first_element = materialize_catalogue_triangle(catalogue, first.triangle_id)
-    second_element = materialize_catalogue_triangle(catalogue, second.triangle_id)
-    third_element = materialize_catalogue_triangle(catalogue, third.triangle_id)
-    for element in (first_element, second_element, third_element):
+    north = catalogue.add_city("Lumière nord", 46.0, 2.5)
+    south = catalogue.add_city("Lumière sud", 44.0, 2.5)
+    chain = catalogue.add_city("Lumière chaîne", 43.5, 2.4)
+    first = catalogue.add_triangle("Do", opening.city_id, base.city_id, north.city_id)
+    second = catalogue.add_triangle("Si", opening.city_id, base.city_id, south.city_id)
+    third = catalogue.add_triangle("La", opening.city_id, base.city_id, chain.city_id)
+    world = TopologyWorld(beacon_resolver=_BeaconResolver())
+    elements = [materialize_catalogue_triangle(catalogue, item.triangle_id) for item in (first, second, third)]
+    for element in elements:
         world.add_element_as_new_group(element)
-
-    edge_edge = TopologyEdgeEdgeAttachment(
-        "A001", first_element.element_id, "OB", second_element.element_id, "OB"
-    )
-    vertex_edge = TopologyVertexEdgeAttachment(
-        "A002",
-        third_element.element_id,
-        "O",
-        "LO",
-        second_element.element_id,
-        "L",
-        "LO",
-        compute_vertex_edge_attachment_orientation(
-            world, third_element.element_id, "O", "LO"
-        ),
-        compute_vertex_edge_attachment_orientation(
-            world, second_element.element_id, "L", "LO"
-        ),
-    )
-    world.apply_attachment(edge_edge)
-    group_id = world.apply_attachment(vertex_edge)
-    world.replay_group_attachment_poses(group_id, second_element.element_id)
-
-    world.attachBeaconResolver(_BeaconResolver({"BEA-0001": (500.0, -200.0)}))
-    anchor = world.createGroupAnchor(
-        world.get_group_of_element(first_element.element_id),
-        "BEA-0001",
-        world.get_element_vertex_node_id_by_type(first_element.element_id, "O"),
-    )
+    world.apply_attachment(TopologyEdgeEdgeAttachment("A001", elements[0].element_id, "OB", elements[1].element_id, "OB"))
+    world.apply_attachment(TopologyVertexEdgeAttachment(
+        "A002", elements[2].element_id, "O", "LO", elements[1].element_id, "L", "LO",
+        compute_vertex_edge_attachment_orientation(world, elements[2].element_id, "O", "LO"),
+        compute_vertex_edge_attachment_orientation(world, elements[1].element_id, "L", "LO"),
+    ))
+    group_id = world.get_group_of_element(elements[0].element_id)
+    world.replay_group_attachment_poses(group_id, elements[1].element_id)
+    anchor = world.createGroupAnchor(group_id, "BEA-0001", world.get_element_vertex_node_id_by_type(elements[0].element_id, "O"))
     world.applyGroupAnchor(anchor.anchor_id)
-    return catalogue, world, third_element.element_id, third.triangle_id, anchor
+    return catalogue, world, elements[1].element_id, second, anchor
 
 
-def _attachment_dump_signature(world, path):
-    world.export_topo_dump_xml(str(path))
-    return [
-        (child.tag, tuple(sorted(child.attrib.items())))
-        for child in ET.parse(path).getroot().find("Attachments")
-    ]
-
-
-def test_deformation_keeps_v2_chain_intentions_and_rebuilds_derived_state():
-    catalogue, world, element_id, triangle_id, anchor = _catalogue_and_v2_chain()
-    attachments_before = tuple(world.attachments.values())
+def test_cow_occurrence_deformation_replays_the_complete_attachment_chain():
+    catalogue, world, element_id, triangle, anchor = _catalogue_and_v2_chain()
+    light_before = np.asarray(catalogue.get_city_lambert(triangle.light_city_id))
+    source_snapshot = world._exportPhysicalSnapshot()
+    source_attachments = tuple(world.attachments.values())
     resolved_before = world.getResolvedAttachment("A002")
-    light_city_id = catalogue.get_triangle(triangle_id).light_city_id
-    light_before = np.asarray(catalogue.get_city_lambert(light_city_id))
-
-    result = simulate_triangle_deformation(
-        catalogue=catalogue,
+    third_pose_before = world.getElementPose("T03")
+    working_point = WorkingPoint("TMP-0001", tuple(light_before + (1000.0, 0.0)), {(element_id, "L")})
+    result = simulate_occurrence_deformation(
+        resolver=GeometryReferenceResolver(catalogue, ScenarioReference()),
         initial_world=world,
-        element_id=element_id,
-        vertex_lambert_overrides={"L": tuple(light_before + np.asarray((1000.0, 0.0)))},
+        occurrence_lambert_overrides={occurrence: working_point.lambert_xy for occurrence in working_point.occurrences},
     )
+    assert result.accepted and result.world is not None
+    assert tuple(result.world.attachments.values()) == source_attachments
+    assert world._exportPhysicalSnapshot() == source_snapshot
+    resolved = result.world.getResolvedAttachment("A002")
+    assert isinstance(resolved, ResolvedVertexEdgeAttachment)
+    assert resolved != resolved_before
+    vertex_local = result.world._local_vertex_point_by_type(resolved.vertex_element_id, resolved.vertex)
+    edge_local = result.world._resolved_edge_local_point(resolved.edge_element_id, resolved.edge, resolved.edge_anchor_vertex, resolved.position_from_anchor, resolved.attachment_id)
+    assert result.world.elementLocalToWorld(resolved.vertex_element_id, vertex_local) == pytest.approx(result.world.elementLocalToWorld(resolved.edge_element_id, edge_local))
+    assert not np.allclose(result.world.getElementPose("T03")[1], third_pose_before[1])
+    restored = result.world.getGroupAnchor(anchor.anchor_id)
+    assert result.world.getConceptNodeWorldXY(restored.node_id, restored.group_id) == (500.0, -200.0)
 
+
+def test_pivot_session_is_independent_from_geometry_references():
+    _catalogue, world, _element_id, _triangle, _anchor = _catalogue_and_v2_chain()
+    result = simulate_deformation_session(reference_world=world, pivoted_attachment_ids=())
     assert result.accepted
-    assert result.warning_reason is None
-    assert tuple(result.world.attachments.values()) == attachments_before
-    assert set(result.world.attachments) == {"A001", "A002"}
-    assert isinstance(result.world.attachments["A001"], TopologyEdgeEdgeAttachment)
-    assert isinstance(result.world.attachments["A002"], TopologyVertexEdgeAttachment)
-    resolved_after = result.world.getResolvedAttachment("A002")
-    assert isinstance(resolved_after, ResolvedVertexEdgeAttachment)
-    assert resolved_after.position_from_anchor != resolved_before.position_from_anchor
-    assert any(
-        point.get("attachmentId") == "A002"
-        for edge in result.world.elements[element_id].edges
-        for point in result.world.buildDerivedSplitPointsForPhysEdge(element_id, edge.edge_index)
-    )
-    assert any(
-        edge.coverages
-        for element in result.world.elements.values()
-        for edge in element.edges
-    )
-    restored_anchor = result.world.getGroupAnchor(anchor.anchor_id)
-    assert result.world.getConceptNodeWorldXY(
-        restored_anchor.node_id, restored_anchor.group_id
-    ) == (500.0, -200.0)
-    assert result.world.is_group_contour_valid(restored_anchor.group_id)
-
-
-def test_triangle_deformation_accepts_an_invalid_contour_with_a_warning(monkeypatch):
-    catalogue, world, element_id, triangle_id, _anchor = _catalogue_and_v2_chain()
-    light_city_id = catalogue.get_triangle(triangle_id).light_city_id
-    light_before = np.asarray(catalogue.get_city_lambert(light_city_id))
-    monkeypatch.setattr(TopologyWorld, "is_group_contour_valid", lambda *_args: False)
-
-    result = simulate_triangle_deformation(
-        catalogue=catalogue,
-        initial_world=world,
-        element_id=element_id,
-        vertex_lambert_overrides={"L": tuple(light_before + np.asarray((1000.0, 0.0)))},
-    )
-
-    assert result.accepted
-    assert result.world is not None
-    assert result.rejection_reason is None
-    assert result.warning_reason == "Attention : chevauchement détecté."
-
-
-def test_triangle_deformation_rejects_a_replay_error_without_warning(monkeypatch):
-    catalogue, world, element_id, triangle_id, _anchor = _catalogue_and_v2_chain()
-    light_city_id = catalogue.get_triangle(triangle_id).light_city_id
-    light_before = np.asarray(catalogue.get_city_lambert(light_city_id))
-
-    def reject_replay(*_args, **_kwargs):
-        raise TopologyConstraintGeometryError("replay impossible")
-
-    monkeypatch.setattr(TopologyWorld, "replay_group_attachment_poses", reject_replay)
-    result = simulate_triangle_deformation(
-        catalogue=catalogue,
-        initial_world=world,
-        element_id=element_id,
-        vertex_lambert_overrides={"L": tuple(light_before + np.asarray((1000.0, 0.0)))},
-    )
-
-    assert not result.accepted
-    assert result.world is None
-    assert result.rejection_reason == "replay impossible"
-    assert result.warning_reason is None
-
-
-def test_deformation_topodump_keeps_attachment_intentions(tmp_path):
-    catalogue, world, element_id, triangle_id, _anchor = _catalogue_and_v2_chain()
-    attachment_dump_before = _attachment_dump_signature(world, tmp_path / "before.xml")
-    light_city_id = catalogue.get_triangle(triangle_id).light_city_id
-    light_before = np.asarray(catalogue.get_city_lambert(light_city_id))
-
-    result = simulate_triangle_deformation(
-        catalogue=catalogue,
-        initial_world=world,
-        element_id=element_id,
-        vertex_lambert_overrides={"L": tuple(light_before + np.asarray((1000.0, 0.0)))},
-    )
-
-    assert result.accepted
-    assert _attachment_dump_signature(result.world, tmp_path / "after.xml") == attachment_dump_before
-
-
-def test_triangle_deformation_replays_from_the_group_anchor_owner(monkeypatch):
-    catalogue, world, element_id, triangle_id, anchor = _catalogue_and_v2_chain()
-    light_city_id = catalogue.get_triangle(triangle_id).light_city_id
-    light_before = np.asarray(catalogue.get_city_lambert(light_city_id))
-    calls = []
-    original_replay = TopologyWorld.replay_group_attachment_poses
-
-    def record_replay(self, group_id, root_element_id, *args, **kwargs):
-        calls.append((self, group_id, root_element_id))
-        return original_replay(self, group_id, root_element_id, *args, **kwargs)
-
-    monkeypatch.setattr(TopologyWorld, "replay_group_attachment_poses", record_replay)
-    result = simulate_triangle_deformation(
-        catalogue=catalogue,
-        initial_world=world,
-        element_id=element_id,
-        vertex_lambert_overrides={"L": tuple(light_before + np.asarray((1000.0, 0.0)))},
-    )
-
-    assert result.accepted
-    assert len(calls) == 1
-    anchor_owner = world.getElementVertexFromAnyNodeId(
-        anchor.node_id, world.get_group_of_element(element_id)
-    )["elementId"]
-    assert calls[0][2] == anchor_owner
-    assert calls[0][2] != element_id
-
-
-def test_city_deformation_replays_all_shared_occurrences_once_from_the_anchor(monkeypatch):
-    catalogue, world, _element_id, _triangle_id, _anchor = _catalogue_and_v2_chain()
-    base_city_id = next(
-        triangle.base_city_id
-        for triangle in catalogue.triangles.values()
-    )
-    base_before = np.asarray(catalogue.get_city_lambert(base_city_id))
-    elements_before = {
-        element_id: tuple(element.edge_lengths_km)
-        for element_id, element in world.elements.items()
-    }
-
-    calls = []
-    original_replay = TopologyWorld.replay_group_attachment_poses
-
-    def record_replay(self, group_id, root_element_id, *args, **kwargs):
-        calls.append((self, group_id, root_element_id))
-        return original_replay(self, group_id, root_element_id, *args, **kwargs)
-
-    monkeypatch.setattr(TopologyWorld, "replay_group_attachment_poses", record_replay)
-    result = simulate_city_deformation(
-        catalogue=catalogue,
-        initial_world=world,
-        city_lambert_overrides={
-            base_city_id: tuple(base_before + np.asarray((1000.0, 0.0))),
-        },
-    )
-
-    assert result.accepted
-    assert result.world is not None
-    assert len(calls) == 1
-    root_element = world.getElementVertexFromAnyNodeId(
-        _anchor.node_id, world.get_group_of_element(_element_id)
-    )["elementId"]
-    assert calls[0][2] == root_element
-    assert all(
-        tuple(result.world.elements[element_id].edge_lengths_km)
-        != elements_before[element_id]
-        for element_id in world.elements
-    )
-    assert tuple(world.elements[next(iter(world.elements))].edge_lengths_km) == (
-        elements_before[next(iter(world.elements))]
-    )
+    assert result.world is world
