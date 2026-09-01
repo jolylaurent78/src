@@ -285,7 +285,7 @@ def plotScenarioWithToggles(
 """
 sid = "SA_AUTO"          # ou topoScenarioId réel si tu l’as
 from assembleur_core import export_topo_dump_xml
-out_path = r"D:\Dropbox\La Chouette\Python\AssembleurTriangles\exports\TopoXML\TopoDump_SA_AUTO_debug.xml"
+out_path = ApplicationPaths.from_runtime().exports_dir / "TopoXML" / "TopoDump_SA_AUTO_debug.xml"
 topoWorld_prev.export_topo_dump_xml(out_path, orientation="cw")
 
 """

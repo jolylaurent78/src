@@ -14,6 +14,8 @@ import tkinter as tk
 from PIL import Image, ImageTk
 from pyproj import Transformer
 
+from src.assembleur_paths import ApplicationPaths
+
 
 @dataclass(frozen=True)
 class GeoMapMarker:
@@ -67,7 +69,11 @@ class CalibratedGeoMap:
         max_image_dimension: int | None = None,
     ) -> "CalibratedGeoMap":
         """Charge une carte à sa résolution native, sauf limite explicitement demandée."""
-        root = Path(maps_dir) if maps_dir is not None else Path(__file__).resolve().parent.parent / "data" / "maps"
+        root = (
+            Path(maps_dir)
+            if maps_dir is not None
+            else ApplicationPaths.from_runtime().resource_maps_dir
+        )
         image_path = root / f"{map_id}.jpg"
         calibration_path = root / f"{map_id}.json"
         if not image_path.is_file():

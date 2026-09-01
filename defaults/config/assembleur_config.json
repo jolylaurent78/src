@@ -1,5 +1,4 @@
 {
-  "lastTriangleExcel": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_v10.xlsx",
   "uiShowDicoPanel": false,
   "uiShowClockOverlay": false,
   "uiMapOpacity": 55,
@@ -45,14 +44,10 @@
     "distOA",
     "distOB"
   ],
-  "lastTriangleCsvIn": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_3villes.csv",
-  "lastVillesCsvIn": "D:\\Dropbox\\La Chouette\\Python\\AlgoSimulator\\data\\villes_database.csv",
-  "lastTriangleExcelOut": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\triangle_v11.xlsx",
   "uiShowBalisesLayer": true,
   "dicoExclureMotsCodes": false,
-  "cheminsBaliseRefName": "Grand Ballon",
   "uiShowGuidesLayer": true,
-  "bgSvgPath": "D:\\Dropbox\\La Chouette\\Python\\AssembleurTriangles\\data\\maps\\899 - Alsace.jpg",
+  "bgMap": "899 - Alsace.jpg",
   "bgWorldRect": {
     "x0": -2963.38,
     "y0": 1642.9905325627296,

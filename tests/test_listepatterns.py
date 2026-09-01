@@ -7,7 +7,7 @@ from src.DictionnaireEnigmes import DictionnaireEnigmes, ListePatterns
 
 @pytest.fixture(scope="module")
 def dico():
-    data_path = Path(__file__).resolve().parents[1] / "data" / "livre.txt"
+    data_path = Path(__file__).resolve().parents[1] / "resources" / "texts" / "livre.txt"
     return DictionnaireEnigmes(str(data_path))
 
 

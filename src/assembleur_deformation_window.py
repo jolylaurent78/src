@@ -20,6 +20,7 @@ from src.assembleur_geo_map_view import (
     GeoMapPolyline,
     GeoMapView,
 )
+from src.assembleur_paths import ApplicationPaths
 from src.assembleur_tooltip import attach_tooltip
 
 
@@ -105,33 +106,16 @@ class DeformationWindow(tk.Toplevel):
         self._occurrences_update_generation = 0
         self._occurrences_guard_after_id = None
 
-        self._icon_compass = tk.PhotoImage(
-            file=str(Path(__file__).resolve().parent.parent / "images" / "compass.png")
-        )
-        self._icon_geometry = tk.PhotoImage(
-            file=str(Path(__file__).resolve().parent.parent / "images" / "geometry.png")
-        )
-        self._icon_map_pin = tk.PhotoImage(
-            file=str(Path(__file__).resolve().parent.parent / "images" / "map-pin.png")
-        )
-        self._icon_delete = tk.PhotoImage(
-            file=str(Path(__file__).resolve().parent.parent / "images" / "delete.png")
-        )
-        self._icon_restore = tk.PhotoImage(
-            file=str(Path(__file__).resolve().parent.parent / "images" / "restore.png")
-        )
-        self._icon_rename = tk.PhotoImage(
-            file=str(Path(__file__).resolve().parent.parent / "images" / "rename.png")
-        )
-        self._icon_pivot_attachment = tk.PhotoImage(
-            file=str(Path(__file__).resolve().parent.parent / "images" / "rotate.png")
-        )
-        self._icon_select = tk.PhotoImage(
-            file=str(Path(__file__).resolve().parent.parent / "images" / "click.png")
-        )
-        self._icon_move = tk.PhotoImage(
-            file=str(Path(__file__).resolve().parent.parent / "images" / "hand-click.png")
-        )
+        images_dir = ApplicationPaths.from_runtime().images_dir
+        self._icon_compass = tk.PhotoImage(file=str(images_dir / "compass.png"))
+        self._icon_geometry = tk.PhotoImage(file=str(images_dir / "geometry.png"))
+        self._icon_map_pin = tk.PhotoImage(file=str(images_dir / "map-pin.png"))
+        self._icon_delete = tk.PhotoImage(file=str(images_dir / "delete.png"))
+        self._icon_restore = tk.PhotoImage(file=str(images_dir / "restore.png"))
+        self._icon_rename = tk.PhotoImage(file=str(images_dir / "rename.png"))
+        self._icon_pivot_attachment = tk.PhotoImage(file=str(images_dir / "rotate.png"))
+        self._icon_select = tk.PhotoImage(file=str(images_dir / "click.png"))
+        self._icon_move = tk.PhotoImage(file=str(images_dir / "hand-click.png"))
 
         content = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         content.pack(fill=tk.BOTH, expand=True, padx=8, pady=(8, 8))

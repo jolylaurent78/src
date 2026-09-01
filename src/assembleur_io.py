@@ -14,9 +14,11 @@ import xml.etree.ElementTree as ET
 import re
 import tempfile
 import traceback
+import inspect
 from dataclasses import dataclass
 import numpy as np
 
+from src.assembleur_config import load_config_file, save_config_file
 from src.assembleur_catalogue import Catalogue
 from src.assembleur_core import TopologyWorld
 from src.assembleur_geometry_reference import (
@@ -27,6 +29,7 @@ from src.assembleur_geometry_reference import (
 )
 from src.assembleur_scenario import ScenarioHypothesis
 from src.assembleur_catalogue_identity import is_catalogue_triangle_id
+from src.assembleur_scenario_map import resolve_resource_map, resource_name_for_path
 
 CFG_KEY_CHEMINS_BEACON_REF = "cheminsBeaconRefId"
 _SCENARIO_XML_VERSIONS = frozenset({"5", "6"})
@@ -51,40 +54,20 @@ def _ioWarn(viewer, where: str, exc: Exception):
 
 
 def loadAppConfig(viewer):
-    """Charge la config JSON (best-effort)."""
+    """Charge la configuration active ; une config existante invalide est une erreur."""
     viewer.appConfig = {}
-    try:
-        path = getattr(viewer, "config_path", "")
-        if not path:
-            return
-        if not os.path.isfile(path):
-            return
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            viewer.appConfig = data
-    except (OSError, json.JSONDecodeError) as e:
-        # Jamais bloquant : si la config est corrompue on repart de zéro.
-        _ioWarn(viewer, f"loadAppConfig(path={getattr(viewer, 'config_path', '')})", e)
-        viewer.appConfig = {}
+    path = getattr(viewer, "config_path", "")
+    if not path or not os.path.isfile(path):
+        return
+    viewer.appConfig = load_config_file(path)
 
 
 def saveAppConfig(viewer):
-    """Sauvegarde la config JSON (best-effort)."""
-    try:
-        path = getattr(viewer, "config_path", "")
-        if not path:
-            return
-        cfg_dir = os.path.dirname(path)
-        if cfg_dir:
-            os.makedirs(cfg_dir, exist_ok=True)
-        # écriture atomique (évite un fichier vide si un souci survient)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(getattr(viewer, "appConfig", {}) or {}, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
-    except OSError as e:
-        _ioWarn(viewer, f"saveAppConfig(path={getattr(viewer, 'config_path', '')})", e)
+    """Sauvegarde atomiquement la configuration active."""
+    path = getattr(viewer, "config_path", "")
+    if not path:
+        return
+    save_config_file(getattr(viewer, "appConfig", {}) or {}, path)
 
 
 def getAppConfigValue(viewer, key: str, default=None):
@@ -92,14 +75,10 @@ def getAppConfigValue(viewer, key: str, default=None):
 
 
 def setAppConfigValue(viewer, key: str, value):
-    try:
-        if not hasattr(viewer, "appConfig") or viewer.appConfig is None:
-            viewer.appConfig = {}
-        viewer.appConfig[key] = value
-        viewer.saveAppConfig()
-    except Exception as e:
-        # Ici on loggue: si ça casse, tu veux le savoir en dev.
-        _ioWarn(viewer, f"setAppConfigValue(key={key!r})", e)
+    if not hasattr(viewer, "appConfig") or viewer.appConfig is None:
+        viewer.appConfig = {}
+    viewer.appConfig[key] = value
+    viewer.saveAppConfig()
 
 
 def _resolver_for_reference(
@@ -472,8 +451,7 @@ def saveScenarioXml(viewer, path: str):
     if map_scale is None:
         map_scale = getattr(viewer, "_bg_scale_factor_override", None)
 
-    ET.SubElement(root, "map", {
-        "path": os.path.abspath(map_path) if map_path else "",
+    map_attributes = {
         "x0": f"{float(bg.get('x0')) if isinstance(bg, dict) and bg.get('x0') is not None else 0.0:.6g}",
         "y0": f"{float(bg.get('y0')) if isinstance(bg, dict) and bg.get('y0') is not None else 0.0:.6g}",
         "w":  f"{float(bg.get('w')) if isinstance(bg, dict) and bg.get('w') is not None else 0.0:.6g}",
@@ -481,7 +459,15 @@ def saveScenarioXml(viewer, path: str):
         "visible": "1" if (getattr(viewer, "show_map_layer", None) and viewer.show_map_layer.get()) else "0",
         "opacity": f"{int(viewer.map_opacity.get()) if hasattr(viewer, 'map_opacity') else 100}",
         "scale": f"{float(map_scale):.6g}" if map_scale is not None else "",
-    })
+    }
+    resource_name = resource_name_for_path(
+        map_path, viewer.paths.resource_maps_dir
+    ) if hasattr(viewer, "paths") else None
+    if resource_name is not None:
+        map_attributes["resource"] = resource_name
+    else:
+        map_attributes["path"] = os.path.abspath(map_path) if map_path else ""
+    ET.SubElement(root, "map", map_attributes)
 
     # clock
     ET.SubElement(root, "clock", {
@@ -860,6 +846,40 @@ def _parse_optional_guides(root: ET.Element) -> tuple[dict[str, object], ...]:
     return tuple(guide_specs)
 
 
+def _parse_map_state(viewer, map_element: ET.Element) -> dict[str, object]:
+    map_path = str(map_element.get("path", "") or "").strip()
+    has_resource = "resource" in map_element.attrib
+    has_path = "path" in map_element.attrib
+    resource = str(map_element.get("resource", "") or "").strip()
+    if has_path and has_resource:
+        raise ValueError("Map scenario invalide : path et resource sont mutuellement exclusifs.")
+    if has_resource:
+        if not hasattr(viewer, "paths"):
+            raise ValueError("Map scenario resource impossible à résoudre sans ApplicationPaths.")
+        map_path = str(resolve_resource_map(resource, viewer.paths.resource_maps_dir))
+    return {
+        "path": map_path,
+        "resource": resource or None,
+        "rect": {
+            "x0": float(map_element.get("x0", "0") or 0.0),
+            "y0": float(map_element.get("y0", "0") or 0.0),
+            "w": float(map_element.get("w", "0") or 0.0),
+            "h": float(map_element.get("h", "0") or 0.0),
+        },
+        "visible": str(map_element.get("visible", "1")) not in ("0", "false", "False"),
+        "opacity": int(map_element.get("opacity", "100") or 100),
+        "scale": str(map_element.get("scale", "") or "").strip(),
+    }
+
+
+def _call_background_method(viewer, method_name: str, *args, **kwargs) -> None:
+    """Évite le redraw intermédiaire quand le viewer runtime le prend en charge."""
+    method = getattr(viewer, method_name)
+    if "redraw" in inspect.signature(method).parameters:
+        kwargs["redraw"] = False
+    method(*args, **kwargs)
+
+
 def _canonical_group_from_loaded_world(
     world: TopologyWorld,
     persisted_group_id: str | None,
@@ -961,18 +981,7 @@ def _parse_loaded_scenario_xml(viewer, path: str) -> _LoadedScenarioXml:
     map_el = root.find("map")
     map_state = None
     if map_el is not None:
-        map_state = {
-            "path": str(map_el.get("path", "") or "").strip(),
-            "rect": {
-                "x0": float(map_el.get("x0", "0") or 0.0),
-                "y0": float(map_el.get("y0", "0") or 0.0),
-                "w": float(map_el.get("w", "0") or 0.0),
-                "h": float(map_el.get("h", "0") or 0.0),
-            },
-            "visible": str(map_el.get("visible", "1")) not in ("0", "false", "False"),
-            "opacity": int(map_el.get("opacity", "100") or 100),
-            "scale": str(map_el.get("scale", "") or "").strip(),
-        }
+        map_state = _parse_map_state(viewer, map_el)
 
     clock_el = root.find("clock")
     clock_state = {"hour": 0, "minute": 0, "label": "", "x": 0.0, "y": 0.0}
@@ -1021,9 +1030,15 @@ def _publish_loaded_scenario_xml(viewer, scenario, loaded: _LoadedScenarioXml, *
     if loaded.map_state is not None:
         map_path = str(loaded.map_state["path"])
         if map_path and os.path.isfile(map_path):
-            viewer._bg_set_map(map_path, rect_override=loaded.map_state["rect"], persist=False)
+            _call_background_method(
+                viewer,
+                "_bg_set_map",
+                map_path,
+                rect_override=loaded.map_state["rect"],
+                persist=False,
+            )
         else:
-            viewer._bg_clear(persist=False)
+            _call_background_method(viewer, "_bg_clear", persist=False)
         if hasattr(viewer, "show_map_layer"):
             viewer.show_map_layer.set(bool(loaded.map_state["visible"]))
         if hasattr(viewer, "map_opacity"):

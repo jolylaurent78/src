@@ -880,7 +880,9 @@ class SequenceCategorie:
 
 
 if __name__ == "__main__":
-    dico = DictionnaireEnigmes("data/livre.txt")
+    from src.assembleur_paths import ApplicationPaths
+
+    dico = DictionnaireEnigmes(str(ApplicationPaths.from_runtime().dictionary_path))
     print(dico[5][10])
     for categorie in dico.getCategories():
         print(categorie, ":", dico.getIndexCategories()[categorie])

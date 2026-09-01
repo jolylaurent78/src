@@ -12,7 +12,9 @@ import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import filedialog, messagebox, ttk
 from src.assembleur_catalogue import Catalogue, CatalogueCity, CatalogueTriangle as ModelCatalogueTriangle, HypothesisTemplate
+from src.assembleur_catalogue_identity import ApplicationContext
 from src.assembleur_catalogue_io import save_catalogue
+from src.assembleur_paths import ApplicationPaths
 from src.assembleur_tooltip import attach_tooltip
 
 from src.assembleur_dms_editor import DmsCoordinateEditor
@@ -382,7 +384,13 @@ class CatalogueWindow(tk.Toplevel):
         self.geometry("1000x700")
         self.minsize(760, 500)
         self._maps_dir = maps_dir
-        self._catalogue_path = Path(catalogue_path) if catalogue_path is not None else Path(__file__).resolve().parent.parent / "catalogue.json"
+        self._catalogue_path = (
+            Path(catalogue_path)
+            if catalogue_path is not None
+            else ApplicationPaths.from_runtime().catalogue_path_for_mode(
+                ApplicationContext.from_environment().mode
+            )
+        )
         self._on_catalogue_applied = on_catalogue_applied
         self._is_beacon_referenced = is_beacon_referenced
         # Copie transactionnelle : le Catalogue runtime du viewer reste intact jusqu'à Appliquer.
@@ -434,7 +442,7 @@ class CatalogueWindow(tk.Toplevel):
 
     def _load_icons(self):
         """Charge une seule fois les icones utilisees par la fenetre Catalogue."""
-        images_dir = Path(__file__).resolve().parent.parent / "images"
+        images_dir = ApplicationPaths.from_runtime().images_dir
         self._icon_clipboard = tk.PhotoImage(file=images_dir / "clipboard.png")
         self._icon_map_pin_plus = tk.PhotoImage(file=images_dir / "map-pin-plus.png")
         self._icon_hexagon_plus = tk.PhotoImage(file=images_dir / "hexagon-plus.png")

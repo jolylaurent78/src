@@ -2,12 +2,12 @@
 
 import logging
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
+
+from src.assembleur_paths import ApplicationPaths
 
 
 MAX_BYTES = 10 * 1024 * 1024
 BACKUP_COUNT = 5
-_LOG_DIR = Path(__file__).resolve().parents[2] / "logs"
 _FORMATTER = logging.Formatter(
     "%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
@@ -16,8 +16,9 @@ _FORMATTER = logging.Formatter(
 
 def _get_logger(name: str, filename: str) -> logging.Logger:
     """Retourne un logger fichier unique, sans multiplier ses handlers."""
-    _LOG_DIR.mkdir(parents=True, exist_ok=True)
-    path = _LOG_DIR / filename
+    log_dir = ApplicationPaths.from_runtime().logs_dir
+    log_dir.mkdir(parents=True, exist_ok=True)
+    path = log_dir / filename
     logger = logging.getLogger(name)
     logger.setLevel(logging.DEBUG)
     logger.propagate = False

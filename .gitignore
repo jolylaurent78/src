@@ -8,6 +8,7 @@
 /exports/
 /exports/TopoXML
 /logs/
+/user-data/
 *.log
 *.tmp
 .env

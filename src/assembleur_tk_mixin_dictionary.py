@@ -44,7 +44,7 @@ class TriangleViewerDictionaryMixin:
         self._build_dico_grid()
 
     def _init_dictionary(self, *, tagExclure: str | None) -> None:
-        """Construit le dictionnaire en lisant ../data/livre.txt."""
+        """Construit le dictionnaire depuis la ressource technique livrée."""
         if DictionnaireEnigmes is None:
             raise ImportError("Module DictionnaireEnigmes introuvable")
         livre_path = os.path.join(self.data_dir, "livre.txt")

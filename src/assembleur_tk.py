@@ -9,6 +9,7 @@ import re
 import copy
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 
 from tkinter import filedialog, messagebox, simpledialog, colorchooser
@@ -74,6 +75,7 @@ from src.assembleur_hypothesis_window import ScenarioHypothesisDialog
 from src.assembleur_catalogue import Catalogue
 from src.assembleur_catalogue_io import load_catalogue
 from src.assembleur_catalogue_identity import ApplicationContext, load_project_dotenv
+from src.assembleur_paths import ApplicationPaths
 from src.assembleur_deformation import (
     commit_deformation_copy_on_write,
     simulate_deformation_session,
@@ -496,7 +498,7 @@ class TriangleViewerManual(
 
         # --- Calibration fond (3 points) ---
         self._bg_calib_active = False
-        self._bg_calib_points_cfg = None  # dict chargé depuis data/maps/<carte>.calib_points.json
+        self._bg_calib_points_cfg = None  # dict chargé depuis resources/maps/<carte>.calib_points.json
         self._bg_calib_clicked_world = []  # [(x,y), ...] en coordonnées monde
         self._bg_calib_step = 0
 
@@ -536,26 +538,26 @@ class TriangleViewerManual(
         self.start_index = tk.IntVar(value=1)
         self.num_triangles = tk.IntVar(value=8)
         # Répertoires par défaut
-        self.data_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "data"))
         # Sous-répertoire dédié aux cartes (fond + fichiers de calibration)
-        self.maps_dir = os.path.join(self.data_dir, "maps")
-        self.scenario_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "scenario"))
         # Exports (artefacts diffables / validation)
-        self.exports_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "exports"))
-        self.topo_xml_dir = os.path.join(self.exports_dir, "TopoXML")
         # Répertoire des icônes
-        self.images_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "images"))
-        os.makedirs(self.scenario_dir, exist_ok=True)
-        os.makedirs(self.maps_dir, exist_ok=True)
-        os.makedirs(self.topo_xml_dir, exist_ok=True)
         # === Config (persistance des paramètres) ===
-        self.config_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "config"))
-        self.config_path = os.path.join(self.config_dir, "assembleur_config.json")
-        self.appConfig: Dict = {}
-        self.loadAppConfig()
         load_project_dotenv()
         self.application_context = ApplicationContext.from_environment()
-        self.catalogue_path = os.path.join(self.config_dir, "catalogue.json")
+        self.paths = ApplicationPaths.from_runtime()
+        self.paths.ensure_user_data_directories()
+        self.data_dir = str(self.paths.resource_texts_dir)
+        self.maps_dir = str(self.paths.resource_maps_dir)
+        self.calibrations_dir = str(self.paths.calibrations_dir)
+        self.scenario_dir = str(self.paths.user_scenarios_dir)
+        self.exports_dir = str(self.paths.exports_dir)
+        self.topo_xml_dir = str(self.paths.exports_dir / "TopoXML")
+        self.images_dir = str(self.paths.images_dir)
+        self.config_dir = str(self.paths.config_dir)
+        self.config_path = str(self.paths.config_path_for_runtime())
+        self.appConfig: Dict = {}
+        self.loadAppConfig()
+        self.catalogue_path = str(self.paths.catalogue_path_for_mode(self.application_context.mode))
         self.catalogue = _load_application_catalogue(
             self.catalogue_path,
             self.application_context.catalogue_id_provider,
@@ -688,7 +690,7 @@ class TriangleViewerManual(
         # Bind pour annuler avec ESC (drag ou sélection)
         self.bind("<Escape>", self._on_escape_key)
 
-        # === Dictionnaire : chargement automatique de ../data/livre.txt ===
+        # === Dictionnaire : chargement automatique depuis resources/texts/livre.txt ===
         self.dico: DictionnaireEnigmes | None = None
         self._initDicoExcludeMotsCodesFromConfig()
         self._init_dictionary(tagExclure=self._getDicoTagExclure())
@@ -6443,7 +6445,7 @@ class TriangleViewerManual(
         files = [f for f in os.listdir(self.scenario_dir) if f.lower().endswith(".xml")]
 
         if not files:
-            m.add_command(label="(aucun scénario dans 'scenario')", state="disabled")
+            m.add_command(label="(aucun scénario utilisateur)", state="disabled")
             return
         files.sort(key=str.lower)
         for fname in files:
@@ -6622,7 +6624,7 @@ class TriangleViewerManual(
             self.appConfig = {}
         if not self._bg:
             changed = False
-            for k in ("bgSvgPath", "bgWorldRect"):
+            for k in ("bgMap", "bgSvgPath", "bgWorldRect"):
                 if k in self.appConfig:
                     del self.appConfig[k]
                     changed = True
@@ -6630,7 +6632,14 @@ class TriangleViewerManual(
                 self.saveAppConfig()
             return
 
-        self.appConfig["bgSvgPath"] = str(self._bg.get("path") or "")
+        background_path = Path(str(self._bg.get("path") or ""))
+        resource_map = self.paths.resource_maps_dir / background_path.name
+        if background_path.is_file() and background_path.resolve() == resource_map.resolve():
+            self.appConfig["bgMap"] = resource_map.name
+            self.appConfig.pop("bgSvgPath", None)
+        else:
+            self.appConfig["bgSvgPath"] = str(background_path)
+            self.appConfig.pop("bgMap", None)
         self.appConfig["bgWorldRect"] = {
             "x0": float(self._bg.get("x0", 0.0)),
             "y0": float(self._bg.get("y0", 0.0)),
@@ -6659,8 +6668,14 @@ class TriangleViewerManual(
         """(interne) Effectue le vrai rechargement du fond après layout."""
 
         self._bg_startup_scheduled = False
+        map_name = self.getAppConfigValue("bgMap", "") or ""
         svg_path = self.getAppConfigValue("bgSvgPath", "") or ""
         rect = self.getAppConfigValue("bgWorldRect", None)
+        if map_name:
+            map_name = str(map_name)
+            if Path(map_name).name != map_name:
+                raise ValueError(f"Nom de carte livrée invalide : {map_name!r}")
+            svg_path = str(self.paths.resource_maps_dir / map_name)
         if not svg_path:
             return
 

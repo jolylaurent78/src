@@ -1,4 +1,5 @@
 from src.utils import logging_utils
+from src.assembleur_paths import ApplicationPaths
 
 
 def _handlers_for(logger, path):
@@ -9,23 +10,39 @@ def _handlers_for(logger, path):
 
 
 def test_loggers_create_files_without_duplicate_handlers(tmp_path, monkeypatch):
-    monkeypatch.setattr(logging_utils, "_LOG_DIR", tmp_path)
+    paths = ApplicationPaths.from_runtime(
+        installation_root=tmp_path / "installation",
+        user_data_root=tmp_path,
+    )
+    monkeypatch.setattr(
+        logging_utils.ApplicationPaths,
+        "from_runtime",
+        classmethod(lambda _cls: paths),
+    )
 
     app_logger = logging_utils.get_app_logger()
     mig_logger = logging_utils.get_mig_geo_logger()
     logging_utils.get_app_logger()
     logging_utils.get_mig_geo_logger()
 
-    assert (tmp_path / "app.log").is_file()
-    assert (tmp_path / "mig_geo.log").is_file()
-    assert len(_handlers_for(app_logger, tmp_path / "app.log")) == 1
-    assert len(_handlers_for(mig_logger, tmp_path / "mig_geo.log")) == 1
+    assert (paths.logs_dir / "app.log").is_file()
+    assert (paths.logs_dir / "mig_geo.log").is_file()
+    assert len(_handlers_for(app_logger, paths.logs_dir / "app.log")) == 1
+    assert len(_handlers_for(mig_logger, paths.logs_dir / "mig_geo.log")) == 1
 
 
 def test_mig_geo_log_rotates_with_standard_rotating_handler(tmp_path, monkeypatch):
-    monkeypatch.setattr(logging_utils, "_LOG_DIR", tmp_path)
+    paths = ApplicationPaths.from_runtime(
+        installation_root=tmp_path / "installation",
+        user_data_root=tmp_path,
+    )
+    monkeypatch.setattr(
+        logging_utils.ApplicationPaths,
+        "from_runtime",
+        classmethod(lambda _cls: paths),
+    )
     logger = logging_utils.get_mig_geo_logger()
-    handler = _handlers_for(logger, tmp_path / "mig_geo.log")[0]
+    handler = _handlers_for(logger, paths.logs_dir / "mig_geo.log")[0]
     handler.maxBytes = 100
     handler.backupCount = 5
 
@@ -33,5 +50,5 @@ def test_mig_geo_log_rotates_with_standard_rotating_handler(tmp_path, monkeypatc
         logger.info("[MIG-GEO] ligne de test suffisamment longue pour déclencher une rotation")
     handler.flush()
 
-    assert (tmp_path / "mig_geo.log").is_file()
-    assert (tmp_path / "mig_geo.log.1").is_file()
+    assert (paths.logs_dir / "mig_geo.log").is_file()
+    assert (paths.logs_dir / "mig_geo.log.1").is_file()

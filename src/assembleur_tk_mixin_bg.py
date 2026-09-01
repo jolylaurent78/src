@@ -54,7 +54,7 @@ class TriangleViewerBackgroundMapMixin:
     def _bg_calibrate_start(self):
         """Démarre un calibrage du fond en cliquant 3 points (villes) définis dans un fichier JSON.
 
-        Fichier attendu (dans ../data/maps) :
+        Fichier de points fourni (dans resources/maps) :
             <nom_de_la_carte>.calib_points.json
         Exemple :
             {
@@ -65,7 +65,7 @@ class TriangleViewerBackgroundMapMixin:
               ]
             }
 
-        Résultat sauvegardé (dans ../data/maps) :
+        Résultat sauvegardé (dans user-data/calibrations) :
             <nom_de_la_carte>.json
         """
         if not self._bg or not self._bg.get("path"):
@@ -226,7 +226,7 @@ class TriangleViewerBackgroundMapMixin:
 
         # Sauvegarde
         base = os.path.splitext(os.path.basename(str(svg_path)))[0]
-        out_path = os.path.join(self.maps_dir, f"{base}.json")
+        out_path = os.path.join(self.calibrations_dir, f"{base}.json")
 
         payload = {
             "type": "bg_calibration_3points",
@@ -256,7 +256,7 @@ class TriangleViewerBackgroundMapMixin:
             "affineLambertKmToWorld": [inv_a, inv_b, inv_c, inv_d, inv_e, inv_f],
         }
 
-        os.makedirs(self.maps_dir, exist_ok=True)
+        os.makedirs(self.calibrations_dir, exist_ok=True)
         with open(out_path, "w", encoding="utf-8") as f_out:
             json.dump(payload, f_out, ensure_ascii=False, indent=2)
 
@@ -281,13 +281,24 @@ class TriangleViewerBackgroundMapMixin:
             self._redraw_from(self._last_drawn)
 
     def _bg_try_load_calibration(self, svg_path: str):
-        """Charge data/maps/<carte>.json si présent (calibration 3 points).
+        """Charge une calibration utilisateur ou, à défaut, celle livrée.
         Objectif: disposer de affineLambertKmToWorld pour convertir (Lambert93 km) -> coordonnées monde.
         """
         try:
             base = os.path.splitext(os.path.basename(str(svg_path)))[0]
-            calib_path = os.path.join(self.maps_dir, f"{base}.json")
-            if not os.path.isfile(calib_path):
+            calibration_name = f"{base}.json"
+            calib_path = next(
+                (
+                    candidate
+                    for candidate in (
+                        os.path.join(self.calibrations_dir, calibration_name),
+                        os.path.join(self.maps_dir, calibration_name),
+                    )
+                    if os.path.isfile(candidate)
+                ),
+                None,
+            )
+            if calib_path is None:
                 self._bg_calib_data = None
                 self._bg_scale_base_w = None
                 return
