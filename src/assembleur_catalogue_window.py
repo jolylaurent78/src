@@ -91,7 +91,7 @@ class CitySelectionDialog(tk.Toplevel):
         self.resizable(True, True)
         self.minsize(280, 320)
         self.result: str | None = None
-        self._cities = list(cities)
+        self._cities = sorted(cities, key=lambda city: (city.name.casefold(), city.city_id))
         self._selected_city_id = selected_city_id
         self._search_var = tk.StringVar()
 
@@ -148,52 +148,6 @@ class CitySelectionDialog(tk.Toplevel):
         visible = self._visible_cities()
         if selection:
             self.result = visible[selection[0]].city_id
-            self.destroy()
-
-
-class BeaconAddDialog(tk.Toplevel):
-    """Choisit la ville non archivée qui portera une nouvelle balise."""
-
-    def __init__(self, parent, cities: list[CatalogueCity]):
-        super().__init__(parent)
-        self.title("Ajouter une balise")
-        self.transient(parent)
-        self.resizable(False, False)
-        self.result: str | None = None
-        self._cities = list(cities)
-        self._selected_name = tk.StringVar()
-
-        root = ttk.Frame(self, padding=10)
-        root.pack(fill=tk.BOTH, expand=True)
-        root.columnconfigure(1, weight=1)
-        ttk.Label(root, text="Ville :").grid(row=0, column=0, sticky="w")
-        self._selector = ttk.Combobox(
-            root,
-            state="readonly",
-            textvariable=self._selected_name,
-            values=tuple(city.name for city in self._cities),
-            width=36,
-        )
-        self._selector.grid(row=0, column=1, sticky="ew", padx=(8, 0))
-        if self._cities:
-            self._selector.current(0)
-        buttons = ttk.Frame(root)
-        buttons.grid(row=1, column=0, columnspan=2, sticky="e", pady=(10, 0))
-        ttk.Button(buttons, text="OK", command=self._accept).pack(side=tk.LEFT)
-        ttk.Button(buttons, text="Annuler", command=self.destroy).pack(side=tk.LEFT, padx=(6, 0))
-        self.bind("<Return>", lambda _event: self._accept())
-        self.bind("<Escape>", lambda _event: self.destroy())
-        self._selector.focus_set()
-        self.grab_set()
-
-    def show(self) -> str | None:
-        self.wait_window()
-        return self.result
-
-    def _accept(self) -> None:
-        index = self._selector.current()
-        if 0 <= index < len(self._cities):
-            self.result = self._cities[index].city_id
             self.destroy()
 
 
@@ -2274,7 +2228,15 @@ class CatalogueWindow(tk.Toplevel):
         )
 
     def _add_beacon(self):
-        city_id = BeaconAddDialog(self, self._available_beacon_cities()).show()
+        cities = self._available_beacon_cities()
+        if not cities:
+            messagebox.showinfo(
+                "Ajouter une balise",
+                "Aucune ville disponible pour créer une nouvelle balise.",
+                parent=self,
+            )
+            return
+        city_id = CitySelectionDialog(self, cities).show()
         if city_id is None:
             return
         try:

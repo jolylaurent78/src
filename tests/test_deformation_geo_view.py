@@ -3,7 +3,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.assembleur_deformation_window import derive_assembly_view_rotation_deg
+from src.assembleur_deformation_window import (
+    DEFORMATION_MAXIMUM_ZOOM,
+    derive_assembly_view_rotation_deg,
+)
 from src.assembleur_geo_map_view import GeoMapView
 
 
@@ -102,3 +105,8 @@ def test_geo_map_view_default_maximum_zoom_remains_half_for_zoom_interaction():
     view._zoom_at(400.0, 300.0, 100.0)
 
     assert view._view_scale == pytest.approx(0.5)
+
+
+def test_deformation_window_allows_four_times_the_standard_maximum_zoom():
+    standard = inspect.signature(GeoMapView).parameters["maximum_zoom"].default
+    assert DEFORMATION_MAXIMUM_ZOOM == pytest.approx(standard * 4)

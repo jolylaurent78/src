@@ -1,5 +1,9 @@
 """REF-001B: commits DEFORM copy-on-write sans mutation Catalogue."""
 
+from types import SimpleNamespace
+
+import numpy as np
+
 import pytest
 
 from src.assembleur_catalogue import Catalogue
@@ -51,6 +55,141 @@ def _working_points(*items):
         point_id: WorkingPoint(point_id, coordinate, set(occurrences))
         for point_id, coordinate, occurrences in items
     }
+
+
+def _viewer_with_dirty_cow_preview():
+    catalogue, scenario, _triangle, element_id = _scenario_with_catalogue_triangle()
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.catalogue = catalogue
+    viewer._get_active_scenario = lambda: scenario
+    viewer.status = type("Status", (), {"config": lambda self, **_kwargs: None})()
+    viewer._show_deformation_preview = lambda _world: None
+    viewer._refresh_deformation_window = lambda **_kwargs: None
+    viewer._rebuild_triangle_listbox_from_core = lambda: None
+    viewer._screen_to_world = lambda x, y: (float(x), float(y))
+    state = viewer._deformation_state
+    state.enter()
+    state.working_reference = scenario.reference.clone()
+    state.working_hypothesis = scenario.hypothesis.clone()
+    state.select(element_id, scenario.topoWorld)
+    state.begin_drag("L")
+    original = GeometryReferenceResolver(
+        catalogue, scenario.reference
+    ).get_city_lambert(scenario.topoWorld.elements[element_id].vertex_business_ids[2])
+    state.ensure_working_point((element_id, "L"), original)
+    preview = viewer._apply_deformation_occurrence_overrides(
+        state.candidate_occurrence_overrides((700000.0, 6600000.0))
+    )
+    state.accept_occurrence_candidate((700000.0, 6600000.0), preview)
+    return viewer, scenario, element_id
+
+
+def _published_snapshot(scenario):
+    return {
+        "reference": scenario.reference.clone(),
+        "hypothesis": list(scenario.hypothesis.triangle_ids_by_rank),
+        "poses": {
+            element_id: scenario.topoWorld.getElementPose(element_id)
+            for element_id in scenario.topoWorld.elements
+        },
+        "sources": {
+            element_id: element.source_triangle_id
+            for element_id, element in scenario.topoWorld.elements.items()
+        },
+    }
+
+
+def _assert_published_snapshot(scenario, snapshot):
+    assert scenario.reference.cities == snapshot["reference"].cities
+    assert scenario.reference.triangles == snapshot["reference"].triangles
+    assert scenario.hypothesis.triangle_ids_by_rank == snapshot["hypothesis"]
+    assert {
+        element_id: element.source_triangle_id
+        for element_id, element in scenario.topoWorld.elements.items()
+    } == snapshot["sources"]
+    for element_id, expected in snapshot["poses"].items():
+        actual = scenario.topoWorld.getElementPose(element_id)
+        np.testing.assert_allclose(actual[0], expected[0])
+        np.testing.assert_allclose(actual[1], expected[1])
+        assert actual[2] is expected[2]
+
+
+def _prepare_deformation_release(viewer):
+    viewer._clock_dragging = False
+    viewer._bg_resizing = None
+    viewer._bg_moving = None
+    viewer._pan_anchor = None
+    viewer._drag = None
+    viewer._reset_assist = lambda: None
+
+
+def test_dirty_deformation_main_rotation_uses_stri_preview_without_publishing():
+    viewer, scenario, element_id = _viewer_with_dirty_cow_preview()
+    state = viewer._deformation_state
+    published_before = _published_snapshot(scenario)
+    preview_before = state.last_accepted_world.clonePhysicalState()
+    group_id = preview_before.get_group_of_element(element_id)
+    viewer._sel = {
+        "mode": "rotate_group_anchor_drag",
+        "core_group_id": group_id,
+        "pivot_world": np.array((0.0, 0.0)),
+        "mouse_angle_start": 0.0,
+        "deformation_base_world": preview_before,
+    }
+
+    _prepare_deformation_release(viewer)
+    viewer._on_canvas_left_move(SimpleNamespace(x=0.0, y=1.0))
+    first_motion_pose = state.last_accepted_world.getElementPose(element_id)
+    viewer._on_canvas_left_move(SimpleNamespace(x=0.0, y=1.0))
+    second_motion_pose = state.last_accepted_world.getElementPose(element_id)
+    np.testing.assert_allclose(second_motion_pose[0], first_motion_pose[0])
+    np.testing.assert_allclose(second_motion_pose[1], first_motion_pose[1])
+    viewer._on_canvas_left_up(SimpleNamespace(x=0.0, y=1.0))
+
+    assert state.last_accepted_world.elements[element_id].source_triangle_id.startswith("STRI-")
+    assert state.working_hypothesis.get_rank_for_triangle_ref(
+        state.last_accepted_world.elements[element_id].source_triangle_id
+    ) == 25
+    assert state.dirty is True
+    assert viewer._sel is None
+    _assert_published_snapshot(scenario, published_before)
+
+    viewer._validate_deformation_session()
+
+    assert scenario.topoWorld.elements[element_id].source_triangle_id.startswith("STRI-")
+    assert scenario.hypothesis.get_rank_for_triangle_ref(
+        scenario.topoWorld.elements[element_id].source_triangle_id
+    ) == 25
+    assert state.dirty is False
+
+
+def test_dirty_deformation_main_move_is_candidate_only_and_close_discards_it():
+    viewer, scenario, element_id = _viewer_with_dirty_cow_preview()
+    state = viewer._deformation_state
+    published_before = _published_snapshot(scenario)
+    preview_before = state.last_accepted_world.clonePhysicalState()
+    group_id = preview_before.get_group_of_element(element_id)
+    viewer._sel = {
+        "mode": "move_group",
+        "core_group_id": group_id,
+        "mouse_world_start": np.array((0.0, 0.0)),
+        "deformation_base_world": preview_before,
+    }
+
+    _prepare_deformation_release(viewer)
+    viewer._on_canvas_left_move(SimpleNamespace(x=10.0, y=-5.0))
+    viewer._on_canvas_left_up(SimpleNamespace(x=20.0, y=-10.0))
+
+    before_pose = preview_before.getElementPose(element_id)
+    after_pose = state.last_accepted_world.getElementPose(element_id)
+    np.testing.assert_allclose(after_pose[1], before_pose[1] + np.array((20.0, -10.0)))
+    assert state.last_accepted_world.elements[element_id].source_triangle_id.startswith("STRI-")
+    assert state.dirty is True
+    assert viewer._sel is None
+    _assert_published_snapshot(scenario, published_before)
+
+    state.exit()
+    _assert_published_snapshot(scenario, published_before)
 
 
 def test_canvas_display_context_uses_the_preview_world_and_hypothesis():

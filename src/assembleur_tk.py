@@ -728,12 +728,14 @@ class TriangleViewerManual(
         core_gid = world.get_group_of_element(element_id)
         return core_gid if core_gid else None
 
-    def _get_core_group_id_for_triangle_index(self, tri_index: int) -> Optional[str]:
+    def _get_core_group_id_for_triangle_index(
+        self, tri_index: int, world: TopologyWorld | None = None
+    ) -> Optional[str]:
         """Resout un triangle projete vers son groupe Core canonique."""
         if not (0 <= int(tri_index) < len(self._last_drawn)):
             return None
-        scen = self._get_active_scenario()
-        world = scen.topoWorld
+        if world is None:
+            world = self._get_active_scenario().topoWorld
         topo_element_id = str(self._last_drawn[int(tri_index)].get("topoElementId", "") or "").strip()
         if not topo_element_id:
             return None
@@ -741,25 +743,29 @@ class TriangleViewerManual(
         core_group_id = world.get_group_of_element(topo_element_id)
         return None if not core_group_id else core_group_id
 
-    def _get_projected_elements_for_core_group(self, core_group_id: str) -> Tuple[Dict, ...]:
+    def _get_projected_elements_for_core_group(
+        self, core_group_id: str, world: TopologyWorld | None = None
+    ) -> Tuple[Dict, ...]:
         """Retourne la projection des membres du groupe Core canonique."""
-        scen = self._get_active_scenario()
-        world = scen.topoWorld
+        if world is None:
+            world = self._get_active_scenario().topoWorld
         if not core_group_id:
             return ()
 
         element_ids = world.getGroupElementIds(core_group_id)
         return self.canvas_objects.get_many_by_topology_ids(element_ids)
 
-    def get_last_drawn_entries_for_core_group(self, core_group_id: str) -> List[Dict]:
+    def get_last_drawn_entries_for_core_group(
+        self, core_group_id: str, world: TopologyWorld | None = None
+    ) -> List[Dict]:
         """Navigue ``groupe Core -> element_ids -> entrées UI``.
 
         Le groupe est canonisé par ``TopologyWorld``. Les éléments absents du
         cache UI sont simplement omis : le validateur DEBUG est chargé de les
         signaler sans interrompre le comportement existant.
         """
-        scen = self._get_active_scenario()
-        world = scen.topoWorld
+        if world is None:
+            world = self._get_active_scenario().topoWorld
         if world is None or not core_group_id:
             return []
         element_ids = world.getGroupElementIds(core_group_id)
@@ -1649,7 +1655,13 @@ class TriangleViewerManual(
             triangle_ref_id = element.source_triangle_id
             if not triangle_ref_id:
                 raise ValueError("Triangle de deformation sans source Catalogue")
-            rank = scenario.hypothesis.get_rank_for_triangle_ref(triangle_ref_id)
+            # Un world de base peut encore porter un TRI publie tandis que le
+            # draft COW porte deja le STRI du meme rang. Une ref effective
+            # STRI doit toutefois toujours etre resolue dans le draft.
+            if triangle_ref_id in working_hypothesis.triangle_ids_by_rank:
+                rank = working_hypothesis.get_rank_for_triangle_ref(triangle_ref_id)
+            else:
+                rank = scenario.hypothesis.get_rank_for_triangle_ref(triangle_ref_id)
             effective_triangle_ref_id = working_hypothesis.triangle_ids_by_rank[rank - 1]
             if effective_triangle_ref_id != triangle_ref_id:
                 candidate_world.replace_element_materialized_definition(
@@ -2439,9 +2451,54 @@ class TriangleViewerManual(
         self._show_deformation_preview(result_world)
         self._refresh_deformation_window()
 
+    def _deformation_effective_world(self) -> TopologyWorld:
+        """Retourne le world candidat affiche, jamais le world publie en priorite."""
+        state = self._deformation_state
+        return (
+            state.last_accepted_world
+            or state.reference_world
+            or self._get_active_scenario().topoWorld
+        )
+
+    def _accept_deformation_main_candidate(
+        self, candidate_reference: TopologyWorld, *, changed: bool
+    ) -> None:
+        """Rejoue DEFORM sur un geste Main sans publier le scenario."""
+        state = self._deformation_state
+        state.replace_reference_world(candidate_reference)
+        result_world = self._apply_deformation_occurrence_overrides(
+            state.occurrence_lambert_overrides()
+        )
+        if result_world is None:
+            raise RuntimeError("Le candidat Main DEFORM ne peut pas etre rejoue")
+        state.last_accepted_world = result_world
+        if changed:
+            state.dirty = True
+        self._show_deformation_preview(result_world)
+        self._refresh_deformation_window()
+
+    def _preview_deformation_group_translation(self, event) -> None:
+        """Construit le candidat de translation Main depuis le snapshot DEFORM."""
+        selection = self._sel
+        if not isinstance(selection, dict):
+            raise RuntimeError("Selection MOVE absente en mode deformation")
+        core_group_id = selection.get("core_group_id")
+        base_world = selection.get("deformation_base_world")
+        if core_group_id is None or not isinstance(base_world, TopologyWorld):
+            raise RuntimeError("Base DEFORM absente pendant le MOVE")
+        delta = self._get_move_drag_delta_world(event)
+        candidate_reference = base_world.clonePhysicalState()
+        candidate_reference.move_group(
+            str(core_group_id), float(delta[0]), float(delta[1])
+        )
+        self._accept_deformation_main_candidate(
+            candidate_reference,
+            changed=bool(float(np.linalg.norm(delta)) > 1e-9),
+        )
+
     def _preview_deformation_rotation(self, event) -> None:
         state = self._deformation_state
-        if state.reference_world is None or state.element_id is None:
+        if state.element_id is None:
             raise RuntimeError("Etat de deformation incomplet pendant la rotation")
         selection = self._sel
         if not isinstance(selection, dict):
@@ -2455,16 +2512,15 @@ class TriangleViewerManual(
             self._rotation_angle_from_mouse_world(mouse_world, pivot_world)
             - float(selection["mouse_angle_start"])
         )
-        preview_reference = state.reference_world.clonePhysicalState()
+        base_world = selection.get("deformation_base_world")
+        if not isinstance(base_world, TopologyWorld):
+            raise RuntimeError("Base DEFORM absente pendant la rotation")
+        preview_reference = base_world.clonePhysicalState()
         preview_reference.rotate_group(core_group_id, pivot_world, angle_delta)
-        state.replace_reference_world(preview_reference)
-        result_world = self._apply_deformation_occurrence_overrides(
-            state.occurrence_lambert_overrides()
+        self._accept_deformation_main_candidate(
+            preview_reference,
+            changed=bool(abs(angle_delta) > 1e-9),
         )
-        if result_world is not None:
-            state.last_accepted_world = result_world
-            self._show_deformation_preview(result_world)
-            self._refresh_deformation_window()
 
     def _handle_deformation_left_down(self, event):
         state = self._deformation_state
@@ -8312,9 +8368,13 @@ class TriangleViewerManual(
         g = self.groups.get(gid)
         return [] if not g else g["nodes"]
 
-    def _group_centroid(self, core_group_id: str) -> Optional[np.ndarray]:
+    def _group_centroid(
+        self, core_group_id: str, world: TopologyWorld | None = None
+    ) -> Optional[np.ndarray]:
         """Barycentre des elements projetes d'un groupe Core."""
-        projected_elements = self._get_projected_elements_for_core_group(core_group_id)
+        projected_elements = self._get_projected_elements_for_core_group(
+            core_group_id, world
+        )
         if not projected_elements:
             return None
         sx = sy = 0.0
@@ -10380,7 +10440,12 @@ class TriangleViewerManual(
 
         self._commit_move_group_to_core(core_group_id, dx_w, dy_w)
 
-    def _prepare_core_group_operation_members(self, operation: str, tri_index: int) -> Dict:
+    def _prepare_core_group_operation_members(
+        self,
+        operation: str,
+        tri_index: int,
+        world: TopologyWorld | None = None,
+    ) -> Dict:
         """Prepare les membres projetes d'une operation depuis le seul Core."""
         operation_name = str(operation or "MIG-GEO").upper()
         result = {"core_group_id": None, "entries": []}
@@ -10389,11 +10454,16 @@ class TriangleViewerManual(
             return result
         triangle = self._last_drawn[int(tri_index)]
         topo_element_id = str(triangle.get("topoElementId", "") or "").strip()
-        core_group_id = self._get_core_group_id_for_triangle_index(int(tri_index))
+        effective_world = world or self._get_active_scenario().topoWorld
+        core_group_id = self._get_core_group_id_for_triangle_index(
+            int(tri_index), effective_world
+        )
         if not core_group_id:
             MIG_GEO_LOGGER.warning("[%s] groupe Core introuvable topoElementId=%s", operation_name, topo_element_id or "(absent)")
             return result
-        entries = list(self._get_projected_elements_for_core_group(core_group_id))
+        entries = list(
+            self._get_projected_elements_for_core_group(core_group_id, effective_world)
+        )
         MIG_GEO_LOGGER.debug(
             "[%s] topoElementId=%s CoreGroupId=%s Members=%s",
             operation_name,
@@ -10405,7 +10475,12 @@ class TriangleViewerManual(
             MIG_GEO_LOGGER.warning("[%s] aucun membre projete CoreGroupId=%s", operation_name, core_group_id)
         return {"core_group_id": core_group_id, "entries": entries}
 
-    def _resolve_core_vertex_move_members(self, tri_index: int, vkey: str) -> Dict:
+    def _resolve_core_vertex_move_members(
+        self,
+        tri_index: int,
+        vkey: str,
+        world: TopologyWorld | None = None,
+    ) -> Dict:
         """Résout le groupe Core du sommet sélectionné, sans lire les groupes UI."""
         result = {
             "core_group_id": None,
@@ -10421,8 +10496,7 @@ class TriangleViewerManual(
         if vertex_type not in ("O", "B", "L"):
             return result
 
-        scen = self._get_active_scenario()
-        world = scen.topoWorld
+        world = world or self._get_active_scenario().topoWorld
         element_id = str(self._last_drawn[int(tri_index)].get("topoElementId", "") or "").strip()
         if not element_id:
             return result
@@ -10430,7 +10504,7 @@ class TriangleViewerManual(
         node_id = world.get_element_vertex_node_id_by_type(element_id, vertex_type)
         node_canon = world.find_node(node_id)
         core_group_id = str(world.get_group_of_element(element_id))
-        entries = self.get_last_drawn_entries_for_core_group(core_group_id)
+        entries = self.get_last_drawn_entries_for_core_group(core_group_id, world)
 
         result.update({
             "core_group_id": core_group_id,
@@ -10716,6 +10790,8 @@ class TriangleViewerManual(
             ),
             "auto_collective": self._is_active_auto_scenario(),
         }
+        if self._deformation_state.active:
+            self._sel["deformation_base_world"] = world.clonePhysicalState()
         self._draw_anchor_rotation_pivot_highlight(pivot_world)
         self.status.config(
             text=f"Rotation du groupe Core {core_group_id} autour de la balise {anchor.beacon_id}."
@@ -10836,21 +10912,38 @@ class TriangleViewerManual(
         if self._drag:
             return
         mode, idx, extra = self._hit_test(event.x, event.y)
+        if (
+            self._deformation_state.active
+            and self._deformation_canvas_mode == "move"
+            and idx is not None
+        ):
+            entry = self._last_drawn[idx]
+            element_id = str(entry.get("topoElementId", "") or "").strip()
+            if not element_id:
+                raise ValueError("Triangle projete sans topoElementId")
+            if not self._select_deformation_element(element_id):
+                return "break"
+        deformation_world = (
+            self._deformation_effective_world()
+            if self._deformation_state.active
+            else None
+        )
         if mode == "center":
             wx = (event.x - self.offset[0]) / self.zoom
             wy = (self.offset[1] - event.y) / self.zoom
             # Groupe obligatoire : on démarre toujours un move_group
-            move_members = self._prepare_core_group_operation_members("MOVE", idx)
+            move_members = self._prepare_core_group_operation_members(
+                "MOVE", idx, deformation_world
+            )
             core_group_id = move_members["core_group_id"]
             move_member_entries = move_members["entries"]
             if not core_group_id or not move_member_entries:
                 return
-            group_centroid = self._group_centroid(core_group_id)
+            group_centroid = self._group_centroid(core_group_id, deformation_world)
             if group_centroid is None:
                 return
             is_auto_move = self._is_active_auto_scenario()
-            scen = self._get_active_scenario()
-            world = scen.topoWorld
+            world = deformation_world or self._get_active_scenario().topoWorld
             anchor = world.getAnchorForGroup(core_group_id)
             if anchor is not None:
                 return self._begin_anchored_group_rotation_drag(
@@ -10866,6 +10959,8 @@ class TriangleViewerManual(
                 "mouse_world_start": np.array([wx, wy], dtype=float),
                 "move_preview_initial_pts": preview_initial_pts,
             }
+            if self._deformation_state.active:
+                self._sel["deformation_base_world"] = world.clonePhysicalState()
             if is_auto_move:
                 self._sel.update({
                     "auto_geom": True,
@@ -10881,11 +10976,12 @@ class TriangleViewerManual(
             wy = (self.offset[1] - event.y) / self.zoom
             # NOTE: si on est en déconnexion, on désactivera toute aide au collage
 
-            vertex_move_members = self._resolve_core_vertex_move_members(idx, vkey)
+            vertex_move_members = self._resolve_core_vertex_move_members(
+                idx, vkey, deformation_world
+            )
             if not vertex_move_members["entries"]:
                 return
-            scen = self._get_active_scenario()
-            world = scen.topoWorld
+            world = deformation_world or self._get_active_scenario().topoWorld
             core_group_id = vertex_move_members["core_group_id"]
             anchor = world.getAnchorForGroup(core_group_id)
             if anchor is not None:
@@ -10898,8 +10994,7 @@ class TriangleViewerManual(
                 # Les membres proviennent du groupe résolu par le sommet Core.
                 move_members = vertex_move_members
                 is_auto_move = self._is_active_auto_scenario()
-                scen = self._get_active_scenario()
-                world = scen.topoWorld
+                world = deformation_world or self._get_active_scenario().topoWorld
                 preview_initial_pts = (
                     self._capture_move_preview_initial_pts(world, str(move_members["core_group_id"]))
                     if not is_auto_move else {}
@@ -10913,6 +11008,8 @@ class TriangleViewerManual(
                     "anchor": {"type": "vertex", "tid": idx, "vkey": vkey},
                     "suppress_assist": False,
                 }
+                if self._deformation_state.active:
+                    self._sel["deformation_base_world"] = world.clonePhysicalState()
                 if is_auto_move:
                     self._sel.update({
                         "auto_geom": True,
@@ -10931,8 +11028,7 @@ class TriangleViewerManual(
                 # Les membres proviennent du groupe résolu par le sommet Core.
                 move_members = vertex_move_members
                 is_auto_move = self._is_active_auto_scenario()
-                scen = self._get_active_scenario()
-                world = scen.topoWorld
+                world = deformation_world or self._get_active_scenario().topoWorld
                 preview_initial_pts = (
                     self._capture_move_preview_initial_pts(world, str(move_members["core_group_id"]))
                     if not is_auto_move else {}
@@ -10947,6 +11043,8 @@ class TriangleViewerManual(
                     # on veut l'aide de collage active
                     "suppress_assist": False,
                 }
+                if self._deformation_state.active:
+                    self._sel["deformation_base_world"] = world.clonePhysicalState()
                 if is_auto_move:
                     self._sel.update({
                         "auto_geom": True,
@@ -11045,6 +11143,13 @@ class TriangleViewerManual(
 
         # --- Déplacement de GROUPE ---
         if self._sel["mode"] == "move_group":
+            if self._deformation_state.active:
+                try:
+                    self._preview_deformation_group_translation(event)
+                except (ValueError, RuntimeError) as exc:
+                    self._exit_deformation_mode()
+                    messagebox.showerror("Deformation", str(exc), parent=self)
+                return "break"
             # Pendant une déconnexion, ne jamais montrer l'aide de collage
             if self._sel.get("suppress_assist"):
                 self._reset_assist()
@@ -11255,6 +11360,16 @@ class TriangleViewerManual(
 
         mode = self._sel.get("mode")
         if mode == "rotate_group_anchor_drag":
+            if self._deformation_state.active:
+                try:
+                    self._preview_deformation_rotation(event)
+                except (ValueError, RuntimeError) as exc:
+                    self._exit_deformation_mode()
+                    messagebox.showerror("Deformation", str(exc), parent=self)
+                    return "break"
+                self._sel = None
+                self._reset_assist()
+                return "break"
             core_group_id = self._sel.get("core_group_id")
             pivot_world = np.asarray(self._sel["pivot_world"], dtype=float)
             scen = self._get_active_scenario()
@@ -11286,6 +11401,16 @@ class TriangleViewerManual(
             return
 
         if mode == "move_group":
+            if self._deformation_state.active:
+                try:
+                    self._preview_deformation_group_translation(event)
+                except (ValueError, RuntimeError) as exc:
+                    self._exit_deformation_mode()
+                    messagebox.showerror("Deformation", str(exc), parent=self)
+                    return "break"
+                self._sel = None
+                self._reset_assist()
+                return "break"
             # Collage du GROUPE quand on l'a déplacé PAR SOMMET (ancre=vertex)
             # et que l'aide de collage était active (pas en déconnexion).
             anchor = self._sel.get("anchor")

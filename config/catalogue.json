@@ -466,9 +466,9 @@
     },
     {
       "cityId": "CITY-0067",
-      "name": "Bâle",
-      "latitude": 47.566944444444445,
-      "longitude": 7.583055555555555,
+      "name": "Frontière Sud",
+      "latitude": 47.49166666666667,
+      "longitude": 7.148333333333333,
       "archived": false
     },
     {
@@ -738,6 +738,11 @@
     {
       "beaconId": "BEA-0003",
       "cityId": "CITY-0095",
+      "archived": false
+    },
+    {
+      "beaconId": "BEA-0004",
+      "cityId": "CITY-0067",
       "archived": false
     }
   ],
@@ -1189,6 +1194,14 @@
       "baseCityId": "CITY-0031",
       "lightCityId": "CITY-0080",
       "archived": false
+    },
+    {
+      "triangleId": "TRI-0057",
+      "note": "LA",
+      "openingCityId": "CITY-0018",
+      "baseCityId": "CITY-0030",
+      "lightCityId": "CITY-0054",
+      "archived": false
     }
   ],
   "templates": [
@@ -1264,9 +1277,9 @@
         "TRI-0022",
         "TRI-0050",
         "TRI-0051",
-        "TRI-0055",
+        "TRI-0046",
         "TRI-0028",
-        "TRI-0029",
+        "TRI-0057",
         "TRI-0030",
         "TRI-0056",
         "TRI-0031"

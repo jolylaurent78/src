@@ -23,6 +23,9 @@ from src.assembleur_geo_map_view import (
 from src.assembleur_tooltip import attach_tooltip
 
 
+DEFORMATION_MAXIMUM_ZOOM = 2.0
+
+
 @dataclass(frozen=True)
 class DeformationVertex:
     role: str
@@ -241,6 +244,7 @@ class DeformationWindow(tk.Toplevel):
             on_marker_dragged=self._marker_dragged,
             on_marker_drag_released=self._marker_drag_released,
             on_marker_selected=self._marker_selected,
+            maximum_zoom=DEFORMATION_MAXIMUM_ZOOM,
         )
         self.map_view.pack(fill=tk.BOTH, expand=True)
         self.map_view.set_map(calibrated_map)
