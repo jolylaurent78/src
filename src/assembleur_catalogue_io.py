@@ -1,4 +1,4 @@
-"""Persistance JSON V1 du catalogue, indépendante de toute interface Tk."""
+"""Persistance JSON V2 du catalogue, indépendante de toute interface Tk."""
 
 from __future__ import annotations
 
@@ -14,16 +14,21 @@ from src.assembleur_catalogue import (
     CatalogueTriangle,
     HypothesisTemplate,
 )
+from src.assembleur_catalogue_identity import CATALOGUE_ID_KIND_ORDER, CatalogueIdProvider
 
 
-_VERSION = 1
+_VERSION = Catalogue.version
 
 
 def catalogue_to_dict(catalogue: Catalogue) -> dict[str, Any]:
-    """Produit la représentation JSON V1 déterministe d'un catalogue valide."""
+    """Produit la représentation JSON V2 déterministe d'un catalogue valide."""
     catalogue.validate()
     return {
         "version": _VERSION,
+        "idCounters": {
+            kind: catalogue.id_counters[kind]
+            for kind in CATALOGUE_ID_KIND_ORDER
+        },
         "defaultTemplateId": catalogue.default_template_id,
         "cities": [
             {
@@ -79,6 +84,13 @@ def _require_list(value: object, label: str) -> list[Any]:
     return value
 
 
+def _require_field(mapping: dict[str, Any], key: str) -> Any:
+    try:
+        return mapping[key]
+    except KeyError as exc:
+        raise ValueError(f"Catalogue invalide : champ obligatoire absent : {key}.") from exc
+
+
 def _require_str(value: object, label: str) -> str:
     if not isinstance(value, str):
         raise ValueError(f"Catalogue invalide : {label} doit être une chaîne.")
@@ -97,6 +109,33 @@ def _require_number(value: object, label: str) -> float:
     return float(value)
 
 
+def _require_id_counters(value: object) -> dict[str, int]:
+    counters = _require_mapping(value, "idCounters")
+    expected_keys = set(CATALOGUE_ID_KIND_ORDER)
+    actual_keys = set(counters)
+    if actual_keys != expected_keys:
+        missing = sorted(expected_keys - actual_keys)
+        unexpected = sorted(actual_keys - expected_keys)
+        details = []
+        if missing:
+            details.append(f"clés manquantes : {', '.join(missing)}")
+        if unexpected:
+            details.append(f"clés inconnues : {', '.join(unexpected)}")
+        raise ValueError(
+            "Catalogue invalide : idCounters doit contenir exactement les clés "
+            f"{', '.join(CATALOGUE_ID_KIND_ORDER)} ({'; '.join(details)})."
+        )
+    restored: dict[str, int] = {}
+    for kind in CATALOGUE_ID_KIND_ORDER:
+        counter = counters[kind]
+        if isinstance(counter, bool) or not isinstance(counter, int) or counter < 0:
+            raise ValueError(
+                f"Catalogue invalide : idCounters.{kind} doit être un entier positif ou nul."
+            )
+        restored[kind] = counter
+    return restored
+
+
 def _require_rank_ids(value: object, label: str) -> list[str | None]:
     ranks = _require_list(value, label)
     if len(ranks) != 32:
@@ -106,20 +145,21 @@ def _require_rank_ids(value: object, label: str) -> list[str | None]:
     return list(ranks)
 
 
-def catalogue_from_dict(data: object) -> Catalogue:
-    """Réhydrate strictement un catalogue V1, sans régénérer les identifiants."""
+def catalogue_from_dict(data: object, *, id_provider: CatalogueIdProvider | None = None) -> Catalogue:
+    """Réhydrate strictement un catalogue V2, sans régénérer les identifiants."""
     root = _require_mapping(data, "la racine")
-    version = root["version"]
+    version = _require_field(root, "version")
     if isinstance(version, bool) or not isinstance(version, int):
         raise ValueError("Catalogue invalide : version doit être un entier.")
     if version != _VERSION:
         raise ValueError(f"Version de catalogue non supportée : {version}")
-    default_template_id = root["defaultTemplateId"]
+    id_counters = _require_id_counters(_require_field(root, "idCounters"))
+    default_template_id = _require_field(root, "defaultTemplateId")
     if default_template_id is not None and not isinstance(default_template_id, str):
         raise ValueError("Catalogue invalide : defaultTemplateId doit être une chaîne ou null.")
 
-    catalogue = Catalogue()
-    for index, raw_city in enumerate(_require_list(root["cities"], "cities"), start=1):
+    catalogue = Catalogue(id_provider=id_provider)
+    for index, raw_city in enumerate(_require_list(_require_field(root, "cities"), "cities"), start=1):
         item = _require_mapping(raw_city, f"cities[{index}]")
         city = CatalogueCity(
             _require_str(item["cityId"], "cityId"),
@@ -132,7 +172,7 @@ def catalogue_from_dict(data: object) -> Catalogue:
             raise ValueError(f"Catalogue invalide : identifiant ville dupliqué : {city.city_id}.")
         catalogue.cities[city.city_id] = city
 
-    for index, raw_beacon in enumerate(_require_list(root.get("beacons", []), "beacons"), start=1):
+    for index, raw_beacon in enumerate(_require_list(_require_field(root, "beacons"), "beacons"), start=1):
         item = _require_mapping(raw_beacon, f"beacons[{index}]")
         beacon = CatalogueBeacon(
             _require_str(item["beaconId"], "beaconId"),
@@ -143,7 +183,7 @@ def catalogue_from_dict(data: object) -> Catalogue:
             raise ValueError(f"Catalogue invalide : identifiant balise dupliqué : {beacon.beacon_id}.")
         catalogue.beacons[beacon.beacon_id] = beacon
 
-    for index, raw_triangle in enumerate(_require_list(root["triangles"], "triangles"), start=1):
+    for index, raw_triangle in enumerate(_require_list(_require_field(root, "triangles"), "triangles"), start=1):
         item = _require_mapping(raw_triangle, f"triangles[{index}]")
         triangle = CatalogueTriangle(
             _require_str(item["triangleId"], "triangleId"),
@@ -157,7 +197,7 @@ def catalogue_from_dict(data: object) -> Catalogue:
             raise ValueError(f"Catalogue invalide : identifiant triangle dupliqué : {triangle.triangle_id}.")
         catalogue.triangles[triangle.triangle_id] = triangle
 
-    for index, raw_template in enumerate(_require_list(root["templates"], "templates"), start=1):
+    for index, raw_template in enumerate(_require_list(_require_field(root, "templates"), "templates"), start=1):
         item = _require_mapping(raw_template, f"templates[{index}]")
         template = HypothesisTemplate(
             _require_str(item["templateId"], "templateId"),
@@ -171,23 +211,24 @@ def catalogue_from_dict(data: object) -> Catalogue:
         catalogue.templates[template.template_id] = template
 
     catalogue.version = version
+    catalogue.id_counters = id_counters
     catalogue.default_template_id = default_template_id
     catalogue.validate()
     return catalogue
 
 
-def load_catalogue(path: str | Path) -> Catalogue:
+def load_catalogue(path: str | Path, *, id_provider: CatalogueIdProvider | None = None) -> Catalogue:
     source = Path(path)
     try:
         with source.open("r", encoding="utf-8") as stream:
             data = json.load(stream)
     except json.JSONDecodeError as exc:
         raise ValueError(f"JSON catalogue invalide : {exc.msg}.") from exc
-    return catalogue_from_dict(data)
+    return catalogue_from_dict(data, id_provider=id_provider)
 
 
 def save_catalogue(catalogue: Catalogue, path: str | Path) -> None:
-    """Écrit atomiquement le JSON V1, sans altérer un fichier valide existant."""
+    """Écrit atomiquement le JSON V2, sans altérer un fichier valide existant."""
     data = catalogue_to_dict(catalogue)
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)

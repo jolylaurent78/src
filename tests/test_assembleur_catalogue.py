@@ -9,6 +9,7 @@ from src.assembleur_catalogue import (
     CatalogueTriangle,
     HypothesisTemplate,
 )
+from src.assembleur_catalogue_identity import SystemCatalogueIdProvider
 
 
 def _three_cities(catalogue: Catalogue):
@@ -24,18 +25,12 @@ def _triangle(catalogue: Catalogue):
     return catalogue.add_triangle("Do", opening.city_id, base.city_id, light.city_id)
 
 
-def test_empty_catalogue_and_ids_use_the_highest_existing_number():
-    catalogue = Catalogue()
+def test_empty_catalogue_uses_initial_system_counters():
+    catalogue = Catalogue(id_provider=SystemCatalogueIdProvider())
     assert catalogue.cities == {}
     assert catalogue.default_template_id is None
-    assert catalogue._next_city_id() == "CITY-0001"
-    catalogue.cities = {"CITY-0001": CatalogueCity("CITY-0001", "A", 0, 0), "CITY-0003": CatalogueCity("CITY-0003", "B", 1, 1)}
-    catalogue.triangles = {"TRI-9999": CatalogueTriangle("TRI-9999", "Do", "CITY-0001", "CITY-0003", "CITY-0002")}
-    catalogue.templates = {"TPL-0004": HypothesisTemplate("TPL-0004", "T")}
-    assert catalogue._next_city_id() == "CITY-0004"
-    assert catalogue._next_beacon_id() == "BEA-0001"
-    assert catalogue._next_triangle_id() == "TRI-10000"
-    assert catalogue._next_template_id() == "TPL-0005"
+    assert catalogue.id_counters == {"city": 0, "beacon": 0, "triangle": 0, "template": 0}
+    assert catalogue.add_city("A", 0, 0).city_id == "CITY-SYS-000001"
 
 
 def test_beacons_have_stable_ids_and_reference_one_catalogue_city_each():
@@ -46,16 +41,16 @@ def test_beacons_have_stable_ids_and_reference_one_catalogue_city_each():
     first = catalogue.add_beacon(first_city.city_id)
     second = catalogue.add_beacon(second_city.city_id)
 
-    assert first == CatalogueBeacon("BEA-0001", first_city.city_id)
+    assert first == CatalogueBeacon(first.beacon_id, first_city.city_id)
     assert tuple(CatalogueBeacon.__dataclass_fields__) == ("beacon_id", "city_id", "archived")
-    assert second == CatalogueBeacon("BEA-0002", second_city.city_id)
+    assert second == CatalogueBeacon(second.beacon_id, second_city.city_id)
     assert catalogue.get_beacon(first.beacon_id) is first
-    assert catalogue.iter_beacons() == (first, second)
+    assert {beacon.beacon_id for beacon in catalogue.iter_beacons()} == {first.beacon_id, second.beacon_id}
     with pytest.raises(ValueError, match="introuvable"):
         catalogue.add_beacon("CITY-9999")
     with pytest.raises(ValueError, match="déjà une balise"):
         catalogue.add_beacon(first_city.city_id)
-    assert tuple(catalogue.beacons) == ("BEA-0001", "BEA-0002")
+    assert tuple(catalogue.beacons) == (first.beacon_id, second.beacon_id)
 
 
 def test_beacon_update_is_atomic_and_archived_beacons_still_protect_their_city():
@@ -90,7 +85,8 @@ def test_beacon_clone_is_independent_and_validate_rejects_corrupted_references()
     assert clone.get_beacon(beacon.beacon_id) is not beacon
     assert catalogue.get_beacon(beacon.beacon_id).archived is False
 
-    catalogue.beacons["BEA-0002"] = CatalogueBeacon("BEA-0002", "CITY-9999")
+    invalid_id = "BEA-SYS-000002"
+    catalogue.beacons[invalid_id] = CatalogueBeacon(invalid_id, "CITY-SYS-999999")
     with pytest.raises(ValueError, match="introuvable"):
         catalogue.validate()
 

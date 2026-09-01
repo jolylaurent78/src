@@ -26,6 +26,7 @@ from src.assembleur_geometry_reference import (
     ScenarioTriangle,
 )
 from src.assembleur_scenario import ScenarioHypothesis
+from src.assembleur_catalogue_identity import is_catalogue_triangle_id
 
 CFG_KEY_CHEMINS_BEACON_REF = "cheminsBeaconRefId"
 _SCENARIO_XML_VERSIONS = frozenset({"5", "6"})
@@ -384,7 +385,7 @@ def _migrate_v5_world_business_ids(
         source_triangle_id = element.source_triangle_id
         if not source_triangle_id:
             continue
-        if not source_triangle_id.startswith("TRI-"):
+        if not is_catalogue_triangle_id(source_triangle_id):
             raise ValueError(
                 f"Migration v5: source_triangle_id Catalogue attendu, reçu {source_triangle_id!r}."
             )

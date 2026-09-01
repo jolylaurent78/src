@@ -4,6 +4,7 @@ import pytest
 from openpyxl import Workbook
 
 from src.assembleur_catalogue import Catalogue
+from src.assembleur_catalogue_identity import SystemCatalogueIdProvider
 from src.assembleur_catalogue_window import CatalogueWindow, CitySelectionDialog
 
 
@@ -16,7 +17,7 @@ class _Value:
 
 
 def _catalogue_with_cities() -> Catalogue:
-    catalogue = Catalogue()
+    catalogue = Catalogue(id_provider=SystemCatalogueIdProvider())
     catalogue.add_city("Grand Ballon", 47.9, 7.1)
     catalogue.add_city("Donon", 48.5, 7.1)
     catalogue.add_city("Frontiere Nord", 50.0, 2.0)
@@ -44,8 +45,8 @@ def _write_beacon_workbook(path, names):
 
 def test_beacon_list_uses_city_names_search_and_archive_filter():
     catalogue = _catalogue_with_cities()
-    first = catalogue.add_beacon("CITY-0001")
-    second = catalogue.add_beacon("CITY-0002")
+    first = catalogue.add_beacon("CITY-SYS-000001")
+    second = catalogue.add_beacon("CITY-SYS-000002")
     catalogue.update_beacon(second.beacon_id, archived=True)
     window = _window_logic(catalogue)
 
@@ -70,16 +71,16 @@ def test_beacon_xlsx_import_resolves_city_ids_and_is_atomic(tmp_path):
     CatalogueWindow._import_beacon_rows(window, rows)
 
     assert [(beacon.beacon_id, beacon.city_id) for beacon in window.catalogue.iter_beacons()] == [
-        ("BEA-0001", "CITY-0001"),
-        ("BEA-0002", "CITY-0002"),
-        ("BEA-0003", "CITY-0003"),
+        ("BEA-SYS-000001", "CITY-SYS-000001"),
+        ("BEA-SYS-000002", "CITY-SYS-000002"),
+        ("BEA-SYS-000003", "CITY-SYS-000003"),
     ]
 
     invalid = tmp_path / "invalid.xlsx"
     _write_beacon_workbook(invalid, ("Donon", "Ville inconnue", "Grand Ballon"))
     with pytest.raises(ValueError, match="ville inconnue"):
         CatalogueWindow._read_beacons_xlsx(window, str(invalid))
-    assert tuple(window.catalogue.beacons) == ("BEA-0001", "BEA-0002", "BEA-0003")
+    assert tuple(window.catalogue.beacons) == ("BEA-SYS-000001", "BEA-SYS-000002", "BEA-SYS-000003")
 
 
 def test_beacon_xlsx_duplicate_rolls_back_without_mutating_the_catalogue(tmp_path):

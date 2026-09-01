@@ -73,6 +73,7 @@ from src.assembleur_catalogue_window import CatalogueWindow, CitySelectionDialog
 from src.assembleur_hypothesis_window import ScenarioHypothesisDialog
 from src.assembleur_catalogue import Catalogue
 from src.assembleur_catalogue_io import load_catalogue
+from src.assembleur_catalogue_identity import ApplicationContext, load_project_dotenv
 from src.assembleur_deformation import (
     commit_deformation_copy_on_write,
     simulate_deformation_session,
@@ -101,6 +102,18 @@ DEFORMATION_DRAG_REFRESH_MS = 40
 
 EPS_WORLD = 1e-6
 MIG_GEO_LOGGER = get_mig_geo_logger()
+
+
+def _load_application_catalogue(catalogue_path: str, id_provider) -> Catalogue:
+    """Charge le catalogue existant, sans masquer un echec de contrat."""
+    if not os.path.exists(catalogue_path):
+        return Catalogue(id_provider=id_provider)
+    try:
+        return load_catalogue(catalogue_path, id_provider=id_provider)
+    except (OSError, ValueError, TypeError) as exc:
+        raise RuntimeError(
+            f"Impossible de charger le catalogue {catalogue_path}: {exc}"
+        ) from exc
 
 
 def createDecryptor(decryptorId: str) -> DecryptorBase:
@@ -540,14 +553,13 @@ class TriangleViewerManual(
         self.config_path = os.path.join(self.config_dir, "assembleur_config.json")
         self.appConfig: Dict = {}
         self.loadAppConfig()
+        load_project_dotenv()
+        self.application_context = ApplicationContext.from_environment()
         self.catalogue_path = os.path.join(self.config_dir, "catalogue.json")
-        self._catalogue_load_error: str | None = None
-        try:
-            self.catalogue = load_catalogue(self.catalogue_path) if os.path.exists(self.catalogue_path) else Catalogue()
-        except (OSError, ValueError, TypeError) as exc:
-            # Le démarrage reste compatible avec une installation sans catalogue valide.
-            self.catalogue = Catalogue()
-            self._catalogue_load_error = str(exc)
+        self.catalogue = _load_application_catalogue(
+            self.catalogue_path,
+            self.application_context.catalogue_id_provider,
+        )
         self._beacon_world_resolver = BeaconWorldResolver(
             self.catalogue, self._catalogue_lambert_to_world,
         )

@@ -64,7 +64,7 @@ def test_catalogue_publication_repositions_existing_anchored_groups():
     world.applyGroupAnchor(anchor.anchor_id)
 
     published = first.clone()
-    published.update_city("CITY-0001", latitude=49.0, longitude=8.0)
+    published.update_city(published.get_beacon(beacon_id).city_id, latitude=49.0, longitude=8.0)
     published.get_city_lambert = lambda city_id: (published.get_city(city_id).latitude, published.get_city(city_id).longitude)
     scenario = ScenarioAssemblage("Manuel", source_type="manual")
     scenario.topoWorld = world

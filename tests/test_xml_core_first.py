@@ -7,6 +7,7 @@ import src.assembleur_tk as assembleur_tk
 
 from src.assembleur_core import ScenarioAssemblage, TopologyElement, TopologyWorld
 from src.assembleur_catalogue import Catalogue
+from src.assembleur_catalogue_identity import SystemCatalogueIdProvider
 from src.assembleur_io import loadScenarioXml, saveScenarioXml
 from src.assembleur_scenario import ScenarioHypothesis
 from src.assembleur_tk import TriangleViewerManual
@@ -36,7 +37,7 @@ class _Canvas:
 
 
 def _catalogue_and_hypothesis():
-    catalogue = Catalogue()
+    catalogue = Catalogue(id_provider=SystemCatalogueIdProvider())
     triangle_ids = []
     for pair_index in range(16):
         base = catalogue.add_city(f"Base {pair_index}", 45.0, 2.0)
@@ -47,7 +48,9 @@ def _catalogue_and_hypothesis():
             triangle_ids.append(catalogue.add_triangle(
                 f"Note {rank}", opening.city_id, base.city_id, light.city_id
             ).triangle_id)
-    return catalogue, ScenarioHypothesis(triangle_ids, "TPL-0001")
+    template = catalogue.add_template("Ordre principal")
+    catalogue.set_template_ranks(template.template_id, triangle_ids)
+    return catalogue, ScenarioHypothesis(triangle_ids, template.template_id)
 
 
 class _Viewer:

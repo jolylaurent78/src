@@ -14,6 +14,7 @@ from src.assembleur_core import (
     TopologyWorld,
 )
 from src.assembleur_catalogue import Catalogue
+from src.assembleur_catalogue_identity import SystemCatalogueIdProvider
 from src.assembleur_io import loadScenarioXml, saveScenarioXml
 from src.assembleur_scenario import ScenarioHypothesis
 from src.assembleur_tk import TriangleViewerManual
@@ -33,7 +34,7 @@ class _Canvas:
 
 
 def _catalogue_and_hypothesis():
-    catalogue = Catalogue()
+    catalogue = Catalogue(id_provider=SystemCatalogueIdProvider())
     triangle_ids = []
     for pair_index in range(16):
         base = catalogue.add_city(f"Base {pair_index}", 45.0, 2.0)

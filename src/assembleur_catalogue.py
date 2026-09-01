@@ -4,9 +4,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
-import re
 
 from pyproj import Transformer
+from src.assembleur_catalogue_identity import (
+    CATALOGUE_ID_KINDS,
+    CATALOGUE_ID_KIND_ORDER,
+    CatalogueIdProvider,
+    UserCatalogueIdProvider,
+    get_system_catalogue_id_number,
+    is_catalogue_id,
+    is_system_catalogue_id,
+)
 
 
 @dataclass
@@ -65,18 +73,14 @@ class TemplateValidationStatus:
 class Catalogue:
     """Agrégat racine du catalogue persistant futur."""
 
-    version = 1
-    _ID_PATTERNS = {
-        "CITY": re.compile(r"CITY-\d{4,}$"),
-        "BEA": re.compile(r"BEA-\d{4,}$"),
-        "TRI": re.compile(r"TRI-\d{4,}$"),
-        "TPL": re.compile(r"TPL-\d{4,}$"),
-    }
+    version = 2
     _MIN_EDGE_LENGTH_M = 1e-6
     _MIN_DOUBLE_AREA_M2 = 1e-6
 
-    def __init__(self) -> None:
-        self.version = 1
+    def __init__(self, *, id_provider: CatalogueIdProvider | None = None) -> None:
+        self.version = Catalogue.version
+        self.id_provider = id_provider if id_provider is not None else UserCatalogueIdProvider()
+        self.id_counters: dict[str, int] = {kind: 0 for kind in CATALOGUE_ID_KIND_ORDER}
         self.cities: dict[str, CatalogueCity] = {}
         self.beacons: dict[str, CatalogueBeacon] = {}
         self.triangles: dict[str, CatalogueTriangle] = {}
@@ -87,8 +91,9 @@ class Catalogue:
 
     def clone(self) -> "Catalogue":
         """Copie l'état métier sans propager les caches runtime."""
-        cloned = Catalogue()
+        cloned = Catalogue(id_provider=self.id_provider)
         cloned.version = self.version
+        cloned.id_counters = dict(self.id_counters)
         cloned.cities = {
             city_id: CatalogueCity(city.city_id, city.name, city.latitude, city.longitude, city.archived)
             for city_id, city in self.cities.items()
@@ -121,21 +126,11 @@ class Catalogue:
         cloned.default_template_id = self.default_template_id
         return cloned
 
-    def _next_id(self, prefix: str, items: dict[str, object]) -> str:
-        numbers = [int(item_id.split("-", 1)[1]) for item_id in items if self._ID_PATTERNS[prefix].fullmatch(item_id)]
-        return f"{prefix}-{max(numbers, default=0) + 1:04d}"
-
-    def _next_city_id(self) -> str:
-        return self._next_id("CITY", self.cities)
-
-    def _next_beacon_id(self) -> str:
-        return self._next_id("BEA", self.beacons)
-
-    def _next_triangle_id(self) -> str:
-        return self._next_id("TRI", self.triangles)
-
-    def _next_template_id(self) -> str:
-        return self._next_id("TPL", self.templates)
+    def _allocate_system_id_number(self, kind: str) -> int:
+        if kind not in CATALOGUE_ID_KINDS:
+            raise ValueError(f"Type de compteur Catalogue inconnu : {kind!r}")
+        self.id_counters[kind] += 1
+        return self.id_counters[kind]
 
     def get_city(self, city_id: str) -> CatalogueCity:
         try:
@@ -202,7 +197,7 @@ class Catalogue:
         self._validate_coordinate(latitude, -90, 90, "La latitude")
         self._validate_coordinate(longitude, -180, 180, "La longitude")
         self._ensure_unique_name(name, self.cities, None, "name")
-        city = CatalogueCity(self._next_city_id(), name, latitude, longitude, archived)
+        city = CatalogueCity(self.id_provider.new_city_id(self), name, latitude, longitude, archived)
         self.cities[city.city_id] = city
         return city
 
@@ -228,12 +223,12 @@ class Catalogue:
         if not isinstance(value, bool):
             raise ValueError(f"{label} archived doit être un booléen.")
 
-    def _validate_beacon_city_id(self, city_id: str, beacon_id: str) -> str:
+    def _validate_beacon_city_id(self, city_id: str, context_label: str) -> str:
         if not isinstance(city_id, str):
-            raise ValueError(f"Balise {beacon_id} : ville Catalogue introuvable {city_id!r}")
+            raise ValueError(f"{context_label} : ville Catalogue introuvable {city_id!r}")
         if not city_id or city_id not in self.cities:
             raise ValueError(
-                f"Balise {beacon_id} : ville Catalogue introuvable {city_id}"
+                f"{context_label} : ville Catalogue introuvable {city_id}"
             )
         return city_id
 
@@ -245,9 +240,9 @@ class Catalogue:
             raise ValueError(f"La ville {city_id} possède déjà une balise.")
 
     def add_beacon(self, city_id: str) -> CatalogueBeacon:
-        beacon_id = self._next_beacon_id()
-        final_city_id = self._validate_beacon_city_id(city_id, beacon_id)
+        final_city_id = self._validate_beacon_city_id(city_id, "Nouvelle balise")
         self._ensure_beacon_city_is_unique(final_city_id)
+        beacon_id = self.id_provider.new_beacon_id(self)
         beacon = CatalogueBeacon(beacon_id, final_city_id)
         self.beacons[beacon.beacon_id] = beacon
         return beacon
@@ -316,7 +311,7 @@ class Catalogue:
         self._validate_triangle_references(opening_city_id, base_city_id, light_city_id,
                                            reject_archived_new={opening_city_id, base_city_id, light_city_id})
         self._ensure_unique_triplet(opening_city_id, base_city_id, light_city_id)
-        triangle = CatalogueTriangle(self._next_triangle_id(), note, opening_city_id, base_city_id, light_city_id, archived)
+        triangle = CatalogueTriangle(self.id_provider.new_triangle_id(self), note, opening_city_id, base_city_id, light_city_id, archived)
         self.triangles[triangle.triangle_id] = triangle
         return triangle
 
@@ -352,7 +347,7 @@ class Catalogue:
     def add_template(self, name: str, description: str = "", *, archived: bool = False) -> HypothesisTemplate:
         name = self._validate_name(name, "de template")
         self._ensure_unique_name(name, self.templates, None, "name")
-        template = HypothesisTemplate(self._next_template_id(), name, description, archived)
+        template = HypothesisTemplate(self.id_provider.new_template_id(self), name, description, archived)
         self.templates[template.template_id] = template
         if self.default_template_id is None:
             self.default_template_id = template.template_id
@@ -439,11 +434,8 @@ class Catalogue:
         was_default = template_id == self.default_template_id
         del self.templates[template_id]
         if was_default:
-            self.default_template_id = min(
-                self.templates,
-                key=lambda item_id: int(item_id.split("-", 1)[1]),
-                default=None,
-            )
+            replacement = next(iter(self.iter_templates()), None)
+            self.default_template_id = replacement.template_id if replacement is not None else None
 
     def get_default_template(self) -> HypothesisTemplate | None:
         if self.default_template_id is None:
@@ -507,10 +499,10 @@ class Catalogue:
         )
 
     def validate(self) -> None:
-        self._validate_collection(self.cities, "CITY", "city_id", "ville")
-        self._validate_collection(self.beacons, "BEA", "beacon_id", "balise")
-        self._validate_collection(self.triangles, "TRI", "triangle_id", "triangle")
-        self._validate_collection(self.templates, "TPL", "template_id", "template")
+        self._validate_collection(self.cities, "city", "city_id", "ville")
+        self._validate_collection(self.beacons, "beacon", "beacon_id", "balise")
+        self._validate_collection(self.triangles, "triangle", "triangle_id", "triangle")
+        self._validate_collection(self.templates, "template", "template_id", "template")
         self._validate_unique_names(self.cities, "ville")
         self._validate_unique_names(self.templates, "template")
         beacon_city_ids: set[str] = set()
@@ -538,11 +530,51 @@ class Catalogue:
         if self.default_template_id is not None and self.default_template_id not in self.templates:
             raise ValueError(f"Le template par défaut {self.default_template_id} est absent.")
 
+        self._validate_id_counters()
+
+    def _validate_id_counters(self) -> None:
+        if not isinstance(self.id_counters, dict):
+            raise ValueError("Les compteurs d'identifiants Catalogue doivent former un dictionnaire.")
+        counter_keys = set(self.id_counters)
+        expected_keys = set(CATALOGUE_ID_KIND_ORDER)
+        if counter_keys != expected_keys:
+            missing = sorted(expected_keys - counter_keys)
+            unexpected = sorted(counter_keys - expected_keys)
+            details = []
+            if missing:
+                details.append(f"clés manquantes : {', '.join(missing)}")
+            if unexpected:
+                details.append(f"clés inconnues : {', '.join(unexpected)}")
+            raise ValueError(
+                "Les compteurs d'identifiants Catalogue sont incomplets ou invalides"
+                f" ({'; '.join(details)})."
+            )
+        collections = {
+            "city": self.cities,
+            "beacon": self.beacons,
+            "triangle": self.triangles,
+            "template": self.templates,
+        }
+        for kind in CATALOGUE_ID_KIND_ORDER:
+            counter = self.id_counters[kind]
+            if isinstance(counter, bool) or not isinstance(counter, int) or counter < 0:
+                raise ValueError(
+                    f"Compteur d'identifiants Catalogue invalide pour {kind} : {counter!r}."
+                )
+            for item_id in collections[kind]:
+                if is_system_catalogue_id(item_id):
+                    number = get_system_catalogue_id_number(item_id, kind)
+                    if counter < number:
+                        raise ValueError(
+                            f"Compteur d'identifiants Catalogue incohérent pour {kind} : "
+                            f"{counter} est inférieur à l'identifiant SYS présent {item_id}."
+                        )
+
     def _validate_collection(self, collection: dict[str, object], prefix: str, id_attribute: str, label: str) -> None:
         for item_id, item in collection.items():
             if item_id != getattr(item, id_attribute):
                 raise ValueError(f"Clé {label} incohérente : {item_id}.")
-            if not self._ID_PATTERNS[prefix].fullmatch(item_id):
+            if not is_catalogue_id(item_id, prefix):
                 raise ValueError(f"Identifiant {label} invalide : {item_id}.")
             if isinstance(item, CatalogueCity):
                 self._validate_name(item.name, "de ville")

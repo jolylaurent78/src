@@ -1,13 +1,14 @@
 import tkinter as tk
 
 from src.assembleur_catalogue import Catalogue
+from src.assembleur_catalogue_identity import SystemCatalogueIdProvider
 from src.assembleur_catalogue_window import CatalogueWindow
 from src.assembleur_core import ScenarioAssemblage
 from src.assembleur_scenario import create_default_scenario_hypothesis
 
 
 def _valid_catalogue() -> Catalogue:
-    catalogue = Catalogue()
+    catalogue = Catalogue(id_provider=SystemCatalogueIdProvider())
     opening = catalogue.add_city("Ouverture", 47.0, 2.0)
     triangle_ids = []
     for pair_index in range(16):
@@ -28,7 +29,7 @@ def _valid_catalogue() -> Catalogue:
 
 def test_window_edits_a_working_copy_and_cancel_never_changes_runtime_catalogue(tmp_path):
     runtime = _valid_catalogue()
-    original_description = runtime.get_template("TPL-0001").description
+    original_description = runtime.get_template("TPL-SYS-000001").description
     published = []
     root = tk.Tk()
     root.withdraw()
@@ -40,11 +41,11 @@ def test_window_edits_a_working_copy_and_cancel_never_changes_runtime_catalogue(
     )
     try:
         assert window.catalogue is not runtime
-        window.catalogue.update_template("TPL-0001", description="Brouillon")
-        assert runtime.get_template("TPL-0001").description == original_description
+        window.catalogue.update_template("TPL-SYS-000001", description="Brouillon")
+        assert runtime.get_template("TPL-SYS-000001").description == original_description
         window._cancel_changes()
-        assert window.catalogue.get_template("TPL-0001").description == original_description
-        assert runtime.get_template("TPL-0001").description == original_description
+        assert window.catalogue.get_template("TPL-SYS-000001").description == original_description
+        assert runtime.get_template("TPL-SYS-000001").description == original_description
         assert published == []
     finally:
         window.destroy()
@@ -69,15 +70,15 @@ def test_apply_publishes_runtime_catalogue_for_future_scenarios_only(tmp_path):
         on_catalogue_applied=published.append,
     )
     try:
-        changed_ranks = list(window.catalogue.get_template("TPL-0001").triangle_ids_by_rank)
+        changed_ranks = list(window.catalogue.get_template("TPL-SYS-000001").triangle_ids_by_rank)
         changed_ranks[0], changed_ranks[1] = changed_ranks[1], changed_ranks[0]
-        window.catalogue.set_template_ranks("TPL-0001", changed_ranks)
+        window.catalogue.set_template_ranks("TPL-SYS-000001", changed_ranks)
         window._mark_dirty()
         window._apply_changes()
 
         assert len(published) == 1
         runtime = published[0]
-        assert runtime.get_template("TPL-0001").triangle_ids_by_rank == changed_ranks
+        assert runtime.get_template("TPL-SYS-000001").triangle_ids_by_rank == changed_ranks
         assert (tmp_path / "catalogue.json").exists()
 
         future = ScenarioAssemblage(
@@ -87,7 +88,7 @@ def test_apply_publishes_runtime_catalogue_for_future_scenarios_only(tmp_path):
         )
         assert future.hypothesis.triangle_ids_by_rank == changed_ranks
         assert existing.hypothesis.triangle_ids_by_rank == existing_ranks
-        assert existing.hypothesis.triangle_ids_by_rank is not runtime.get_template("TPL-0001").triangle_ids_by_rank
+        assert existing.hypothesis.triangle_ids_by_rank is not runtime.get_template("TPL-SYS-000001").triangle_ids_by_rank
     finally:
         window.destroy()
         root.destroy()

@@ -10,6 +10,7 @@
 /logs/
 *.log
 *.tmp
+.env
 
 # Fichiers système inutiles
 .DS_Store
