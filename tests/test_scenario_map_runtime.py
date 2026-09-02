@@ -16,7 +16,7 @@ from src.assembleur_scenario_map_runtime import ScenarioMapResolver, resolve_sce
 def _paths(tmp_path: Path) -> ApplicationPaths:
     return ApplicationPaths.from_runtime(
         installation_root=tmp_path / "installation",
-        user_data_root=tmp_path / "user-data",
+        user_data_root=tmp_path / "user-root",
     )
 
 
@@ -182,7 +182,7 @@ def test_real_default_map_resolves_and_round_trips_lambert_and_catalogue_cities(
     root = Path(__file__).resolve().parents[1]
     paths = ApplicationPaths.from_runtime(
         installation_root=root,
-        user_data_root=root / ".scenario-map-runtime-test-data",
+        user_data_root=root / ".scenario-map-runtime-test-root",
     )
     catalogue = load_catalogue(paths.default_catalogue_path)
     resolved = resolve_scenario_map(
@@ -205,7 +205,7 @@ def test_real_default_map_composes_position_and_scale_without_changing_legacy_de
     root = Path(__file__).resolve().parents[1]
     paths = ApplicationPaths.from_runtime(
         installation_root=root,
-        user_data_root=root / ".scenario-map-runtime-test-data",
+        user_data_root=root / ".scenario-map-runtime-test-root",
     )
     catalogue = load_catalogue(paths.default_catalogue_path)
     resolver = CatalogueMapAssetResolver(paths)
@@ -240,7 +240,7 @@ def test_real_default_transform_composes_catalogue_calibration_with_y_up_world()
     root = Path(__file__).resolve().parents[1]
     paths = ApplicationPaths.from_runtime(
         installation_root=root,
-        user_data_root=root / ".scenario-map-runtime-test-data",
+        user_data_root=root / ".scenario-map-runtime-test-root",
     )
     catalogue = load_catalogue(paths.default_catalogue_path)
     resolved = resolve_scenario_map(

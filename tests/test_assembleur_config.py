@@ -17,7 +17,7 @@ from src.assembleur_paths import ApplicationPaths
 def _paths_with_seed(tmp_path) -> ApplicationPaths:
     paths = ApplicationPaths.from_runtime(
         installation_root=tmp_path / "installation",
-        user_data_root=tmp_path / "user-data",
+        user_data_root=tmp_path / "user-root",
     )
     save_config_file({"uiMapOpacity": 70}, paths.default_config_path)
     return paths
@@ -59,7 +59,7 @@ def test_user_config_modification_does_not_change_default(tmp_path) -> None:
 def test_missing_default_config_fails_explicitly(tmp_path) -> None:
     paths = ApplicationPaths.from_runtime(
         installation_root=tmp_path / "installation",
-        user_data_root=tmp_path / "user-data",
+        user_data_root=tmp_path / "user-root",
     )
 
     with pytest.raises(FileNotFoundError, match="Configuration par défaut absente"):

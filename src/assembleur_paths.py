@@ -38,9 +38,9 @@ class ApplicationPaths:
         resolved_user_data_root = (
             Path(user_data_root)
             if user_data_root is not None
-            else Path(local_app_data) / _APPLICATION_NAME / "user-data"
+            else Path(local_app_data) / _APPLICATION_NAME
             if local_app_data
-            else Path.home() / "AppData" / "Local" / _APPLICATION_NAME / "user-data"
+            else Path.home() / "AppData" / "Local" / _APPLICATION_NAME
         )
         return cls(resolved_installation_root.resolve(), resolved_user_data_root.resolve())
 
@@ -129,7 +129,144 @@ class ApplicationPaths:
     def logs_dir(self) -> Path:
         return self.user_data_root / "logs"
 
+    @staticmethod
+    def _merge_legacy_directory(source: Path, destination: Path) -> None:
+        """Fusionne un répertoire legacy sans écraser de données existantes."""
+        if not source.is_dir():
+            raise NotADirectoryError(
+                f"Répertoire legacy attendu, fichier trouvé : {source}"
+            )
+        if not destination.exists():
+            shutil.move(str(source), str(destination))
+            return
+        if not destination.is_dir():
+            raise FileExistsError(
+                "Migration du layout utilisateur impossible : types incompatibles "
+                f"entre {source} et {destination}"
+            )
+
+        for source_entry in source.iterdir():
+            destination_entry = destination / source_entry.name
+            if not destination_entry.exists():
+                shutil.move(str(source_entry), str(destination_entry))
+                continue
+            if source_entry.is_dir() and destination_entry.is_dir():
+                ApplicationPaths._merge_legacy_directory(source_entry, destination_entry)
+                continue
+            if source_entry.is_file() and destination_entry.is_file():
+                if source_entry.read_bytes() != destination_entry.read_bytes():
+                    raise FileExistsError(
+                        "Migration du layout utilisateur impossible : fichiers "
+                        f"différents : {source_entry} et {destination_entry}"
+                    )
+                source_entry.unlink()
+                continue
+            raise FileExistsError(
+                "Migration du layout utilisateur impossible : types incompatibles "
+                f"entre {source_entry} et {destination_entry}"
+            )
+
+        source.rmdir()
+
+    @staticmethod
+    def _legacy_collision_path(destination: Path) -> Path:
+        """Retourne un nom ``.legacy`` libre en conservant l'extension finale."""
+        suffix = destination.suffix
+        stem = destination.name[:-len(suffix)] if suffix else destination.name
+        candidate = destination.with_name(f"{stem}.legacy{suffix}")
+        index = 2
+        while candidate.exists():
+            candidate = destination.with_name(f"{stem}.legacy-{index}{suffix}")
+            index += 1
+        return candidate
+
+    @staticmethod
+    def _merge_legacy_runtime_directory(source: Path, destination: Path) -> None:
+        """Fusionne des données runtime mutables sans perdre de collision."""
+        if not source.is_dir():
+            raise NotADirectoryError(
+                f"Répertoire legacy attendu, fichier trouvé : {source}"
+            )
+        if not destination.exists():
+            shutil.move(str(source), str(destination))
+            return
+        if not destination.is_dir():
+            raise FileExistsError(
+                "Migration du layout utilisateur impossible : types incompatibles "
+                f"entre {source} et {destination}"
+            )
+
+        for source_entry in source.iterdir():
+            destination_entry = destination / source_entry.name
+            if not destination_entry.exists():
+                shutil.move(str(source_entry), str(destination_entry))
+                continue
+            if source_entry.is_dir() and destination_entry.is_dir():
+                ApplicationPaths._merge_legacy_runtime_directory(
+                    source_entry, destination_entry
+                )
+                continue
+            if source_entry.is_file() and destination_entry.is_file():
+                if source_entry.read_bytes() == destination_entry.read_bytes():
+                    source_entry.unlink()
+                else:
+                    shutil.move(
+                        str(source_entry),
+                        str(ApplicationPaths._legacy_collision_path(destination_entry)),
+                    )
+                continue
+            raise FileExistsError(
+                "Migration du layout utilisateur impossible : types incompatibles "
+                f"entre {source_entry} et {destination_entry}"
+            )
+
+        source.rmdir()
+
+    def migrate_legacy_user_data_layout(self) -> None:
+        """Migre de façon rejouable l'ancien layout utilisateur imbriqué."""
+        legacy_roots = (
+            self.user_data_root / "user_data",
+            self.user_data_root / "user-data",
+        )
+        strict_directories = (
+            "catalogue",
+            "scenarios",
+            "config",
+            "exports",
+            "reports",
+        )
+        runtime_directories = (
+            "logs",
+            "cache",
+            "temp",
+        )
+        for legacy_root in legacy_roots:
+            if not legacy_root.exists():
+                continue
+            if not legacy_root.is_dir():
+                raise NotADirectoryError(
+                    f"Racine utilisateur legacy invalide : {legacy_root}"
+                )
+            for name in strict_directories:
+                source = legacy_root / name
+                if not source.exists():
+                    continue
+                destination = self.user_data_root / name
+                self._merge_legacy_directory(source, destination)
+            for name in runtime_directories:
+                source = legacy_root / name
+                if not source.exists():
+                    continue
+                destination = self.user_data_root / name
+                self._merge_legacy_runtime_directory(source, destination)
+            try:
+                legacy_root.rmdir()
+            except OSError:
+                # Des fichiers inconnus sont volontairement conservés dans le dossier legacy.
+                pass
+
     def ensure_user_data_directories(self) -> None:
+        self.migrate_legacy_user_data_layout()
         for directory in (
             self.user_data_root,
             self.user_catalogue_dir,

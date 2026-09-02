@@ -9,7 +9,6 @@ import re
 import copy
 import threading
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 
 from tkinter import filedialog, messagebox, simpledialog, colorchooser
@@ -1361,7 +1360,6 @@ class TriangleViewerManual(
 
         self.status = tk.Label(self, text="Prêt", bd=1, relief=tk.SUNKEN, anchor="w")
         self.status.pack(side=tk.BOTTOM, fill=tk.X)
-
 
     def _create_manual_scenario_hypothesis(self, *, report_error: bool = False):
         """Instancie l'hypothèse propriétaire d'un nouveau scénario manuel."""
@@ -5648,6 +5646,7 @@ class TriangleViewerManual(
         combo = ttk.Combobox(dialog, textvariable=map_var, values=tuple(labels), state="readonly", width=31)
         combo.grid(row=1, column=1, padx=(0, 12), pady=6)
         result = {"ok": False}
+
         def accept():
             cleaned = name_var.get().strip()
             if not cleaned:

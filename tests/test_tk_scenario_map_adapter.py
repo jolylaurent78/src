@@ -41,7 +41,7 @@ class _Viewer(TriangleViewerScenarioMapMixin):
 
 def test_adapter_projects_resolved_map_and_uses_its_transform(tmp_path) -> None:
     paths = ApplicationPaths.from_runtime(
-        installation_root=tmp_path / "installation", user_data_root=tmp_path / "user-data"
+        installation_root=tmp_path / "installation", user_data_root=tmp_path / "user-root"
     )
     catalogue = Catalogue(id_provider=SystemCatalogueIdProvider())
     map_id = catalogue.add_map(

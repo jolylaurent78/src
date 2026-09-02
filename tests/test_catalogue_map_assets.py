@@ -17,7 +17,7 @@ from src.assembleur_paths import ApplicationPaths
 def _paths(tmp_path: Path) -> ApplicationPaths:
     return ApplicationPaths.from_runtime(
         installation_root=tmp_path / "installation",
-        user_data_root=tmp_path / "user-data",
+        user_data_root=tmp_path / "user-root",
     )
 
 
@@ -211,7 +211,7 @@ def test_default_catalogue_map_resolves_loads_and_round_trips_lambert():
     root = Path(__file__).resolve().parents[1]
     paths = ApplicationPaths.from_runtime(
         installation_root=root,
-        user_data_root=root / ".pytest-user-data",
+        user_data_root=root / ".pytest-user-root",
     )
     catalogue = load_catalogue(paths.default_catalogue_path)
     catalogue_map = catalogue.get_map(catalogue.default_map_id)
@@ -246,4 +246,3 @@ def test_catalogue_map_loader_rejects_incoherent_projection(tmp_path):
 
     with pytest.raises(ValueError, match="projection non supportée"):
         load_calibrated_catalogue_map(_map("MAP-SYS-000001"), CatalogueMapAssetResolver(paths))
-
