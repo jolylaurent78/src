@@ -1,12 +1,15 @@
 {
-  "version": 2,
+  "version": 5,
   "idCounters": {
-    "city": 104,
+    "city": 106,
     "beacon": 4,
     "triangle": 57,
-    "template": 2
+    "template": 2,
+    "map": 2
   },
   "defaultTemplateId": "TPL-SYS-000002",
+  "defaultMapId": "MAP-SYS-000001",
+  "catalogueReferenceMapId": "MAP-SYS-000002",
   "cities": [
     {
       "cityId": "CITY-SYS-000001",
@@ -728,6 +731,20 @@
       "latitude": 47.88527777777778,
       "longitude": 1.2113888888888888,
       "archived": false
+    },
+    {
+      "cityId": "CITY-SYS-000105",
+      "name": "Plombières",
+      "latitude": 47.967222222222226,
+      "longitude": 6.4638888888888895,
+      "archived": false
+    },
+    {
+      "cityId": "CITY-SYS-000106",
+      "name": "Mont Sainte-Odile",
+      "latitude": 48.43694444444444,
+      "longitude": 7.404166666666667,
+      "archived": false
     }
   ],
   "beacons": [
@@ -1289,6 +1306,56 @@
         "TRI-SYS-000030",
         "TRI-SYS-000056",
         "TRI-SYS-000031"
+      ]
+    }
+  ],
+  "maps": [
+    {
+      "mapId": "MAP-SYS-000001",
+      "name": "899 - Alsace",
+      "imageFile": "899 - Alsace.jpg",
+      "calibrationPointsFile": "899 - Alsace.calib_points.json",
+      "calibrationFile": "899 - Alsace.json",
+      "projection": "EPSG:2154",
+      "defaultWorldRect": {
+        "x0": -2146.8248581777198,
+        "y0": -2641.0797337186355,
+        "w": 4293.6497163554395,
+        "h": 5282.159467437271
+      },
+      "defaultScaleFactor": 12.0,
+      "archived": false,
+      "description": "Carte d'assemblage Vosges",
+      "calibrationCityIds": [
+        "CITY-SYS-000105",
+        "CITY-SYS-000106",
+        "CITY-SYS-000094",
+        "CITY-SYS-000004",
+        "CITY-SYS-000037"
+      ]
+    },
+    {
+      "mapId": "MAP-SYS-000002",
+      "name": "France Michelin",
+      "imageFile": "france_michelin.jpg",
+      "calibrationPointsFile": null,
+      "calibrationFile": "france_michelin.json",
+      "projection": "EPSG:2154",
+      "defaultWorldRect": {
+        "x0": -4999.5,
+        "y0": -4999.5,
+        "w": 9999.0,
+        "h": 9999.0
+      },
+      "defaultScaleFactor": 1.0,
+      "archived": false,
+      "description": "Carte de référence Catalogue",
+      "calibrationCityIds": [
+        "CITY-SYS-000009",
+        "CITY-SYS-000002",
+        "CITY-SYS-000010",
+        "CITY-SYS-000005",
+        "CITY-SYS-000052"
       ]
     }
   ]

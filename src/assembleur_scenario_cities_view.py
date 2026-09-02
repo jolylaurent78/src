@@ -5,8 +5,14 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from src.assembleur_geo_map_view import CalibratedGeoMap, GeoMapMarker, GeoMapView
+from src.assembleur_catalogue import Catalogue
+from src.assembleur_catalogue_map_assets import (
+    CatalogueMapAssetResolver,
+    load_calibrated_catalogue_map,
+)
+from src.assembleur_geo_map_view import GeoMapMarker, GeoMapView
 from src.assembleur_geometry_reference import ScenarioReference
+from src.assembleur_paths import ApplicationPaths
 
 
 class ScenarioCitiesView(ttk.Frame):
@@ -17,7 +23,7 @@ class ScenarioCitiesView(ttk.Frame):
         parent,
         *,
         scenario_reference: ScenarioReference,
-        maps_dir: str,
+        catalogue: Catalogue,
         on_reference_changed=None,
     ):
         super().__init__(parent)
@@ -67,10 +73,14 @@ class ScenarioCitiesView(ttk.Frame):
             maximum_zoom=1.0,
         )
         self.map_view.grid(row=1, column=0, sticky="nsew")
-        try:
-            self.map_view.set_map(CalibratedGeoMap.load_map("france_michelin", maps_dir))
-        except (FileNotFoundError, OSError, ValueError):
-            pass
+        default_map_id = catalogue.default_map_id
+        if default_map_id is not None:
+            catalogue_map = catalogue.get_map(default_map_id)
+            calibrated_map = load_calibrated_catalogue_map(
+                catalogue_map,
+                CatalogueMapAssetResolver(ApplicationPaths.from_runtime()),
+            )
+            self.map_view.set_map(calibrated_map)
         self.refresh(scenario_reference)
 
     def _sync_name_field(self) -> None:

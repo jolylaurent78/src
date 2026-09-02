@@ -155,7 +155,6 @@ def test_escape_restores_core_projection_without_committing_preview():
     viewer._clock_arc_active = False
     viewer._clock_measure_active = False
     viewer._clock_setref_active = False
-    viewer._bg_calib_active = False
     discard_calls = []
     discard = viewer._discard_manual_move_preview
     viewer._discard_manual_move_preview = lambda: (discard_calls.append(True), discard())[1]

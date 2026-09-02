@@ -94,9 +94,6 @@ class _Viewer:
     def _xml_to_pt(self, text):
         return np.array([float(value) for value in text.split(",")])
 
-    def _bg_clear(self, persist=False):
-        pass
-
     def _clear_nearest_line(self):
         pass
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+from pathlib import PurePosixPath, PureWindowsPath
 
 from pyproj import Transformer
 from src.assembleur_catalogue_identity import (
@@ -13,6 +14,8 @@ from src.assembleur_catalogue_identity import (
     UserCatalogueIdProvider,
     get_system_catalogue_id_number,
     is_catalogue_id,
+    is_catalogue_city_id,
+    is_catalogue_map_id,
     is_system_catalogue_id,
 )
 
@@ -52,6 +55,38 @@ class HypothesisTemplate:
     triangle_ids_by_rank: list[str | None] = field(default_factory=lambda: [None] * 32)
 
 
+@dataclass
+class WorldRect:
+    """Pose rectangulaire d'une carte dans le repère monde du Catalogue."""
+
+    x0: float
+    y0: float
+    w: float
+    h: float
+
+
+def centered_world_rect(width: float, height: float) -> WorldRect:
+    """Construit le repère local centré d'une carte."""
+    return WorldRect(-float(width) / 2.0, -float(height) / 2.0, float(width), float(height))
+
+
+@dataclass
+class CatalogueMap:
+    """Définition persistante d'une carte Catalogue, indépendante des assets physiques."""
+
+    map_id: str
+    name: str
+    image_file: str
+    calibration_points_file: str | None
+    calibration_file: str | None
+    projection: str | None
+    default_world_rect: WorldRect
+    default_scale_factor: float
+    archived: bool = False
+    description: str = ""
+    calibration_city_ids: list[str] = field(default_factory=list)
+
+
 @dataclass(frozen=True)
 class TriangleGeometry:
     distance_ob_km: float
@@ -73,19 +108,30 @@ class TemplateValidationStatus:
 class Catalogue:
     """Agrégat racine du catalogue persistant futur."""
 
-    version = 2
+    version = 5
     _MIN_EDGE_LENGTH_M = 1e-6
     _MIN_DOUBLE_AREA_M2 = 1e-6
 
-    def __init__(self, *, id_provider: CatalogueIdProvider | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        id_provider: CatalogueIdProvider | None = None,
+        provider: CatalogueIdProvider | None = None,
+    ) -> None:
+        if id_provider is not None and provider is not None:
+            raise ValueError("Fournisseur d'identité Catalogue fourni deux fois.")
         self.version = Catalogue.version
-        self.id_provider = id_provider if id_provider is not None else UserCatalogueIdProvider()
+        resolved_provider = id_provider if id_provider is not None else provider
+        self.id_provider = resolved_provider if resolved_provider is not None else UserCatalogueIdProvider()
         self.id_counters: dict[str, int] = {kind: 0 for kind in CATALOGUE_ID_KIND_ORDER}
         self.cities: dict[str, CatalogueCity] = {}
         self.beacons: dict[str, CatalogueBeacon] = {}
         self.triangles: dict[str, CatalogueTriangle] = {}
         self.templates: dict[str, HypothesisTemplate] = {}
+        self.maps: dict[str, CatalogueMap] = {}
         self.default_template_id: str | None = None
+        self.default_map_id: str | None = None
+        self.catalogue_reference_map_id: str | None = None
         self._city_lambert_cache: dict[str, tuple[float, float]] = {}
         self._lambert_transformer = Transformer.from_crs("EPSG:4326", "EPSG:2154", always_xy=True)
 
@@ -123,7 +169,30 @@ class Catalogue:
             )
             for template_id, template in self.templates.items()
         }
+        cloned.maps = {
+            map_id: CatalogueMap(
+                catalogue_map.map_id,
+                catalogue_map.name,
+                catalogue_map.image_file,
+                catalogue_map.calibration_points_file,
+                catalogue_map.calibration_file,
+                catalogue_map.projection,
+                WorldRect(
+                    catalogue_map.default_world_rect.x0,
+                    catalogue_map.default_world_rect.y0,
+                    catalogue_map.default_world_rect.w,
+                    catalogue_map.default_world_rect.h,
+                ),
+                catalogue_map.default_scale_factor,
+                catalogue_map.archived,
+                catalogue_map.description,
+                list(catalogue_map.calibration_city_ids),
+            )
+            for map_id, catalogue_map in self.maps.items()
+        }
         cloned.default_template_id = self.default_template_id
+        cloned.default_map_id = self.default_map_id
+        cloned.catalogue_reference_map_id = self.catalogue_reference_map_id
         return cloned
 
     def _allocate_system_id_number(self, kind: str) -> int:
@@ -156,6 +225,12 @@ class Catalogue:
         except KeyError as exc:
             raise KeyError(f"Template inconnu : {template_id}") from exc
 
+    def get_map(self, map_id: str) -> CatalogueMap:
+        try:
+            return self.maps[map_id]
+        except KeyError as exc:
+            raise KeyError(f"Carte inconnue : {map_id}") from exc
+
     def iter_cities(self) -> tuple[CatalogueCity, ...]:
         return tuple(self.cities[item_id] for item_id in sorted(self.cities))
 
@@ -168,8 +243,13 @@ class Catalogue:
     def iter_templates(self) -> tuple[HypothesisTemplate, ...]:
         return tuple(self.templates[item_id] for item_id in sorted(self.templates))
 
+    def iter_maps(self) -> tuple[CatalogueMap, ...]:
+        return tuple(self.maps[item_id] for item_id in sorted(self.maps))
+
     @staticmethod
     def _validate_name(name: str, label: str) -> str:
+        if not isinstance(name, str):
+            raise ValueError(f"Le nom {label} doit être une chaîne.")
         cleaned = name.strip()
         if not cleaned:
             raise ValueError(f"Le nom {label} ne peut pas être vide.")
@@ -457,6 +537,295 @@ class Catalogue:
         template = self.get_default_template()
         return template is not None and self.get_template_validation_status(template.template_id).state == "Valide"
 
+    @staticmethod
+    def _validate_logical_asset_reference(value: object, label: str, *, required: bool) -> str | None:
+        if value is None:
+            if required:
+                raise ValueError(f"{label} est obligatoire.")
+            return None
+        if not isinstance(value, str):
+            raise ValueError(f"{label} doit être une chaîne ou null.")
+        if not value or value != value.strip():
+            raise ValueError(f"{label} ne peut pas être vide ou contenir des espaces de bord.")
+        if "\\" in value:
+            raise ValueError(f"{label} doit utiliser une référence logique avec des séparateurs '/'.")
+        posix_path = PurePosixPath(value)
+        windows_path = PureWindowsPath(value)
+        raw_parts = value.split("/")
+        if (
+            posix_path.is_absolute()
+            or windows_path.is_absolute()
+            or windows_path.drive
+            or any(part in ("", ".", "..") for part in raw_parts)
+            or ":" in value
+        ):
+            raise ValueError(f"{label} doit être une référence relative sûre.")
+        return value
+
+    @staticmethod
+    def _validate_map_number(value: object, label: str, *, strictly_positive: bool = False) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{label} doit être un nombre.")
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError(f"{label} doit être fini.")
+        if strictly_positive and number <= 0:
+            raise ValueError(f"{label} doit être strictement positif.")
+        return number
+
+    @classmethod
+    def _validate_world_rect(cls, value: object) -> WorldRect:
+        if not isinstance(value, WorldRect):
+            raise ValueError("default_world_rect doit être un WorldRect.")
+        x0 = cls._validate_map_number(value.x0, "default_world_rect.x0")
+        y0 = cls._validate_map_number(value.y0, "default_world_rect.y0")
+        width = cls._validate_map_number(value.w, "default_world_rect.w", strictly_positive=True)
+        height = cls._validate_map_number(value.h, "default_world_rect.h", strictly_positive=True)
+        return WorldRect(x0, y0, width, height)
+
+    @classmethod
+    def _validate_catalogue_map_fields(
+        cls,
+        *,
+        map_id: object,
+        name: object,
+        image_file: object,
+        calibration_points_file: object,
+        calibration_file: object,
+        projection: object,
+        default_world_rect: object,
+        default_scale_factor: object,
+        archived: object,
+        description: object,
+        calibration_city_ids: object,
+    ) -> tuple[str, str, str, str | None, str | None, str | None, WorldRect, float, bool, str, list[str]]:
+        if not isinstance(map_id, str) or not is_catalogue_id(map_id, "map"):
+            raise ValueError(f"Identifiant carte invalide : {map_id!r}.")
+        cleaned_name = cls._validate_name(name, "de carte")
+        image = cls._validate_logical_asset_reference(image_file, "image_file", required=True)
+        points = cls._validate_logical_asset_reference(
+            calibration_points_file, "calibration_points_file", required=False
+        )
+        calibration = cls._validate_logical_asset_reference(
+            calibration_file, "calibration_file", required=False
+        )
+        if calibration is None:
+            if projection is not None:
+                raise ValueError("projection doit être null sans calibration_file.")
+            final_projection = None
+        else:
+            if projection not in (None, "EPSG:2154"):
+                raise ValueError("projection doit être null ou 'EPSG:2154' avec calibration_file.")
+            final_projection = projection
+        rect = cls._validate_world_rect(default_world_rect)
+        scale = cls._validate_map_number(
+            default_scale_factor, "default_scale_factor", strictly_positive=True
+        )
+        if scale > 20.0:
+            raise ValueError("default_scale_factor doit etre inferieur ou egal a 20.")
+        if not isinstance(archived, bool):
+            raise ValueError("Carte archived doit être un booléen.")
+        if not isinstance(description, str):
+            raise ValueError("description doit être une chaîne.")
+        if not isinstance(calibration_city_ids, list):
+            raise ValueError("calibration_city_ids doit être une liste.")
+        final_city_ids: list[str] = []
+        seen_city_ids: set[str] = set()
+        for city_id in calibration_city_ids:
+            if not is_catalogue_city_id(city_id):
+                raise ValueError(f"Identifiant ville de calibration invalide : {city_id!r}.")
+            if city_id in seen_city_ids:
+                raise ValueError(f"Ville de calibration dupliquée : {city_id}.")
+            seen_city_ids.add(city_id)
+            final_city_ids.append(city_id)
+        return (
+            map_id,
+            cleaned_name,
+            image,
+            points,
+            calibration,
+            final_projection,
+            rect,
+            scale,
+            archived,
+            description,
+            final_city_ids,
+        )
+
+    def _validate_catalogue_map(self, catalogue_map: CatalogueMap) -> None:
+        self._validate_catalogue_map_fields(
+            map_id=catalogue_map.map_id,
+            name=catalogue_map.name,
+            image_file=catalogue_map.image_file,
+            calibration_points_file=catalogue_map.calibration_points_file,
+            calibration_file=catalogue_map.calibration_file,
+            projection=catalogue_map.projection,
+            default_world_rect=catalogue_map.default_world_rect,
+            default_scale_factor=catalogue_map.default_scale_factor,
+            archived=catalogue_map.archived,
+            description=catalogue_map.description,
+            calibration_city_ids=catalogue_map.calibration_city_ids,
+        )
+
+    def add_map(
+        self,
+        *,
+        name: str,
+        image_file: str,
+        calibration_points_file: str | None = None,
+        calibration_file: str | None = None,
+        projection: str | None = None,
+        default_world_rect: WorldRect,
+        default_scale_factor: float,
+        archived: bool = False,
+        description: str = "",
+        calibration_city_ids: list[str] | None = None,
+    ) -> str:
+        """Crée une carte après validation complète, avant toute allocation SYS."""
+        # L'identité provisoire ne sert qu'à valider les autres champs avant
+        # l'allocation réelle, qui reste exclusivement du ressort du provider.
+        provisional_id = "MAP-SYS-000001"
+        (
+            _map_id,
+            final_name,
+            final_image,
+            final_points,
+            final_calibration,
+            final_projection,
+            final_rect,
+            final_scale,
+            final_archived,
+            final_description,
+            final_city_ids,
+        ) = self._validate_catalogue_map_fields(
+            map_id=provisional_id,
+            name=name,
+            image_file=image_file,
+            calibration_points_file=calibration_points_file,
+            calibration_file=calibration_file,
+            projection=projection,
+            default_world_rect=default_world_rect,
+            default_scale_factor=default_scale_factor,
+            archived=archived,
+            description=description,
+            calibration_city_ids=[] if calibration_city_ids is None else calibration_city_ids,
+        )
+        self._validate_calibration_city_ids_exist(final_city_ids)
+        self._ensure_unique_name(final_name, self.maps, None, "name")
+        map_id = self.id_provider.new_map_id(self)
+        catalogue_map = CatalogueMap(
+            map_id,
+            final_name,
+            final_image,
+            final_points,
+            final_calibration,
+            final_projection,
+            final_rect,
+            final_scale,
+            final_archived,
+            final_description,
+            final_city_ids,
+        )
+        self.maps[map_id] = catalogue_map
+        return map_id
+
+    def update_map(
+        self,
+        map_id: str,
+        *,
+        name: str | None = None,
+        image_file: str | None = None,
+        calibration_points_file: str | None | object = ...,
+        calibration_file: str | None | object = ...,
+        projection: str | None | object = ...,
+        default_world_rect: WorldRect | None = None,
+        default_scale_factor: float | None = None,
+        archived: bool | None = None,
+        description: str | None = None,
+        calibration_city_ids: list[str] | None = None,
+    ) -> CatalogueMap:
+        catalogue_map = self.get_map(map_id)
+        final_name = catalogue_map.name if name is None else name
+        final_image = catalogue_map.image_file if image_file is None else image_file
+        final_points = catalogue_map.calibration_points_file if calibration_points_file is ... else calibration_points_file
+        final_calibration = catalogue_map.calibration_file if calibration_file is ... else calibration_file
+        final_projection = catalogue_map.projection if projection is ... else projection
+        final_rect = catalogue_map.default_world_rect if default_world_rect is None else default_world_rect
+        final_scale = catalogue_map.default_scale_factor if default_scale_factor is None else default_scale_factor
+        final_archived = catalogue_map.archived if archived is None else archived
+        final_description = catalogue_map.description if description is None else description
+        final_city_ids = catalogue_map.calibration_city_ids if calibration_city_ids is None else calibration_city_ids
+        (
+            _validated_id,
+            validated_name,
+            validated_image,
+            validated_points,
+            validated_calibration,
+            validated_projection,
+            validated_rect,
+            validated_scale,
+            validated_archived,
+            validated_description,
+            validated_city_ids,
+        ) = self._validate_catalogue_map_fields(
+            map_id=map_id,
+            name=final_name,
+            image_file=final_image,
+            calibration_points_file=final_points,
+            calibration_file=final_calibration,
+            projection=final_projection,
+            default_world_rect=final_rect,
+            default_scale_factor=final_scale,
+            archived=final_archived,
+            description=final_description,
+            calibration_city_ids=final_city_ids,
+        )
+        self._validate_calibration_city_ids_exist(validated_city_ids)
+        self._ensure_unique_name(validated_name, self.maps, map_id, "name")
+        catalogue_map.name = validated_name
+        catalogue_map.image_file = validated_image
+        catalogue_map.calibration_points_file = validated_points
+        catalogue_map.calibration_file = validated_calibration
+        catalogue_map.projection = validated_projection
+        catalogue_map.default_world_rect = validated_rect
+        catalogue_map.default_scale_factor = validated_scale
+        catalogue_map.archived = validated_archived
+        catalogue_map.description = validated_description
+        catalogue_map.calibration_city_ids = validated_city_ids
+        if validated_archived and self.default_map_id == map_id:
+            self.default_map_id = None
+        if validated_archived and self.catalogue_reference_map_id == map_id:
+            self.catalogue_reference_map_id = None
+        return catalogue_map
+
+    def archive_map(self, map_id: str) -> CatalogueMap:
+        return self.update_map(map_id, archived=True)
+
+    def _validate_calibration_city_ids_exist(self, city_ids: list[str]) -> None:
+        for city_id in city_ids:
+            if city_id not in self.cities:
+                raise ValueError(f"La ville de calibration {city_id} est absente.")
+
+    def delete_map(self, map_id: str) -> None:
+        self.get_map(map_id)
+        if map_id == self.default_map_id:
+            raise ValueError("La carte par défaut ne peut pas être supprimée.")
+        if map_id == self.catalogue_reference_map_id:
+            raise ValueError("La carte de référence Catalogue ne peut pas être supprimée.")
+        del self.maps[map_id]
+
+    def set_default_map(self, map_id: str) -> None:
+        catalogue_map = self.get_map(map_id)
+        if catalogue_map.archived:
+            raise ValueError(f"La carte archivée {map_id} ne peut pas être la carte par défaut.")
+        self.default_map_id = map_id
+
+    def set_catalogue_reference_map(self, map_id: str) -> None:
+        catalogue_map = self.get_map(map_id)
+        if catalogue_map.calibration_file is None or catalogue_map.projection is None:
+            raise ValueError(f"La carte de référence Catalogue {map_id} doit être calibrée.")
+        self.catalogue_reference_map_id = map_id
+
     def get_city_lambert(self, city_id: str) -> tuple[float, float]:
         if city_id in self._city_lambert_cache:
             return self._city_lambert_cache[city_id]
@@ -503,8 +872,10 @@ class Catalogue:
         self._validate_collection(self.beacons, "beacon", "beacon_id", "balise")
         self._validate_collection(self.triangles, "triangle", "triangle_id", "triangle")
         self._validate_collection(self.templates, "template", "template_id", "template")
+        self._validate_collection(self.maps, "map", "map_id", "carte")
         self._validate_unique_names(self.cities, "ville")
         self._validate_unique_names(self.templates, "template")
+        self._validate_unique_names(self.maps, "carte")
         beacon_city_ids: set[str] = set()
         for beacon in self.beacons.values():
             city_id = self._validate_beacon_city_id(beacon.city_id, beacon.beacon_id)
@@ -529,6 +900,38 @@ class Catalogue:
             raise ValueError("Un catalogue contenant des templates doit définir un template par défaut.")
         if self.default_template_id is not None and self.default_template_id not in self.templates:
             raise ValueError(f"Le template par défaut {self.default_template_id} est absent.")
+        for catalogue_map in self.maps.values():
+            self._validate_catalogue_map(catalogue_map)
+            for city_id in catalogue_map.calibration_city_ids:
+                if city_id not in self.cities:
+                    raise ValueError(
+                        f"La ville de calibration {city_id} de la carte {catalogue_map.map_id} est absente."
+                    )
+        if self.default_map_id is not None:
+            if not isinstance(self.default_map_id, str):
+                raise ValueError("defaultMapId doit être une chaîne ou null.")
+            if not is_catalogue_map_id(self.default_map_id):
+                raise ValueError(f"defaultMapId invalide : {self.default_map_id!r}.")
+            if self.default_map_id not in self.maps:
+                raise ValueError(f"La carte par défaut {self.default_map_id} est absente.")
+            default_map = self.maps[self.default_map_id]
+            if default_map.archived:
+                raise ValueError(f"La carte par défaut {self.default_map_id} est archivée.")
+        if self.catalogue_reference_map_id is not None:
+            if not isinstance(self.catalogue_reference_map_id, str):
+                raise ValueError("catalogueReferenceMapId doit être une chaîne ou null.")
+            if not is_catalogue_map_id(self.catalogue_reference_map_id):
+                raise ValueError(f"catalogueReferenceMapId invalide : {self.catalogue_reference_map_id!r}.")
+            try:
+                reference_map = self.maps[self.catalogue_reference_map_id]
+            except KeyError as exc:
+                raise ValueError(
+                    f"La carte de référence Catalogue {self.catalogue_reference_map_id} est absente."
+                ) from exc
+            if reference_map.calibration_file is None or reference_map.projection is None:
+                raise ValueError(
+                    f"La carte de référence Catalogue {self.catalogue_reference_map_id} doit être calibrée."
+                )
 
         self._validate_id_counters()
 
@@ -554,6 +957,7 @@ class Catalogue:
             "beacon": self.beacons,
             "triangle": self.triangles,
             "template": self.templates,
+            "map": self.maps,
         }
         for kind in CATALOGUE_ID_KIND_ORDER:
             counter = self.id_counters[kind]

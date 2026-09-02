@@ -90,7 +90,6 @@ def test_manual_rotate_commit_recomputes_click_angle_once_and_projects_core():
     world.rotate_group = lambda *args: (calls.append(args), original_rotate(*args))[1]
     viewer._clock_arc_active = viewer._clock_trace_active = False
     viewer._clock_measure_active = viewer._clock_setref_active = False
-    viewer._bg_calib_active = False
     viewer._is_in_clock = lambda *_args: False
     viewer._hide_tooltip = viewer._reset_assist = lambda: None
     viewer._redraw_from = lambda _entries: None
@@ -125,7 +124,6 @@ def test_manual_rotate_escape_discards_preview_without_core_write():
     viewer._on_canvas_motion_update_drag(SimpleNamespace(x=0.0, y=-1.0))
     viewer._clock_trace_active = viewer._clock_arc_active = False
     viewer._clock_measure_active = viewer._clock_setref_active = False
-    viewer._bg_calib_active = False
     viewer._drag = None
     viewer._clock_trace_active = False
     viewer._clock_measure_active = False

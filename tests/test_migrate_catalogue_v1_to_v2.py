@@ -4,8 +4,7 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from src.assembleur_catalogue_identity import SystemCatalogueIdProvider
-from src.assembleur_catalogue_io import catalogue_from_dict, load_catalogue
+from tools.migrate_catalogue_v2_to_v3 import parse_catalogue_v2
 from tools.migrate_catalogue_v1_to_v2 import (
     build_catalogue_mappings,
     migrate_catalogue_data_v1_to_v2,
@@ -65,10 +64,10 @@ def test_mappings_preserve_numeric_suffixes_and_reject_normalization_collisions(
         build_catalogue_mappings(collision)
 
 
-def test_catalogue_v1_migrates_to_a_runtime_valid_v2():
+def test_catalogue_v1_migrates_to_a_v2_validated_by_the_dedicated_parser():
     legacy = _legacy_catalogue()
     migrated = migrate_catalogue_data_v1_to_v2(legacy)
-    loaded = catalogue_from_dict(migrated, id_provider=SystemCatalogueIdProvider())
+    loaded = parse_catalogue_v2(migrated)
 
     assert migrated["version"] == 2
     assert migrated["idCounters"] == {"city": 42, "beacon": 7, "triangle": 42, "template": 1}
@@ -114,7 +113,7 @@ def test_migration_is_dry_run_then_publishes_all_destinations(tmp_path):
     assert not catalogue_out.exists() and not scenario_out.exists()
 
     migrate_paths(catalogue_in, catalogue_out, [(scenario_in, scenario_out)])
-    assert load_catalogue(catalogue_out, id_provider=SystemCatalogueIdProvider()).version == 2
+    assert parse_catalogue_v2(json.loads(catalogue_out.read_text(encoding="utf-8"))).version == 2
     assert scenario_out.exists()
 
 

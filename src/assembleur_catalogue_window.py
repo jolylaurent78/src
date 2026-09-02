@@ -10,15 +10,23 @@ from pathlib import Path
 from typing import Callable
 import tkinter as tk
 from tkinter import font as tkfont
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from src.assembleur_catalogue import Catalogue, CatalogueCity, CatalogueTriangle as ModelCatalogueTriangle, HypothesisTemplate
-from src.assembleur_catalogue_identity import ApplicationContext
+from src.assembleur_catalogue_map_assets import CatalogueMapAssetResolver, load_calibrated_catalogue_map
+from src.assembleur_catalogue_map_calibration import CatalogueMapCalibrationController, STATUS_VALID
+from src.assembleur_catalogue_identity import ApplicationContext, UserCatalogueIdProvider
 from src.assembleur_catalogue_io import save_catalogue
 from src.assembleur_paths import ApplicationPaths
 from src.assembleur_tooltip import attach_tooltip
 
 from src.assembleur_dms_editor import DmsCoordinateEditor
-from src.assembleur_geo_map_view import CalibratedGeoMap, GeoMapMarker, GeoMapPolyline, GeoMapView
+from src.assembleur_geo_map_view import (
+    GeoMapMarker,
+    GeoMapPixelMarker,
+    GeoMapPixelPolyline,
+    GeoMapPolyline,
+    GeoMapView,
+)
 
 
 _TEMPLATE_BASE_COLUMN_WEIGHT = 2
@@ -27,6 +35,7 @@ _TEMPLATE_DRAG_THRESHOLD = 6
 _TEMPLATE_BASE_COLUMN_WIDTH = 120
 _TRIANGLE_NOTE_VALUES = ("DO", "SI", "LA", "SOL", "FA", "MI", "RE", "ZONE")
 _TRIANGLE_MAP_FIT_MARGIN = 0.20
+_CALIBRATION_MAP_MAXIMUM_ZOOM = 8.0
 
 
 @dataclass(frozen=True)
@@ -374,7 +383,6 @@ class CatalogueWindow(tk.Toplevel):
         parent,
         *,
         catalogue: Catalogue,
-        maps_dir: str | Path | None = None,
         catalogue_path: str | Path | None = None,
         on_catalogue_applied: Callable[[Catalogue], None] | None = None,
         is_beacon_referenced: Callable[[str], bool] | None = None,
@@ -383,12 +391,12 @@ class CatalogueWindow(tk.Toplevel):
         self.title("Gestion du catalogue")
         self.geometry("1000x700")
         self.minsize(760, 500)
-        self._maps_dir = maps_dir
+        self._application_context = ApplicationContext.from_environment()
         self._catalogue_path = (
             Path(catalogue_path)
             if catalogue_path is not None
             else ApplicationPaths.from_runtime().catalogue_path_for_mode(
-                ApplicationContext.from_environment().mode
+                self._application_context.mode
             )
         )
         self._on_catalogue_applied = on_catalogue_applied
@@ -400,6 +408,8 @@ class CatalogueWindow(tk.Toplevel):
         self._selected_beacon_id: str | None = None
         self._selected_triangle_id: str | None = None
         self._selected_template_id: str | None = self.catalogue.default_template_id
+        self._selected_map_id: str | None = self.catalogue.default_map_id
+        self._selected_calibration_city_id: str | None = None
         self._selected_template_triangle_id: str | None = None
         self._selected_template_rank_slot: TemplateRankSlot | None = None
         self._template_drag_triangle_id: str | None = None
@@ -412,6 +422,12 @@ class CatalogueWindow(tk.Toplevel):
         self._updating_detail = False
         self._updating_template_detail = False
         self._is_dirty = False
+        self._paths = ApplicationPaths.from_runtime()
+        self._map_calibration = CatalogueMapCalibrationController(
+            self.catalogue,
+            self._paths,
+            allow_system_map_editing=self._application_context.mode == "SYS",
+        )
 
         self._search_var = tk.StringVar()
         self._show_archived_var = tk.BooleanVar(value=False)
@@ -431,12 +447,18 @@ class CatalogueWindow(tk.Toplevel):
         self._template_note_filter_var = tk.StringVar(value="Tous")
         self._template_base_filter_var = tk.StringVar()
         self._template_light_filter_var = tk.StringVar()
+        self._map_description_var = tk.StringVar()
+        self._map_default_var = tk.BooleanVar(value=False)
+        self._map_scale_var = tk.StringVar()
+        self._map_interaction_mode = "hand"
+        self._updating_map_placement = False
 
         self._load_icons()
         self._build_ui()
         self._refresh_city_list()
         self._refresh_beacon_list()
         self._refresh_triangle_tree()
+        self._refresh_maps()
         self._load_map()
         self.protocol("WM_DELETE_WINDOW", self.request_close)
 
@@ -451,6 +473,9 @@ class CatalogueWindow(tk.Toplevel):
         self._icon_trash = tk.PhotoImage(file=images_dir / "trash.png")
         self._icon_template_default = tk.PhotoImage(file=images_dir / "checkbox.png")
         self._icon_duplicate = tk.PhotoImage(file=images_dir / "duplicate.png")
+        self._icon_map_add = tk.PhotoImage(file=images_dir / "map-pin-plus.png")
+        self._icon_focus = tk.PhotoImage(file=images_dir / "focus.png")
+        self._icon_hand = tk.PhotoImage(file=images_dir / "hand-click.png")
 
     def _attach_tooltip(self, widget, text: str):
         return attach_tooltip(widget, text)
@@ -475,15 +500,18 @@ class CatalogueWindow(tk.Toplevel):
         self._beacons_tab = ttk.Frame(notebook, padding=8)
         self._triangles_tab = ttk.Frame(notebook, padding=8)
         self._templates_tab = ttk.Frame(notebook, padding=8)
+        self._maps_tab = ttk.Frame(notebook, padding=8)
         notebook.add(self._cities_tab, text="Villes (0)")
         notebook.add(self._beacons_tab, text="Balises (0)")
         notebook.add(self._triangles_tab, text="Triangles (0)")
         notebook.add(self._templates_tab, text="Templates (0)")
+        notebook.add(self._maps_tab, text="Cartes (0)")
         self._catalogue_notebook = notebook
         self._build_cities_tab()
         self._build_beacons_tab()
         self._build_triangles_tab()
         self._build_templates_tab()
+        self._build_maps_tab()
 
         bottom = ttk.Frame(root)
         bottom.grid(row=1, column=0, sticky="ew", pady=(10, 0))
@@ -669,7 +697,13 @@ class CatalogueWindow(tk.Toplevel):
 
     def _load_map(self):
         try:
-            calibrated_map = CalibratedGeoMap.load_map("france_michelin", self._maps_dir)
+            map_id = self.catalogue.catalogue_reference_map_id
+            if map_id is None:
+                return
+            calibrated_map = load_calibrated_catalogue_map(
+                self.catalogue.get_map(map_id),
+                CatalogueMapAssetResolver(ApplicationPaths.from_runtime()),
+            )
             self._map_view.set_map(calibrated_map)
             self._beacon_map_view.set_map(calibrated_map)
             self._triangle_map_view.set_map(calibrated_map)
@@ -972,6 +1006,416 @@ class CatalogueWindow(tk.Toplevel):
         self.after_idle(lambda: panes.sashpos(0, max(280, int(panes.winfo_width() * 0.36))))
         self._refresh_templates()
         self._refresh_template_triangle_tree()
+
+    def _build_maps_tab(self):
+        self._maps_tab.rowconfigure(2, weight=1)
+        self._maps_tab.columnconfigure(0, weight=1)
+        header = ttk.Frame(self._maps_tab)
+        header.grid(row=0, column=0, sticky="ew")
+        ttk.Label(header, text="Carte :").pack(side=tk.LEFT)
+        self._map_selector = ttk.Combobox(header, state="readonly", width=34)
+        self._map_selector.pack(side=tk.LEFT, padx=(6, 6))
+        self._map_selector.bind("<<ComboboxSelected>>", self._on_map_selected)
+        self._map_add_button = ttk.Button(header, image=self._icon_map_add, command=self._add_map)
+        self._map_add_button.pack(side=tk.LEFT)
+        self._attach_tooltip(self._map_add_button, "Ajouter une carte")
+        self._map_archive_button = ttk.Button(header, image=self._icon_archive, command=self._toggle_archive_selected_map)
+        self._map_archive_button.pack(side=tk.LEFT, padx=4)
+        self._map_delete_button = ttk.Button(header, image=self._icon_trash, command=self._delete_selected_map)
+        self._map_delete_button.pack(side=tk.LEFT)
+
+        detail = ttk.Frame(self._maps_tab)
+        detail.grid(row=1, column=0, sticky="ew", pady=(8, 10))
+        detail.columnconfigure(2, weight=1)
+        self._map_default_check = ttk.Checkbutton(detail, text="Défaut", variable=self._map_default_var,
+                                                   command=self._set_selected_map_as_default)
+        self._map_default_check.grid(row=0, column=0, sticky="w", padx=(0, 12))
+        ttk.Label(detail, text="Description :").grid(row=0, column=1, sticky="w")
+        self._map_description_entry = ttk.Entry(detail, textvariable=self._map_description_var)
+        self._map_description_entry.grid(row=0, column=2, sticky="ew", padx=(6, 12))
+        self._map_status_label = ttk.Label(detail, anchor="e")
+        self._map_status_label.grid(row=0, column=3, sticky="e")
+        self._map_role_label = ttk.Label(detail, foreground="#446")
+        self._map_role_label.grid(row=1, column=2, columnspan=2, sticky="e", pady=(3, 0))
+        self._map_description_var.trace_add("write", self._save_map_description)
+
+        panes = ttk.PanedWindow(self._maps_tab, orient=tk.HORIZONTAL)
+        panes.grid(row=2, column=0, sticky="nsew")
+        cities = ttk.Frame(panes, padding=(0, 0, 8, 0))
+        preview = ttk.Frame(panes, padding=(8, 0, 0, 0))
+        panes.add(cities, weight=0)
+        panes.add(preview, weight=1)
+        cities.rowconfigure(1, weight=1)
+        cities.columnconfigure(0, weight=1)
+        toolbar = ttk.Frame(cities)
+        toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 5))
+        self._calibration_city_add_button = ttk.Button(
+            toolbar, image=self._icon_map_pin_plus, command=self._add_calibration_city
+        )
+        self._calibration_city_add_button.pack(side=tk.LEFT)
+        self._attach_tooltip(self._calibration_city_add_button, "Ajouter une ville de calibration")
+        self._calibration_city_remove_button = ttk.Button(
+            toolbar, image=self._icon_trash, command=self._remove_calibration_city
+        )
+        self._calibration_city_remove_button.pack(side=tk.LEFT, padx=(5, 0))
+        self._attach_tooltip(self._calibration_city_remove_button, "Supprimer la ville de calibration")
+        self._calibration_city_tree = ttk.Treeview(cities, columns=("pointed", "city", "error"), show="headings", selectmode="browse")
+        self._calibration_city_tree.heading("pointed", text="Pointé")
+        self._calibration_city_tree.heading("city", text="Ville")
+        self._calibration_city_tree.heading("error", text="Écart")
+        self._calibration_city_tree.column("pointed", width=58, anchor="center", stretch=False)
+        self._calibration_city_tree.column("city", width=180, anchor="w")
+        self._calibration_city_tree.column("error", width=80, anchor="e", stretch=False)
+        self._calibration_city_tree.grid(row=1, column=0, sticky="nsew")
+        self._calibration_city_tree.bind("<<TreeviewSelect>>", self._on_calibration_city_selected)
+        scroll = ttk.Scrollbar(cities, orient=tk.VERTICAL, command=self._calibration_city_tree.yview)
+        scroll.grid(row=1, column=1, sticky="ns")
+        self._calibration_city_tree.configure(yscrollcommand=scroll.set)
+
+        ttk.Separator(cities, orient=tk.HORIZONTAL).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 6))
+        placement = ttk.Frame(cities)
+        placement.grid(row=3, column=0, columnspan=2, sticky="ew")
+        placement.columnconfigure(2, weight=1)
+        ttk.Label(placement, text="Scale").grid(row=0, column=0, sticky="w")
+        self._map_scale_entry = ttk.Entry(placement, textvariable=self._map_scale_var, width=7)
+        self._map_scale_entry.grid(row=0, column=1, sticky="w", padx=(6, 8))
+        self._map_scale_entry.bind("<Return>", self._commit_map_scale_entry)
+        self._map_scale_entry.bind("<FocusOut>", self._commit_map_scale_entry)
+        self._map_scale_slider = ttk.Scale(
+            placement, from_=0.0, to=20.0, orient=tk.HORIZONTAL,
+            command=self._on_map_scale_slider_changed,
+        )
+        self._map_scale_slider.grid(row=0, column=2, sticky="ew")
+
+        preview.rowconfigure(1, weight=1)
+        preview.columnconfigure(0, weight=1)
+        preview_toolbar = ttk.Frame(preview)
+        preview_toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 5))
+        self._map_hand_button = tk.Button(
+            preview_toolbar, image=self._icon_hand, command=lambda: self._set_map_interaction_mode("hand")
+        )
+        self._map_hand_button.pack(side=tk.LEFT)
+        self._attach_tooltip(self._map_hand_button, "Mode déplacement et sélection")
+        self._map_focus_button = tk.Button(
+            preview_toolbar, image=self._icon_focus, command=lambda: self._set_map_interaction_mode("focus")
+        )
+        self._map_focus_button.pack(side=tk.LEFT, padx=(4, 0))
+        self._attach_tooltip(self._map_focus_button, "Mode pointage calibration")
+        self._calibration_map_view = GeoMapView(
+            preview,
+            on_marker_selected=self._on_calibration_marker_selected,
+            maximum_zoom=_CALIBRATION_MAP_MAXIMUM_ZOOM,
+        )
+        self._calibration_map_view.grid(row=1, column=0, sticky="nsew")
+        self._set_map_interaction_mode("hand")
+        self.after_idle(lambda: panes.sashpos(0, max(250, int(panes.winfo_width() * .32))))
+
+    def _get_selected_map(self):
+        return self.catalogue.get_map(self._selected_map_id) if self._selected_map_id is not None else None
+
+    def _refresh_maps(self, *, fit: bool = True):
+        maps = list(self.catalogue.iter_maps())
+        self._map_selector_ids = [item.map_id for item in maps]
+        if self._selected_map_id not in self._map_selector_ids:
+            self._selected_map_id = self.catalogue.default_map_id or (self._map_selector_ids[0] if self._map_selector_ids else None)
+        selected = self._get_selected_map()
+        self._updating_map_detail = True
+        self._map_selector.configure(values=tuple(item.name for item in maps))
+        if selected is not None:
+            self._map_selector.current(self._map_selector_ids.index(selected.map_id))
+            self._map_description_var.set(selected.description)
+        else:
+            self._map_selector.set("")
+            self._map_description_var.set("")
+        self._map_default_var.set(selected is not None and selected.map_id == self.catalogue.default_map_id)
+        self._updating_map_detail = False
+        self._refresh_map_placement_detail()
+        self._catalogue_notebook.tab(self._maps_tab, text=f"Cartes ({len(maps)})")
+        self._refresh_calibration_cities()
+        self._load_selected_catalogue_map(fit=fit)
+        self._update_map_action_buttons()
+
+    def _on_map_selected(self, _event=None):
+        index = self._map_selector.current()
+        self._selected_map_id = self._map_selector_ids[index] if 0 <= index < len(self._map_selector_ids) else None
+        self._selected_calibration_city_id = None
+        self._set_map_interaction_mode("hand")
+        self._refresh_maps(fit=True)
+        self._update_context_actions()
+
+    def _save_map_description(self, *_args):
+        selected = self._get_selected_map()
+        if self._updating_map_detail or selected is None or self._map_calibration.is_readonly(selected):
+            return
+        self.catalogue.update_map(selected.map_id, description=self._map_description_var.get())
+        self._mark_dirty()
+
+    def _refresh_map_placement_detail(self) -> None:
+        selected = self._get_selected_map()
+        self._updating_map_placement = True
+        try:
+            if selected is None:
+                self._map_scale_var.set("")
+                self._map_scale_slider.set(0.0)
+                return
+            self._map_scale_var.set(f"{selected.default_scale_factor:.2f}")
+            self._map_scale_slider.set(selected.default_scale_factor)
+        finally:
+            self._updating_map_placement = False
+
+    def _set_map_scale(self, value: float) -> None:
+        selected = self._get_selected_map()
+        if selected is None or self._map_calibration.is_readonly(selected):
+            self._refresh_map_placement_detail()
+            return
+        self.catalogue.update_map(selected.map_id, default_scale_factor=value)
+        self._refresh_map_placement_detail()
+        self._mark_dirty()
+
+    def _on_map_scale_slider_changed(self, value: str) -> None:
+        if self._updating_map_placement:
+            return
+        try:
+            self._set_map_scale(float(value))
+        except ValueError as exc:
+            messagebox.showerror("Scale", str(exc), parent=self)
+            self._refresh_map_placement_detail()
+
+    def _commit_map_scale_entry(self, _event=None) -> None:
+        if self._updating_map_placement:
+            return
+        selected = self._get_selected_map()
+        if selected is None:
+            return
+        if self._map_calibration.is_readonly(selected):
+            self._refresh_map_placement_detail()
+            return
+        try:
+            value = float(self._map_scale_var.get().strip())
+            self.catalogue.update_map(selected.map_id, default_scale_factor=value)
+        except ValueError as exc:
+            messagebox.showerror("Scale", str(exc), parent=self)
+            self._refresh_map_placement_detail()
+            return
+        self._refresh_map_placement_detail()
+        self._mark_dirty()
+
+    def _refresh_calibration_cities(self):
+        tree = self._calibration_city_tree
+        tree.delete(*tree.get_children())
+        selected = self._get_selected_map()
+        if selected is None:
+            return
+        points = self._map_calibration.points_for(selected)
+        residuals = self._map_calibration.leave_one_out_residuals(selected)
+        for city_id in selected.calibration_city_ids:
+            city = self.catalogue.get_city(city_id)
+            residual = residuals.get(city_id)
+            error = "—" if residual is None else f"{residual.error_px:.1f} px"
+            tree.insert("", tk.END, iid=city_id, values=("☑" if city_id in points else "☐", city.name, error))
+        if self._selected_calibration_city_id in selected.calibration_city_ids:
+            tree.selection_set(self._selected_calibration_city_id)
+
+    def _on_calibration_city_selected(self, _event=None):
+        selected = self._calibration_city_tree.selection()
+        self._selected_calibration_city_id = selected[0] if selected else None
+        if self._selected_calibration_city_id is not None:
+            catalogue_map = self._get_selected_map()
+            if catalogue_map is not None:
+                points = self._map_calibration.points_for(catalogue_map)
+                if self._selected_calibration_city_id in points:
+                    self._calibration_map_view.set_selected_marker(
+                        self._selected_calibration_city_id,
+                        recenter=True,
+                    )
+        self._update_map_action_buttons()
+
+    def _on_calibration_marker_selected(self, marker_id):
+        if marker_id is None or not isinstance(marker_id, str):
+            return
+        catalogue_map = self._get_selected_map()
+        if catalogue_map is None or marker_id not in catalogue_map.calibration_city_ids:
+            return
+        self._selected_calibration_city_id = marker_id
+        self._calibration_city_tree.selection_set(marker_id)
+        self._calibration_city_tree.focus(marker_id)
+        self._calibration_city_tree.see(marker_id)
+        self._update_map_action_buttons()
+
+    def _load_selected_catalogue_map(self, *, fit: bool = True):
+        selected = self._get_selected_map()
+        if selected is None:
+            return
+        try:
+            preview = self._map_calibration.preview_map(selected)
+        except (OSError, ValueError) as exc:
+            self._map_status_label.configure(text=f"Statut : {self._map_calibration.status_for(selected)} ({exc})")
+            return
+        view_map = getattr(self._calibration_map_view, "map", None)
+        same_map = view_map is not None and view_map.map_id == preview.map_id
+        self._calibration_map_view.set_map(preview, preserve_view=not fit and same_map)
+        points = self._map_calibration.points_for(selected)
+        residuals = self._map_calibration.leave_one_out_residuals(selected)
+        projected_markers = []
+        residual_lines = []
+        observed_markers = []
+        for city_id in selected.calibration_city_ids:
+            point = points.get(city_id)
+            if point is None:
+                continue
+            city = self.catalogue.get_city(city_id)
+            projected = residuals.get(city_id)
+            if projected is not None:
+                projected_x = projected.predicted_x
+                projected_y = projected.predicted_y
+                error = projected.error_px
+                dx = projected.dx
+                dy = projected.dy
+                projected_markers.append(
+                    GeoMapPixelMarker(
+                        marker_id=("projected", city_id), pixel_x=projected_x, pixel_y=projected_y,
+                        fill_color="", outline_color="#6f7f8f", selectable=False,
+                    )
+                )
+                if error > 1e-6:
+                    residual_lines.append(
+                        GeoMapPixelPolyline(((point.pixel_x, point.pixel_y), (projected_x, projected_y)))
+                    )
+                tooltip = f"Écart : {error:.1f} px\ndx : {dx:+.1f} px\ndy : {dy:+.1f} px"
+            else:
+                tooltip = None
+            observed_markers.append(
+                GeoMapPixelMarker(
+                    marker_id=city_id, pixel_x=point.pixel_x, pixel_y=point.pixel_y,
+                    label=city.name, always_show_label=True, fill_color="#d52b1e", tooltip=tooltip,
+                )
+            )
+        self._calibration_map_view.set_markers(())
+        self._calibration_map_view.set_pixel_polylines(residual_lines)
+        self._calibration_map_view.set_pixel_markers([*projected_markers, *observed_markers])
+        if fit and observed_markers:
+            self._calibration_map_view.fit_to_pixel_bounds(
+                [(marker.pixel_x, marker.pixel_y) for marker in observed_markers], margin=0.20
+            )
+        selected_city_id = getattr(self, "_selected_calibration_city_id", None)
+        if selected_city_id in points:
+            self._calibration_map_view.set_selected_marker(
+                selected_city_id,
+                recenter=False,
+            )
+        self._map_status_label.configure(text=f"Statut : {self._map_calibration.status_for(selected)}")
+
+    def _update_map_action_buttons(self):
+        selected = self._get_selected_map()
+        readonly = selected is None or self._map_calibration.is_readonly(selected)
+        state = tk.DISABLED if readonly else tk.NORMAL
+        self._map_description_entry.configure(state=state)
+        self._map_scale_entry.configure(state=state)
+        self._map_scale_slider.configure(state=state)
+        status = self._map_calibration.status_for(selected) if selected is not None else ""
+        self._map_default_check.configure(state=tk.NORMAL if selected is not None and status == STATUS_VALID and not selected.archived else tk.DISABLED)
+        self._map_archive_button.configure(state=state, image=self._icon_archive_off if selected is not None and selected.archived else self._icon_archive)
+        self._map_delete_button.configure(state=tk.DISABLED)  # références de scénarios non encore inspectables
+        self._calibration_city_add_button.configure(state=state)
+        self._calibration_city_remove_button.configure(state=state if self._selected_calibration_city_id else tk.DISABLED)
+        if self._selected_calibration_city_id is None and self._map_interaction_mode == "focus":
+            self._set_map_interaction_mode("hand")
+        self._set_map_interaction_mode(self._map_interaction_mode)
+        self._map_add_button.configure(
+            state=tk.NORMAL if isinstance(self.catalogue.id_provider, UserCatalogueIdProvider) else tk.DISABLED
+        )
+        self._map_role_label.configure(text="Carte de référence Catalogue" if selected is not None and selected.map_id == self.catalogue.catalogue_reference_map_id else "")
+
+    def _set_selected_map_as_default(self):
+        selected = self._get_selected_map()
+        if selected is None or self._map_calibration.status_for(selected) != STATUS_VALID:
+            return
+        self.catalogue.set_default_map(selected.map_id)
+        self._refresh_maps(fit=False)
+        self._mark_dirty()
+
+    def _add_calibration_city(self):
+        selected = self._get_selected_map()
+        if selected is None:
+            return
+        candidates = [city for city in self.catalogue.iter_cities() if not city.archived and city.city_id not in selected.calibration_city_ids]
+        choice = CitySelectionDialog(self, candidates).show()
+        if choice is None:
+            return
+        self._map_calibration.add_city(selected.map_id, choice)
+        self._selected_calibration_city_id = choice
+        self._refresh_maps(fit=True)
+        self._mark_dirty()
+
+    def _remove_calibration_city(self):
+        selected = self._get_selected_map()
+        city_id = self._selected_calibration_city_id
+        if selected is None or city_id is None:
+            return
+        self._map_calibration.remove_city(selected.map_id, city_id)
+        self._selected_calibration_city_id = None
+        self._set_map_interaction_mode("hand")
+        self._refresh_maps(fit=True)
+        self._mark_dirty()
+
+    def _set_map_interaction_mode(self, mode: str) -> None:
+        if mode not in {"hand", "focus"}:
+            raise ValueError(f"Mode d'interaction carte invalide : {mode!r}.")
+        selected_map = self._get_selected_map()
+        focus_allowed = (
+            selected_map is not None
+            and self._selected_calibration_city_id is not None
+            and not self._map_calibration.is_readonly(selected_map)
+        )
+        if mode == "focus" and not focus_allowed:
+            mode = "hand"
+        self._map_interaction_mode = mode
+        self._calibration_map_view.set_map_click_handler(
+            self._on_map_focus_click if mode == "focus" else None
+        )
+        self._map_hand_button.configure(relief=tk.SUNKEN if mode == "hand" else tk.RAISED, state=tk.NORMAL)
+        self._map_focus_button.configure(
+            relief=tk.SUNKEN if mode == "focus" else tk.RAISED,
+            state=tk.NORMAL if focus_allowed else tk.DISABLED,
+        )
+
+    def _on_map_focus_click(self, pixel):
+        selected = self._get_selected_map()
+        city_id = self._selected_calibration_city_id
+        if selected is None or city_id is None:
+            messagebox.showinfo("Pointage calibration", "Sélectionnez d'abord une ville de calibration.", parent=self)
+            return
+        self._map_calibration.set_pixel(selected.map_id, city_id, *pixel)
+        self._refresh_maps(fit=False)
+        self._mark_dirty()
+
+    def _toggle_archive_selected_map(self):
+        selected = self._get_selected_map()
+        if selected is None:
+            return
+        self.catalogue.update_map(selected.map_id, archived=not selected.archived)
+        self._refresh_maps(fit=False)
+        self._mark_dirty()
+
+    def _delete_selected_map(self):
+        messagebox.showinfo("Supprimer une carte", "La suppression reste désactivée tant que les références de scénarios ne sont pas contrôlées.", parent=self)
+
+    def _add_map(self):
+        image_path = filedialog.askopenfilename(parent=self, title="Image de la carte", filetypes=[("Images", "*.jpg *.jpeg *.png")])
+        if not image_path:
+            return
+        name = simpledialog.askstring("Ajouter une carte", "Nom de la carte :", parent=self)
+        if name is None:
+            return
+        description = simpledialog.askstring("Ajouter une carte", "Description :", parent=self) or ""
+        try:
+            self._selected_map_id = self._map_calibration.stage_user_map(image_path, name=name, description=description)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Ajouter une carte", str(exc), parent=self)
+            return
+        self._selected_calibration_city_id = None
+        self._refresh_maps(fit=True)
+        self._mark_dirty()
 
     def _build_template_triangle_source(self, parent):
         parent.rowconfigure(1, weight=1)
@@ -1297,33 +1741,46 @@ class CatalogueWindow(tk.Toplevel):
     def _mark_dirty(self) -> None:
         self._set_dirty(True)
 
+    def _replace_working_catalogue(self, catalogue: Catalogue) -> None:
+        """Remplace le clone de travail en conservant sa transaction cartographique."""
+        self.catalogue = catalogue
+        self._map_calibration.rebind_catalogue(catalogue)
+
     def _apply_changes(self) -> None:
         """Valide uniquement l'état courant de cette session, sans persistance."""
+        created_assets: list[Path] = []
         try:
             self.catalogue.validate()
+            created_assets = self._map_calibration.commit()
             save_catalogue(self.catalogue, self._catalogue_path)
         except (OSError, ValueError, TypeError) as exc:
+            self._map_calibration.rollback(created_assets)
             messagebox.showerror("Catalogue", str(exc), parent=self)
             return
         if self._on_catalogue_applied is not None:
             self._on_catalogue_applied(self.catalogue.clone())
         self._validated_catalogue = self.catalogue.clone()
+        self._map_calibration.finalize_commit()
         self._set_dirty(False)
 
     def _cancel_changes(self) -> None:
         """Restaure le dernier instantané validé localement."""
         if self._selected_template_rank_slot is not None:
             self._selected_template_rank_slot.set_selected(False)
-        self.catalogue = self._validated_catalogue.clone()
+        self._map_calibration.discard()
+        self._replace_working_catalogue(self._validated_catalogue.clone())
         self._selected_city_id = None
         self._selected_beacon_id = None
         self._selected_triangle_id = None
         self._selected_template_id = self.catalogue.default_template_id
+        self._selected_map_id = self.catalogue.default_map_id
+        self._selected_calibration_city_id = None
         self._selected_template_triangle_id = None
         self._selected_template_rank_slot = None
         self._refresh_city_list()
         self._refresh_beacon_list()
         self._refresh_triangle_tree()
+        self._refresh_maps()
         self._refresh_templates()
         self._update_context_actions()
         self._load_selected_city()
@@ -1331,12 +1788,14 @@ class CatalogueWindow(tk.Toplevel):
 
     def request_close(self) -> bool:
         """Ferme après confirmation lorsqu'un état local non validé existe."""
-        if self._is_dirty and not messagebox.askyesno(
-            "Gestion du catalogue",
-            "Des modifications ne sont pas appliquées. Fermer sans les appliquer ?",
-            parent=self,
-        ):
-            return False
+        if self._is_dirty:
+            if not messagebox.askyesno(
+                "Gestion du catalogue",
+                "Des modifications ne sont pas appliquées. Fermer sans les appliquer ?",
+                parent=self,
+            ):
+                return False
+            self._map_calibration.discard()
         self.destroy()
         return True
 
@@ -1369,7 +1828,7 @@ class CatalogueWindow(tk.Toplevel):
                 else:
                     preview.update_city(city.city_id, latitude=latitude, longitude=longitude)
                     updated_ids.append(city.city_id)
-            self.catalogue = preview
+            self._replace_working_catalogue(preview)
         except (OSError, UnicodeError, ValueError, csv.Error) as exc:
             messagebox.showerror("Importer des villes", str(exc), parent=self)
             return
@@ -1415,7 +1874,7 @@ class CatalogueWindow(tk.Toplevel):
             except ValueError as exc:
                 city_name = self.catalogue.get_city(city_id).name
                 raise ValueError(f"Ligne {line_number} : {city_name} : {exc}") from exc
-        self.catalogue = preview
+        self._replace_working_catalogue(preview)
 
     def _beacon_export_names(self) -> tuple[str, ...]:
         """Exporte toutes les balises, y compris archivées, dans l'ordre des IDs."""

@@ -91,9 +91,6 @@ class _Viewer:
     def _attach_beacon_resolver_to_world(self, world):
         world.attachBeaconResolver(None)
 
-    def _bg_clear(self, persist=False):
-        pass
-
     def _clear_nearest_line(self):
         pass
 

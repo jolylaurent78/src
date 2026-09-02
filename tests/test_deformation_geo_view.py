@@ -8,6 +8,7 @@ from src.assembleur_deformation_window import (
     derive_assembly_view_rotation_deg,
 )
 from src.assembleur_geo_map_view import GeoMapView
+from src.assembleur_geo_map_view import GeoMapPixelMarker
 
 
 def _rotated_view(rotation_deg: float) -> GeoMapView:
@@ -105,6 +106,61 @@ def test_geo_map_view_default_maximum_zoom_remains_half_for_zoom_interaction():
     view._zoom_at(400.0, 300.0, 100.0)
 
     assert view._view_scale == pytest.approx(0.5)
+
+
+def test_geo_map_view_replaces_calibration_without_refitting_when_requested():
+    view = _rotated_view(0.0)
+    view.map = SimpleNamespace(map_id="MAP-SYS-000001", image="old")
+    view._source_image = "old"
+    view._constrain_view_offsets = lambda: None
+    redraws = []
+    view._request_redraw = lambda: redraws.append(True)
+
+    GeoMapView.set_map(
+        view,
+        SimpleNamespace(map_id="MAP-SYS-000001", image="new"),
+        preserve_view=True,
+    )
+
+    assert view.map.image == "new"
+    assert view._source_image == "new"
+    assert (view._view_scale, view._offset_x, view._offset_y) == (0.25, 120.0, -35.0)
+    assert redraws == [True]
+
+
+def test_geo_map_view_fits_normally_when_replacing_a_map():
+    view = _rotated_view(0.0)
+    view._initial_fit_applied = True
+    fit_calls = []
+    view.fit_to_view = lambda: fit_calls.append(True)
+
+    GeoMapView.set_map(view, SimpleNamespace(map_id="MAP-SYS-000002", image="new"))
+
+    assert view._initial_fit_applied is False
+    assert fit_calls == [True]
+
+
+@pytest.mark.parametrize("scale", (0.5, 1.0, 3.0, 8.0))
+def test_pixel_marker_coordinates_follow_the_map_at_every_zoom(scale):
+    view = _rotated_view(37.5)
+    view._view_scale = scale
+    pixel = (1234.5, 678.25)
+
+    assert view._screen_to_map(*view._map_to_screen(*pixel)) == pytest.approx(pixel)
+
+
+def test_recenter_on_pixel_marker_uses_its_observed_position():
+    view = _rotated_view(0.0)
+    view.map = SimpleNamespace(image_size=(2000.0, 1000.0))
+    view._markers = []
+    view._pixel_markers = [GeoMapPixelMarker("CITY", 1234.5, 678.25)]
+    view._constrain_view_offsets = lambda: None
+    view._request_redraw = lambda: None
+
+    view.recenter_on_marker("CITY")
+
+    assert view._offset_x == pytest.approx(400.0 - 1234.5 * 0.25)
+    assert view._offset_y == pytest.approx(300.0 - 678.25 * 0.25)
 
 
 def test_deformation_window_allows_four_times_the_standard_maximum_zoom():

@@ -76,7 +76,17 @@ class ApplicationPaths:
 
     @property
     def default_catalogue_path(self) -> Path:
-        return self.defaults_root / "catalogue.json"
+        return self.default_catalogue_dir / "catalogue.json"
+
+    @property
+    def default_catalogue_dir(self) -> Path:
+        """Repertoire du Catalogue SYS distribue avec l'application."""
+        return self.defaults_root / "catalogue"
+
+    @property
+    def default_catalogue_maps_dir(self) -> Path:
+        """Assets physiques des cartes appartenant au Catalogue SYS."""
+        return self.default_catalogue_dir / "maps"
 
     @property
     def default_scenarios_dir(self) -> Path:
@@ -95,6 +105,11 @@ class ApplicationPaths:
         return self.user_catalogue_dir / "catalogue.json"
 
     @property
+    def user_catalogue_maps_dir(self) -> Path:
+        """Répertoire des assets physiques appartenant au Catalogue USER."""
+        return self.user_catalogue_dir / "maps"
+
+    @property
     def user_scenarios_dir(self) -> Path:
         return self.user_data_root / "scenarios"
 
@@ -105,10 +120,6 @@ class ApplicationPaths:
     @property
     def config_path(self) -> Path:
         return self.config_dir / "assembleur_config.json"
-
-    @property
-    def calibrations_dir(self) -> Path:
-        return self.user_data_root / "calibrations"
 
     @property
     def exports_dir(self) -> Path:
@@ -122,9 +133,9 @@ class ApplicationPaths:
         for directory in (
             self.user_data_root,
             self.user_catalogue_dir,
+            self.user_catalogue_maps_dir,
             self.user_scenarios_dir,
             self.config_dir,
-            self.calibrations_dir,
             self.exports_dir,
             self.logs_dir,
         ):

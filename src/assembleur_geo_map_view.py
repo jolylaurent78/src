@@ -14,7 +14,6 @@ import tkinter as tk
 from PIL import Image, ImageTk
 from pyproj import Transformer
 
-from src.assembleur_paths import ApplicationPaths
 
 
 @dataclass(frozen=True)
@@ -30,6 +29,31 @@ class GeoMapMarker:
     outline_color: str | None = None
     label_color: str | None = None
     tooltip: str | None = None
+
+
+@dataclass(frozen=True)
+class GeoMapPixelMarker:
+    """Marqueur ancré dans le repère pixel de l'image de carte."""
+
+    marker_id: object
+    pixel_x: float
+    pixel_y: float
+    label: str = ""
+    always_show_label: bool = False
+    fill_color: str | None = None
+    outline_color: str | None = None
+    label_color: str | None = None
+    tooltip: str | None = None
+    selectable: bool = True
+
+
+@dataclass(frozen=True)
+class GeoMapPixelPolyline:
+    """Polyligne ancrée dans le repère pixel de l'image de carte."""
+
+    points: tuple[tuple[float, float], ...]
+    color: str | None = None
+    width: int = 1
 
 
 @dataclass(frozen=True)
@@ -62,32 +86,39 @@ class CalibratedGeoMap:
         self._from_lambert = Transformer.from_crs("EPSG:2154", "EPSG:4326", always_xy=True)
 
     @classmethod
-    def load_map(
+    def load_from_assets(
         cls,
+        *,
         map_id: str,
-        maps_dir: str | Path | None = None,
+        image_path: str | Path,
+        calibration_path: str | Path,
         max_image_dimension: int | None = None,
     ) -> "CalibratedGeoMap":
-        """Charge une carte à sa résolution native, sauf limite explicitement demandée."""
-        root = (
-            Path(maps_dir)
-            if maps_dir is not None
-            else ApplicationPaths.from_runtime().resource_maps_dir
-        )
-        image_path = root / f"{map_id}.jpg"
-        calibration_path = root / f"{map_id}.json"
-        if not image_path.is_file():
-            raise FileNotFoundError(f"Image de carte introuvable : {image_path}")
-        if not calibration_path.is_file():
-            raise FileNotFoundError(f"Calibration de carte introuvable : {calibration_path}")
-        if max_image_dimension is not None and int(max_image_dimension) <= 0:
+        """Charge une carte calibrée depuis des assets explicitement résolus."""
+        image_source = Path(image_path)
+        calibration_source = Path(calibration_path)
+        if not image_source.is_file():
+            raise FileNotFoundError(f"Image de carte introuvable : {image_source}")
+        if not calibration_source.is_file():
+            raise FileNotFoundError(f"Calibration de carte introuvable : {calibration_source}")
+        if max_image_dimension is not None and (
+            isinstance(max_image_dimension, bool)
+            or not isinstance(max_image_dimension, int)
+            or max_image_dimension <= 0
+        ):
             raise ValueError("max_image_dimension doit être un entier strictement positif ou None.")
-        with calibration_path.open(encoding="utf-8") as calibration_file:
-            calibration = json.load(calibration_file)
+        try:
+            with calibration_source.open(encoding="utf-8") as calibration_file:
+                raw_calibration = json.load(calibration_file)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Calibration cartographique JSON invalide : {calibration_source}") from exc
+        if not isinstance(raw_calibration, dict):
+            raise ValueError("Calibration cartographique invalide : objet JSON attendu.")
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", Image.DecompressionBombWarning)
-            with Image.open(image_path) as source:
+            with Image.open(image_source) as source:
                 image_size = source.size
+                calibration = cls._normalize_calibration(raw_calibration, image_size)
                 if max_image_dimension is not None and max(image_size) > int(max_image_dimension):
                     source.thumbnail(
                         (int(max_image_dimension), int(max_image_dimension)),
@@ -95,6 +126,55 @@ class CalibratedGeoMap:
                     )
                 image = source.copy()
         return cls(map_id, image, calibration, image_size=image_size)
+
+    @staticmethod
+    def _normalize_calibration(raw_calibration: dict, image_size: tuple[int, int]) -> dict:
+        """Adapte le seul format historique 3-points sans réécrire le fichier source."""
+        if "A" in raw_calibration and "offset" in raw_calibration:
+            return raw_calibration
+        required = {"affineWorldToLambertKm", "bgWorldRectAtCalibration"}
+        if not required.issubset(raw_calibration):
+            raise ValueError("Calibration cartographique invalide : A/offset ou calibration 3-points attendue.")
+        affine = raw_calibration["affineWorldToLambertKm"]
+        rect = raw_calibration["bgWorldRectAtCalibration"]
+        if not isinstance(affine, list) or len(affine) != 6:
+            raise ValueError("Calibration 3-points invalide : affineWorldToLambertKm doit contenir 6 valeurs.")
+        if not isinstance(rect, dict):
+            raise ValueError("Calibration 3-points invalide : bgWorldRectAtCalibration doit être un objet.")
+        try:
+            x0, y0, width, height = (float(rect[key]) for key in ("x0", "y0", "w", "h"))
+            a, b, c, d, e, f = (float(value) for value in affine)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("Calibration 3-points invalide : valeurs numériques attendues.") from exc
+        image_width, image_height = image_size
+        if image_width <= 0 or image_height <= 0 or width <= 0 or height <= 0:
+            raise ValueError("Calibration 3-points invalide : dimensions strictement positives attendues.")
+        pixel_to_lambert_m = np.asarray(
+            (
+                (1000.0 * a * width / image_width, -1000.0 * b * height / image_height),
+                (1000.0 * d * width / image_width, -1000.0 * e * height / image_height),
+            ),
+            dtype=float,
+        )
+        pixel_offset_m = np.asarray(
+            (
+                1000.0 * (a * x0 + b * (y0 + height) + c),
+                1000.0 * (d * x0 + e * (y0 + height) + f),
+            ),
+            dtype=float,
+        )
+        if not np.all(np.isfinite(pixel_to_lambert_m)) or not np.all(np.isfinite(pixel_offset_m)):
+            raise ValueError("Calibration 3-points invalide : valeurs finies attendues.")
+        determinant = float(np.linalg.det(pixel_to_lambert_m))
+        if abs(determinant) < 1e-15:
+            raise ValueError("Calibration 3-points non inversible.")
+        lambert_to_pixel = np.linalg.inv(pixel_to_lambert_m)
+        return {
+            "projection": "EPSG:2154",
+            "A": lambert_to_pixel.tolist(),
+            "offset": (-lambert_to_pixel @ pixel_offset_m).tolist(),
+            "sourceCalibrationType": "bg_calibration_3points",
+        }
 
     def lambert_to_pixel(self, x_m: float, y_m: float) -> tuple[float, float]:
         pixel = self._matrix @ np.asarray((x_m, y_m), dtype=float) + self._offset
@@ -132,6 +212,7 @@ class GeoMapView(tk.Frame):
         on_marker_drag_started: Callable[[object], None] | None = None,
         on_marker_dragged: Callable[[object, tuple[float, float]], None] | None = None,
         on_marker_drag_released: Callable[[object], None] | None = None,
+        on_map_clicked: Callable[[tuple[float, float]], None] | None = None,
         initial_fit_zoom: float = 1.0,
         minimum_fit_zoom: float = 1.0,
         maximum_zoom: float = 0.5,
@@ -144,8 +225,10 @@ class GeoMapView(tk.Frame):
         self.on_marker_drag_started = on_marker_drag_started
         self.on_marker_dragged = on_marker_dragged
         self.on_marker_drag_released = on_marker_drag_released
+        self.on_map_clicked = on_map_clicked
         self.map: CalibratedGeoMap | None = None
         self._markers: list[GeoMapMarker] = []
+        self._pixel_markers: list[GeoMapPixelMarker] = []
         self._selected_marker_id: object | None = None
         self._marker_screen_positions: dict[object, tuple[float, float]] = {}
         self._source_image: Image.Image | None = None
@@ -172,6 +255,7 @@ class GeoMapView(tk.Frame):
         self._hover_marker_id: object | None = None
         self._hover_root_position: tuple[int, int] | None = None
         self._polylines: list[GeoMapPolyline] = []
+        self._pixel_polylines: list[GeoMapPixelPolyline] = []
         self._polygons: list[object] = []   # Extension prévue : géométries surfaciques.
         self._overlays: list[object] = []   # Extension prévue : overlays applicatifs.
 
@@ -188,11 +272,19 @@ class GeoMapView(tk.Frame):
     def load_map(self, map_id: str, maps_dir: str | Path | None = None) -> None:
         self.set_map(CalibratedGeoMap.load_map(map_id, maps_dir))
 
-    def set_map(self, calibrated_map: CalibratedGeoMap) -> None:
+    def set_map(self, calibrated_map: CalibratedGeoMap, *, preserve_view: bool = False) -> None:
         self.map = calibrated_map
         self._source_image = calibrated_map.image
+        if preserve_view:
+            self._constrain_view_offsets()
+            self._request_redraw()
+            return
         self._initial_fit_applied = False
         self.fit_to_view()
+
+    def set_map_click_handler(self, handler: Callable[[tuple[float, float]], None] | None) -> None:
+        """Active un consommateur de clic image (p. ex. pointage de calibration)."""
+        self.on_map_clicked = handler
 
     def set_view_rotation_deg(self, angle_deg: float) -> None:
         """Tourne uniquement le repere visuel de la carte autour du viewport."""
@@ -216,9 +308,17 @@ class GeoMapView(tk.Frame):
         self._markers = list(markers)
         self._request_redraw()
 
+    def set_pixel_markers(self, markers: Iterable[GeoMapPixelMarker]) -> None:
+        self._pixel_markers = list(markers)
+        self._request_redraw()
+
     def set_polylines(self, polylines: Iterable[GeoMapPolyline]) -> None:
         """Définit des polylignes géographiques à dessiner."""
         self._polylines = list(polylines)
+        self._request_redraw()
+
+    def set_pixel_polylines(self, polylines: Iterable[GeoMapPixelPolyline]) -> None:
+        self._pixel_polylines = list(polylines)
         self._request_redraw()
 
     def set_polygons(self, polygons: Iterable[object]) -> None:
@@ -241,10 +341,21 @@ class GeoMapView(tk.Frame):
     def recenter_on_marker(self, marker_id: object) -> None:
         if self.map is None:
             return
-        marker = next((item for item in self._markers if item.marker_id == marker_id), None)
-        if marker is None:
+        marker = next(
+            (
+                item
+                for item in (*self._markers, *self._pixel_markers)
+                if item.marker_id == marker_id
+            ),
+            None,
+        )
+        pixel_marker = next((item for item in self._pixel_markers if item.marker_id == marker_id), None)
+        if marker is None and pixel_marker is None:
             return
-        x_px, y_px = self.map.geographic_to_pixel(marker.latitude, marker.longitude)
+        if pixel_marker is not None:
+            x_px, y_px = pixel_marker.pixel_x, pixel_marker.pixel_y
+        else:
+            x_px, y_px = self.map.geographic_to_pixel(marker.latitude, marker.longitude)
         width, height = self._canvas_size()
         self._offset_x = width / 2 - x_px * self._view_scale
         self._offset_y = height / 2 - y_px * self._view_scale
@@ -256,6 +367,13 @@ class GeoMapView(tk.Frame):
         if self.map is None:
             return
         points = [self.map.geographic_to_pixel(latitude, longitude) for latitude, longitude in coordinates]
+        self.fit_to_pixel_bounds(points, margin=margin)
+
+    def fit_to_pixel_bounds(self, points: Iterable[tuple[float, float]], *, margin: float = 0.12) -> None:
+        """Ajuste la vue à des points du repère pixel de l'image."""
+        if self.map is None:
+            return
+        points = list(points)
         if not points:
             return
         canvas_width, canvas_height = self._canvas_size()
@@ -404,7 +522,10 @@ class GeoMapView(tk.Frame):
         self._pan_last_position = None
         self._drag_distance = 0.0
         if was_click:
-            self._select_marker_at(event.x, event.y)
+            if self.on_map_clicked is not None and self.map is not None:
+                self.on_map_clicked(self._screen_to_map(event.x, event.y))
+            else:
+                self._select_marker_at(event.x, event.y)
 
     def _on_zoom(self, event):
         self._zoom_at(event.x, event.y, 1.15 if event.delta > 0 else 1 / 1.15)
@@ -480,7 +601,14 @@ class GeoMapView(tk.Frame):
     def _show_tooltip(self) -> None:
         self._tooltip_after_id = None
         marker_id = self._hover_marker_id
-        marker = next((item for item in self._markers if item.marker_id == marker_id), None)
+        marker = next(
+            (
+                item
+                for item in (*self._markers, *self._pixel_markers)
+                if item.marker_id == marker_id
+            ),
+            None,
+        )
         if marker is None:
             return
         tooltip_text = marker.tooltip if marker.tooltip is not None else marker.label
@@ -599,16 +727,52 @@ class GeoMapView(tk.Frame):
                     width=polyline.width,
                     joinstyle=tk.ROUND,
                 )
+        for polyline in self._pixel_polylines:
+            screen_points = []
+            for x_map, y_map in polyline.points:
+                screen_points.extend(self._map_to_screen(x_map, y_map))
+            if len(screen_points) >= 4:
+                self.canvas.create_line(
+                    *screen_points,
+                    fill=polyline.color if polyline.color is not None else "#6f7f8f",
+                    width=polyline.width,
+                )
         for marker in self._markers:
             x_map, y_map = self.map.geographic_to_pixel(marker.latitude, marker.longitude)
-            x_screen, y_screen = self._map_to_screen(x_map, y_map)
+            self._draw_marker(marker, x_map, y_map, selectable=True)
+        for marker in self._pixel_markers:
+            self._draw_marker(marker, marker.pixel_x, marker.pixel_y, selectable=marker.selectable)
+
+    def _draw_marker(
+        self,
+        marker: GeoMapMarker | GeoMapPixelMarker,
+        x_map: float,
+        y_map: float,
+        *,
+        selectable: bool,
+    ) -> None:
+        x_screen, y_screen = self._map_to_screen(x_map, y_map)
+        if selectable:
             self._marker_screen_positions[marker.marker_id] = (x_screen, y_screen)
-            selected = marker.marker_id == self._selected_marker_id
-            radius = 8 if selected else 6
-            color = marker.fill_color if marker.fill_color is not None else ("#d52b1e" if selected else "#1565c0")
-            outline = marker.outline_color if marker.outline_color is not None else "white"
-            self.canvas.create_oval(x_screen - radius, y_screen - radius, x_screen + radius, y_screen + radius,
-                                    fill=color, outline=outline, width=2)
-            if (selected or marker.always_show_label) and marker.label:
-                self.canvas.create_text(x_screen + 10, y_screen - 10, text=marker.label, anchor="sw",
-                                        fill=marker.label_color or "#202020", font=("TkDefaultFont", 9, "bold"))
+        selected = selectable and marker.marker_id == self._selected_marker_id
+        radius = 8 if selected else 6
+        color = marker.fill_color if marker.fill_color is not None else ("#d52b1e" if selected else "#1565c0")
+        outline = marker.outline_color if marker.outline_color is not None else "white"
+        self.canvas.create_oval(
+            x_screen - radius,
+            y_screen - radius,
+            x_screen + radius,
+            y_screen + radius,
+            fill=color,
+            outline=outline,
+            width=2,
+        )
+        if (selected or marker.always_show_label) and marker.label:
+            self.canvas.create_text(
+                x_screen + 10,
+                y_screen - 10,
+                text=marker.label,
+                anchor="sw",
+                fill=marker.label_color or "#202020",
+                font=("TkDefaultFont", 9, "bold"),
+            )

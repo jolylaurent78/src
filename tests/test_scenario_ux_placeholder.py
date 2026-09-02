@@ -7,6 +7,7 @@ from src.assembleur_catalogue import Catalogue
 from src.assembleur_core import ScenarioAssemblage, TopologyElement, TopologyWorld
 from src.assembleur_geometry_reference import GeometryReferenceResolver
 from src.assembleur_scenario import ScenarioHypothesis, materialize_triangle
+from src.assembleur_scenario_map import ScenarioMapState
 from src.assembleur_tk import TriangleViewerManual
 
 
@@ -151,6 +152,32 @@ def test_loading_keeps_a_real_active_scenario(monkeypatch, tmp_path):
     assert viewer._get_active_scenario().name == "reference"
 
 
+def test_loading_publishes_map_state_before_scenario_activation(monkeypatch, tmp_path):
+    manual = ScenarioAssemblage("Manuel", is_placeholder=False)
+    viewer = _load_viewer(manual)
+    expected_map_state = ScenarioMapState("MAP-SYS-000001")
+    calls = []
+    monkeypatch.setattr(
+        assembleur_tk_module._assembleur_io, "_parse_loaded_scenario_xml", lambda *_args: object(),
+    )
+
+    def publish(_viewer, scenario, _loaded, *, publish_ui):
+        calls.append(publish_ui)
+        if not publish_ui:
+            scenario.map_state = expected_map_state
+
+    monkeypatch.setattr(assembleur_tk_module._assembleur_io, "_publish_loaded_scenario_xml", publish)
+
+    def activate(index):
+        assert viewer.scenarios[index].map_state == expected_map_state
+        viewer.active_scenario_index = index
+
+    viewer._set_active_scenario = activate
+    TriangleViewerManual._load_scenario_into_new_scenario(viewer, str(tmp_path / "reference.xml"))
+
+    assert calls == [False, True]
+
+
 def test_invalid_new_scenario_load_does_not_publish_a_scenario(monkeypatch, tmp_path):
     manual = ScenarioAssemblage("Manuel", is_placeholder=False)
     viewer = _load_viewer(manual)
@@ -178,14 +205,11 @@ def test_new_empty_scenario_keeps_current_map_and_view_context(tmp_path):
     viewer.active_scenario_index = 0
     viewer.status = _Status()
     viewer._bg = {"path": str(map_path), "x0": 1.0, "y0": 2.0, "w": 30.0, "h": 40.0}
-    viewer._bg_scale_factor_override = None
     current_view = {"zoom": 2.0, "offset_x": 12.0, "offset_y": 34.0}
-    current_map = {
-        "path": str(map_path), "x0": 1.0, "y0": 2.0, "w": 30.0, "h": 40.0,
-        "visible": True, "opacity": 100, "scale": None,
-    }
     viewer._capture_view_state = lambda: dict(current_view)
-    viewer._capture_map_state = lambda: dict(current_map)
+    default_map = ScenarioMapState(None)
+    viewer._new_default_map_state = lambda: default_map
+    viewer._apply_map_state = lambda *_args, **_kwargs: None
     viewer.show_map_layer = SimpleNamespace(set=lambda _value: None)
     viewer.map_opacity = SimpleNamespace(
         set=lambda _value: None,
@@ -198,9 +222,7 @@ def test_new_empty_scenario_keeps_current_map_and_view_context(tmp_path):
 
     def activate(index):
         viewer.active_scenario_index = index
-        TriangleViewerManual._apply_map_state(
-            viewer, viewer.scenarios[index].map_state, persist=False, redraw=False
-        )
+        viewer._apply_map_state(viewer.scenarios[index].map_state, persist=False, redraw=False)
 
     viewer._set_active_scenario = activate
 
@@ -211,7 +233,7 @@ def test_new_empty_scenario_keeps_current_map_and_view_context(tmp_path):
     assert viewer.active_scenario_index == 1
     assert created.last_drawn == []
     assert created.view_state == current_view
-    assert created.map_state == current_map
+    assert created.map_state == default_map
     assert viewer._bg is not None
     assert viewer._bg["path"] == str(map_path)
 
@@ -256,14 +278,11 @@ def test_duplicate_keeps_current_map_context_and_reapplies_group_anchor(tmp_path
     viewer.status = _Status()
     viewer._beacon_world_resolver = resolver
     viewer._bg = {"path": str(map_path), "x0": 1.0, "y0": 2.0, "w": 30.0, "h": 40.0}
-    viewer._bg_scale_factor_override = None
     current_view = {"zoom": 2.0, "offset_x": 12.0, "offset_y": 34.0}
-    current_map = {
-        "path": str(map_path), "x0": 1.0, "y0": 2.0, "w": 30.0, "h": 40.0,
-        "visible": True, "opacity": 100, "scale": None,
-    }
+    current_map = ScenarioMapState(None)
     viewer._capture_view_state = lambda: dict(current_view)
-    viewer._capture_map_state = lambda: dict(current_map)
+    viewer._capture_map_state = lambda: current_map
+    viewer._apply_map_state = lambda *_args, **_kwargs: None
     viewer.show_map_layer = SimpleNamespace(set=lambda _value: None)
     viewer.map_opacity = SimpleNamespace(set=lambda _value: None, get=lambda: 100)
     viewer._exit_deformation_mode = lambda: None
@@ -271,9 +290,7 @@ def test_duplicate_keeps_current_map_context_and_reapplies_group_anchor(tmp_path
 
     def activate(index):
         duplicate = viewer.scenarios[index]
-        TriangleViewerManual._apply_map_state(
-            viewer, duplicate.map_state, persist=False, redraw=False
-        )
+        viewer._apply_map_state(duplicate.map_state, persist=False, redraw=False)
         TriangleViewerManual._reapply_scenario_group_anchors(viewer, duplicate)
         viewer.active_scenario_index = index
 

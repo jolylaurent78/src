@@ -14,7 +14,6 @@ import xml.etree.ElementTree as ET
 import re
 import tempfile
 import traceback
-import inspect
 from dataclasses import dataclass
 import numpy as np
 
@@ -29,7 +28,12 @@ from src.assembleur_geometry_reference import (
 )
 from src.assembleur_scenario import ScenarioHypothesis
 from src.assembleur_catalogue_identity import is_catalogue_triangle_id
-from src.assembleur_scenario_map import resolve_resource_map, resource_name_for_path
+from src.assembleur_scenario_map import (
+    ScenarioMapState,
+    migrate_legacy_map_attributes,
+    scenario_map_state_from_xml_attributes,
+    scenario_map_state_to_xml_attributes,
+)
 
 CFG_KEY_CHEMINS_BEACON_REF = "cheminsBeaconRefId"
 _SCENARIO_XML_VERSIONS = frozenset({"5", "6"})
@@ -443,31 +447,11 @@ def saveScenarioXml(viewer, path: str):
         "offset_y": f"{float(getattr(viewer, 'offset', (0.0, 0.0))[1]):.6g}",
     })
 
-    # map (fond) : fichier + worldRect + opacité/visibilité + scale
-    bg = getattr(viewer, "_bg", None)
-    map_path = str(bg.get("path")) if isinstance(bg, dict) and bg.get("path") else ""
-    # scale affiché (best-effort)
-    map_scale = viewer._bg_compute_scale_factor() if hasattr(viewer, "_bg_compute_scale_factor") else None
-    if map_scale is None:
-        map_scale = getattr(viewer, "_bg_scale_factor_override", None)
-
-    map_attributes = {
-        "x0": f"{float(bg.get('x0')) if isinstance(bg, dict) and bg.get('x0') is not None else 0.0:.6g}",
-        "y0": f"{float(bg.get('y0')) if isinstance(bg, dict) and bg.get('y0') is not None else 0.0:.6g}",
-        "w":  f"{float(bg.get('w')) if isinstance(bg, dict) and bg.get('w') is not None else 0.0:.6g}",
-        "h":  f"{float(bg.get('h')) if isinstance(bg, dict) and bg.get('h') is not None else 0.0:.6g}",
-        "visible": "1" if (getattr(viewer, "show_map_layer", None) and viewer.show_map_layer.get()) else "0",
-        "opacity": f"{int(viewer.map_opacity.get()) if hasattr(viewer, 'map_opacity') else 100}",
-        "scale": f"{float(map_scale):.6g}" if map_scale is not None else "",
-    }
-    resource_name = resource_name_for_path(
-        map_path, viewer.paths.resource_maps_dir
-    ) if hasattr(viewer, "paths") else None
-    if resource_name is not None:
-        map_attributes["resource"] = resource_name
-    else:
-        map_attributes["path"] = os.path.abspath(map_path) if map_path else ""
-    ET.SubElement(root, "map", map_attributes)
+    map_state = scen.map_state
+    if not isinstance(map_state, ScenarioMapState):
+        raise TypeError("saveScenarioXml: map_state doit être un ScenarioMapState.")
+    if map_state.map_ref_id is not None:
+        ET.SubElement(root, "map", scenario_map_state_to_xml_attributes(map_state))
 
     # clock
     ET.SubElement(root, "clock", {
@@ -524,277 +508,6 @@ def saveScenarioXml(viewer, path: str):
             os.unlink(temporary_path)
 
 
-def _loadScenarioXml_v5_legacy_non_atomic(viewer, path: str):
-    """
-    Recharge un scénario Core-only v5 :
-      - restaure la topologie Core depuis <topoSnapshot encoding="json">,
-      - restaure vue et horloge,
-      - reconstruit la projection runtime depuis le Core,
-      - remplace le scénario actif par un scénario manuel ;
-      - vide le cache puis le reconstruit depuis le Core ;
-      - redessine.
-    """
-    tree = ET.parse(path)
-    root = tree.getroot()
-    if root.tag != "scenario":
-        raise ValueError("Fichier scenario invalide (balise racine).")
-
-    ver = str(root.get("version", "") or "").strip()
-    if ver != "5":
-        raise ValueError(f"Unsupported scenario version: expected 5, got {ver}.")
-    if root.find("triangles") is not None:
-        raise ValueError("Invalid scenario v5: legacy <triangles> section is forbidden.")
-
-    topo_tx_orientation = str(root.get("topo_tx_orientation", "") or "").strip().lower()
-    if topo_tx_orientation not in {"cw", "ccw"}:
-        raise ValueError("Missing or invalid topo_tx_orientation (expected cw|ccw).")
-
-    topo_snapshot_el = root.find("topoSnapshot")
-    topo_snapshot_txt = ""
-    if topo_snapshot_el is not None:
-        topo_snapshot_txt = str(topo_snapshot_el.text or "").strip()
-    if (
-        topo_snapshot_el is None
-        or str(topo_snapshot_el.get("encoding", "") or "").strip().lower() != "json"
-        or not topo_snapshot_txt
-    ):
-        raise ValueError("Missing topoSnapshot (encoding=json) in scenario v5.")
-
-    snapshot = json.loads(topo_snapshot_txt)
-    if not isinstance(snapshot, dict):
-        raise ValueError("Missing topoSnapshot (encoding=json) in scenario v5.")
-
-    scen = viewer._get_active_scenario()
-    if scen is None:
-        raise ValueError("loadScenarioXml: active scenario is required for v5 load.")
-
-    loaded_hypothesis = _load_scenario_hypothesis(root, viewer.catalogue)
-    if loaded_hypothesis is None:
-        raise ValueError("loadScenarioXml: ScenarioHypothesis absente du scénario XML.")
-
-    # clockRef optional: clear the runtime reference when it is incomplete.
-    clock_ref_el = root.find("clockRef")
-    if clock_ref_el is None:
-        scen.clockRefTopoGroupId = None
-        scen.clockRefNodeId = None
-        scen.clockRefEdgeId = None
-    else:
-        topo_group_id = str(clock_ref_el.get("topoGroupId", "") or "").strip()
-        node_id = str(clock_ref_el.get("nodeId", "") or "").strip()
-        edge_id = str(clock_ref_el.get("edgeId", "") or "").strip()
-        if (not topo_group_id) or (not node_id) or (not edge_id):
-            scen.clockRefTopoGroupId = None
-            scen.clockRefNodeId = None
-            scen.clockRefEdgeId = None
-        else:
-            scen.clockRefTopoGroupId = topo_group_id
-            scen.clockRefNodeId = node_id
-            scen.clockRefEdgeId = edge_id
-
-    # guides (v4 compatibility: conversion vers le modèle runtime actuel après restauration du world)
-    raw_guides_specs = []
-    guides_el = root.find("guides")
-    if guides_el is not None:
-        for guide_el in guides_el.findall("guide"):
-            topo_group_id = str(guide_el.get("topoGroupId", "") or "").strip()
-            node_id = str(guide_el.get("nodeId", "") or "").strip()
-            edge_ref_id = str(guide_el.get("edgeRefId", "") or "").strip()
-            delta_az_raw = str(guide_el.get("deltaAzDeg", "") or "").strip()
-            color_hex = str(guide_el.get("colorHex", "") or "").strip()
-
-            if (not topo_group_id) or (not node_id):
-                continue
-            if not re.fullmatch(r"#[0-9A-Fa-f]{6}", color_hex):
-                continue
-
-            try:
-                delta_az = float(delta_az_raw)
-            except ValueError:
-                continue
-
-            raw_guides_specs.append({
-                "topoGroupId": topo_group_id,
-                "nodeId": node_id,
-                "edgeRefId": edge_ref_id,
-                "deltaAzDeg": float(delta_az) % 360.0,
-                "colorHex": color_hex,
-            })
-
-    # 1) vue
-    view = root.find("view")
-    if view is not None:
-        viewer.zoom = float(view.get("zoom", viewer.zoom))
-        ox = float(view.get("offset_x", viewer.offset[0] if hasattr(viewer, "offset") else 0.0))
-        oy = float(view.get("offset_y", viewer.offset[1] if hasattr(viewer, "offset") else 0.0))
-        viewer.offset = np.array([ox, oy], dtype=float)
-
-    # 1bis) map (fond)
-    map_el = root.find("map")
-    if map_el is not None:
-        map_path = str(map_el.get("path", "") or "").strip()
-        if map_path and os.path.isfile(map_path):
-            rect = {
-                "x0": float(map_el.get("x0", "0") or 0.0),
-                "y0": float(map_el.get("y0", "0") or 0.0),
-                "w": float(map_el.get("w", "0") or 0.0),
-                "h": float(map_el.get("h", "0") or 0.0),
-            }
-            try:
-                viewer._bg_set_map(map_path, rect_override=rect, persist=False)
-            except Exception as e:
-                _ioWarn(viewer, "loadScenarioXml(map)", e)
-                viewer._bg_clear(persist=False)
-        else:
-            if map_path and hasattr(viewer, "_status_warn"):
-                viewer._status_warn(f"Carte introuvable: {map_path}")
-            viewer._bg_clear(persist=False)
-
-        if hasattr(viewer, "show_map_layer"):
-            viewer.show_map_layer.set(str(map_el.get("visible", "1")) not in ("0", "false", "False"))
-        if hasattr(viewer, "map_opacity"):
-            viewer.map_opacity.set(int(map_el.get("opacity", "100") or 100))
-        sc = str(map_el.get("scale", "") or "").strip()
-        if sc:
-            viewer._bg_scale_factor_override = float(sc)
-
-    # Etat d'interaction propre
-    viewer._sel = {"mode": None}
-    viewer._clear_nearest_line()
-    viewer._clear_edge_highlights()
-    viewer._hide_tooltip()
-    viewer._ctx_target_element_id = None
-    viewer._attachment_intent = None
-    viewer._attachment_preview = None
-    viewer._drag_preview_id = None
-    viewer.canvas.delete("preview")
-
-    # 2) horloge
-    clock = root.find("clock")
-    if clock is not None:
-        viewer._clock_cx = float(clock.get("x", "0"))
-        viewer._clock_cy = float(clock.get("y", "0"))
-        h = int(clock.get("hour", "0"))
-        m = int(clock.get("minute", "0"))
-        lbl = clock.get("label", "")
-        viewer._clock_state.update({"hour": h, "minute": m, "label": lbl})
-
-    # 3) Core snapshot first; the Canvas projection is rebuilt afterwards.
-    from src.assembleur_core import TopologyWorld
-
-    # topoScenarioId non défini si on charge au debut
-    sid = getattr(scen, "topoScenarioId", "SCENARIO")
-    # Core restored in isolation; the active scenario is replaced only once
-    # the physical snapshot has been imported successfully.
-    world = TopologyWorld()
-    # Le catalogue déjà chargé par le viewer est partagé avec le monde restauré.
-    viewer._attach_beacon_resolver_to_world(world)
-    world._topoTxOrientation = topo_tx_orientation
-    world._importPhysicalSnapshot(snapshot)
-
-    def _canonical_group_from_snapshot(persisted_group_id, node_id, label):
-        """Resolve an obsolete XML group id from a physical node in the Core."""
-        group_id = str(persisted_group_id or "").strip()
-        if world.hasLiveGroup(group_id):
-            return group_id
-        match = re.fullmatch(r"(T\d+):N\d+", str(node_id or "").strip())
-        if match is None or match.group(1) not in world.elements:
-            raise ValueError(
-                f"{label} references missing Core group {group_id!r} "
-                f"and cannot be resolved from node {node_id!r}."
-            )
-        core_group_id = world.get_group_of_element(match.group(1))
-        if not core_group_id:
-            raise ValueError(
-                f"{label} cannot resolve a Core group from node {node_id!r}."
-            )
-        return str(core_group_id)
-
-    # Les références persistées sont recanonisées à partir du nœud physique,
-    # car l'identifiant de groupe peut changer pendant l'import du snapshot.
-    chemins_el = root.find("chemins")
-    if chemins_el is not None and str(chemins_el.get("isDefined", "") or "") == "1":
-        chemins_el.set(
-            "groupId",
-            _canonical_group_from_snapshot(
-                chemins_el.get("groupId"),
-                chemins_el.get("startNodeId"),
-                "Chemins",
-            ),
-        )
-    world.topologyChemins._loadFromXml(chemins_el)
-
-    if scen.clockRefTopoGroupId and scen.clockRefNodeId:
-        scen.clockRefTopoGroupId = _canonical_group_from_snapshot(
-            scen.clockRefTopoGroupId,
-            scen.clockRefNodeId,
-            "clockRef",
-        )
-
-    # The XML contains no projection. A v5 load is always editable manually.
-    scen.topoScenarioId = sid
-    scen.topoWorld = world
-    scen.hypothesis = loaded_hypothesis
-    scen.source_type = "manual"
-    scen.algo_id = None
-    scen.orderedElementIds = []
-    scen.traversal_direction = None
-    scen.status = None
-    viewer.canvas_objects.clear()
-    scen.last_drawn = []
-    viewer._reapply_scenario_group_anchors(scen)
-    viewer._rebuild_active_projection_from_core()
-    viewer._update_triangle_listbox_colors()
-
-    scen.clockAzimuthTraits = []
-    ref_az = float(getattr(viewer, "_clock_ref_azimuth_deg", 0.0)) % 360.0
-    for guide_spec in raw_guides_specs:
-        topo_group_id = _canonical_group_from_snapshot(
-            guide_spec["topoGroupId"],
-            guide_spec["nodeId"],
-            "Guide",
-        )
-        node_id = str(guide_spec["nodeId"])
-        delta_az = float(guide_spec["deltaAzDeg"]) % 360.0
-        color_hex = str(guide_spec["colorHex"])
-        edge_ref_id = str(guide_spec.get("edgeRefId", "") or "").strip()
-
-        if edge_ref_id:
-            try:
-                node_world = np.array(world.getConceptNodeWorldXY(node_id, topo_group_id), dtype=float)
-                other_node_id = world.getEdgeOtherNodeId(topo_group_id, edge_ref_id, node_id)
-                other_world = np.array(world.getConceptNodeWorldXY(other_node_id, topo_group_id), dtype=float)
-                az_edge_abs = float(viewer._azimuth_world_deg(node_world, other_world))
-                az_trait_abs = (az_edge_abs + delta_az) % 360.0
-                delta_az = (az_trait_abs - ref_az + 360.0) % 360.0
-            except Exception:
-                continue
-
-        scen.clockAzimuthTraits.append({
-            "topoGroupId": topo_group_id,
-            "nodeId": node_id,
-            "deltaAzDeg": float(delta_az) % 360.0,
-            "colorHex": color_hex,
-        })
-
-    # 8) selection et aides reset
-    viewer._sel = {"mode": None}
-    viewer._clear_nearest_line()
-    viewer._clear_edge_highlights()
-
-    # 9) re-appliquer les bindings
-    viewer._bind_canvas_handlers()
-
-    # 10) redraw complet
-    viewer._redraw_from(viewer._last_drawn)
-    viewer._redraw_overlay_only()
-    viewer._rebuild_pick_cache()
-    viewer._pick_cache_valid = True
-    if hasattr(viewer, "refreshCheminTreeView"):
-        viewer.refreshCheminTreeView()
-
-    viewer.canvas.focus_set()
-    viewer._bind_canvas_handlers()
-
 @dataclass(frozen=True)
 class _LoadedScenarioXml:
     version: str
@@ -804,7 +517,7 @@ class _LoadedScenarioXml:
     clock_ref: tuple[str | None, str | None, str | None]
     clock_state: dict[str, object]
     view_state: tuple[float, np.ndarray] | None
-    map_state: dict[str, object] | None
+    map_state: ScenarioMapState
     guides: tuple[dict[str, object], ...]
 
 
@@ -846,38 +559,17 @@ def _parse_optional_guides(root: ET.Element) -> tuple[dict[str, object], ...]:
     return tuple(guide_specs)
 
 
-def _parse_map_state(viewer, map_element: ET.Element) -> dict[str, object]:
-    map_path = str(map_element.get("path", "") or "").strip()
-    has_resource = "resource" in map_element.attrib
-    has_path = "path" in map_element.attrib
-    resource = str(map_element.get("resource", "") or "").strip()
-    if has_path and has_resource:
-        raise ValueError("Map scenario invalide : path et resource sont mutuellement exclusifs.")
-    if has_resource:
-        if not hasattr(viewer, "paths"):
-            raise ValueError("Map scenario resource impossible à résoudre sans ApplicationPaths.")
-        map_path = str(resolve_resource_map(resource, viewer.paths.resource_maps_dir))
-    return {
-        "path": map_path,
-        "resource": resource or None,
-        "rect": {
-            "x0": float(map_element.get("x0", "0") or 0.0),
-            "y0": float(map_element.get("y0", "0") or 0.0),
-            "w": float(map_element.get("w", "0") or 0.0),
-            "h": float(map_element.get("h", "0") or 0.0),
-        },
-        "visible": str(map_element.get("visible", "1")) not in ("0", "false", "False"),
-        "opacity": int(map_element.get("opacity", "100") or 100),
-        "scale": str(map_element.get("scale", "") or "").strip(),
-    }
-
-
-def _call_background_method(viewer, method_name: str, *args, **kwargs) -> None:
-    """Évite le redraw intermédiaire quand le viewer runtime le prend en charge."""
-    method = getattr(viewer, method_name)
-    if "redraw" in inspect.signature(method).parameters:
-        kwargs["redraw"] = False
-    method(*args, **kwargs)
+def _parse_map_state(catalogue: Catalogue, map_element: ET.Element) -> ScenarioMapState:
+    attributes = dict(map_element.attrib)
+    if "refId" in attributes:
+        if "resource" in attributes or "path" in attributes or "w" in attributes or "h" in attributes:
+            raise ValueError("Map scenario invalide : attributs legacy mélangés au format refId.")
+        state = scenario_map_state_from_xml_attributes(attributes)
+    else:
+        state = migrate_legacy_map_attributes(catalogue, attributes)
+    if state.map_ref_id is not None:
+        catalogue.get_map(state.map_ref_id)
+    return state
 
 
 def _canonical_group_from_loaded_world(
@@ -979,9 +671,9 @@ def _parse_loaded_scenario_xml(viewer, path: str) -> _LoadedScenarioXml:
         )
 
     map_el = root.find("map")
-    map_state = None
+    map_state = ScenarioMapState(map_ref_id=catalogue.default_map_id)
     if map_el is not None:
-        map_state = _parse_map_state(viewer, map_el)
+        map_state = _parse_map_state(catalogue, map_el)
 
     clock_el = root.find("clock")
     clock_state = {"hour": 0, "minute": 0, "label": "", "x": 0.0, "y": 0.0}
@@ -1022,29 +714,14 @@ def _publish_loaded_scenario_xml(viewer, scenario, loaded: _LoadedScenarioXml, *
         scenario.clockRefEdgeId,
     ) = loaded.clock_ref
     scenario.clockAzimuthTraits = [dict(guide) for guide in loaded.guides]
+    scenario.map_state = loaded.map_state
     if not publish_ui:
         return
 
     if loaded.view_state is not None:
         viewer.zoom, viewer.offset = loaded.view_state
-    if loaded.map_state is not None:
-        map_path = str(loaded.map_state["path"])
-        if map_path and os.path.isfile(map_path):
-            _call_background_method(
-                viewer,
-                "_bg_set_map",
-                map_path,
-                rect_override=loaded.map_state["rect"],
-                persist=False,
-            )
-        else:
-            _call_background_method(viewer, "_bg_clear", persist=False)
-        if hasattr(viewer, "show_map_layer"):
-            viewer.show_map_layer.set(bool(loaded.map_state["visible"]))
-        if hasattr(viewer, "map_opacity"):
-            viewer.map_opacity.set(int(loaded.map_state["opacity"]))
-        if loaded.map_state["scale"]:
-            viewer._bg_scale_factor_override = float(loaded.map_state["scale"])
+    if loaded.map_state is not None and hasattr(viewer, "_apply_map_state"):
+        viewer._apply_map_state(loaded.map_state, persist=False)
     viewer._clock_cx = float(loaded.clock_state["x"])
     viewer._clock_cy = float(loaded.clock_state["y"])
     viewer._clock_state.update({

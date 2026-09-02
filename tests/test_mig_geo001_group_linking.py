@@ -393,7 +393,6 @@ def test_center_move_initializes_a_core_only_selection_state():
     viewer._clock_trace_active = False
     viewer._clock_measure_active = False
     viewer._clock_setref_active = False
-    viewer._bg_calib_active = False
     viewer._bg = None
     viewer.bg_resize_mode = SimpleNamespace(get=lambda: False)
     viewer._ensure_pick_cache = lambda: None

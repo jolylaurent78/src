@@ -25,12 +25,14 @@ def _catalogue_with_cities() -> Catalogue:
 
 
 def _window_logic(catalogue: Catalogue):
-    return SimpleNamespace(
+    window = SimpleNamespace(
         catalogue=catalogue,
         _BEACON_XLSX_HEADER=CatalogueWindow._BEACON_XLSX_HEADER,
         _beacon_search_var=_Value(""),
         _show_archived_beacons_var=_Value(False),
     )
+    window._replace_working_catalogue = lambda replacement: setattr(window, "catalogue", replacement)
+    return window
 
 
 def _write_beacon_workbook(path, names):

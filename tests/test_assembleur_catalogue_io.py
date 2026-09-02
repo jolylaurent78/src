@@ -22,7 +22,7 @@ def _catalogue() -> Catalogue:
     return catalogue
 
 
-def test_v2_round_trip_keeps_ids_references_counters_and_injected_provider(tmp_path):
+def test_v5_round_trip_keeps_ids_references_counters_and_injected_provider(tmp_path):
     catalogue = _catalogue()
     city_ids = list(catalogue.cities)
     beacon_one = catalogue.add_beacon(city_ids[0])
@@ -39,14 +39,15 @@ def test_v2_round_trip_keeps_ids_references_counters_and_injected_provider(tmp_p
     serialized = json.loads(path.read_text(encoding="utf-8"))
     loaded = load_catalogue(path, id_provider=user_provider)
 
-    assert serialized["version"] == 2
-    assert serialized["idCounters"] == {"city": 3, "beacon": 2, "triangle": 1, "template": 1}
-    assert list(serialized["idCounters"]) == ["city", "beacon", "triangle", "template"]
+    assert serialized["version"] == 5
+    assert serialized["idCounters"] == {"city": 3, "beacon": 2, "triangle": 1, "template": 1, "map": 0}
+    assert list(serialized["idCounters"]) == ["city", "beacon", "triangle", "template", "map"]
     assert set(loaded.cities) == set(catalogue.cities)
     assert set(loaded.beacons) == set(catalogue.beacons)
     assert set(loaded.triangles) == set(catalogue.triangles)
     assert set(loaded.templates) == set(catalogue.templates)
     assert loaded.default_template_id == catalogue.default_template_id
+    assert loaded.catalogue_reference_map_id == catalogue.catalogue_reference_map_id
     assert loaded.id_counters == catalogue.id_counters
     assert loaded.id_provider is user_provider
     assert loaded.get_beacon(beacon_one.beacon_id).city_id == city_ids[0]
@@ -69,11 +70,11 @@ def test_id_counters_reject_invalid_value_types(value):
 @pytest.mark.parametrize(
     "counters",
     [
-        {"city": 1, "beacon": 0, "triangle": 0},
-        {"city": 1, "beacon": 0, "triangle": 0, "template": 0, "triangles": 3},
+        {"city": 1, "beacon": 0, "triangle": 0, "template": 0},
+        {"city": 1, "beacon": 0, "triangle": 0, "template": 0, "map": 0, "triangles": 3},
     ],
 )
-def test_id_counters_require_exactly_four_known_keys(counters):
+def test_id_counters_require_exactly_five_known_keys(counters):
     data = catalogue_to_dict(_catalogue())
     data["idCounters"] = counters
     with pytest.raises(ValueError, match="idCounters doit contenir exactement"):
@@ -136,7 +137,7 @@ def test_system_ids_are_never_reused_after_delete_save_and_load(tmp_path):
     save_catalogue(catalogue, path)
     loaded = load_catalogue(path, id_provider=provider)
 
-    assert loaded.id_counters == {"city": 3, "beacon": 0, "triangle": 0, "template": 2}
+    assert loaded.id_counters == {"city": 3, "beacon": 0, "triangle": 0, "template": 2, "map": 0}
     assert first.city_id in loaded.cities
     assert second.city_id in loaded.cities
     assert first_template.template_id in loaded.templates
@@ -146,9 +147,11 @@ def test_system_ids_are_never_reused_after_delete_save_and_load(tmp_path):
 
 def test_system_provider_after_loading_a_mixed_catalogue_starts_after_persisted_counter():
     data = {
-        "version": 2,
-        "idCounters": {"city": 8, "beacon": 0, "triangle": 0, "template": 0},
+        "version": 5,
+        "idCounters": {"city": 8, "beacon": 0, "triangle": 0, "template": 0, "map": 0},
         "defaultTemplateId": None,
+        "defaultMapId": None,
+        "catalogueReferenceMapId": None,
         "cities": [
             {"cityId": "CITY-SYS-000005", "name": "Système", "latitude": 47.0, "longitude": 2.0, "archived": False},
             {
@@ -162,19 +165,22 @@ def test_system_provider_after_loading_a_mixed_catalogue_starts_after_persisted_
         "beacons": [],
         "triangles": [],
         "templates": [],
+        "maps": [],
     }
     loaded = catalogue_from_dict(data, id_provider=SystemCatalogueIdProvider())
 
     assert loaded.add_city("Nouvelle", 45.0, 4.0).city_id == "CITY-SYS-000009"
 
 
-def test_v1_is_rejected_explicitly_and_json_errors_stay_contextual(tmp_path):
+def test_older_versions_are_rejected_explicitly_and_json_errors_stay_contextual(tmp_path):
     syntax_path = tmp_path / "syntax.json"
     syntax_path.write_text("{", encoding="utf-8")
     with pytest.raises(ValueError, match="JSON catalogue invalide"):
         load_catalogue(syntax_path)
     with pytest.raises(ValueError, match="Version de catalogue non supportée : 1"):
         catalogue_from_dict({"version": 1})
+    with pytest.raises(ValueError, match="Version de catalogue non supportée : 2"):
+        catalogue_from_dict({"version": 2})
 
 
 def test_save_replaces_existing_file_atomically(tmp_path):
@@ -186,6 +192,6 @@ def test_save_replaces_existing_file_atomically(tmp_path):
     save_catalogue(second, path)
 
     data = json.loads(path.read_text(encoding="utf-8"))
-    assert data["version"] == 2
+    assert data["version"] == 5
     assert data["templates"][0]["description"] == "Nouvelle description"
     assert not path.with_suffix(".json.tmp").exists()

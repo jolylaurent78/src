@@ -16,8 +16,10 @@ import xml.etree.ElementTree as ET
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.assembleur_catalogue_identity import CATALOGUE_ID_KIND_ORDER, SystemCatalogueIdProvider
-from src.assembleur_catalogue_io import catalogue_from_dict, catalogue_to_dict
+from tools.migrate_catalogue_v2_to_v3 import parse_catalogue_v2
+
+
+_V1_TO_V2_ID_KINDS = ("city", "beacon", "triangle", "template")
 
 
 _LEGACY_PREFIXES = {
@@ -69,7 +71,7 @@ class MigrationReport:
             f"  Templates:{len(self.mappings.template)} migrated",
             "Counters",
         ]
-        lines.extend(f"  {kind}: {self.mappings.counters[kind]}" for kind in CATALOGUE_ID_KIND_ORDER)
+        lines.extend(f"  {kind}: {self.mappings.counters[kind]}" for kind in _V1_TO_V2_ID_KINDS)
         for scenario in self.scenario_reports:
             lines.extend([
                 f"Scenario {scenario.source}",
@@ -198,8 +200,8 @@ def migrate_catalogue_data_v1_to_v2(legacy_catalogue: object, mappings: Catalogu
             None if triangle_id is None else _mapped(triangle_id, mappings.triangle, "triangle", "templates.triangleIdsByRank")
             for triangle_id in ranks
         ]
-    catalogue = catalogue_from_dict(migrated, id_provider=SystemCatalogueIdProvider())
-    return catalogue_to_dict(catalogue)
+    parse_catalogue_v2(migrated)
+    return migrated
 
 
 def _preserve_or_map_local(value: object, local_prefix: str, mapping: dict[str, str], kind: str, context: str, report: ScenarioMigrationReport) -> str:
@@ -322,7 +324,7 @@ def migrate_scenario_xml(source: Path, mappings: CatalogueMappings) -> tuple[byt
 
 def _validate_migrated_scenario(root: ET.Element, mappings: CatalogueMappings) -> None:
     """Validation croisée des seuls emplacements Catalogue migrés."""
-    valid = {kind: set(mappings.for_kind(kind).values()) for kind in CATALOGUE_ID_KIND_ORDER}
+    valid = {kind: set(mappings.for_kind(kind).values()) for kind in _V1_TO_V2_ID_KINDS}
     version = root.get("version")
     local_city_ids = {
         city.get("cityRefId")

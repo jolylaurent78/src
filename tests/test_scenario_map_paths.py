@@ -5,6 +5,8 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
+from src.assembleur_catalogue import Catalogue, WorldRect
+from src.assembleur_catalogue_identity import SystemCatalogueIdProvider
 from src.assembleur_io import _parse_map_state
 from src.assembleur_paths import ApplicationPaths
 from src.assembleur_scenario_map import migrate_scenario_map_path
@@ -59,19 +61,16 @@ def test_migration_preserves_external_map_and_xml_without_map(tmp_path) -> None:
     assert no_map_result.changed is False
 
 
-def test_resource_map_state_is_resolved_strictly(tmp_path) -> None:
-    paths = ApplicationPaths.from_runtime(
-        installation_root=tmp_path / "installation", user_data_root=tmp_path / "user-data"
+def test_resource_map_state_is_migrated_to_an_explicit_catalogue_reference(tmp_path) -> None:
+    catalogue = Catalogue(id_provider=SystemCatalogueIdProvider())
+    map_id = catalogue.add_map(
+        name="Alsace", image_file="899 - Alsace.jpg", calibration_file="map.json",
+        projection="EPSG:2154", default_world_rect=WorldRect(1, 2, 4, 2), default_scale_factor=12,
     )
-    paths.resource_maps_dir.mkdir(parents=True)
-    (paths.resource_maps_dir / "899 - Alsace.jpg").write_bytes(b"map")
-    viewer = type("Viewer", (), {"paths": paths})()
 
-    state = _parse_map_state(viewer, ET.Element("map", {"resource": "899 - Alsace.jpg"}))
-    assert Path(state["path"]) == paths.resource_maps_dir / "899 - Alsace.jpg"
+    state = _parse_map_state(catalogue, ET.Element("map", {"resource": "899 - Alsace.jpg"}))
+    assert state.map_ref_id == map_id
     with pytest.raises(ValueError, match="mutuellement exclusifs"):
-        _parse_map_state(viewer, ET.Element("map", {"resource": "899 - Alsace.jpg", "path": "x"}))
-    with pytest.raises(ValueError, match="resource vide"):
-        _parse_map_state(viewer, ET.Element("map", {"resource": ""}))
-    with pytest.raises(ValueError, match="resource invalide"):
-        _parse_map_state(viewer, ET.Element("map", {"resource": "../899 - Alsace.jpg"}))
+        _parse_map_state(catalogue, ET.Element("map", {"resource": "899 - Alsace.jpg", "path": "x"}))
+    with pytest.raises(ValueError, match="non migrable"):
+        _parse_map_state(catalogue, ET.Element("map", {"resource": "../899 - Alsace.jpg"}))

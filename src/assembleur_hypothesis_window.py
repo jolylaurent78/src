@@ -43,7 +43,6 @@ class ScenarioHypothesisDialog(tk.Toplevel):
         hypothesis: ScenarioHypothesis,
         resolver: GeometryReferenceResolver,
         scenario_reference: ScenarioReference,
-        maps_dir: str,
     ):
         super().__init__(parent)
         self.title("Modifier l'hypothèse du scénario")
@@ -54,7 +53,6 @@ class ScenarioHypothesisDialog(tk.Toplevel):
         self.resolver = resolver
         self._original_reference = scenario_reference
         self._reference_draft = scenario_reference.clone()
-        self.maps_dir = maps_dir
         self._original = hypothesis
         self._draft = hypothesis.clone()
         self.result: ScenarioHypothesisDialogResult | None = None
@@ -98,7 +96,7 @@ class ScenarioHypothesisDialog(tk.Toplevel):
         self.cities_view = ScenarioCitiesView(
             self._cities_tab,
             scenario_reference=self._reference_draft,
-            maps_dir=self.maps_dir,
+            catalogue=self.catalogue,
             on_reference_changed=self._refresh_ranks,
         )
         self.cities_view.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)

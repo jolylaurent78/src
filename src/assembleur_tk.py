@@ -51,6 +51,7 @@ import src.assembleur_io as _assembleur_io
 # --- Tk split: mixins (découpage assembleur_tk.py) ---
 from src.assembleur_tk_mixin_dictionary import TriangleViewerDictionaryMixin
 from src.assembleur_tk_mixin_frontier import TriangleViewerFrontierGraphMixin
+from src.assembleur_tk_scenario_map import TriangleViewerScenarioMapMixin
 from src.assembleur_tk_mixin_bg import TriangleViewerBackgroundMapMixin
 from src.assembleur_tk_mixin_clockarc import TriangleViewerClockArcMixin
 from src.assembleur_edgechoice import (
@@ -89,7 +90,8 @@ from src.assembleur_deformation_window import (
     derive_assembly_view_rotation_deg,
 )
 from src.assembleur_tooltip import attach_tooltip
-from src.assembleur_geo_map_view import CalibratedGeoMap
+from src.assembleur_catalogue_map_assets import CatalogueMapAssetResolver, load_calibrated_catalogue_map
+from src.assembleur_scenario_map import ScenarioMapState
 from src.assembleur_scenario import (
     ScenarioHypothesis,
     ScenarioHypothesisChangePlan,
@@ -359,6 +361,7 @@ class DialogSimulationAssembler(tk.Toplevel):
 class TriangleViewerManual(
     TriangleViewerDictionaryMixin,
     TriangleViewerFrontierGraphMixin,
+    TriangleViewerScenarioMapMixin,
     TriangleViewerBackgroundMapMixin,
     TriangleViewerClockArcMixin,
     tk.Tk,
@@ -428,7 +431,8 @@ class TriangleViewerManual(
         self._deformation_drag_pending_point = None
         self._deformation_status_text = ""
         self._deformation_window: DeformationWindow | None = None
-        self._deformation_map: CalibratedGeoMap | None = None
+        self._deformation_map_cache_id: str | None = None
+        self._deformation_map_cache = None
         self.ctxGroupId = None         # contexte chemin: groupId Core canonique (clic droit)
         self.ctxStartNodeId = None     # contexte chemin: startNodeId DSU canonique (clic droit)
         self._nearest_line_id = None   # trait d'aide "sommet le plus proche"
@@ -496,26 +500,6 @@ class TriangleViewerManual(
         self._bg_resizing = None  # dict état drag poignée
         self._bg_moving = None    # dict état drag déplacement (mode resize)
 
-        # --- Calibration fond (3 points) ---
-        self._bg_calib_active = False
-        self._bg_calib_points_cfg = None  # dict chargé depuis resources/maps/<carte>.calib_points.json
-        self._bg_calib_clicked_world = []  # [(x,y), ...] en coordonnées monde
-        self._bg_calib_step = 0
-
-        # calibration chargée (si data/<carte>.json existe)
-        self._bg_calib_data = None  # dict du fichier JSON de calibration (affineLambertKmToWorld)
-
-        # Référence d'échelle "x1" : largeur monde du fond au moment où la calibration est chargée.
-        # Sert uniquement à afficher un facteur (x1, x1/3.15, x2.49) pendant le redimensionnement.
-        self._bg_scale_base_w = None
-
-        # Valeur mémorisée (persistable) de l'échelle carte, pour l'affichage quand la calibration n'est pas disponible.
-        self._bg_scale_factor_override: float | None = None
-
-        # --- Calibration chargée (Lambert93 km -> monde) ---
-        self._bg_affine_lambert_to_world = None  # [a, b, c, d, e, f]
-
-        # mode "déconnexion" activé par CTRL
         self._ctrl_down = False
 
         # === Scénarios d'assemblage ===
@@ -524,7 +508,7 @@ class TriangleViewerManual(
         self.active_scenario_index: int = 0
 
         # Carte partagée pour les scénarios automatiques (snapshot au lancement de la simu)
-        self.auto_map_state: dict | None = None
+        self.auto_map_state = None
         self.auto_view_state: dict | None = None
 
         # Rotation collective supplémentaire des scénarios automatiques ancrés.
@@ -547,8 +531,6 @@ class TriangleViewerManual(
         self.paths = ApplicationPaths.from_runtime()
         self.paths.ensure_user_data_directories()
         self.data_dir = str(self.paths.resource_texts_dir)
-        self.maps_dir = str(self.paths.resource_maps_dir)
-        self.calibrations_dir = str(self.paths.calibrations_dir)
         self.scenario_dir = str(self.paths.user_scenarios_dir)
         self.exports_dir = str(self.paths.exports_dir)
         self.topo_xml_dir = str(self.paths.exports_dir / "TopoXML")
@@ -593,10 +575,6 @@ class TriangleViewerManual(
         ).strip()
 
         # Fond SVG : au démarrage le canvas n'a pas toujours une taille valide.
-        # On déclenche donc un redessin différé (au 1er <Configure>) après rechargement.
-        self._bg_defer_redraw = False
-        self._bg_startup_scheduled = False
-
         self._triangle_list_triangle_ids: list[str] = []
         self.canvas_objects = CanvasObjectsCollection()
         self._last_drawn = self.canvas_objects.entries
@@ -613,9 +591,10 @@ class TriangleViewerManual(
         )
         manual.last_drawn = self._last_drawn
         manual.view_state = self._capture_view_state()
-        manual.map_state = self._capture_map_state()
+        manual.map_state = self._new_default_map_state()
         self.scenarios.append(manual)
         self._attach_beacon_resolver_to_world(manual.topoWorld)
+        self._apply_map_state(manual.map_state, persist=False, redraw=False)
 
         # --- Horloge (overlay fixe) : état par défaut ---
         # hour peut être un float (si l'aiguille des heures avance avec les minutes)
@@ -1317,6 +1296,8 @@ class TriangleViewerManual(
         self.menu_scenario.add_command(label="Enregistrer", command=self._scenario_save)
         self.menu_scenario.add_command(label="Enregistrer sous…", command=self._scenario_save_as_dialog)
         self.menu_scenario.add_separator()
+        self.menu_scenario.add_command(label="Propriétés…", command=self._scenario_edit_properties)
+        self.menu_scenario.add_separator()
         # placeholder pour la liste des .xml du dossier 'scenario'
         self._menu_scenario_files_anchor = self.menu_scenario.index("end")
         self.menu_scenario.add_command(label="(scan des scénarios…)", state="disabled")
@@ -1341,6 +1322,11 @@ class TriangleViewerManual(
             variable=self.auto_fit_scenario_select,
             command=self._toggle_auto_fit_scenario_select
         )
+        self.menu_visual.add_checkbutton(
+            label="Redimensionner et déplacer la carte",
+            variable=self.bg_resize_mode,
+            command=self._toggle_bg_resize_mode,
+        )
         # Effacer l'affichage depuis le menu
         self.menu_visual.add_command(
             label="Effacer l'affichage…",
@@ -1360,19 +1346,6 @@ class TriangleViewerManual(
             command=self._export_view_pdf_dialog
         )
 
-        # --- Menu Carte ---
-        self.menu_carte = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Carte", menu=self.menu_carte)
-        self.menu_carte.add_command(label="Charger une carte…", command=self._bg_load_svg_dialog)
-        self.menu_carte.add_command(label="Calibrer la carte…", command=self._bg_calibrate_start)
-
-        self.menu_carte.add_checkbutton(
-            label="Redimensioner et déplacer la carte",
-            variable=self.bg_resize_mode,
-            command=self._toggle_bg_resize_mode
-        )
-        self.menu_carte.add_command(label="Supprimer fond", command=self._bg_clear)
-
         # Zone principale : panneau gauche redimensionnable (liste) | panneau droit (canvas+dico)
         main = tk.PanedWindow(self, orient=tk.HORIZONTAL, sashrelief=tk.RAISED, sashwidth=6)
         main.pack(fill=tk.BOTH, expand=True)
@@ -1389,7 +1362,6 @@ class TriangleViewerManual(
         self.status = tk.Label(self, text="Prêt", bd=1, relief=tk.SUNKEN, anchor="w")
         self.status.pack(side=tk.BOTTOM, fill=tk.X)
 
-        self.autoLoadBackgroundAtStartup()
 
     def _create_manual_scenario_hypothesis(self, *, report_error: bool = False):
         """Instancie l'hypothèse propriétaire d'un nouveau scénario manuel."""
@@ -1566,7 +1538,7 @@ class TriangleViewerManual(
                 continue
             scen.source_type = "auto"
             scen.view_state = self._capture_view_state()
-            scen.map_state = {}
+            scen.map_state = self.auto_map_state
             scen.algo_id = scen.algo_id or algo_id
             if scen.hypothesis is None:
                 raise RuntimeError("Simulation: scénario AUTO sans ScenarioHypothesis")
@@ -1743,15 +1715,10 @@ class TriangleViewerManual(
         if window is not None and window.winfo_exists():
             return window
 
-        if self._deformation_map is None:
-            self._deformation_map = CalibratedGeoMap.load_map(
-                "france_michelin",
-                self.maps_dir,
-                max_image_dimension=None,
-            )
+        calibrated_map = self._resolve_deformation_catalogue_map()
         window = DeformationWindow(
             self,
-            calibrated_map=self._deformation_map,
+            calibrated_map=calibrated_map,
             on_vertex_drag_started=self._deformation_window_drag_started,
             on_vertex_dragged=self._deformation_window_dragged,
             on_vertex_drag_released=self._deformation_window_drag_released,
@@ -1770,6 +1737,25 @@ class TriangleViewerManual(
         self._deformation_window = window
         window.set_canvas_mode(self._deformation_canvas_mode)
         return window
+
+    def _resolve_deformation_catalogue_map(self):
+        """Résout la référence géographique Catalogue utilisée par DEFORM."""
+        map_id = self.catalogue.catalogue_reference_map_id
+        if map_id is None:
+            raise ValueError("Aucune carte de référence Catalogue n'est définie pour DEFORM.")
+        catalogue_map = self.catalogue.get_map(map_id)
+        if catalogue_map.archived:
+            raise ValueError("La carte de référence Catalogue est archivée.")
+        if catalogue_map.projection != "EPSG:2154" or catalogue_map.calibration_file is None:
+            raise ValueError("La carte de référence du Catalogue n'est pas calibrée.")
+        if self._deformation_map_cache_id != map_id or self._deformation_map_cache is None:
+            self._deformation_map_cache = load_calibrated_catalogue_map(
+                catalogue_map,
+                CatalogueMapAssetResolver(self.paths),
+                max_image_dimension=None,
+            )
+            self._deformation_map_cache_id = map_id
+        return self._deformation_map_cache
 
     def _deformation_canvas_mode_changed(self, mode: str) -> None:
         if mode not in {"select", "move"}:
@@ -2574,7 +2560,6 @@ class TriangleViewerManual(
         window = CatalogueWindow(
             self,
             catalogue=self.catalogue,
-            maps_dir=self.maps_dir,
             catalogue_path=self.catalogue_path,
             on_catalogue_applied=self._publish_catalogue,
             is_beacon_referenced=self._is_beacon_referenced_by_anchor,
@@ -2661,7 +2646,6 @@ class TriangleViewerManual(
             hypothesis=scenario.hypothesis,
             resolver=GeometryReferenceResolver(self.catalogue, scenario.reference),
             scenario_reference=scenario.reference,
-            maps_dir=self.maps_dir,
         )
         result = dialog.show()
         if result is None:
@@ -2678,6 +2662,8 @@ class TriangleViewerManual(
         """Publie le Catalogue et recale les groupes ancrés via le Core."""
         self._exit_deformation_mode()
         self.catalogue = catalogue
+        self._deformation_map_cache_id = None
+        self._deformation_map_cache = None
         self._beacon_world_resolver.set_catalogue(catalogue)
         for scenario in self.scenarios:
             world = scenario.topoWorld
@@ -5171,92 +5157,6 @@ class TriangleViewerManual(
         tc.supprimerChemin()
         self.refreshCheminTreeView()
 
-    def _bgWorldToLambertKm(self, wx: float, wy: float) -> Tuple[float, float]:
-        """Convertit un point monde -> Lambert93 (km), en tenant compte du redimensionnement/déplacement du fond.
-
-        Contrat:
-        - nécessite une calibration (affineWorldToLambertKm + bgWorldRectAtCalibration).
-        - si la calibration est absente alors qu'une carte est chargée, c'est un bug (on lève).
-        """
-        if self._bg is None:
-            raise RuntimeError("bgWorldToLambertKm: pas de carte chargée")
-        data = self._bg_calib_data
-        if not isinstance(data, dict):
-            raise RuntimeError("bgWorldToLambertKm: calibration absente (_bg_calib_data)")
-        aff = data.get("affineWorldToLambertKm")
-        if not (isinstance(aff, list) and len(aff) == 6):
-            raise RuntimeError("bgWorldToLambertKm: affineWorldToLambertKm absent de la calibration")
-        rect_cal = data.get("bgWorldRectAtCalibration")
-        if not isinstance(rect_cal, dict):
-            raise RuntimeError("bgWorldToLambertKm: bgWorldRectAtCalibration absent de la calibration")
-
-        rect_cur = self._bg
-        # Similarité entre monde_calibration -> monde_actuel (resize + translation)
-        w_cal = float(rect_cal.get("w"))
-        h_cal = float(rect_cal.get("h"))
-        w_cur = float(rect_cur.get("w"))
-        h_cur = float(rect_cur.get("h"))
-        if w_cal <= 0 or h_cal <= 0 or w_cur <= 0 or h_cur <= 0:
-            raise RuntimeError("bgWorldToLambertKm: rect invalide")
-
-        sx = w_cur / w_cal
-        sy = h_cur / h_cal
-
-        x0_cal = float(rect_cal.get("x0"))
-        y0_cal = float(rect_cal.get("y0"))
-        x0_cur = float(rect_cur.get("x0"))
-        y0_cur = float(rect_cur.get("y0"))
-
-        # Inverse: monde_actuel -> monde_calibration
-        wx_cal = x0_cal + (float(wx) - x0_cur) / sx
-        wy_cal = y0_cal + (float(wy) - y0_cur) / sy
-
-        a, b, c, d, e, f = [float(v) for v in aff]
-        x_km = a * wx_cal + b * wy_cal + c
-        y_km = d * wx_cal + e * wy_cal + f
-        return (float(x_km), float(y_km))
-
-    def bgLambertKmToWorld(self, xKm: float, yKm: float) -> tuple[float, float]:
-        """
-        Convertit Lambert93 (km) -> World (coord monde utilisée par la vue).
-        Nécessite une carte calibrée (bg calib). Sinon RuntimeError.
-        """
-        if self._bg is None:
-            raise RuntimeError("bgLambertKmToWorld: pas de carte chargée")
-        data = self._bg_calib_data
-        if not isinstance(data, dict):
-            raise RuntimeError("bgLambertKmToWorld: calibration absente (_bg_calib_data)")
-        aff = data.get("affineLambertKmToWorld")
-        if not (isinstance(aff, list) and len(aff) == 6):
-            raise RuntimeError("bgLambertKmToWorld: affineLambertKmToWorld absent de la calibration")
-        rect_cal = data.get("bgWorldRectAtCalibration")
-        if not isinstance(rect_cal, dict):
-            raise RuntimeError("bgLambertKmToWorld: bgWorldRectAtCalibration absent de la calibration")
-
-        rect_cur = self._bg
-        w_cal = float(rect_cal.get("w"))
-        h_cal = float(rect_cal.get("h"))
-        w_cur = float(rect_cur.get("w"))
-        h_cur = float(rect_cur.get("h"))
-        if w_cal <= 0 or h_cal <= 0 or w_cur <= 0 or h_cur <= 0:
-            raise RuntimeError("bgLambertKmToWorld: rect invalide")
-
-        sx = w_cur / w_cal
-        sy = h_cur / h_cal
-
-        x0_cal = float(rect_cal.get("x0"))
-        y0_cal = float(rect_cal.get("y0"))
-        x0_cur = float(rect_cur.get("x0"))
-        y0_cur = float(rect_cur.get("y0"))
-
-        a, b, c, d, e, f = [float(v) for v in aff]
-        wx_cal = a * float(xKm) + b * float(yKm) + c
-        wy_cal = d * float(xKm) + e * float(yKm) + f
-
-        wx_cur = x0_cur + (wx_cal - x0_cal) * sx
-        wy_cur = y0_cur + (wy_cal - y0_cal) * sy
-        return (float(wx_cur), float(wy_cur))
-
     def _update_triangle_listbox_colors(self):
         """
         Met à jour la couleur des entrées de la listbox des triangles
@@ -5277,9 +5177,6 @@ class TriangleViewerManual(
                 idx,
                 fg="gray50" if triangle_id in used_ids else "black",
             )
-
-    def _catalogue_lambert_to_world(self, lambert_x_m: float, lambert_y_m: float) -> tuple[float, float]:
-        return self.bgLambertKmToWorld(lambert_x_m / 1000.0, lambert_y_m / 1000.0)
 
     def _attach_beacon_resolver_to_world(self, world: TopologyWorld | None) -> None:
         """Injecte le résolveur World des balises Catalogue dans un monde Core."""
@@ -5427,81 +5324,6 @@ class TriangleViewerManual(
         ox = float(vs.get("offset_x", self.offset[0] if hasattr(self, "offset") else 0.0))
         oy = float(vs.get("offset_y", self.offset[1] if hasattr(self, "offset") else 0.0))
         self.offset = np.array([ox, oy], dtype=float)
-
-    def _capture_map_state(self) -> dict:
-        bg = self._bg
-        state = {
-            "path": str(bg.get("path")) if isinstance(bg, dict) and bg.get("path") else "",
-            "x0": float(bg.get("x0")) if isinstance(bg, dict) and bg.get("x0") is not None else 0.0,
-            "y0": float(bg.get("y0")) if isinstance(bg, dict) and bg.get("y0") is not None else 0.0,
-            "w": float(bg.get("w")) if isinstance(bg, dict) and bg.get("w") is not None else 0.0,
-            "h": float(bg.get("h")) if isinstance(bg, dict) and bg.get("h") is not None else 0.0,
-            "visible": bool(self.show_map_layer.get()) if hasattr(self, "show_map_layer") else True,
-            "opacity": int(self.map_opacity.get()) if hasattr(self, "map_opacity") else 100,
-            "scale": None,
-        }
-        if hasattr(self, "_bg_compute_scale_factor"):
-            state["scale"] = self._bg_compute_scale_factor()
-        if state["scale"] is None:
-            state["scale"] = self._bg_scale_factor_override
-        return state
-
-    def _apply_map_state(
-        self,
-        ms: dict | None,
-        persist: bool = False,
-        redraw: bool = True,
-    ):
-        if ms is None:
-            return
-
-        if hasattr(self, "show_map_layer") and "visible" in ms:
-            self.show_map_layer.set(bool(ms.get("visible")))
-        if hasattr(self, "map_opacity") and "opacity" in ms:
-            self.map_opacity.set(int(ms.get("opacity", self.map_opacity.get())))
-
-        if "scale" in ms:
-            self._bg_scale_factor_override = ms.get("scale")
-
-        path = str(ms.get("path") or "").strip()
-        if not path:
-            self._bg_clear(persist=persist, redraw=redraw)
-            return
-
-        if not os.path.isfile(path):
-            self._bg_clear(persist=persist, redraw=redraw)
-            self._status_warn(f"Carte introuvable: {path}")
-            return
-
-        rect = {
-            "x0": float(ms.get("x0", 0.0)),
-            "y0": float(ms.get("y0", 0.0)),
-            "w": float(ms.get("w", 0.0)),
-            "h": float(ms.get("h", 0.0)),
-        }
-
-        # --- OPTIM: ne pas recharger la carte + calibration si rien n'a changé ---
-        bg = self._bg or {}
-        samePath = str(bg.get("path") or "") == str(path or "")
-        eps = 1e-9
-        sameRect = (
-            abs(float(bg.get("x0") or 0.0) - float(rect.get("x0") or 0.0)) < eps and
-            abs(float(bg.get("y0") or 0.0) - float(rect.get("y0") or 0.0)) < eps and
-            abs(float(bg.get("w") or 0.0) - float(rect.get("w") or 0.0)) < eps and
-            abs(float(bg.get("h") or 0.0) - float(rect.get("h") or 0.0)) < eps
-        )
-        sameScale = (self._bg_scale_factor_override == ms.get("scale"))
-
-        if samePath and sameRect and sameScale:
-            # Rien à faire : on a déjà exactement cette carte dans ce repère monde
-            return
-
-        self._bg_set_map(
-            path,
-            rect_override=rect,
-            persist=persist,
-            redraw=redraw,
-        )
 
     # ---------- AUTO (scénarios automatiques): transform géométrique global ----------
 
@@ -5786,7 +5608,7 @@ class TriangleViewerManual(
         # Scénario vide : nouvelles structures indépendantes
         scen.last_drawn = []
         scen.view_state = self._capture_view_state()
-        scen.map_state = self._capture_map_state()
+        scen.map_state = self._new_default_map_state()
 
         self.scenarios.append(scen)
         # Bascule sur ce nouveau scénario
@@ -5797,27 +5619,59 @@ class TriangleViewerManual(
         self.status.config(text=f"Nouveau scénario créé : {scen.name}")
 
     def _scenario_edit_properties(self):
-        """
-        Modifie les propriétés du scénario actif (pour l'instant : uniquement le nom).
-        """
+        """Edite transactionnellement le nom et la carte du scénario actif."""
         if not self.scenarios:
             return
         idx = self.active_scenario_index
         if idx < 0 or idx >= len(self.scenarios):
             return
         scen = self.scenarios[idx]
-        new_name = simpledialog.askstring(
-            "Propriétés du scénario",
-            "Nom du scénario :",
-            initialvalue=scen.name,
-            parent=self,
-        )
-        if new_name is None:
-            return  # annulé
-        new_name = new_name.strip()
-        if not new_name:
+        state = scen.map_state if isinstance(scen.map_state, ScenarioMapState) else self._new_default_map_state()
+        maps = [item for item in self.catalogue.iter_maps() if not item.archived or item.map_id == state.map_ref_id]
+        labels = {
+            f"{item.name}{' (archivée)' if item.archived else ''}": item.map_id
+            for item in maps
+        }
+        if not labels:
             return
-        scen.name = new_name
+        current_label = next((label for label, map_id in labels.items() if map_id == state.map_ref_id), None)
+        dialog = tk.Toplevel(self)
+        dialog.title("Propriétés du scénario")
+        dialog.transient(self)
+        dialog.resizable(False, False)
+        name_var = tk.StringVar(value=scen.name)
+        map_var = tk.StringVar(value=current_label or next(iter(labels)))
+        ttk.Label(dialog, text="Nom").grid(row=0, column=0, padx=12, pady=(12, 6), sticky="w")
+        name_entry = ttk.Entry(dialog, textvariable=name_var, width=34)
+        name_entry.grid(row=0, column=1, padx=(0, 12), pady=(12, 6))
+        ttk.Label(dialog, text="Carte").grid(row=1, column=0, padx=12, pady=6, sticky="w")
+        combo = ttk.Combobox(dialog, textvariable=map_var, values=tuple(labels), state="readonly", width=31)
+        combo.grid(row=1, column=1, padx=(0, 12), pady=6)
+        result = {"ok": False}
+        def accept():
+            cleaned = name_var.get().strip()
+            if not cleaned:
+                messagebox.showerror("Propriétés du scénario", "Le nom du scénario ne peut pas être vide.", parent=dialog)
+                return
+            result.update(ok=True, name=cleaned, map_id=labels[map_var.get()])
+            dialog.destroy()
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=2, column=0, columnspan=2, sticky="e", padx=12, pady=(8, 12))
+        ttk.Button(buttons, text="Annuler", command=dialog.destroy).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="OK", command=accept).pack(side=tk.RIGHT, padx=(0, 6))
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.grab_set()
+        name_entry.focus_set()
+        self.wait_window(dialog)
+        if not result["ok"]:
+            return
+        scen.name = result["name"]
+        if result["map_id"] != state.map_ref_id:
+            state = ScenarioMapState(
+                map_ref_id=result["map_id"], visible=state.visible, opacity=state.opacity
+            )
+            scen.map_state = state
+            self._apply_map_state(state)
         self._refresh_scenario_listbox()
         self.status.config(text=f"Nom du scénario mis à jour : {scen.name}")
 
@@ -6030,14 +5884,6 @@ class TriangleViewerManual(
 
                 self._resize_redraw_after_id = self.after(40, self._do_resize_redraw)
 
-        if self._bg_defer_redraw and self._bg:
-            cw = int(self.canvas.winfo_width() or 0)
-            ch = int(self.canvas.winfo_height() or 0)
-            if cw > 2 and ch > 2:
-                # Un seul redraw complet (sinon c'est lourd)
-                self._bg_defer_redraw = False
-                self._redraw_from(self._last_drawn)
-
         # Overlay + pick-cache (après le redraw complet, car _redraw_from() fait delete('all'))
         self._redraw_overlay_only()
         self._invalidate_pick_cache()
@@ -6107,13 +5953,13 @@ class TriangleViewerManual(
             self._bg_resizing = None
             self._bg_moving = None
             self.canvas.configure(cursor="")
-            self._persistBackgroundConfig()
             self._bg_update_scale_status()
 
         self._redraw_from(self._last_drawn)
 
     def _toggle_layers(self):
         """Redessine le canvas suite à un changement de visibilité d'un layer."""
+        self._set_active_map_visibility(bool(self.show_map_layer.get()))
         self._redraw_from(self._last_drawn)
 
     def _navigate_beacon(self, direction: int) -> None:
@@ -6184,6 +6030,7 @@ class TriangleViewerManual(
         v = int(float(self.map_opacity.get()))
         v = max(0, min(100, v))
         self.map_opacity.set(v)
+        self._set_active_map_opacity(v / 100.0)
         self.setAppConfigValue("uiMapOpacity", int(v))
         if self._map_opacity_redraw_job is not None:
             self.after_cancel(self._map_opacity_redraw_job)
@@ -6371,13 +6218,13 @@ class TriangleViewerManual(
         # Structures indépendantes pour ce scénario
         scen.last_drawn = []
         scen.view_state = self._capture_view_state()
-        scen.map_state = self._capture_map_state()
-
         loaded = _assembleur_io._parse_loaded_scenario_xml(self, path)
+        _assembleur_io._publish_loaded_scenario_xml(
+            self, scen, loaded, publish_ui=False,
+        )
         self.scenarios.append(scen)
 
-        # On bascule sur ce nouveau scénario AVANT de charger,
-        # ainsi load_scenario_xml() écrit bien dans ses structures.
+        # Le scénario est intégralement publié avant toute résolution/redraw.
         self._set_active_scenario(new_index)
         _assembleur_io._publish_loaded_scenario_xml(
             self, scen, loaded, publish_ui=True,
@@ -6616,87 +6463,6 @@ class TriangleViewerManual(
 
     def setAppConfigValue(self, key, value):
         return _assembleur_io.setAppConfigValue(self, key, value)
-
-    def _persistBackgroundConfig(self):
-        """Sauvegarde en config l'état du fond SVG (path + rect monde)."""
-
-        if not hasattr(self, "appConfig") or self.appConfig is None:
-            self.appConfig = {}
-        if not self._bg:
-            changed = False
-            for k in ("bgMap", "bgSvgPath", "bgWorldRect"):
-                if k in self.appConfig:
-                    del self.appConfig[k]
-                    changed = True
-            if changed:
-                self.saveAppConfig()
-            return
-
-        background_path = Path(str(self._bg.get("path") or ""))
-        resource_map = self.paths.resource_maps_dir / background_path.name
-        if background_path.is_file() and background_path.resolve() == resource_map.resolve():
-            self.appConfig["bgMap"] = resource_map.name
-            self.appConfig.pop("bgSvgPath", None)
-        else:
-            self.appConfig["bgSvgPath"] = str(background_path)
-            self.appConfig.pop("bgMap", None)
-        self.appConfig["bgWorldRect"] = {
-            "x0": float(self._bg.get("x0", 0.0)),
-            "y0": float(self._bg.get("y0", 0.0)),
-            "w": float(self._bg.get("w", 1.0)),
-            "h": float(self._bg.get("h", 1.0)),
-            "aspect": float(self._bg.get("aspect", 1.0)),
-        }
-        self.saveAppConfig()
-
-    def autoLoadBackgroundAtStartup(self):
-        """Recharge le fond SVG et sa géométrie depuis la config.
-
-        Important : au moment où _build_ui() s'exécute, le canvas peut encore avoir une taille
-        (winfo_width/height) quasi nulle. Dans ce cas, _bg_draw_world_layer() ne peut pas
-        rasteriser/afficher correctement et le fond semble "non rechargé".
-
-        Solution : charger le SVG *après* la 1ère passe de layout (after_idle) et forcer
-        un redraw complet au 1er <Configure> valide.
-        """
-        if self._bg_startup_scheduled:
-            return
-        self._bg_startup_scheduled = True
-        self.after_idle(self._autoLoadBackgroundAfterLayout)
-
-    def _autoLoadBackgroundAfterLayout(self):
-        """(interne) Effectue le vrai rechargement du fond après layout."""
-
-        self._bg_startup_scheduled = False
-        map_name = self.getAppConfigValue("bgMap", "") or ""
-        svg_path = self.getAppConfigValue("bgSvgPath", "") or ""
-        rect = self.getAppConfigValue("bgWorldRect", None)
-        if map_name:
-            map_name = str(map_name)
-            if Path(map_name).name != map_name:
-                raise ValueError(f"Nom de carte livrée invalide : {map_name!r}")
-            svg_path = str(self.paths.resource_maps_dir / map_name)
-        if not svg_path:
-            return
-
-        # Normaliser le chemin (Windows tolère / et \ mais os.path.isfile peut être sensible
-        # selon certains contextes d'exécution).
-        svg_path = os.path.normpath(str(svg_path))
-
-        if not os.path.isfile(svg_path):
-            return
-
-        # S'assurer que la géométrie Tk est calculée (best-effort)
-        self.update_idletasks()
-
-        if isinstance(rect, dict) and all(k in rect for k in ("x0", "y0", "w", "h")):
-            self._bg_set_map(svg_path, rect_override=rect, persist=False)
-        else:
-            self._bg_set_map(svg_path, rect_override=None, persist=False)
-
-        # Si le canvas était encore trop petit au moment du redraw, on redessinera une fois
-        # dès qu'un <Configure> avec une taille valide arrive.
-        self._bg_defer_redraw = True
 
     def _triangle_from_index(self, idx):
         """Construit l'aperçu local depuis le modèle du scénario actif."""
@@ -8454,11 +8220,6 @@ class TriangleViewerManual(
         # Annule le mode de définition d'azimut du compas
         if self._clock_setref_active:
             self._clock_setref_cancel()
-            return
-
-        # Annule une calibration en cours
-        if self._bg_calib_active:
-            self._bg_calibrate_cancel()
             return
 
         if self._drag:
@@ -10855,10 +10616,6 @@ class TriangleViewerManual(
         # mémoriser l'ancre monde de la souris pour des déplacements "delta"
         self._mouse_world_prev = self._screen_to_world(event.x, event.y)
 
-        # Calibration fond (3 points) : intercepte le clic gauche
-        if self._bg_calib_active:
-            return self._bg_calibrate_handle_click(event)
-
         # Horloge : démarrer drag si clic dans le disque (marge 10px)
         if self._is_in_clock(event.x, event.y):
             # ne pas intercepter si un drag de triangle est en cours
@@ -11359,7 +11116,6 @@ class TriangleViewerManual(
         if self._bg_resizing:
             self._bg_resizing = None
             self.canvas.configure(cursor="")
-            self._persistBackgroundConfig()
             self._bg_update_scale_status()
             self._redraw_from(self._last_drawn)
             return "break"
@@ -11367,7 +11123,6 @@ class TriangleViewerManual(
         if self._bg_moving:
             self._bg_moving = None
             self.canvas.configure(cursor="")
-            self._persistBackgroundConfig()
             self._redraw_from(self._last_drawn)
             return "break"
 

@@ -29,7 +29,7 @@ def test_empty_catalogue_uses_initial_system_counters():
     catalogue = Catalogue(id_provider=SystemCatalogueIdProvider())
     assert catalogue.cities == {}
     assert catalogue.default_template_id is None
-    assert catalogue.id_counters == {"city": 0, "beacon": 0, "triangle": 0, "template": 0}
+    assert catalogue.id_counters == {"city": 0, "beacon": 0, "triangle": 0, "template": 0, "map": 0}
     assert catalogue.add_city("A", 0, 0).city_id == "CITY-SYS-000001"
 
 

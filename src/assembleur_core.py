@@ -100,10 +100,11 @@ class ScenarioAssemblage:
 
         # --- Vue & Carte ---
         # Vue: zoom + offset (pan). Stockée pour retrouver exactement l'affichage au switch.
-        # Carte: état du fond (fichier + worldRect + visibilité/opacité + scale affiché).
+        # Carte: état métier unique, résolu ensuite pour le rendu du viewer.
         # Pour les scénarios automatiques, la carte peut être partagée au niveau du viewer.
         self.view_state: Dict[str, float] = {}   # {"zoom":..., "offset_x":..., "offset_y":...}
-        self.map_state: Dict[str, object] = {}   # {"path":.., "x0":.., "y0":.., "w":.., "h":.., "visible":.., "opacity":.., "scale":..}
+        from src.assembleur_scenario_map import ScenarioMapState
+        self.map_state = ScenarioMapState(map_ref_id=None)
 
         # Statut global du scénario (utile pour les simulations auto)
         self.status: str = "complete"            # "complete", "pruned", etc.

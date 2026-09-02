@@ -9,6 +9,7 @@ from src.assembleur_catalogue_identity import (
     UserCatalogueIdProvider,
     is_catalogue_beacon_id,
     is_catalogue_city_id,
+    is_catalogue_map_id,
     is_catalogue_template_id,
     is_catalogue_triangle_id,
     is_system_catalogue_id,
@@ -113,7 +114,7 @@ def test_system_ids_use_monotonic_counters_and_all_catalogue_kinds():
     assert beacon.beacon_id == "BEA-SYS-000001"
     assert triangle.triangle_id == "TRI-SYS-000001"
     assert template.template_id == "TPL-SYS-000001"
-    assert catalogue.id_counters == {"city": 3, "beacon": 1, "triangle": 1, "template": 1}
+    assert catalogue.id_counters == {"city": 3, "beacon": 1, "triangle": 1, "template": 1, "map": 0}
 
     catalogue.delete_triangle(triangle.triangle_id)
     catalogue.delete_city(light.city_id)
@@ -149,7 +150,7 @@ def test_clone_keeps_provider_and_counters_without_mutating_source():
     cloned_user = user.clone()
     created = cloned_user.add_city("A", 47.0, 2.0)
     assert is_user_catalogue_id(created.city_id)
-    assert user.id_counters == {"city": 0, "beacon": 0, "triangle": 0, "template": 0}
+    assert user.id_counters == {"city": 0, "beacon": 0, "triangle": 0, "template": 0, "map": 0}
 
 
 def test_user_ids_are_uuid4_and_distinct_for_each_kind():
@@ -173,6 +174,8 @@ def test_user_ids_are_uuid4_and_distinct_for_each_kind():
         ("BEA-SYS-1000000", is_catalogue_beacon_id),
         ("TRI-USR-550e8400-e29b-41d4-a716-446655440000", is_catalogue_triangle_id),
         ("TPL-USR-550e8400-e29b-41d4-a716-446655440000", is_catalogue_template_id),
+        ("MAP-SYS-000001", is_catalogue_map_id),
+        ("MAP-USR-550e8400-e29b-41d4-a716-446655440000", is_catalogue_map_id),
     ],
 )
 def test_catalogue_identity_validation_accepts_contract(value, validator):

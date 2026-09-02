@@ -91,7 +91,6 @@ class _Viewer:
     def _get_active_scenario(self): return self.scenarios[self.active_scenario_index]
     def _attach_beacon_resolver_to_world(self, world):
         world.attachBeaconResolver(self._beacon_world_resolver)
-    def _bg_clear(self, persist=False): pass
     def _clear_nearest_line(self): pass
     def _clear_edge_highlights(self): pass
     def _hide_tooltip(self): pass

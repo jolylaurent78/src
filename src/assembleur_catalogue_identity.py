@@ -14,18 +14,19 @@ if TYPE_CHECKING:
     from src.assembleur_catalogue import Catalogue
 
 
-CATALOGUE_ID_KINDS = frozenset({"city", "beacon", "triangle", "template"})
-CATALOGUE_ID_KIND_ORDER = ("city", "beacon", "triangle", "template")
+CATALOGUE_ID_KINDS = frozenset({"city", "beacon", "triangle", "template", "map"})
+CATALOGUE_ID_KIND_ORDER = ("city", "beacon", "triangle", "template", "map")
 _PREFIX_BY_KIND = {
     "city": "CITY",
     "beacon": "BEA",
     "triangle": "TRI",
     "template": "TPL",
+    "map": "MAP",
 }
 _KIND_BY_PREFIX = {prefix: kind for kind, prefix in _PREFIX_BY_KIND.items()}
-_SYSTEM_ID_RE = re.compile(r"^(CITY|BEA|TRI|TPL)-SYS-(\d{6,})$")
+_SYSTEM_ID_RE = re.compile(r"^(CITY|BEA|TRI|TPL|MAP)-SYS-(\d{6,})$")
 _USER_ID_RE = re.compile(
-    r"^(CITY|BEA|TRI|TPL)-USR-"
+    r"^(CITY|BEA|TRI|TPL|MAP)-USR-"
     r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
 )
 _ASSEMBLEUR_MODE_ENV = "ASSEMBLEUR_MODE"
@@ -133,6 +134,10 @@ def is_catalogue_template_id(value: object) -> bool:
     return is_catalogue_id(value, "template")
 
 
+def is_catalogue_map_id(value: object) -> bool:
+    return is_catalogue_id(value, "map")
+
+
 class CatalogueIdProvider(ABC):
     """Fabrique les identites Catalogue selon un contexte deja resolu."""
 
@@ -151,6 +156,9 @@ class CatalogueIdProvider(ABC):
 
     def new_template_id(self, catalogue: "Catalogue") -> str:
         return self.new_id(catalogue, "template")
+
+    def new_map_id(self, catalogue: "Catalogue") -> str:
+        return self.new_id(catalogue, "map")
 
 
 class SystemCatalogueIdProvider(CatalogueIdProvider):

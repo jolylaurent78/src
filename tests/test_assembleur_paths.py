@@ -30,6 +30,9 @@ def test_roots_are_distinct_and_independent_from_cwd(tmp_path, monkeypatch) -> N
 
     assert paths.resource_root == tmp_path / "installation" / "resources"
     assert paths.defaults_root == tmp_path / "installation" / "defaults"
+    assert paths.default_catalogue_dir == tmp_path / "installation" / "defaults" / "catalogue"
+    assert paths.default_catalogue_path == tmp_path / "installation" / "defaults" / "catalogue" / "catalogue.json"
+    assert paths.default_catalogue_maps_dir == tmp_path / "installation" / "defaults" / "catalogue" / "maps"
     assert paths.user_data_root == tmp_path / "user-space" / "user-data"
     assert len({paths.resource_root, paths.defaults_root, paths.user_data_root}) == 3
     assert paths.default_catalogue_path.is_file()
@@ -47,6 +50,7 @@ def test_user_first_run_copies_default_without_modifying_it(tmp_path) -> None:
     assert active_path == paths.user_catalogue_path
     assert active_path.read_bytes() == default_content
     assert paths.default_catalogue_path.read_bytes() == default_content
+    assert list(paths.user_catalogue_maps_dir.iterdir()) == []
     assert load_catalogue(active_path).get_city("CITY-SYS-000001").name == "Reference"
 
 
@@ -96,9 +100,9 @@ def test_mutable_directories_are_created(tmp_path) -> None:
         directory.is_dir()
         for directory in (
             paths.user_catalogue_dir,
+            paths.user_catalogue_maps_dir,
             paths.user_scenarios_dir,
             paths.config_dir,
-            paths.calibrations_dir,
             paths.exports_dir,
             paths.logs_dir,
         )
