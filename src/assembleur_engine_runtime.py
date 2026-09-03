@@ -122,7 +122,7 @@ class CheckpointPolicy:
 
         # timing
         self._lastBatchStartTime = time.perf_counter()
-        self._lastProgressTime = 0.0
+        self._lastProgressTime: float | None = None
 
     # --- appelé par le moteur à chaque cellule testée ---
     def onCellTested(self, n: int = 1) -> None:
@@ -160,7 +160,10 @@ class CheckpointPolicy:
 
         # --- Décider si on peut émettre un PROGRESS ---
         emitProgress = False
-        if (now - self._lastProgressTime) >= float(self.cfg.progressMinIntervalSec):
+        if (
+            self._lastProgressTime is None
+            or (now - self._lastProgressTime) >= float(self.cfg.progressMinIntervalSec)
+        ):
             emitProgress = True
             self._lastProgressTime = now
 

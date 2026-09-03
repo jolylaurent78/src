@@ -11,10 +11,13 @@ from typing import Callable
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import filedialog, messagebox, simpledialog, ttk
-from src.assembleur_catalogue import Catalogue, CatalogueCity, CatalogueTriangle as ModelCatalogueTriangle, HypothesisTemplate
+from tksheet import Sheet
+from src.DictionnaireEnigmes import parse_book_file
+from src.assembleur_catalogue import Catalogue, CatalogueBook, CatalogueCity, CatalogueTriangle as ModelCatalogueTriangle, HypothesisTemplate
+from src.assembleur_catalogue_book_asset_controller import CatalogueBookAssetController
 from src.assembleur_catalogue_map_assets import CatalogueMapAssetResolver, load_calibrated_catalogue_map
 from src.assembleur_catalogue_map_calibration import CatalogueMapCalibrationController, STATUS_VALID
-from src.assembleur_catalogue_identity import ApplicationContext, UserCatalogueIdProvider
+from src.assembleur_catalogue_identity import ApplicationContext, UserCatalogueIdProvider, is_system_catalogue_id
 from src.assembleur_catalogue_io import save_catalogue
 from src.assembleur_paths import ApplicationPaths
 from src.assembleur_tooltip import attach_tooltip
@@ -386,6 +389,7 @@ class CatalogueWindow(tk.Toplevel):
         catalogue_path: str | Path | None = None,
         on_catalogue_applied: Callable[[Catalogue], None] | None = None,
         is_beacon_referenced: Callable[[str], bool] | None = None,
+        is_book_referenced: Callable[[str], bool] | None = None,
     ):
         super().__init__(parent)
         self.title("Gestion du catalogue")
@@ -401,6 +405,7 @@ class CatalogueWindow(tk.Toplevel):
         )
         self._on_catalogue_applied = on_catalogue_applied
         self._is_beacon_referenced = is_beacon_referenced
+        self._is_book_referenced = is_book_referenced
         # Copie transactionnelle : le Catalogue runtime du viewer reste intact jusqu'à Appliquer.
         self.catalogue = catalogue.clone()
         self._validated_catalogue = self.catalogue.clone()
@@ -409,6 +414,7 @@ class CatalogueWindow(tk.Toplevel):
         self._selected_triangle_id: str | None = None
         self._selected_template_id: str | None = self.catalogue.default_template_id
         self._selected_map_id: str | None = self.catalogue.default_map_id
+        self._selected_book_id: str | None = self.catalogue.default_book_id
         self._selected_calibration_city_id: str | None = None
         self._selected_template_triangle_id: str | None = None
         self._selected_template_rank_slot: TemplateRankSlot | None = None
@@ -427,6 +433,11 @@ class CatalogueWindow(tk.Toplevel):
             self.catalogue,
             self._paths,
             allow_system_map_editing=self._application_context.mode == "SYS",
+        )
+        self._book_assets = CatalogueBookAssetController(
+            self.catalogue,
+            self._paths,
+            allow_system_book_editing=self._application_context.mode == "SYS",
         )
 
         self._search_var = tk.StringVar()
@@ -452,6 +463,10 @@ class CatalogueWindow(tk.Toplevel):
         self._map_scale_var = tk.StringVar()
         self._map_interaction_mode = "hand"
         self._updating_map_placement = False
+        self._book_name_var = tk.StringVar()
+        self._book_description_var = tk.StringVar()
+        self._book_default_var = tk.BooleanVar(value=False)
+        self._updating_book_detail = False
 
         self._load_icons()
         self._build_ui()
@@ -459,6 +474,7 @@ class CatalogueWindow(tk.Toplevel):
         self._refresh_beacon_list()
         self._refresh_triangle_tree()
         self._refresh_maps()
+        self._refresh_books()
         self._load_map()
         self.protocol("WM_DELETE_WINDOW", self.request_close)
 
@@ -476,6 +492,7 @@ class CatalogueWindow(tk.Toplevel):
         self._icon_map_add = tk.PhotoImage(file=images_dir / "map-pin-plus.png")
         self._icon_focus = tk.PhotoImage(file=images_dir / "focus.png")
         self._icon_hand = tk.PhotoImage(file=images_dir / "hand-click.png")
+        self._icon_book_add = tk.PhotoImage(file=images_dir / "book - plus.png")
 
     def _attach_tooltip(self, widget, text: str):
         return attach_tooltip(widget, text)
@@ -501,17 +518,20 @@ class CatalogueWindow(tk.Toplevel):
         self._triangles_tab = ttk.Frame(notebook, padding=8)
         self._templates_tab = ttk.Frame(notebook, padding=8)
         self._maps_tab = ttk.Frame(notebook, padding=8)
+        self._books_tab = ttk.Frame(notebook, padding=8)
         notebook.add(self._cities_tab, text="Villes (0)")
         notebook.add(self._beacons_tab, text="Balises (0)")
         notebook.add(self._triangles_tab, text="Triangles (0)")
         notebook.add(self._templates_tab, text="Templates (0)")
         notebook.add(self._maps_tab, text="Cartes (0)")
+        notebook.add(self._books_tab, text="Livres (0)")
         self._catalogue_notebook = notebook
         self._build_cities_tab()
         self._build_beacons_tab()
         self._build_triangles_tab()
         self._build_templates_tab()
         self._build_maps_tab()
+        self._build_books_tab()
 
         bottom = ttk.Frame(root)
         bottom.grid(row=1, column=0, sticky="ew", pady=(10, 0))
@@ -734,6 +754,16 @@ class CatalogueWindow(tk.Toplevel):
                 command=self._export_template_csv,
                 state=tk.NORMAL if has_template else tk.DISABLED,
             )
+        elif active_tab == str(self._books_tab):
+            selected = self._get_selected_book()
+            self._import_button.configure(
+                command=self._import_selected_book,
+                state=tk.NORMAL if selected is not None and not self._book_assets.is_readonly(selected) else tk.DISABLED,
+            )
+            self._export_button.configure(
+                command=self._export_selected_book,
+                state=tk.NORMAL if selected is not None else tk.DISABLED,
+            )
         else:
             self._import_button.configure(command=lambda: None, state=tk.DISABLED)
             self._export_button.configure(command=lambda: None, state=tk.DISABLED)
@@ -742,6 +772,7 @@ class CatalogueWindow(tk.Toplevel):
         return filedialog.asksaveasfilename(
             parent=self,
             title=title,
+            initialdir=self._paths.exports_dir,
             defaultextension=".csv",
             initialfile=initialfile,
             filetypes=[("Fichiers CSV", "*.csv"), ("Tous les fichiers", "*.*")],
@@ -760,6 +791,7 @@ class CatalogueWindow(tk.Toplevel):
         path = filedialog.asksaveasfilename(
             parent=self,
             title="Exporter les balises",
+            initialdir=self._paths.exports_dir,
             defaultextension=".xlsx",
             initialfile="balises.xlsx",
             filetypes=[("Fichiers Excel", "*.xlsx"), ("Tous les fichiers", "*.*")],
@@ -1110,6 +1142,291 @@ class CatalogueWindow(tk.Toplevel):
         self._set_map_interaction_mode("hand")
         self.after_idle(lambda: panes.sashpos(0, max(250, int(panes.winfo_width() * .32))))
 
+    def _build_books_tab(self) -> None:
+        self._books_tab.rowconfigure(2, weight=1)
+        self._books_tab.columnconfigure(0, weight=1)
+        header = ttk.Frame(self._books_tab)
+        header.grid(row=0, column=0, sticky="ew")
+        ttk.Label(header, text="Livre :").pack(side=tk.LEFT)
+        self._book_selector = ttk.Combobox(header, state="readonly", width=38)
+        self._book_selector.pack(side=tk.LEFT, padx=(6, 6))
+        self._book_selector.bind("<<ComboboxSelected>>", self._on_book_selected)
+        self._book_add_button = ttk.Button(header, image=self._icon_book_add, command=self._add_book)
+        self._book_add_button.pack(side=tk.LEFT)
+        self._attach_tooltip(self._book_add_button, "Ajouter un livre")
+        self._book_duplicate_button = ttk.Button(header, image=self._icon_duplicate, command=self._duplicate_selected_book)
+        self._book_duplicate_button.pack(side=tk.LEFT, padx=4)
+        self._attach_tooltip(self._book_duplicate_button, "Dupliquer le livre")
+        self._book_archive_button = ttk.Button(header, image=self._icon_archive, command=self._archive_selected_book)
+        self._book_archive_button.pack(side=tk.LEFT)
+        self._attach_tooltip(self._book_archive_button, "Archiver le livre")
+        self._book_delete_button = ttk.Button(header, image=self._icon_trash, command=self._delete_selected_book)
+        self._book_delete_button.pack(side=tk.LEFT, padx=(4, 0))
+        self._attach_tooltip(self._book_delete_button, "Détruire le livre")
+
+        detail = ttk.Frame(self._books_tab)
+        detail.grid(row=1, column=0, sticky="ew", pady=(8, 10))
+        detail.columnconfigure(3, weight=1)
+        self._book_default_check = ttk.Checkbutton(
+            detail, text="Livre par défaut", variable=self._book_default_var,
+            command=self._set_selected_book_as_default,
+        )
+        self._book_default_check.grid(row=0, column=0, sticky="w", padx=(0, 12))
+        ttk.Label(detail, text="Nom :").grid(row=0, column=1, sticky="w")
+        self._book_name_entry = ttk.Entry(detail, textvariable=self._book_name_var, width=22)
+        self._book_name_entry.grid(row=0, column=2, sticky="ew", padx=(6, 12))
+        ttk.Label(detail, text="Description :").grid(row=0, column=3, sticky="w")
+        self._book_description_entry = ttk.Entry(detail, textvariable=self._book_description_var)
+        self._book_description_entry.grid(row=0, column=4, sticky="ew", padx=(6, 0))
+        detail.columnconfigure(4, weight=1)
+        self._book_name_var.trace_add("write", self._save_book_metadata)
+        self._book_description_var.trace_add("write", self._save_book_metadata)
+
+        panes = ttk.PanedWindow(self._books_tab, orient=tk.HORIZONTAL)
+        panes.grid(row=2, column=0, sticky="nsew")
+        tags = ttk.Frame(panes, padding=(0, 0, 8, 0))
+        grid = ttk.Frame(panes, padding=(8, 0, 0, 0))
+        panes.add(tags, weight=0)
+        panes.add(grid, weight=1)
+        tags.rowconfigure(1, weight=1)
+        tags.columnconfigure(0, weight=1)
+        ttk.Label(tags, text="Tags").grid(row=0, column=0, sticky="w", pady=(0, 4))
+        self._book_tags_listbox = tk.Listbox(tags, exportselection=False, selectmode=tk.BROWSE)
+        self._book_tags_listbox.grid(row=1, column=0, sticky="nsew")
+        tag_scroll = ttk.Scrollbar(tags, orient=tk.VERTICAL, command=self._book_tags_listbox.yview)
+        tag_scroll.grid(row=1, column=1, sticky="ns")
+        self._book_tags_listbox.configure(yscrollcommand=tag_scroll.set)
+        self._book_tags_listbox.bind("<<ListboxSelect>>", self._on_book_tag_selected)
+        grid.rowconfigure(0, weight=1)
+        grid.columnconfigure(0, weight=1)
+        self._book_sheet = Sheet(grid, data=[], headers=[], row_index=[], show_row_index=True)
+        self._book_sheet.enable_bindings(("single_select", "row_select", "column_select", "arrowkeys", "copy"))
+        self._book_sheet.pack(fill=tk.BOTH, expand=True)
+        self._book_cell_tags: dict[tuple[int, int], str | None] = {}
+        self._book_tags: tuple[str, ...] = ()
+
+    def _get_selected_book(self) -> CatalogueBook | None:
+        return self.catalogue.get_book(self._selected_book_id) if self._selected_book_id is not None else None
+
+    def _refresh_books(self) -> None:
+        books = [book for book in self.catalogue.iter_books() if not book.archived]
+        self._book_selector_ids = [book.book_id for book in books]
+        if self._selected_book_id not in self._book_selector_ids:
+            self._selected_book_id = self.catalogue.default_book_id or (self._book_selector_ids[0] if self._book_selector_ids else None)
+        selected = self._get_selected_book()
+        self._updating_book_detail = True
+        try:
+            self._book_selector.configure(values=tuple(book.name for book in books))
+            if selected is None:
+                self._book_selector.set("")
+                self._book_name_var.set("")
+                self._book_description_var.set("")
+            else:
+                self._book_selector.current(self._book_selector_ids.index(selected.book_id))
+                self._book_name_var.set(selected.name)
+                self._book_description_var.set(selected.description)
+            self._book_default_var.set(selected is not None and selected.book_id == self.catalogue.default_book_id)
+        finally:
+            self._updating_book_detail = False
+        self._catalogue_notebook.tab(self._books_tab, text=f"Livres ({len(books)})")
+        self._load_selected_book_source()
+        self._update_book_action_buttons()
+
+    def _on_book_selected(self, _event=None) -> None:
+        index = self._book_selector.current()
+        self._selected_book_id = self._book_selector_ids[index] if 0 <= index < len(self._book_selector_ids) else None
+        self._refresh_books()
+        self._update_context_actions()
+
+    def _save_book_metadata(self, *_args) -> None:
+        selected = self._get_selected_book()
+        if self._updating_book_detail or selected is None or self._book_assets.is_readonly(selected):
+            return
+        try:
+            self.catalogue.update_book(
+                selected.book_id,
+                name=self._book_name_var.get(),
+                description=self._book_description_var.get(),
+            )
+        except ValueError:
+            return
+        self._mark_dirty()
+
+    def _load_selected_book_source(self) -> None:
+        selected = self._get_selected_book()
+        self._book_tags_listbox.delete(0, tk.END)
+        self._book_cell_tags.clear()
+        self._book_tags = ()
+        if selected is None:
+            self._book_sheet.set_sheet_data([])
+            return
+        try:
+            lines = parse_book_file(self._book_assets.asset_path_for(selected))
+        except (OSError, ValueError) as exc:
+            self._book_sheet.set_sheet_data([])
+            messagebox.showerror("Livre", f"{selected.book_id} : {exc}", parent=self)
+            return
+        tags = tuple(sorted({token.tag for line in lines for token in line.tokens if token.tag is not None}))
+        self._book_tags = tags
+        for tag in tags:
+            self._book_tags_listbox.insert(tk.END, f"[{tag}]")
+        width = max((len(line.tokens) for line in lines), default=0)
+        data = [[token.text for token in line.tokens] + [""] * (width - len(line.tokens)) for line in lines]
+        self._book_sheet.set_sheet_data(data, reset_col_positions=True, reset_row_positions=True)
+        self._book_sheet.headers([str(index) for index in range(1, width + 1)])
+        self._book_sheet.row_index([line.title for line in lines])
+        for row, line in enumerate(lines):
+            for column, token in enumerate(line.tokens):
+                self._book_cell_tags[(row, column)] = token.tag
+        self._highlight_selected_book_tag()
+
+    def _on_book_tag_selected(self, _event=None) -> None:
+        self._highlight_selected_book_tag()
+
+    def _highlight_selected_book_tag(self) -> None:
+        self._book_sheet.dehighlight_all()
+        selection = self._book_tags_listbox.curselection()
+        if not selection:
+            return
+        tag = self._book_tags[selection[0]]
+        cells = [cell for cell, token_tag in self._book_cell_tags.items() if token_tag == tag]
+        if cells:
+            self._book_sheet.highlight_cells(cells=cells, bg="#fff2a8")
+
+    def _update_book_action_buttons(self) -> None:
+        selected = self._get_selected_book()
+        readonly = selected is None or self._book_assets.is_readonly(selected)
+        self._book_name_entry.configure(state=tk.DISABLED if readonly else tk.NORMAL)
+        self._book_description_entry.configure(state=tk.DISABLED if readonly else tk.NORMAL)
+        self._book_default_check.configure(state=tk.NORMAL if selected is not None and not selected.archived else tk.DISABLED)
+        self._book_duplicate_button.configure(state=tk.NORMAL if selected is not None else tk.DISABLED)
+        self._book_archive_button.configure(state=tk.NORMAL if not readonly else tk.DISABLED, image=self._icon_archive_off if selected is not None and selected.archived else self._icon_archive)
+        self._book_delete_button.configure(state=tk.NORMAL if selected is not None and not readonly and selected.book_id != self.catalogue.default_book_id else tk.DISABLED)
+        self._book_add_button.configure(state=tk.NORMAL)
+
+    def _set_selected_book_as_default(self) -> None:
+        selected = self._get_selected_book()
+        if selected is None:
+            return
+        self.catalogue.set_default_book(selected.book_id)
+        self._refresh_books()
+        self._mark_dirty()
+
+    def _add_book(self) -> None:
+        source = filedialog.askopenfilename(parent=self, title="Importer un livre", initialdir=self._paths.exports_dir, filetypes=[("Livres texte", "*.txt")])
+        if not source:
+            return
+        try:
+            self._selected_book_id = self._book_assets.stage_new_book(
+                source,
+                name=self._next_new_book_name(),
+                description="",
+            )
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Ajouter un livre", str(exc), parent=self)
+            return
+        self._refresh_books()
+        self._mark_dirty()
+
+    def _next_new_book_name(self) -> str:
+        base = "Nouveau Livre"
+        names = {book.name.casefold() for book in self.catalogue.books.values()}
+        candidate = base
+        suffix = 2
+        while candidate.casefold() in names:
+            candidate = f"{base} {suffix}"
+            suffix += 1
+        return candidate
+
+    def _duplicate_selected_book(self) -> None:
+        selected = self._get_selected_book()
+        if selected is None:
+            return
+        try:
+            self._selected_book_id = self._book_assets.stage_duplicate(selected)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Dupliquer le livre", str(exc), parent=self)
+            return
+        self._refresh_books()
+        self._mark_dirty()
+
+    def _archive_selected_book(self) -> None:
+        selected = self._get_selected_book()
+        if selected is None:
+            return
+        try:
+            self.catalogue.archive_book(selected.book_id)
+        except ValueError as exc:
+            messagebox.showerror("Archiver le livre", str(exc), parent=self)
+            return
+        self._selected_book_id = self.catalogue.default_book_id
+        self._refresh_books()
+        self._mark_dirty()
+
+    def _delete_selected_book(self) -> None:
+        selected = self._get_selected_book()
+        if selected is None:
+            return
+        if self._book_assets.is_readonly(selected):
+            messagebox.showerror(
+                "Détruire le livre",
+                "Les livres SYS sont consultables uniquement.",
+                parent=self,
+            )
+            return
+        if selected.book_id == self.catalogue.default_book_id:
+            messagebox.showerror(
+                "Détruire le livre",
+                "Le livre par défaut ne peut pas être supprimé.",
+                parent=self,
+            )
+            return
+        if self._is_book_referenced is not None and self._is_book_referenced(selected.book_id):
+            messagebox.showerror(
+                "Détruire le livre",
+                "Impossible de supprimer ce livre :\nil est utilisé par un scénario actuellement chargé.",
+                parent=self,
+            )
+            return
+        if not messagebox.askyesno("Détruire le livre", f"Détruire {selected.name} ?", parent=self):
+            return
+        try:
+            self._book_assets.schedule_delete_asset(selected)
+            self.catalogue.delete_book(selected.book_id)
+        except ValueError as exc:
+            messagebox.showerror("Détruire le livre", str(exc), parent=self)
+            return
+        self._selected_book_id = self.catalogue.default_book_id
+        self._refresh_books()
+        self._mark_dirty()
+
+    def _import_selected_book(self) -> None:
+        selected = self._get_selected_book()
+        if selected is None or self._book_assets.is_readonly(selected):
+            return
+        source = filedialog.askopenfilename(parent=self, title="Importer un livre", initialdir=self._paths.exports_dir, filetypes=[("Livres texte", "*.txt")])
+        if not source:
+            return
+        try:
+            self._book_assets.stage_import(selected, source)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Importer le livre", str(exc), parent=self)
+            return
+        self._load_selected_book_source()
+        self._mark_dirty()
+
+    def _export_selected_book(self) -> None:
+        selected = self._get_selected_book()
+        if selected is None:
+            return
+        destination = filedialog.asksaveasfilename(parent=self, title="Exporter le livre", initialdir=self._paths.exports_dir, defaultextension=".txt", initialfile=f"{selected.name}.txt", filetypes=[("Livres texte", "*.txt")])
+        if not destination:
+            return
+        try:
+            self._book_assets.export(selected, destination)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Exporter le livre", str(exc), parent=self)
+
     def _get_selected_map(self):
         return self.catalogue.get_map(self._selected_map_id) if self._selected_map_id is not None else None
 
@@ -1401,7 +1718,7 @@ class CatalogueWindow(tk.Toplevel):
         messagebox.showinfo("Supprimer une carte", "La suppression reste désactivée tant que les références de scénarios ne sont pas contrôlées.", parent=self)
 
     def _add_map(self):
-        image_path = filedialog.askopenfilename(parent=self, title="Image de la carte", filetypes=[("Images", "*.jpg *.jpeg *.png")])
+        image_path = filedialog.askopenfilename(parent=self, title="Image de la carte", initialdir=self._paths.exports_dir, filetypes=[("Images", "*.jpg *.jpeg *.png")])
         if not image_path:
             return
         name = simpledialog.askstring("Ajouter une carte", "Nom de la carte :", parent=self)
@@ -1745,22 +2062,27 @@ class CatalogueWindow(tk.Toplevel):
         """Remplace le clone de travail en conservant sa transaction cartographique."""
         self.catalogue = catalogue
         self._map_calibration.rebind_catalogue(catalogue)
+        self._book_assets.rebind_catalogue(catalogue)
 
     def _apply_changes(self) -> None:
         """Valide uniquement l'état courant de cette session, sans persistance."""
         created_assets: list[Path] = []
+        created_book_assets: list[Path] = []
         try:
             self.catalogue.validate()
             created_assets = self._map_calibration.commit()
+            created_book_assets = self._book_assets.commit()
             save_catalogue(self.catalogue, self._catalogue_path)
         except (OSError, ValueError, TypeError) as exc:
             self._map_calibration.rollback(created_assets)
+            self._book_assets.rollback(created_book_assets)
             messagebox.showerror("Catalogue", str(exc), parent=self)
             return
         if self._on_catalogue_applied is not None:
             self._on_catalogue_applied(self.catalogue.clone())
         self._validated_catalogue = self.catalogue.clone()
         self._map_calibration.finalize_commit()
+        self._book_assets.finalize_commit()
         self._set_dirty(False)
 
     def _cancel_changes(self) -> None:
@@ -1768,12 +2090,14 @@ class CatalogueWindow(tk.Toplevel):
         if self._selected_template_rank_slot is not None:
             self._selected_template_rank_slot.set_selected(False)
         self._map_calibration.discard()
+        self._book_assets.discard()
         self._replace_working_catalogue(self._validated_catalogue.clone())
         self._selected_city_id = None
         self._selected_beacon_id = None
         self._selected_triangle_id = None
         self._selected_template_id = self.catalogue.default_template_id
         self._selected_map_id = self.catalogue.default_map_id
+        self._selected_book_id = self.catalogue.default_book_id
         self._selected_calibration_city_id = None
         self._selected_template_triangle_id = None
         self._selected_template_rank_slot = None
@@ -1781,6 +2105,7 @@ class CatalogueWindow(tk.Toplevel):
         self._refresh_beacon_list()
         self._refresh_triangle_tree()
         self._refresh_maps()
+        self._refresh_books()
         self._refresh_templates()
         self._update_context_actions()
         self._load_selected_city()
@@ -1796,11 +2121,12 @@ class CatalogueWindow(tk.Toplevel):
             ):
                 return False
             self._map_calibration.discard()
+            self._book_assets.discard()
         self.destroy()
         return True
 
     def _import_csv(self):
-        path = filedialog.askopenfilename(parent=self, title="Importer des villes",
+        path = filedialog.askopenfilename(parent=self, title="Importer des villes", initialdir=self._paths.exports_dir,
                                           filetypes=[("Fichiers CSV", "*.csv"), ("Tous les fichiers", "*.*")])
         if not path:
             return
@@ -1850,6 +2176,7 @@ class CatalogueWindow(tk.Toplevel):
         path = filedialog.askopenfilename(
             parent=self,
             title="Importer des balises",
+            initialdir=self._paths.exports_dir,
             filetypes=[("Fichiers Excel", "*.xlsx"), ("Tous les fichiers", "*.*")],
         )
         if not path:
@@ -1959,6 +2286,7 @@ class CatalogueWindow(tk.Toplevel):
         path = filedialog.askopenfilename(
             parent=self,
             title="Importer des triangles",
+            initialdir=self._paths.exports_dir,
             filetypes=[("Fichiers CSV", "*.csv"), ("Tous les fichiers", "*.*")],
         )
         if not path:
@@ -2056,6 +2384,7 @@ class CatalogueWindow(tk.Toplevel):
         path = filedialog.askopenfilename(
             parent=self,
             title="Importer un template",
+            initialdir=self._paths.exports_dir,
             filetypes=[("Fichiers CSV", "*.csv"), ("Tous les fichiers", "*.*")],
         )
         if not path:
@@ -2656,10 +2985,13 @@ class CatalogueWindow(tk.Toplevel):
 
     def _available_beacon_cities(self) -> list[CatalogueCity]:
         beacon_city_ids = {beacon.city_id for beacon in self.catalogue.iter_beacons()}
-        return [
-            city for city in self.catalogue.iter_cities()
-            if not city.archived and city.city_id not in beacon_city_ids
-        ]
+        return sorted(
+            (
+                city for city in self.catalogue.iter_cities()
+                if not city.archived and city.city_id not in beacon_city_ids
+            ),
+            key=lambda city: (city.name.casefold(), city.city_id),
+        )
 
     def _on_beacon_selected(self, _event=None):
         selection, visible = self._beacon_listbox.curselection(), self._visible_beacons()

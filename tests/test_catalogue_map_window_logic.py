@@ -5,6 +5,7 @@ from PIL import Image
 from src.assembleur_catalogue import Catalogue, WorldRect
 from src.assembleur_catalogue_identity import UserCatalogueIdProvider
 from src.assembleur_catalogue_map_calibration import CatalogueMapCalibrationController
+from src.assembleur_catalogue_book_asset_controller import CatalogueBookAssetController
 from src.assembleur_catalogue_window import CatalogueWindow, _CALIBRATION_MAP_MAXIMUM_ZOOM
 from src.assembleur_paths import ApplicationPaths
 
@@ -82,6 +83,7 @@ def test_confirmed_close_discards_staged_user_map(monkeypatch, tmp_path):
     window.catalogue = Catalogue(id_provider=UserCatalogueIdProvider())
     window._paths = paths
     window._map_calibration = CatalogueMapCalibrationController(window.catalogue, paths)
+    window._book_assets = CatalogueBookAssetController(window.catalogue, paths)
     window._map_calibration.stage_user_map(source, name="Brouillon", description="")
     staged = next((paths.user_catalogue_maps_dir / ".staging").iterdir())
     window._is_dirty = True
@@ -101,6 +103,7 @@ def test_replacing_working_catalogue_rebinds_the_calibration_controller(tmp_path
     window.catalogue = first
     window._paths = paths
     window._map_calibration = CatalogueMapCalibrationController(first, paths)
+    window._book_assets = CatalogueBookAssetController(first, paths)
     controller = window._map_calibration
 
     CatalogueWindow._replace_working_catalogue(window, second)
@@ -129,6 +132,7 @@ def test_rebound_controller_uses_cities_from_the_replaced_catalogue(tmp_path):
     window.catalogue = first
     window._paths = paths
     window._map_calibration = CatalogueMapCalibrationController(first, paths)
+    window._book_assets = CatalogueBookAssetController(first, paths)
 
     CatalogueWindow._replace_working_catalogue(window, second)
     for city, pixel in zip(cities, ((10, 10), (60, 20), (30, 70))):
@@ -201,6 +205,7 @@ def test_city_import_rebind_keeps_a_staged_user_map(monkeypatch, tmp_path):
     window.catalogue = Catalogue(id_provider=UserCatalogueIdProvider())
     window._paths = paths
     window._map_calibration = CatalogueMapCalibrationController(window.catalogue, paths)
+    window._book_assets = CatalogueBookAssetController(window.catalogue, paths)
     map_id = window._map_calibration.stage_user_map(source, name="Brouillon", description="")
     staged = window._map_calibration._staged_images[map_id]
     window._read_cities_csv = lambda _path: ([('Ville importée', 47.0, 2.0)], [])

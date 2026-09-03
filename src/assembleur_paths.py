@@ -67,14 +67,6 @@ class ApplicationPaths:
         return self.resource_root / "maps"
 
     @property
-    def resource_texts_dir(self) -> Path:
-        return self.resource_root / "texts"
-
-    @property
-    def dictionary_path(self) -> Path:
-        return self.resource_texts_dir / "livre.txt"
-
-    @property
     def default_catalogue_path(self) -> Path:
         return self.default_catalogue_dir / "catalogue.json"
 
@@ -87,6 +79,10 @@ class ApplicationPaths:
     def default_catalogue_maps_dir(self) -> Path:
         """Assets physiques des cartes appartenant au Catalogue SYS."""
         return self.default_catalogue_dir / "maps"
+
+    @property
+    def default_catalogue_books_dir(self) -> Path:
+        return self.default_catalogue_dir / "books"
 
     @property
     def default_scenarios_dir(self) -> Path:
@@ -108,6 +104,10 @@ class ApplicationPaths:
     def user_catalogue_maps_dir(self) -> Path:
         """Répertoire des assets physiques appartenant au Catalogue USER."""
         return self.user_catalogue_dir / "maps"
+
+    @property
+    def user_catalogue_books_dir(self) -> Path:
+        return self.user_catalogue_dir / "books"
 
     @property
     def user_scenarios_dir(self) -> Path:
@@ -271,6 +271,7 @@ class ApplicationPaths:
             self.user_data_root,
             self.user_catalogue_dir,
             self.user_catalogue_maps_dir,
+            self.user_catalogue_books_dir,
             self.user_scenarios_dir,
             self.config_dir,
             self.exports_dir,

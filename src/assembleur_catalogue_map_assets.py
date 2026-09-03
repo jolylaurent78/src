@@ -20,7 +20,6 @@ class ResolvedCatalogueMapAssets:
 
     map_id: str
     image_path: Path
-    calibration_points_path: Path | None
     calibration_path: Path | None
 
 
@@ -40,12 +39,6 @@ class CatalogueMapAssetResolver:
             map_id=catalogue_map.map_id,
             image_path=self._resolve_required_asset(
                 root, catalogue_map.map_id, "image", catalogue_map.image_file
-            ),
-            calibration_points_path=self._resolve_optional_asset(
-                root,
-                catalogue_map.map_id,
-                "calibration points",
-                catalogue_map.calibration_points_file,
             ),
             calibration_path=self._resolve_optional_asset(
                 root,

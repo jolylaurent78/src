@@ -33,6 +33,21 @@ def _maps_catalogue(*, calibrated_reference: bool = True) -> tuple[Catalogue, st
     return catalogue, default_id, reference_id
 
 
+def _as_v3_fixture(data: dict) -> dict:
+    data["version"] = 3
+    data["idCounters"].pop("book")
+    data.pop("defaultBookId")
+    data.pop("books")
+    data.pop("catalogueReferenceMapId")
+    data["maps"] = data["maps"][:1]
+    for catalogue_map in data["maps"]:
+        catalogue_map["calibrationPointsFile"] = None
+        catalogue_map.pop("description")
+        catalogue_map.pop("calibrationCityIds")
+    data["idCounters"]["map"] = 1
+    return data
+
+
 def test_catalogue_has_two_independent_map_roles() -> None:
     catalogue, default_id, reference_id = _maps_catalogue()
     catalogue.set_default_map(default_id)
@@ -56,13 +71,7 @@ def test_v3_to_v4_migration_adds_the_reference_role_and_system_map() -> None:
     catalogue, default_id, _reference_id = _maps_catalogue()
     catalogue.set_default_map(default_id)
     data = catalogue_to_dict(catalogue)
-    data["version"] = 3
-    data.pop("catalogueReferenceMapId")
-    data["maps"] = data["maps"][:1]
-    for catalogue_map in data["maps"]:
-        catalogue_map.pop("description")
-        catalogue_map.pop("calibrationCityIds")
-    data["idCounters"]["map"] = 1
+    data = _as_v3_fixture(data)
 
     migrated = migrate_catalogue_data_v3_to_v4(data)
     loaded = catalogue_from_dict(migrate_catalogue_data_v4_to_v5(migrated), id_provider=SystemCatalogueIdProvider())
@@ -77,10 +86,7 @@ def test_v3_to_v4_file_migration_keeps_a_v3_backup(tmp_path) -> None:
     catalogue, default_id, _reference_id = _maps_catalogue()
     catalogue.set_default_map(default_id)
     source = catalogue_to_dict(catalogue)
-    source["version"] = 3
-    source.pop("catalogueReferenceMapId")
-    source["maps"] = source["maps"][:1]
-    source["idCounters"]["map"] = 1
+    source = _as_v3_fixture(source)
     path = tmp_path / "catalogue.json"
     path.write_text(json.dumps(source), encoding="utf-8")
 

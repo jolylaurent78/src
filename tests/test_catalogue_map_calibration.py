@@ -220,6 +220,7 @@ def test_v4_to_v5_migration_adds_empty_fields_to_user_maps():
     assert migrated["version"] == 5
     assert migrated["maps"][0]["description"] == "Carte d'assemblage Vosges"
     assert migrated["maps"][0]["calibrationCityIds"] == []
+    assert "calibrationPointsFile" not in migrated["maps"][0]
 
 
 def test_user_map_assets_stay_staged_until_commit(tmp_path):

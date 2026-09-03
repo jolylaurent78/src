@@ -40,8 +40,8 @@ def test_v5_round_trip_keeps_ids_references_counters_and_injected_provider(tmp_p
     loaded = load_catalogue(path, id_provider=user_provider)
 
     assert serialized["version"] == 5
-    assert serialized["idCounters"] == {"city": 3, "beacon": 2, "triangle": 1, "template": 1, "map": 0}
-    assert list(serialized["idCounters"]) == ["city", "beacon", "triangle", "template", "map"]
+    assert serialized["idCounters"] == {"city": 3, "beacon": 2, "triangle": 1, "template": 1, "map": 0, "book": 0}
+    assert list(serialized["idCounters"]) == ["city", "beacon", "triangle", "template", "map", "book"]
     assert set(loaded.cities) == set(catalogue.cities)
     assert set(loaded.beacons) == set(catalogue.beacons)
     assert set(loaded.triangles) == set(catalogue.triangles)
@@ -137,7 +137,7 @@ def test_system_ids_are_never_reused_after_delete_save_and_load(tmp_path):
     save_catalogue(catalogue, path)
     loaded = load_catalogue(path, id_provider=provider)
 
-    assert loaded.id_counters == {"city": 3, "beacon": 0, "triangle": 0, "template": 2, "map": 0}
+    assert loaded.id_counters == {"city": 3, "beacon": 0, "triangle": 0, "template": 2, "map": 0, "book": 0}
     assert first.city_id in loaded.cities
     assert second.city_id in loaded.cities
     assert first_template.template_id in loaded.templates

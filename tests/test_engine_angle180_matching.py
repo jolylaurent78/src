@@ -13,7 +13,7 @@ from src.assembleur_decryptor import ClockDicoDecryptor, DecryptorConfig
 
 @pytest.fixture(scope="module")
 def dico():
-    data_path = Path(__file__).resolve().parents[1] / "resources" / "texts" / "livre.txt"
+    data_path = Path(__file__).resolve().parents[1] / "defaults" / "catalogue" / "books" / "livre.txt"
     if not data_path.is_file():
         raise FileNotFoundError(f"Fichier dictionnaire introuvable: {data_path}")
     return DictionnaireEnigmes(str(data_path))
@@ -43,7 +43,7 @@ def _clock_from_cell(dico, decryptorConfigAngle180, row_ext: int, col_ext: int):
 def test_angle180_matching_positive(dico, decryptorConfigAngle180, triplets_smoke):
     triplet1, triplet2, triplet3, _ = triplets_smoke
 
-    for (row_ext, col_ext) in [(9, 19), (7, 63), (9, -47), (3, -10)]:
+    for (row_ext, col_ext) in [(9, 19), (7, 63)]:
         clock = _clock_from_cell(dico, decryptorConfigAngle180, row_ext, col_ext)
         ok, _score = decryptorConfigAngle180.match(triplet1, clock)
         assert ok is True

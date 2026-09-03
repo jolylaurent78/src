@@ -4,12 +4,13 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from src.assembleur_catalogue import CatalogueMap, WorldRect
+from src.assembleur_catalogue import Catalogue, CatalogueMap, WorldRect
+from src.assembleur_catalogue_identity import SystemCatalogueIdProvider
 from src.assembleur_catalogue_map_assets import (
     CatalogueMapAssetResolver,
     load_calibrated_catalogue_map,
 )
-from src.assembleur_catalogue_io import load_catalogue
+from src.assembleur_catalogue_io import catalogue_from_dict, catalogue_to_dict, load_catalogue
 from src.assembleur_geo_map_view import CalibratedGeoMap
 from src.assembleur_paths import ApplicationPaths
 
@@ -35,12 +36,11 @@ def _write_calibration(path: Path, *, projection: str = "EPSG:2154", matrix=None
     }), encoding="utf-8")
 
 
-def _map(map_id: str, *, points: str | None = "points.json", calibration: str | None = "calibration.json", projection: str | None = "EPSG:2154") -> CatalogueMap:
+def _map(map_id: str, *, calibration: str | None = "calibration.json", projection: str | None = "EPSG:2154") -> CatalogueMap:
     return CatalogueMap(
         map_id=map_id,
         name="Carte",
         image_file="image.jpg",
-        calibration_points_file=points,
         calibration_file=calibration,
         projection=projection,
         default_world_rect=WorldRect(0, 0, 10, 10),
@@ -51,14 +51,11 @@ def _map(map_id: str, *, points: str | None = "points.json", calibration: str | 
 def test_resolver_resolves_system_assets_only_from_default_catalogue_maps(tmp_path):
     paths = _paths(tmp_path)
     _write_image(paths.default_catalogue_maps_dir / "image.jpg")
-    (paths.default_catalogue_maps_dir / "points.json").parent.mkdir(parents=True, exist_ok=True)
-    (paths.default_catalogue_maps_dir / "points.json").write_text("{}", encoding="utf-8")
     _write_calibration(paths.default_catalogue_maps_dir / "calibration.json")
 
     resolved = CatalogueMapAssetResolver(paths).resolve(_map("MAP-SYS-000001"))
 
     assert resolved.image_path == (paths.default_catalogue_maps_dir / "image.jpg").resolve()
-    assert resolved.calibration_points_path == (paths.default_catalogue_maps_dir / "points.json").resolve()
     assert resolved.calibration_path == (paths.default_catalogue_maps_dir / "calibration.json").resolve()
 
 
@@ -66,7 +63,6 @@ def test_resolver_resolves_user_assets_only_from_catalogue_maps_store(tmp_path):
     paths = _paths(tmp_path)
     paths.ensure_user_data_directories()
     _write_image(paths.user_catalogue_maps_dir / "image.jpg")
-    (paths.user_catalogue_maps_dir / "points.json").write_text("{}", encoding="utf-8")
     _write_calibration(paths.user_catalogue_maps_dir / "calibration.json")
 
     resolved = CatalogueMapAssetResolver(paths).resolve(
@@ -82,11 +78,33 @@ def test_resolver_returns_none_for_optional_assets(tmp_path):
     _write_image(paths.default_catalogue_maps_dir / "image.jpg")
 
     resolved = CatalogueMapAssetResolver(paths).resolve(
-        _map("MAP-SYS-000001", points=None, calibration=None, projection=None)
+        _map("MAP-SYS-000001", calibration=None, projection=None)
     )
 
-    assert resolved.calibration_points_path is None
     assert resolved.calibration_path is None
+
+
+def test_legacy_calibration_points_reference_is_ignored_and_not_reserialized(tmp_path):
+    paths = _paths(tmp_path)
+    _write_image(paths.default_catalogue_maps_dir / "image.jpg")
+    _write_calibration(paths.default_catalogue_maps_dir / "calibration.json")
+    catalogue = Catalogue(id_provider=SystemCatalogueIdProvider())
+    catalogue.add_map(
+        name="Carte legacy",
+        image_file="image.jpg",
+        calibration_file="calibration.json",
+        projection="EPSG:2154",
+        default_world_rect=WorldRect(0, 0, 10, 10),
+        default_scale_factor=1,
+    )
+    legacy_payload = catalogue_to_dict(catalogue)
+    legacy_payload["maps"][0]["calibrationPointsFile"] = "missing.calib_points.json"
+
+    loaded = catalogue_from_dict(legacy_payload)
+    resolved = CatalogueMapAssetResolver(paths).resolve(loaded.get_map("MAP-SYS-000001"))
+
+    assert resolved.calibration_path == (paths.default_catalogue_maps_dir / "calibration.json").resolve()
+    assert "calibrationPointsFile" not in catalogue_to_dict(loaded)["maps"][0]
 
 
 def test_resolver_never_falls_back_between_system_and_user_asset_roots(tmp_path):
@@ -110,7 +128,6 @@ def test_resolver_never_falls_back_between_system_and_user_asset_roots(tmp_path)
     ("field", "expected_role"),
     [
         ("image", "image"),
-        ("points", "calibration points"),
         ("calibration", "calibration"),
     ],
 )
@@ -118,12 +135,6 @@ def test_resolver_fails_explicitly_for_missing_assets(tmp_path, field, expected_
     paths = _paths(tmp_path)
     if field != "image":
         _write_image(paths.default_catalogue_maps_dir / "image.jpg")
-    if field == "calibration":
-        (paths.default_catalogue_maps_dir / "points.json").parent.mkdir(parents=True, exist_ok=True)
-        (paths.default_catalogue_maps_dir / "points.json").write_text("{}", encoding="utf-8")
-    if field == "points":
-        _write_calibration(paths.default_catalogue_maps_dir / "calibration.json")
-
     with pytest.raises(FileNotFoundError, match=rf"MAP-SYS-000001.*{expected_role}"):
         CatalogueMapAssetResolver(paths).resolve(_map("MAP-SYS-000001"))
 
@@ -222,7 +233,6 @@ def test_default_catalogue_map_resolves_loads_and_round_trips_lambert():
     pixel = geo_map.lambert_to_pixel(*source)
 
     assert assets.image_path == paths.default_catalogue_maps_dir / "899 - Alsace.jpg"
-    assert assets.calibration_points_path == paths.default_catalogue_maps_dir / "899 - Alsace.calib_points.json"
     assert assets.calibration_path == paths.default_catalogue_maps_dir / "899 - Alsace.json"
     assert geo_map.map_id == "MAP-SYS-000001"
     assert geo_map.pixel_to_lambert(*pixel) == pytest.approx(source, abs=1e-6)
@@ -231,7 +241,7 @@ def test_default_catalogue_map_resolves_loads_and_round_trips_lambert():
 def test_catalogue_map_loader_rejects_an_uncalibrated_map(tmp_path):
     paths = _paths(tmp_path)
     _write_image(paths.default_catalogue_maps_dir / "image.jpg")
-    catalogue_map = _map("MAP-SYS-000001", points=None, calibration=None, projection=None)
+    catalogue_map = _map("MAP-SYS-000001", calibration=None, projection=None)
 
     with pytest.raises(ValueError, match="n'est pas calibrée"):
         load_calibrated_catalogue_map(catalogue_map, CatalogueMapAssetResolver(paths))
@@ -240,8 +250,6 @@ def test_catalogue_map_loader_rejects_an_uncalibrated_map(tmp_path):
 def test_catalogue_map_loader_rejects_incoherent_projection(tmp_path):
     paths = _paths(tmp_path)
     _write_image(paths.default_catalogue_maps_dir / "image.jpg")
-    (paths.default_catalogue_maps_dir / "points.json").parent.mkdir(parents=True, exist_ok=True)
-    (paths.default_catalogue_maps_dir / "points.json").write_text("{}", encoding="utf-8")
     _write_calibration(paths.default_catalogue_maps_dir / "calibration.json", projection="EPSG:4326")
 
     with pytest.raises(ValueError, match="projection non supportée"):

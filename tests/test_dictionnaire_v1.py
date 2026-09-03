@@ -12,7 +12,7 @@ TOTAL_STRICT = 543
 
 @pytest.fixture(scope="module")
 def dico():
-    data_path = Path(__file__).resolve().parents[1] / "resources" / "texts" / "livre.txt"
+    data_path = Path(__file__).resolve().parents[1] / "defaults" / "catalogue" / "books" / "livre.txt"
     if not data_path.is_file():
         raise FileNotFoundError(f"Fichier dictionnaire introuvable: {data_path}")
     return DictionnaireEnigmes(str(data_path))

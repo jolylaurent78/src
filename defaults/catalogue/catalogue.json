@@ -5,10 +5,12 @@
     "beacon": 4,
     "triangle": 57,
     "template": 2,
-    "map": 2
+    "map": 2,
+    "book": 2
   },
   "defaultTemplateId": "TPL-SYS-000002",
   "defaultMapId": "MAP-SYS-000001",
+  "defaultBookId": "BOOK-SYS-000001",
   "catalogueReferenceMapId": "MAP-SYS-000002",
   "cities": [
     {
@@ -1314,7 +1316,6 @@
       "mapId": "MAP-SYS-000001",
       "name": "899 - Alsace",
       "imageFile": "899 - Alsace.jpg",
-      "calibrationPointsFile": "899 - Alsace.calib_points.json",
       "calibrationFile": "899 - Alsace.json",
       "projection": "EPSG:2154",
       "defaultWorldRect": {
@@ -1338,7 +1339,6 @@
       "mapId": "MAP-SYS-000002",
       "name": "France Michelin",
       "imageFile": "france_michelin.jpg",
-      "calibrationPointsFile": null,
       "calibrationFile": "france_michelin.json",
       "projection": "EPSG:2154",
       "defaultWorldRect": {
@@ -1357,6 +1357,15 @@
         "CITY-SYS-000005",
         "CITY-SYS-000052"
       ]
+    }
+  ],
+  "books": [
+    {
+      "bookId": "BOOK-SYS-000001",
+      "name": "Livre",
+      "assetFile": "books/livre.txt",
+      "archived": false,
+      "description": ""
     }
   ]
 }

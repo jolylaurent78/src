@@ -14,7 +14,7 @@ from src.assembleur_engine_runtime import RunControlConfig, CheckpointPolicy, En
 
 @pytest.fixture(scope="module")
 def dico():
-    data_path = Path(__file__).resolve().parents[1] / "resources" / "texts" / "livre.txt"
+    data_path = Path(__file__).resolve().parents[1] / "defaults" / "catalogue" / "books" / "livre.txt"
     if not data_path.is_file():
         raise FileNotFoundError(f"Fichier dictionnaire introuvable: {data_path}")
     return DictionnaireEnigmes(str(data_path))
@@ -80,24 +80,24 @@ def test_engine_abs_strict_total_2_solutions(engine, listePatterns_engine, decry
     assert len(results) == 2
 
 
-def test_engine_abs_mirroring_total_6_solutions(engine, listePatterns_engine, decryptorConfigAngle180):
+def test_engine_abs_mirroring_total_8_solutions(engine, listePatterns_engine, decryptorConfigAngle180):
     results = engine.runAbs(
         scope=DicoScope.MIRRORING,
         listePatterns=listePatterns_engine,
         decryptorConfig=decryptorConfigAngle180,
         patternMode="last",
     )
-    assert len(results) == 6
+    assert len(results) == 8
 
 
-def test_engine_abs_extended_total_15_solutions(engine, listePatterns_engine, decryptorConfigAngle180):
+def test_engine_abs_extended_total_16_solutions(engine, listePatterns_engine, decryptorConfigAngle180):
     results = engine.runAbs(
         scope=DicoScope.EXTENDED,
         listePatterns=listePatterns_engine,
         decryptorConfig=decryptorConfigAngle180,
         patternMode="last",
     )
-    assert len(results) == 15
+    assert len(results) == 16
 
     counts = {0: 0, 1: 0}
     for sol in results:
@@ -107,8 +107,8 @@ def test_engine_abs_extended_total_15_solutions(engine, listePatterns_engine, de
         if sol.patternIndex == 1:
             assert sol.words[0] == "MON"
 
-    assert counts[0] == 9
-    assert counts[1] == 6
+    assert counts[0] == 8
+    assert counts[1] == 8
 
 
 def test_engine_abs_extended_total_joker_solutions(engine, listePatterns_engine_joker, decryptorConfigAngle180):
@@ -118,7 +118,7 @@ def test_engine_abs_extended_total_joker_solutions(engine, listePatterns_engine_
         decryptorConfig=decryptorConfigAngle180,
         patternMode="last",
     )
-    assert len(results) == 9
+    assert len(results) == 12
 
     counts = {0: 0, 1: 0}
     for sol in results:
@@ -128,8 +128,8 @@ def test_engine_abs_extended_total_joker_solutions(engine, listePatterns_engine_
         if sol.patternIndex == 1:
             assert sol.words[0] == "MON"
 
-    assert counts[0] == 3
-    assert counts[1] == 6
+    assert counts[0] == 4
+    assert counts[1] == 8
 
 
 def test_engine_rel_extended_total_count_smoke(engine, listePatterns_engine, decryptorConfigAngle180):
@@ -144,7 +144,7 @@ def test_engine_rel_extended_total_count_smoke(engine, listePatterns_engine, dec
     assert isinstance(results, list)
 
     # 2) on mesure d'abord
-    assert len(results) == 6
+    assert len(results) == 9
 
     counts = {0: 0, 1: 0}
     for sol in results:
@@ -155,4 +155,4 @@ def test_engine_rel_extended_total_count_smoke(engine, listePatterns_engine, dec
             assert sol.words[0] == "MON"
 
     assert counts[0] == 1
-    assert counts[1] == 5
+    assert counts[1] == 8

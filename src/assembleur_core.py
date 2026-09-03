@@ -105,6 +105,7 @@ class ScenarioAssemblage:
         self.view_state: Dict[str, float] = {}   # {"zoom":..., "offset_x":..., "offset_y":...}
         from src.assembleur_scenario_map import ScenarioMapState
         self.map_state = ScenarioMapState(map_ref_id=None)
+        self.book_ref_id: str | None = None
 
         # Statut global du scénario (utile pour les simulations auto)
         self.status: str = "complete"            # "complete", "pruned", etc.

@@ -216,6 +216,7 @@ def test_new_empty_scenario_keeps_current_map_and_view_context(tmp_path):
         get=lambda: 100,
     )
     viewer._create_manual_scenario_hypothesis = lambda **_kwargs: object()
+    viewer.catalogue = SimpleNamespace(default_book_id="BOOK-SYS-000001")
     viewer._exit_deformation_mode = lambda: None
     viewer._attach_beacon_resolver_to_world = lambda _world: None
     viewer._refresh_scenario_listbox = lambda: None

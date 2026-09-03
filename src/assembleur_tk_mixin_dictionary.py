@@ -11,6 +11,7 @@ from tkinter import ttk
 from tksheet import Sheet
 
 from src.DictionnaireEnigmes import DictionnaireEnigmes, DicoScope, _normalizeWordLocal
+from src.assembleur_catalogue_book_assets import CatalogueBookAssetResolver
 
 DICO_TAG_EXCLURE = "exclure"
 CFG_KEY_DICO_EXCLURE_MOTS_CODES = "dicoExclureMotsCodes"
@@ -43,13 +44,17 @@ class TriangleViewerDictionaryMixin:
         self._init_dictionary(tagExclure=tagExclure)
         self._build_dico_grid()
 
+    def _resolve_active_scenario_book_path(self) -> str:
+        scenario = self._get_active_scenario()
+        book_ref_id = scenario.book_ref_id
+        if book_ref_id is None:
+            raise ValueError("Le scénario actif ne référence aucun livre Catalogue.")
+        book = self.catalogue.get_book(book_ref_id)
+        return str(CatalogueBookAssetResolver(self.paths).resolve(book))
+
     def _init_dictionary(self, *, tagExclure: str | None) -> None:
-        """Construit le dictionnaire depuis la ressource technique livrée."""
-        if DictionnaireEnigmes is None:
-            raise ImportError("Module DictionnaireEnigmes introuvable")
-        livre_path = os.path.join(self.data_dir, "livre.txt")
-        if not os.path.isfile(livre_path):
-            raise FileNotFoundError(livre_path)
+        """Construit le dictionnaire depuis le livre du scénario actif."""
+        livre_path = self._resolve_active_scenario_book_path()
         self.dico = DictionnaireEnigmes(livre_path, tagExclure=tagExclure)
         nb_lignes = len(self.dico)
         self.status.config(text=f"Dico chargé: {nb_lignes} lignes depuis {livre_path}")

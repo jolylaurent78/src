@@ -19,6 +19,7 @@ if __package__ in {None, ""}:
 from src.assembleur_catalogue import (
     Catalogue,
     CatalogueBeacon,
+    CatalogueBook,
     CatalogueCity,
     CatalogueTriangle,
     HypothesisTemplate,
@@ -218,10 +219,16 @@ def parse_catalogue_v2(data: object, *, id_provider=None) -> Catalogue:
             raise ValueError(f"Catalogue V2 invalide : identifiant template dupliqué : {template.template_id}.")
         catalogue.templates[template.template_id] = template
 
-    catalogue.id_counters = {**counters, "map": 0}
+    # Le parseur V2 conserve son contrat d'entrée historique, puis normalise
+    # le modèle en mémoire afin de satisfaire le Catalogue moderne.
+    catalogue.id_counters = {**counters, "map": 0, "book": 1}
     catalogue.version = 2
     catalogue.default_template_id = default_template_id
     catalogue.default_map_id = None
+    catalogue.books["BOOK-SYS-000001"] = CatalogueBook(
+        "BOOK-SYS-000001", "Livre", "books/livre.txt"
+    )
+    catalogue.default_book_id = "BOOK-SYS-000001"
     catalogue.validate()
     return catalogue
 
@@ -277,7 +284,6 @@ def migrate_catalogue_data_v2_to_v3(
     map_id = catalogue.add_map(
         name=initial_map.name,
         image_file=initial_map.image_file,
-        calibration_points_file=initial_map.calibration_points_file,
         calibration_file=initial_map.calibration_file,
         projection=initial_map.projection,
         default_world_rect=initial_map.default_world_rect,
@@ -293,7 +299,11 @@ def migrate_catalogue_data_v2_to_v3(
     # dédié ``migrate_catalogue_v3_to_v4``.
     migrated["version"] = 3
     migrated.pop("catalogueReferenceMapId", None)
+    migrated.pop("defaultBookId", None)
+    migrated.pop("books", None)
+    migrated["idCounters"].pop("book", None)
     for catalogue_map in migrated["maps"]:
+        catalogue_map["calibrationPointsFile"] = initial_map.calibration_points_file
         catalogue_map.pop("description", None)
         catalogue_map.pop("calibrationCityIds", None)
     return migrated

@@ -15,6 +15,7 @@ from src.assembleur_catalogue_identity import (
     get_system_catalogue_id_number,
     is_catalogue_id,
     is_catalogue_city_id,
+    is_catalogue_book_id,
     is_catalogue_map_id,
     is_system_catalogue_id,
 )
@@ -77,7 +78,6 @@ class CatalogueMap:
     map_id: str
     name: str
     image_file: str
-    calibration_points_file: str | None
     calibration_file: str | None
     projection: str | None
     default_world_rect: WorldRect
@@ -85,6 +85,15 @@ class CatalogueMap:
     archived: bool = False
     description: str = ""
     calibration_city_ids: list[str] = field(default_factory=list)
+
+
+@dataclass
+class CatalogueBook:
+    book_id: str
+    name: str
+    asset_file: str
+    archived: bool = False
+    description: str = ""
 
 
 @dataclass(frozen=True)
@@ -129,8 +138,10 @@ class Catalogue:
         self.triangles: dict[str, CatalogueTriangle] = {}
         self.templates: dict[str, HypothesisTemplate] = {}
         self.maps: dict[str, CatalogueMap] = {}
+        self.books: dict[str, CatalogueBook] = {}
         self.default_template_id: str | None = None
         self.default_map_id: str | None = None
+        self.default_book_id: str | None = None
         self.catalogue_reference_map_id: str | None = None
         self._city_lambert_cache: dict[str, tuple[float, float]] = {}
         self._lambert_transformer = Transformer.from_crs("EPSG:4326", "EPSG:2154", always_xy=True)
@@ -174,7 +185,6 @@ class Catalogue:
                 catalogue_map.map_id,
                 catalogue_map.name,
                 catalogue_map.image_file,
-                catalogue_map.calibration_points_file,
                 catalogue_map.calibration_file,
                 catalogue_map.projection,
                 WorldRect(
@@ -190,8 +200,13 @@ class Catalogue:
             )
             for map_id, catalogue_map in self.maps.items()
         }
+        cloned.books = {
+            book_id: CatalogueBook(book.book_id, book.name, book.asset_file, book.archived, book.description)
+            for book_id, book in self.books.items()
+        }
         cloned.default_template_id = self.default_template_id
         cloned.default_map_id = self.default_map_id
+        cloned.default_book_id = self.default_book_id
         cloned.catalogue_reference_map_id = self.catalogue_reference_map_id
         return cloned
 
@@ -231,6 +246,12 @@ class Catalogue:
         except KeyError as exc:
             raise KeyError(f"Carte inconnue : {map_id}") from exc
 
+    def get_book(self, book_id: str) -> CatalogueBook:
+        try:
+            return self.books[book_id]
+        except KeyError as exc:
+            raise KeyError(f"Livre inconnu : {book_id}") from exc
+
     def iter_cities(self) -> tuple[CatalogueCity, ...]:
         return tuple(self.cities[item_id] for item_id in sorted(self.cities))
 
@@ -245,6 +266,9 @@ class Catalogue:
 
     def iter_maps(self) -> tuple[CatalogueMap, ...]:
         return tuple(self.maps[item_id] for item_id in sorted(self.maps))
+
+    def iter_books(self) -> tuple[CatalogueBook, ...]:
+        return tuple(self.books[item_id] for item_id in sorted(self.books))
 
     @staticmethod
     def _validate_name(name: str, label: str) -> str:
@@ -590,7 +614,6 @@ class Catalogue:
         map_id: object,
         name: object,
         image_file: object,
-        calibration_points_file: object,
         calibration_file: object,
         projection: object,
         default_world_rect: object,
@@ -598,14 +621,11 @@ class Catalogue:
         archived: object,
         description: object,
         calibration_city_ids: object,
-    ) -> tuple[str, str, str, str | None, str | None, str | None, WorldRect, float, bool, str, list[str]]:
+    ) -> tuple[str, str, str, str | None, str | None, WorldRect, float, bool, str, list[str]]:
         if not isinstance(map_id, str) or not is_catalogue_id(map_id, "map"):
             raise ValueError(f"Identifiant carte invalide : {map_id!r}.")
         cleaned_name = cls._validate_name(name, "de carte")
         image = cls._validate_logical_asset_reference(image_file, "image_file", required=True)
-        points = cls._validate_logical_asset_reference(
-            calibration_points_file, "calibration_points_file", required=False
-        )
         calibration = cls._validate_logical_asset_reference(
             calibration_file, "calibration_file", required=False
         )
@@ -642,7 +662,6 @@ class Catalogue:
             map_id,
             cleaned_name,
             image,
-            points,
             calibration,
             final_projection,
             rect,
@@ -657,7 +676,6 @@ class Catalogue:
             map_id=catalogue_map.map_id,
             name=catalogue_map.name,
             image_file=catalogue_map.image_file,
-            calibration_points_file=catalogue_map.calibration_points_file,
             calibration_file=catalogue_map.calibration_file,
             projection=catalogue_map.projection,
             default_world_rect=catalogue_map.default_world_rect,
@@ -672,7 +690,6 @@ class Catalogue:
         *,
         name: str,
         image_file: str,
-        calibration_points_file: str | None = None,
         calibration_file: str | None = None,
         projection: str | None = None,
         default_world_rect: WorldRect,
@@ -689,7 +706,6 @@ class Catalogue:
             _map_id,
             final_name,
             final_image,
-            final_points,
             final_calibration,
             final_projection,
             final_rect,
@@ -701,7 +717,6 @@ class Catalogue:
             map_id=provisional_id,
             name=name,
             image_file=image_file,
-            calibration_points_file=calibration_points_file,
             calibration_file=calibration_file,
             projection=projection,
             default_world_rect=default_world_rect,
@@ -717,7 +732,6 @@ class Catalogue:
             map_id,
             final_name,
             final_image,
-            final_points,
             final_calibration,
             final_projection,
             final_rect,
@@ -735,7 +749,6 @@ class Catalogue:
         *,
         name: str | None = None,
         image_file: str | None = None,
-        calibration_points_file: str | None | object = ...,
         calibration_file: str | None | object = ...,
         projection: str | None | object = ...,
         default_world_rect: WorldRect | None = None,
@@ -747,7 +760,6 @@ class Catalogue:
         catalogue_map = self.get_map(map_id)
         final_name = catalogue_map.name if name is None else name
         final_image = catalogue_map.image_file if image_file is None else image_file
-        final_points = catalogue_map.calibration_points_file if calibration_points_file is ... else calibration_points_file
         final_calibration = catalogue_map.calibration_file if calibration_file is ... else calibration_file
         final_projection = catalogue_map.projection if projection is ... else projection
         final_rect = catalogue_map.default_world_rect if default_world_rect is None else default_world_rect
@@ -759,7 +771,6 @@ class Catalogue:
             _validated_id,
             validated_name,
             validated_image,
-            validated_points,
             validated_calibration,
             validated_projection,
             validated_rect,
@@ -771,7 +782,6 @@ class Catalogue:
             map_id=map_id,
             name=final_name,
             image_file=final_image,
-            calibration_points_file=final_points,
             calibration_file=final_calibration,
             projection=final_projection,
             default_world_rect=final_rect,
@@ -784,7 +794,6 @@ class Catalogue:
         self._ensure_unique_name(validated_name, self.maps, map_id, "name")
         catalogue_map.name = validated_name
         catalogue_map.image_file = validated_image
-        catalogue_map.calibration_points_file = validated_points
         catalogue_map.calibration_file = validated_calibration
         catalogue_map.projection = validated_projection
         catalogue_map.default_world_rect = validated_rect
@@ -819,6 +828,63 @@ class Catalogue:
         if catalogue_map.archived:
             raise ValueError(f"La carte archivée {map_id} ne peut pas être la carte par défaut.")
         self.default_map_id = map_id
+
+    def add_book(self, *, name: str, asset_file: str, description: str = "", archived: bool = False) -> str:
+        final_name = self._validate_name(name, "de livre")
+        self._ensure_unique_name(final_name, self.books, None, "name")
+        asset = self._validate_logical_asset_reference(asset_file, "asset_file", required=True)
+        if not isinstance(description, str):
+            raise ValueError("description doit être une chaîne.")
+        self._validate_archived(archived, "Livre")
+        book_id = self.id_provider.new_book_id(self)
+        self.books[book_id] = CatalogueBook(book_id, final_name, asset, archived, description)
+        if self.default_book_id is None and not archived:
+            self.default_book_id = book_id
+        return book_id
+
+    def update_book(
+        self,
+        book_id: str,
+        *,
+        name: str | None = None,
+        asset_file: str | None = None,
+        description: str | None = None,
+        archived: bool | None = None,
+    ) -> CatalogueBook:
+        book = self.get_book(book_id)
+        final_name = book.name if name is None else self._validate_name(name, "de livre")
+        final_asset = book.asset_file if asset_file is None else self._validate_logical_asset_reference(asset_file, "asset_file", required=True)
+        final_description = book.description if description is None else description
+        if not isinstance(final_description, str):
+            raise ValueError("description doit être une chaîne.")
+        final_archived = book.archived if archived is None else archived
+        self._validate_archived(final_archived, f"Livre {book_id}")
+        self._ensure_unique_name(final_name, self.books, book_id, "name")
+        book.name = final_name
+        book.asset_file = final_asset
+        book.description = final_description
+        book.archived = final_archived
+        if final_archived and self.default_book_id == book_id:
+            self.default_book_id = None
+        return book
+
+    def archive_book(self, book_id: str) -> CatalogueBook:
+        book = self.get_book(book_id)
+        if book.archived:
+            raise ValueError(f"Le livre {book_id} est déjà archivé.")
+        return self.update_book(book_id, archived=True)
+
+    def delete_book(self, book_id: str) -> None:
+        self.get_book(book_id)
+        if self.default_book_id == book_id:
+            raise ValueError("Le livre par défaut ne peut pas être supprimé.")
+        del self.books[book_id]
+
+    def set_default_book(self, book_id: str) -> None:
+        book = self.get_book(book_id)
+        if book.archived:
+            raise ValueError(f"Le livre archivé {book_id} ne peut pas être le livre par défaut.")
+        self.default_book_id = book_id
 
     def set_catalogue_reference_map(self, map_id: str) -> None:
         catalogue_map = self.get_map(map_id)
@@ -873,9 +939,11 @@ class Catalogue:
         self._validate_collection(self.triangles, "triangle", "triangle_id", "triangle")
         self._validate_collection(self.templates, "template", "template_id", "template")
         self._validate_collection(self.maps, "map", "map_id", "carte")
+        self._validate_collection(self.books, "book", "book_id", "livre")
         self._validate_unique_names(self.cities, "ville")
         self._validate_unique_names(self.templates, "template")
         self._validate_unique_names(self.maps, "carte")
+        self._validate_unique_names(self.books, "livre")
         beacon_city_ids: set[str] = set()
         for beacon in self.beacons.values():
             city_id = self._validate_beacon_city_id(beacon.city_id, beacon.beacon_id)
@@ -917,6 +985,19 @@ class Catalogue:
             default_map = self.maps[self.default_map_id]
             if default_map.archived:
                 raise ValueError(f"La carte par défaut {self.default_map_id} est archivée.")
+        for book in self.books.values():
+            self._validate_name(book.name, "de livre")
+            self._validate_logical_asset_reference(book.asset_file, "asset_file", required=True)
+            self._validate_archived(book.archived, f"Livre {book.book_id}")
+            if not isinstance(book.description, str):
+                raise ValueError(f"Livre {book.book_id} : description invalide.")
+        if self.default_book_id is not None:
+            if not is_catalogue_book_id(self.default_book_id):
+                raise ValueError(f"defaultBookId invalide : {self.default_book_id!r}.")
+            if self.default_book_id not in self.books:
+                raise ValueError(f"Le livre par défaut {self.default_book_id} est absent.")
+            if self.books[self.default_book_id].archived:
+                raise ValueError(f"Le livre par défaut {self.default_book_id} est archivé.")
         if self.catalogue_reference_map_id is not None:
             if not isinstance(self.catalogue_reference_map_id, str):
                 raise ValueError("catalogueReferenceMapId doit être une chaîne ou null.")
@@ -958,6 +1039,7 @@ class Catalogue:
             "triangle": self.triangles,
             "template": self.templates,
             "map": self.maps,
+            "book": self.books,
         }
         for kind in CATALOGUE_ID_KIND_ORDER:
             counter = self.id_counters[kind]

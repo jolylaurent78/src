@@ -529,7 +529,6 @@ class TriangleViewerManual(
         self.application_context = ApplicationContext.from_environment()
         self.paths = ApplicationPaths.from_runtime()
         self.paths.ensure_user_data_directories()
-        self.data_dir = str(self.paths.resource_texts_dir)
         self.scenario_dir = str(self.paths.user_scenarios_dir)
         self.exports_dir = str(self.paths.exports_dir)
         self.topo_xml_dir = str(self.paths.exports_dir / "TopoXML")
@@ -591,6 +590,7 @@ class TriangleViewerManual(
         manual.last_drawn = self._last_drawn
         manual.view_state = self._capture_view_state()
         manual.map_state = self._new_default_map_state()
+        manual.book_ref_id = self.catalogue.default_book_id
         self.scenarios.append(manual)
         self._attach_beacon_resolver_to_world(manual.topoWorld)
         self._apply_map_state(manual.map_state, persist=False, redraw=False)
@@ -668,7 +668,7 @@ class TriangleViewerManual(
         # Bind pour annuler avec ESC (drag ou sélection)
         self.bind("<Escape>", self._on_escape_key)
 
-        # === Dictionnaire : chargement automatique depuis resources/texts/livre.txt ===
+        # === Dictionnaire : livre Catalogue du scénario actif ===
         self.dico: DictionnaireEnigmes | None = None
         self._initDicoExcludeMotsCodesFromConfig()
         self._init_dictionary(tagExclure=self._getDicoTagExclure())
@@ -1403,6 +1403,7 @@ class TriangleViewerManual(
                 source_type="manual",
                 hypothesis=self._create_manual_scenario_hypothesis(),
             )
+            manual.book_ref_id = self.catalogue.default_book_id
             self._attach_beacon_resolver_to_world(manual.topoWorld)
             self.scenarios = [manual]
         self.active_scenario_index = min(self.active_scenario_index, len(self.scenarios) - 1)
@@ -1537,6 +1538,7 @@ class TriangleViewerManual(
             scen.source_type = "auto"
             scen.view_state = self._capture_view_state()
             scen.map_state = self.auto_map_state
+            scen.book_ref_id = active_scenario.book_ref_id
             scen.algo_id = scen.algo_id or algo_id
             if scen.hypothesis is None:
                 raise RuntimeError("Simulation: scénario AUTO sans ScenarioHypothesis")
@@ -2561,6 +2563,7 @@ class TriangleViewerManual(
             catalogue_path=self.catalogue_path,
             on_catalogue_applied=self._publish_catalogue,
             is_beacon_referenced=self._is_beacon_referenced_by_anchor,
+            is_book_referenced=self._is_book_referenced_by_loaded_scenario,
         )
         self._catalogue_window = window
 
@@ -2681,6 +2684,10 @@ class TriangleViewerManual(
             for scenario in self.scenarios
             for anchor in scenario.topoWorld.groupAnchors.values()
         )
+
+    def _is_book_referenced_by_loaded_scenario(self, book_id: str) -> bool:
+        """Indique si un livre est référencé par un scénario runtime chargé."""
+        return any(scenario.book_ref_id == book_id for scenario in self.scenarios)
 
     # ---------- Icônes ----------
     def _load_icon(self, filename: str):
@@ -5483,6 +5490,7 @@ class TriangleViewerManual(
 
         new_scen.view_state = self._capture_view_state()
         new_scen.map_state = self._capture_map_state()
+        new_scen.book_ref_id = scen.book_ref_id
 
         self.scenarios.append(new_scen)
         return len(self.scenarios) - 1
@@ -5525,6 +5533,11 @@ class TriangleViewerManual(
         scen = self.scenarios[index]
         self.active_scenario_index = index
         self._attach_beacon_resolver_to_world(scen.topoWorld)
+        self._init_dictionary(tagExclure=self._getDicoTagExclure())
+        self._dico_origin_cell = None
+        self._dico_ref_mode = None
+        if "dicoPanel" in self.__dict__:
+            self._build_dico_grid()
 
         # Restaurer carte + vue (sans écraser la config globale)
         scenIsAuto = (getattr(scen, "source_type", "manual") == "auto")
@@ -5607,6 +5620,7 @@ class TriangleViewerManual(
         scen.last_drawn = []
         scen.view_state = self._capture_view_state()
         scen.map_state = self._new_default_map_state()
+        scen.book_ref_id = self.catalogue.default_book_id
 
         self.scenarios.append(scen)
         # Bascule sur ce nouveau scénario
@@ -5616,8 +5630,40 @@ class TriangleViewerManual(
 
         self.status.config(text=f"Nouveau scénario créé : {scen.name}")
 
+    def _scenario_property_book_choices(self, scen: ScenarioAssemblage) -> tuple[tuple[str, str], ...]:
+        """Retourne les livres sélectionnables, avec le livre archivé courant conservé."""
+        book_ref_id = scen.book_ref_id
+        if book_ref_id is None:
+            raise ValueError("Le scénario ne référence aucun livre Catalogue.")
+        try:
+            current = self.catalogue.get_book(book_ref_id)
+        except KeyError as exc:
+            raise ValueError(
+                f"Le livre {book_ref_id} référencé par ce scénario est absent du Catalogue."
+            ) from exc
+        choices = [book for book in self.catalogue.iter_books() if not book.archived]
+        if current.archived:
+            choices.append(current)
+        return tuple((book.book_id, book.name) for book in choices)
+
+    def _apply_scenario_book_selection(self, scen: ScenarioAssemblage, book_id: str) -> bool:
+        """Valide et applique un livre ; reconstruit le dictionnaire du scénario actif."""
+        book = self.catalogue.get_book(book_id)
+        if book.archived and book.book_id != scen.book_ref_id:
+            raise ValueError(f"Le livre Catalogue {book_id} est archivé.")
+        if book_id == scen.book_ref_id:
+            return False
+        scen.book_ref_id = book_id
+        if scen is self._get_active_scenario():
+            self._dico_origin_cell = None
+            self._dico_ref_mode = None
+            self._init_dictionary(tagExclure=self._getDicoTagExclure())
+            if "dicoPanel" in self.__dict__:
+                self._build_dico_grid()
+        return True
+
     def _scenario_edit_properties(self):
-        """Edite transactionnellement le nom et la carte du scénario actif."""
+        """Edite transactionnellement le nom, la carte et le livre du scénario actif."""
         if not self.scenarios:
             return
         idx = self.active_scenario_index
@@ -5633,18 +5679,38 @@ class TriangleViewerManual(
         if not labels:
             return
         current_label = next((label for label, map_id in labels.items() if map_id == state.map_ref_id), None)
+        book_choices = self._scenario_property_book_choices(scen)
+        book_labels = {name: book_id for book_id, name in book_choices}
+        current_book_label = next(
+            (name for book_id, name in book_choices if book_id == scen.book_ref_id),
+            None,
+        )
+        if current_book_label is None:
+            raise ValueError(
+                f"Le livre {scen.book_ref_id} référencé par ce scénario est absent du Catalogue."
+            )
         dialog = tk.Toplevel(self)
         dialog.title("Propriétés du scénario")
         dialog.transient(self)
         dialog.resizable(False, False)
         name_var = tk.StringVar(value=scen.name)
         map_var = tk.StringVar(value=current_label or next(iter(labels)))
+        book_var = tk.StringVar(value=current_book_label)
         ttk.Label(dialog, text="Nom").grid(row=0, column=0, padx=12, pady=(12, 6), sticky="w")
         name_entry = ttk.Entry(dialog, textvariable=name_var, width=34)
         name_entry.grid(row=0, column=1, padx=(0, 12), pady=(12, 6))
         ttk.Label(dialog, text="Carte").grid(row=1, column=0, padx=12, pady=6, sticky="w")
         combo = ttk.Combobox(dialog, textvariable=map_var, values=tuple(labels), state="readonly", width=31)
         combo.grid(row=1, column=1, padx=(0, 12), pady=6)
+        ttk.Label(dialog, text="Livre").grid(row=2, column=0, padx=12, pady=6, sticky="w")
+        book_combo = ttk.Combobox(
+            dialog,
+            textvariable=book_var,
+            values=tuple(book_labels),
+            state="readonly",
+            width=31,
+        )
+        book_combo.grid(row=2, column=1, padx=(0, 12), pady=6)
         result = {"ok": False}
 
         def accept():
@@ -5652,10 +5718,27 @@ class TriangleViewerManual(
             if not cleaned:
                 messagebox.showerror("Propriétés du scénario", "Le nom du scénario ne peut pas être vide.", parent=dialog)
                 return
-            result.update(ok=True, name=cleaned, map_id=labels[map_var.get()])
+            selected_book_id = book_labels.get(book_var.get())
+            if selected_book_id is None:
+                messagebox.showerror("Propriétés du scénario", "Le livre sélectionné est invalide.", parent=dialog)
+                return
+            try:
+                selected_book = self.catalogue.get_book(selected_book_id)
+            except ValueError as exc:
+                messagebox.showerror("Propriétés du scénario", str(exc), parent=dialog)
+                return
+            if selected_book.archived and selected_book.book_id != scen.book_ref_id:
+                messagebox.showerror("Propriétés du scénario", "Le livre sélectionné est archivé.", parent=dialog)
+                return
+            result.update(
+                ok=True,
+                name=cleaned,
+                map_id=labels[map_var.get()],
+                book_id=selected_book_id,
+            )
             dialog.destroy()
         buttons = ttk.Frame(dialog)
-        buttons.grid(row=2, column=0, columnspan=2, sticky="e", padx=12, pady=(8, 12))
+        buttons.grid(row=3, column=0, columnspan=2, sticky="e", padx=12, pady=(8, 12))
         ttk.Button(buttons, text="Annuler", command=dialog.destroy).pack(side=tk.RIGHT)
         ttk.Button(buttons, text="OK", command=accept).pack(side=tk.RIGHT, padx=(0, 6))
         dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
@@ -5671,6 +5754,7 @@ class TriangleViewerManual(
             )
             scen.map_state = state
             self._apply_map_state(state)
+        self._apply_scenario_book_selection(scen, result["book_id"])
         self._refresh_scenario_listbox()
         self.status.config(text=f"Nom du scénario mis à jour : {scen.name}")
 
@@ -5718,6 +5802,7 @@ class TriangleViewerManual(
         # runtime courant plutôt que les snapshots potentiellement périmés de src.
         dup.view_state = self._capture_view_state()
         dup.map_state = self._capture_map_state()
+        dup.book_ref_id = src.book_ref_id
 
         self.scenarios.append(dup)
         self._refresh_scenario_listbox()

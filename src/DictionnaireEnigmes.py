@@ -1,5 +1,7 @@
 from itertools import product
+from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Iterator
 import re
 import unicodedata
@@ -7,6 +9,44 @@ import unicodedata
 PATTERN_MIN_TOKENS = 2
 PATTERN_MAX_TOKENS = 5
 LISTEPATTERNS_MAX = 8
+
+
+@dataclass(frozen=True)
+class BookToken:
+    text: str
+    tag: str | None
+
+
+@dataclass(frozen=True)
+class BookLine:
+    line_number: int
+    title: str
+    tokens: tuple[BookToken, ...]
+
+
+def parse_book_lines(lines: list[str]) -> tuple[BookLine, ...]:
+    """Parse le contenu source d'un livre sans filtrage runtime des tags."""
+    parsed: list[BookLine] = []
+    for line_number, raw_line in enumerate(lines, start=1):
+        fields = raw_line.strip().split()
+        if not fields:
+            continue
+        tokens: list[BookToken] = []
+        for field in fields[1:]:
+            if "[" not in field and "]" not in field:
+                tokens.append(BookToken(field, None))
+                continue
+            match = re.fullmatch(r"([^\[\]]+)\[([^\[\]]+)\]", field)
+            if match is None:
+                raise ValueError(f"Livre invalide ligne {line_number} : token tagué invalide {field!r}.")
+            tokens.append(BookToken(match.group(1), match.group(2)))
+        parsed.append(BookLine(line_number, fields[0], tuple(tokens)))
+    return tuple(parsed)
+
+
+def parse_book_file(path: str | Path) -> tuple[BookLine, ...]:
+    with Path(path).open("r", encoding="utf-8") as stream:
+        return parse_book_lines(stream.readlines())
 
 
 class DicoScope(Enum):
@@ -82,8 +122,17 @@ class DictionnaireEnigmes:
             "utilisable": [False, []]
         }
 
-        with open(cheminFichier, "r", encoding="utf-8") as fichier:
-            lignes = fichier.readlines()
+        book_lines = parse_book_file(cheminFichier)
+        if book_lines:
+            lignes = [
+                " ".join(
+                    [line.title, *[
+                        token.text if token.tag is None else f"{token.text}[{token.tag}]"
+                        for token in line.tokens
+                    ]]
+                )
+                for line in book_lines
+            ]
             # On inverse les lignes si dans le contre sens
             if not bonSens:
                 lignes = list(reversed(lignes))
@@ -881,8 +930,12 @@ class SequenceCategorie:
 
 if __name__ == "__main__":
     from src.assembleur_paths import ApplicationPaths
+    from src.assembleur_catalogue_io import load_catalogue
+    from src.assembleur_catalogue_book_assets import CatalogueBookAssetResolver
 
-    dico = DictionnaireEnigmes(str(ApplicationPaths.from_runtime().dictionary_path))
+    paths = ApplicationPaths.from_runtime()
+    catalogue = load_catalogue(paths.default_catalogue_path)
+    dico = DictionnaireEnigmes(str(CatalogueBookAssetResolver(paths).resolve(catalogue.get_book(catalogue.default_book_id))))
     print(dico[5][10])
     for categorie in dico.getCategories():
         print(categorie, ":", dico.getIndexCategories()[categorie])

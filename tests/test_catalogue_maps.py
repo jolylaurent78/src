@@ -20,7 +20,6 @@ def _add_map(catalogue: Catalogue, *, name: str = "899 - Alsace", **overrides) -
     values = {
         "name": name,
         "image_file": "899 - Alsace.jpg",
-        "calibration_points_file": "899 - Alsace.calib_points.json",
         "calibration_file": "899 - Alsace.json",
         "projection": "EPSG:2154",
         "default_world_rect": _rect(),
@@ -84,19 +83,10 @@ def test_partial_and_uncalibrated_map_states_are_valid():
     visual_map_id = _add_map(
         catalogue,
         name="Fond visuel",
-        calibration_points_file=None,
         calibration_file=None,
         projection=None,
     )
-    points_map_id = _add_map(
-        catalogue,
-        name="Points préparés",
-        calibration_file=None,
-        projection=None,
-    )
-
     assert catalogue.get_map(visual_map_id).projection is None
-    assert catalogue.get_map(points_map_id).calibration_points_file is not None
     catalogue.validate()
 
 
@@ -154,7 +144,6 @@ def test_v3_map_round_trip_preserves_all_map_fields_and_default():
     active_map_id = _add_map(
         catalogue,
         name="Fond non calibré",
-        calibration_points_file=None,
         calibration_file=None,
         projection=None,
     )
@@ -167,7 +156,6 @@ def test_v3_map_round_trip_preserves_all_map_fields_and_default():
     assert restored.id_counters["map"] == 2
     assert archived.archived is True
     assert archived.image_file == "899 - Alsace.jpg"
-    assert archived.calibration_points_file == "899 - Alsace.calib_points.json"
     assert archived.calibration_file == "899 - Alsace.json"
     assert archived.projection == "EPSG:2154"
     assert archived.default_world_rect == _rect()
@@ -271,7 +259,6 @@ def test_direct_catalogue_map_validation_checks_identity_and_archived_type():
         "CITY-SYS-000001",
         "Carte",
         "map.jpg",
-        None,
         None,
         None,
         WorldRect(0, 0, 1, 1),

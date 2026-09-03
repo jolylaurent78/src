@@ -51,7 +51,7 @@ def migrate_catalogue_data_v4_to_v5(data: object) -> dict[str, Any]:
         if not set(calibration_city_ids).issubset(city_ids):
             calibration_city_ids = []
         migrated_maps.append({
-            **raw_map,
+            **{key: value for key, value in raw_map.items() if key != "calibrationPointsFile"},
             "description": "Carte d'assemblage Vosges" if map_id == "MAP-SYS-000001"
             else "Carte de référence Catalogue" if map_id == "MAP-SYS-000002" else "",
             "calibrationCityIds": calibration_city_ids,

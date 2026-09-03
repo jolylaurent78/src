@@ -435,6 +435,7 @@ def saveScenarioXml(viewer, path: str):
         "version": "6",
         "saved_at": _dt.datetime.now().isoformat(timespec="seconds"),
         "topo_tx_orientation": topo_tx_orientation,
+        "bookRefId": str(scen.book_ref_id or ""),
     })
     _save_scenario_reference(root, scen.reference)
     _save_scenario_hypothesis(root, hypothesis, resolver)
@@ -518,6 +519,7 @@ class _LoadedScenarioXml:
     clock_state: dict[str, object]
     view_state: tuple[float, np.ndarray] | None
     map_state: ScenarioMapState
+    book_ref_id: str | None
     guides: tuple[dict[str, object], ...]
 
 
@@ -674,6 +676,13 @@ def _parse_loaded_scenario_xml(viewer, path: str) -> _LoadedScenarioXml:
     map_state = ScenarioMapState(map_ref_id=catalogue.default_map_id)
     if map_el is not None:
         map_state = _parse_map_state(catalogue, map_el)
+    book_ref_id = str(root.get("bookRefId", "") or "").strip()
+    if not book_ref_id:
+        # Frontière legacy : les scénarios enregistrés avant CATALOG-BOOK-001
+        # ne sérialisaient pas bookRefId, y compris certains XML v6.
+        book_ref_id = catalogue.default_book_id
+    if book_ref_id is not None:
+        catalogue.get_book(book_ref_id)
 
     clock_el = root.find("clock")
     clock_state = {"hour": 0, "minute": 0, "label": "", "x": 0.0, "y": 0.0}
@@ -694,6 +703,7 @@ def _parse_loaded_scenario_xml(viewer, path: str) -> _LoadedScenarioXml:
         clock_state=clock_state,
         view_state=view_state,
         map_state=map_state,
+        book_ref_id=book_ref_id,
         guides=_parse_optional_guides(root),
     )
 
@@ -715,6 +725,7 @@ def _publish_loaded_scenario_xml(viewer, scenario, loaded: _LoadedScenarioXml, *
     ) = loaded.clock_ref
     scenario.clockAzimuthTraits = [dict(guide) for guide in loaded.guides]
     scenario.map_state = loaded.map_state
+    scenario.book_ref_id = loaded.book_ref_id
     if not publish_ui:
         return
 

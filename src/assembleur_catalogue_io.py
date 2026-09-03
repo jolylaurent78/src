@@ -10,6 +10,7 @@ from typing import Any
 from src.assembleur_catalogue import (
     Catalogue,
     CatalogueBeacon,
+    CatalogueBook,
     CatalogueCity,
     CatalogueMap,
     CatalogueTriangle,
@@ -33,6 +34,7 @@ def catalogue_to_dict(catalogue: Catalogue) -> dict[str, Any]:
         },
         "defaultTemplateId": catalogue.default_template_id,
         "defaultMapId": catalogue.default_map_id,
+        "defaultBookId": catalogue.default_book_id,
         "catalogueReferenceMapId": catalogue.catalogue_reference_map_id,
         "cities": [
             {
@@ -78,7 +80,6 @@ def catalogue_to_dict(catalogue: Catalogue) -> dict[str, Any]:
                 "mapId": catalogue_map.map_id,
                 "name": catalogue_map.name,
                 "imageFile": catalogue_map.image_file,
-                "calibrationPointsFile": catalogue_map.calibration_points_file,
                 "calibrationFile": catalogue_map.calibration_file,
                 "projection": catalogue_map.projection,
                 "defaultWorldRect": {
@@ -93,6 +94,16 @@ def catalogue_to_dict(catalogue: Catalogue) -> dict[str, Any]:
                 "calibrationCityIds": list(catalogue_map.calibration_city_ids),
             }
             for catalogue_map in catalogue.iter_maps()
+        ],
+        "books": [
+            {
+                "bookId": book.book_id,
+                "name": book.name,
+                "assetFile": book.asset_file,
+                "archived": book.archived,
+                "description": book.description,
+            }
+            for book in catalogue.iter_books()
         ],
     }
 
@@ -193,30 +204,27 @@ def _require_rank_ids(value: object, label: str) -> list[str | None]:
 def _catalogue_map_from_dict(raw_map: object, index: int) -> CatalogueMap:
     label = f"maps[{index}]"
     item = _require_mapping(raw_map, label)
-    _require_exact_keys(
-        item,
-        label,
-        {
-            "mapId",
-            "name",
-            "imageFile",
-            "calibrationPointsFile",
-            "calibrationFile",
-            "projection",
-            "defaultWorldRect",
-            "defaultScaleFactor",
-            "archived",
-            "description",
-            "calibrationCityIds",
-        },
-    )
+    expected_keys = {
+        "mapId",
+        "name",
+        "imageFile",
+        "calibrationFile",
+        "projection",
+        "defaultWorldRect",
+        "defaultScaleFactor",
+        "archived",
+        "description",
+        "calibrationCityIds",
+    }
+    legacy_keys = expected_keys | {"calibrationPointsFile"}
+    if set(item) not in (expected_keys, legacy_keys):
+        _require_exact_keys(item, label, expected_keys)
     raw_rect = _require_mapping(_require_field(item, "defaultWorldRect"), f"{label}.defaultWorldRect")
     _require_exact_keys(raw_rect, f"{label}.defaultWorldRect", {"x0", "y0", "w", "h"})
     return CatalogueMap(
         _require_str(_require_field(item, "mapId"), f"{label}.mapId"),
         _require_str(_require_field(item, "name"), f"{label}.name"),
         _require_str(_require_field(item, "imageFile"), f"{label}.imageFile"),
-        _require_optional_str(_require_field(item, "calibrationPointsFile"), f"{label}.calibrationPointsFile"),
         _require_optional_str(_require_field(item, "calibrationFile"), f"{label}.calibrationFile"),
         _require_optional_str(_require_field(item, "projection"), f"{label}.projection"),
         WorldRect(
@@ -245,21 +253,27 @@ def catalogue_from_dict(data: object, *, id_provider: CatalogueIdProvider | None
         raise ValueError("Catalogue invalide : version doit être un entier.")
     if version != _VERSION:
         raise ValueError(f"Version de catalogue non supportée : {version}")
+    expected_root_keys = {
+            "version", "idCounters", "defaultTemplateId", "defaultMapId", "catalogueReferenceMapId",
+            "cities", "beacons", "triangles", "templates", "maps", "defaultBookId", "books",
+        }
+    legacy_root_keys = expected_root_keys - {"defaultBookId", "books"}
+    if set(root) not in (expected_root_keys, legacy_root_keys):
+        _require_exact_keys(root, "la racine", expected_root_keys)
+    if set(root) == expected_root_keys:
+        pass
+    else:
+        # Boundary de migration des catalogues créés avant les livres Catalogue.
+        root = dict(root)
+        counters = dict(_require_mapping(root["idCounters"], "idCounters"))
+        counters["book"] = 1
+        root["idCounters"] = counters
+        root["defaultBookId"] = "BOOK-SYS-000001"
+        root["books"] = [{"bookId": "BOOK-SYS-000001", "name": "Livre", "assetFile": "books/livre.txt", "archived": False, "description": ""}]
     _require_exact_keys(
         root,
         "la racine",
-        {
-            "version",
-            "idCounters",
-            "defaultTemplateId",
-            "defaultMapId",
-            "catalogueReferenceMapId",
-            "cities",
-            "beacons",
-            "triangles",
-            "templates",
-            "maps",
-        },
+        expected_root_keys,
     )
     id_counters = _require_id_counters(_require_field(root, "idCounters"))
     default_template_id = _require_field(root, "defaultTemplateId")
@@ -268,6 +282,9 @@ def catalogue_from_dict(data: object, *, id_provider: CatalogueIdProvider | None
     default_map_id = _require_field(root, "defaultMapId")
     if default_map_id is not None and not isinstance(default_map_id, str):
         raise ValueError("Catalogue invalide : defaultMapId doit être une chaîne ou null.")
+    default_book_id = _require_field(root, "defaultBookId")
+    if default_book_id is not None and not isinstance(default_book_id, str):
+        raise ValueError("Catalogue invalide : defaultBookId doit être une chaîne ou null.")
     catalogue_reference_map_id = _require_field(root, "catalogueReferenceMapId")
     if catalogue_reference_map_id is not None and not isinstance(catalogue_reference_map_id, str):
         raise ValueError("Catalogue invalide : catalogueReferenceMapId doit être une chaîne ou null.")
@@ -329,11 +346,28 @@ def catalogue_from_dict(data: object, *, id_provider: CatalogueIdProvider | None
         if catalogue_map.map_id in catalogue.maps:
             raise ValueError(f"Catalogue invalide : identifiant carte dupliqué : {catalogue_map.map_id}.")
         catalogue.maps[catalogue_map.map_id] = catalogue_map
+    for index, raw_book in enumerate(_require_list(_require_field(root, "books"), "books"), start=1):
+        item = _require_mapping(raw_book, f"books[{index}]")
+        expected_book_keys = {"bookId", "name", "assetFile", "archived", "description"}
+        legacy_book_keys = expected_book_keys - {"description"}
+        if set(item) not in (expected_book_keys, legacy_book_keys):
+            _require_exact_keys(item, f"books[{index}]", expected_book_keys)
+        book = CatalogueBook(
+            _require_str(_require_field(item, "bookId"), f"books[{index}].bookId"),
+            _require_str(_require_field(item, "name"), f"books[{index}].name"),
+            _require_str(_require_field(item, "assetFile"), f"books[{index}].assetFile"),
+            _require_bool(_require_field(item, "archived"), f"books[{index}].archived"),
+            "" if "description" not in item else _require_str(_require_field(item, "description"), f"books[{index}].description"),
+        )
+        if book.book_id in catalogue.books:
+            raise ValueError(f"Catalogue invalide : identifiant livre dupliqué : {book.book_id}.")
+        catalogue.books[book.book_id] = book
 
     catalogue.version = version
     catalogue.id_counters = id_counters
     catalogue.default_template_id = default_template_id
     catalogue.default_map_id = default_map_id
+    catalogue.default_book_id = default_book_id
     catalogue.catalogue_reference_map_id = catalogue_reference_map_id
     catalogue.validate()
     return catalogue

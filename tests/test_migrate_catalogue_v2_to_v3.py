@@ -37,7 +37,10 @@ def _catalogue_v2(provider=None) -> dict:
     catalogue.set_template_rank(template.template_id, 1, triangle.triangle_id)
     data = catalogue_to_dict(catalogue)
     data["version"] = 2
+    data["idCounters"].pop("book")
     data["idCounters"].pop("map")
+    data.pop("defaultBookId")
+    data.pop("books")
     data.pop("defaultMapId")
     data.pop("catalogueReferenceMapId")
     data.pop("maps")
@@ -50,8 +53,9 @@ def test_v2_parser_accepts_current_v2_contract_without_using_v3_loader():
 
     parsed = parse_catalogue_v2(data)
 
-    assert parsed.id_counters == {"city": 3, "beacon": 1, "triangle": 1, "template": 1, "map": 0}
+    assert parsed.id_counters == {"city": 3, "beacon": 1, "triangle": 1, "template": 1, "map": 0, "book": 1}
     assert parsed.default_map_id is None
+    assert parsed.default_book_id == "BOOK-SYS-000001"
     assert set(parsed.cities) == {"CITY-SYS-000001", "CITY-SYS-000002", "CITY-SYS-000003"}
 
 

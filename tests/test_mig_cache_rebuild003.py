@@ -174,6 +174,8 @@ def test_scenario_activation_rebuilds_the_new_active_projection_from_core():
     viewer._discard_manual_rotate_preview = lambda: False
     viewer._discard_auto_transform_preview = lambda: False
     viewer._attach_beacon_resolver_to_world = lambda _world: None
+    viewer._getDicoTagExclure = lambda: None
+    viewer._init_dictionary = lambda **_kwargs: None
     viewer._capture_view_state = lambda: {}
     viewer._capture_map_state = lambda: {}
     viewer._apply_map_state = lambda *_args, **_kwargs: None
@@ -219,6 +221,8 @@ def test_scenario_activation_suppresses_map_redraw_until_new_projection_is_ready
     viewer._discard_manual_rotate_preview = lambda: False
     viewer._discard_auto_transform_preview = lambda: False
     viewer._attach_beacon_resolver_to_world = lambda _world: None
+    viewer._getDicoTagExclure = lambda: None
+    viewer._init_dictionary = lambda **_kwargs: None
     viewer._capture_view_state = lambda: {}
     viewer._capture_map_state = lambda: {}
     map_redraw_flags = []
