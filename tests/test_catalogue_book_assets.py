@@ -12,8 +12,12 @@ from src.assembleur_catalogue_io import catalogue_from_dict, catalogue_to_dict
 from src.assembleur_paths import ApplicationPaths
 
 
-def _paths(tmp_path: Path) -> ApplicationPaths:
-    return ApplicationPaths.from_runtime(installation_root=tmp_path / "installation", user_data_root=tmp_path / "user")
+def _paths(tmp_path: Path, *, catalogue_mode: str = "USER") -> ApplicationPaths:
+    return ApplicationPaths.from_runtime(
+        installation_root=tmp_path / "installation",
+        user_data_root=tmp_path / "user",
+        catalogue_mode=catalogue_mode,
+    )
 
 
 def _sys_book_catalogue() -> Catalogue:
@@ -111,7 +115,7 @@ def test_delete_published_user_book_removes_its_asset_on_commit(tmp_path) -> Non
 
 
 def test_system_provider_creates_and_duplicates_system_books_transactionally(tmp_path) -> None:
-    paths = _paths(tmp_path)
+    paths = _paths(tmp_path, catalogue_mode="SYS")
     source = tmp_path / "source.txt"
     source.write_text("530 mot[tag]\n", encoding="utf-8")
     catalogue = Catalogue(id_provider=SystemCatalogueIdProvider())
@@ -140,7 +144,7 @@ def test_system_provider_creates_and_duplicates_system_books_transactionally(tmp
 
 
 def test_system_staged_book_delete_cleans_staging_without_resolving_final_asset(tmp_path) -> None:
-    paths = _paths(tmp_path)
+    paths = _paths(tmp_path, catalogue_mode="SYS")
     source = tmp_path / "source.txt"
     source.write_text("530 mot[tag]\n", encoding="utf-8")
     catalogue = Catalogue(id_provider=SystemCatalogueIdProvider())
@@ -161,7 +165,7 @@ def test_system_staged_book_delete_cleans_staging_without_resolving_final_asset(
 
 
 def test_system_published_book_delete_is_transactional_and_rollback_restores_bytes(tmp_path) -> None:
-    paths = _paths(tmp_path)
+    paths = _paths(tmp_path, catalogue_mode="SYS")
     source = tmp_path / "source.txt"
     content = b"530 mot[tag]\r\n"
     source.write_bytes(content)
@@ -206,7 +210,7 @@ def test_user_mode_refuses_system_book_asset_delete(tmp_path) -> None:
 
 
 def test_shared_book_asset_cannot_be_scheduled_for_deletion(tmp_path) -> None:
-    paths = _paths(tmp_path)
+    paths = _paths(tmp_path, catalogue_mode="SYS")
     catalogue = Catalogue(id_provider=SystemCatalogueIdProvider())
     first = catalogue.add_book(name="Défaut", asset_file="books/shared.txt")
     second = catalogue.add_book(name="Autre", asset_file="books/shared.txt")
@@ -220,8 +224,8 @@ def test_shared_book_asset_cannot_be_scheduled_for_deletion(tmp_path) -> None:
 
 def test_duplicate_sys_book_creates_independent_user_asset_and_import_rolls_back(tmp_path) -> None:
     paths = _paths(tmp_path)
-    paths.default_catalogue_books_dir.mkdir(parents=True)
-    (paths.default_catalogue_books_dir / "livre.txt").write_text("530 nord[direction]\n", encoding="utf-8")
+    paths.user_catalogue_books_dir.mkdir(parents=True)
+    (paths.user_catalogue_books_dir / "livre.txt").write_text("530 nord[direction]\n", encoding="utf-8")
     catalogue = _sys_book_catalogue()
     controller = CatalogueBookAssetController(catalogue, paths)
 
@@ -244,8 +248,8 @@ def test_duplicate_sys_book_creates_independent_user_asset_and_import_rolls_back
 
 def test_sys_book_import_is_refused_in_user_mode_and_export_preserves_bytes(tmp_path) -> None:
     paths = _paths(tmp_path)
-    paths.default_catalogue_books_dir.mkdir(parents=True)
-    source_asset = paths.default_catalogue_books_dir / "livre.txt"
+    paths.user_catalogue_books_dir.mkdir(parents=True)
+    source_asset = paths.user_catalogue_books_dir / "livre.txt"
     source_asset.write_bytes(b"530 mot[exclure]\r\n")
     replacement = tmp_path / "replacement.txt"
     replacement.write_text("530 autre\n", encoding="utf-8")

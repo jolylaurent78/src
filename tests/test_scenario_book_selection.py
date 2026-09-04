@@ -95,8 +95,8 @@ def test_archived_book_asset_remains_resolvable_for_an_existing_scenario(tmp_pat
         installation_root=tmp_path / "installation",
         user_data_root=tmp_path / "user",
     )
-    paths.default_catalogue_books_dir.mkdir(parents=True)
-    asset = paths.default_catalogue_books_dir / "archive.txt"
+    paths.user_catalogue_books_dir.mkdir(parents=True)
+    asset = paths.user_catalogue_books_dir / "archive.txt"
     asset.write_text("530 mot[tag]\n", encoding="utf-8")
     scenario = ScenarioAssemblage("Scénario")
     scenario.book_ref_id = archived
@@ -112,9 +112,9 @@ def test_runtime_uses_scenario_book_not_the_catalogue_default(tmp_path) -> None:
         installation_root=tmp_path / "installation",
         user_data_root=tmp_path / "user",
     )
-    paths.default_catalogue_books_dir.mkdir(parents=True)
-    first_asset = paths.default_catalogue_books_dir / "a.txt"
-    second_asset = paths.default_catalogue_books_dir / "b.txt"
+    paths.user_catalogue_books_dir.mkdir(parents=True)
+    first_asset = paths.user_catalogue_books_dir / "a.txt"
+    second_asset = paths.user_catalogue_books_dir / "b.txt"
     first_asset.write_text("530 premier[tag]\n", encoding="utf-8")
     second_asset.write_text("530 second[tag]\n", encoding="utf-8")
     scenario = ScenarioAssemblage("Scénario")

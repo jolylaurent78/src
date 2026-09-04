@@ -100,7 +100,7 @@ def test_v3_to_v4_file_migration_keeps_a_v3_backup(tmp_path) -> None:
 
 def test_delivered_reference_map_resolves_calibration_and_city_coordinates() -> None:
     root = Path(__file__).resolve().parents[1]
-    paths = ApplicationPaths.from_runtime(installation_root=root, user_data_root=root / ".pytest-user-root")
+    paths = ApplicationPaths.from_runtime(installation_root=root, user_data_root=root / ".pytest-user-root", catalogue_mode="SYS")
     catalogue = load_catalogue(paths.default_catalogue_path)
     reference_id = catalogue.catalogue_reference_map_id
     assert reference_id == "MAP-SYS-000002"
@@ -120,7 +120,7 @@ def test_delivered_reference_map_resolves_calibration_and_city_coordinates() -> 
 
 def test_delivered_system_maps_have_five_pointed_calibration_cities() -> None:
     root = Path(__file__).resolve().parents[1]
-    paths = ApplicationPaths.from_runtime(installation_root=root, user_data_root=root / ".pytest-user-root")
+    paths = ApplicationPaths.from_runtime(installation_root=root, user_data_root=root / ".pytest-user-root", catalogue_mode="SYS")
     catalogue = load_catalogue(paths.default_catalogue_path)
     controller = CatalogueMapCalibrationController(catalogue, paths)
 

@@ -17,7 +17,7 @@ from src.assembleur_catalogue import Catalogue, CatalogueBook, CatalogueCity, Ca
 from src.assembleur_catalogue_book_asset_controller import CatalogueBookAssetController
 from src.assembleur_catalogue_map_assets import CatalogueMapAssetResolver, load_calibrated_catalogue_map
 from src.assembleur_catalogue_map_calibration import CatalogueMapCalibrationController, STATUS_VALID
-from src.assembleur_catalogue_identity import ApplicationContext, UserCatalogueIdProvider, is_system_catalogue_id
+from src.assembleur_catalogue_identity import ApplicationContext, is_system_catalogue_id
 from src.assembleur_catalogue_io import save_catalogue
 from src.assembleur_paths import ApplicationPaths
 from src.assembleur_tooltip import attach_tooltip
@@ -428,7 +428,9 @@ class CatalogueWindow(tk.Toplevel):
         self._updating_detail = False
         self._updating_template_detail = False
         self._is_dirty = False
-        self._paths = ApplicationPaths.from_runtime()
+        self._paths = ApplicationPaths.from_runtime(
+            catalogue_mode=self._application_context.mode,
+        )
         self._map_calibration = CatalogueMapCalibrationController(
             self.catalogue,
             self._paths,
@@ -1638,9 +1640,7 @@ class CatalogueWindow(tk.Toplevel):
         if self._selected_calibration_city_id is None and self._map_interaction_mode == "focus":
             self._set_map_interaction_mode("hand")
         self._set_map_interaction_mode(self._map_interaction_mode)
-        self._map_add_button.configure(
-            state=tk.NORMAL if isinstance(self.catalogue.id_provider, UserCatalogueIdProvider) else tk.DISABLED
-        )
+        self._map_add_button.configure(state=tk.NORMAL)
         self._map_role_label.configure(text="Carte de référence Catalogue" if selected is not None and selected.map_id == self.catalogue.catalogue_reference_map_id else "")
 
     def _set_selected_map_as_default(self):
@@ -1726,7 +1726,7 @@ class CatalogueWindow(tk.Toplevel):
             return
         description = simpledialog.askstring("Ajouter une carte", "Description :", parent=self) or ""
         try:
-            self._selected_map_id = self._map_calibration.stage_user_map(image_path, name=name, description=description)
+            self._selected_map_id = self._map_calibration.stage_map(image_path, name=name, description=description)
         except (OSError, ValueError) as exc:
             messagebox.showerror("Ajouter une carte", str(exc), parent=self)
             return

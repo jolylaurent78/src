@@ -193,7 +193,7 @@ def test_leave_one_out_is_unavailable_with_only_three_observations(tmp_path):
 
 
 def test_alsace_leave_one_out_residuals_are_finite():
-    paths = ApplicationPaths.from_runtime()
+    paths = ApplicationPaths.from_runtime(catalogue_mode="SYS")
     catalogue = load_catalogue(paths.default_catalogue_path)
     catalogue_map = catalogue.get_map("MAP-SYS-000001")
     controller = CatalogueMapCalibrationController(catalogue, paths)
@@ -259,7 +259,7 @@ def test_system_map_editing_permission_is_explicit(tmp_path):
 
 
 def test_sys_calibration_recalculation_persists_modern_a_offset(tmp_path):
-    paths = ApplicationPaths.from_runtime(installation_root=tmp_path, user_data_root=tmp_path / "user")
+    paths = ApplicationPaths.from_runtime(installation_root=tmp_path, user_data_root=tmp_path / "user", catalogue_mode="SYS")
     catalogue = Catalogue(id_provider=SystemCatalogueIdProvider())
     cities = [
         catalogue.add_city("A", 47.0, 2.0),

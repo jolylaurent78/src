@@ -8,8 +8,6 @@ from pathlib import Path
 from src.assembleur_catalogue import CatalogueMap
 from src.assembleur_catalogue_identity import (
     is_catalogue_map_id,
-    is_system_catalogue_id,
-    is_user_catalogue_id,
 )
 from src.assembleur_paths import ApplicationPaths
 
@@ -49,11 +47,7 @@ class CatalogueMapAssetResolver:
         )
 
     def _asset_root_for_map(self, map_id: str) -> Path:
-        if is_system_catalogue_id(map_id):
-            return self._paths.default_catalogue_maps_dir
-        if is_user_catalogue_id(map_id):
-            return self._paths.user_catalogue_maps_dir
-        raise ValueError(f"Namespace CatalogueMap non supporté : {map_id!r}.")
+        return self._paths.active_catalogue_maps_dir
 
     @staticmethod
     def _resolve_required_asset(root: Path, map_id: str, role: str, reference: str) -> Path:

@@ -33,6 +33,7 @@ class DeformationUiState:
     working_points: dict[str, WorkingPoint] = field(default_factory=dict)
     working_reference: ScenarioReference | None = None
     working_hypothesis: ScenarioHypothesis | None = None
+    working_point_names: dict[str, str] = field(default_factory=dict)
     dirty: bool = False
     _drag_last_accepted_point: VertexLambertPoint | None = None
 
@@ -52,6 +53,7 @@ class DeformationUiState:
         self.working_points.clear()
         self.working_reference = None
         self.working_hypothesis = None
+        self.working_point_names.clear()
         self.dirty = False
 
     def _new_temporary_point_id(self) -> str:
@@ -140,6 +142,7 @@ class DeformationUiState:
             previous.occurrences.discard(destination)
             if not previous.occurrences:
                 self.working_points.pop(previous.point_id)
+                self.working_point_names.pop(previous.point_id, None)
         point.occurrences.add(destination)
         self.dirty = True
 
@@ -162,6 +165,7 @@ class DeformationUiState:
                 old_point.occurrences.discard(occurrence)
                 if not old_point.occurrences:
                     self.working_points.pop(old_point.point_id)
+                    self.working_point_names.pop(old_point.point_id, None)
             point.occurrences.add(occurrence)
             if occurrence not in self.modified_occurrences:
                 self.modified_occurrences.append(occurrence)
@@ -196,6 +200,7 @@ class DeformationUiState:
             return set()
         restored = set(point.occurrences)
         self.working_points.pop(point.point_id)
+        self.working_point_names.pop(point.point_id, None)
         self.modified_occurrences = [
             item for item in self.modified_occurrences if item not in restored
         ]
@@ -213,6 +218,7 @@ class DeformationUiState:
         self.working_reference = reference.clone() if reference is not None else None
         self.working_hypothesis = hypothesis.clone() if hypothesis is not None else None
         self.working_points.clear()
+        self.working_point_names.clear()
         self.pivoted_attachment_ids.clear()
         self.modified_occurrences.clear()
         self.selected_occurrence = None

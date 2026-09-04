@@ -4,6 +4,10 @@
 *.pyo
 *.pyd
 
+# Build
+build/
+dist/
+
 # Données générées automatiquement
 /exports/
 /exports/TopoXML

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from PIL import Image
 
 from src.assembleur_catalogue import Catalogue, WorldRect
-from src.assembleur_catalogue_identity import UserCatalogueIdProvider
+from src.assembleur_catalogue_identity import SystemCatalogueIdProvider, UserCatalogueIdProvider
 from src.assembleur_catalogue_map_calibration import CatalogueMapCalibrationController
 from src.assembleur_catalogue_book_asset_controller import CatalogueBookAssetController
 from src.assembleur_catalogue_window import CatalogueWindow, _CALIBRATION_MAP_MAXIMUM_ZOOM
@@ -282,6 +282,38 @@ class _ScaleWidget:
 
     def configure(self, **kwargs):
         self.state = kwargs.get("state", self.state)
+
+
+def _window_for_map_add_button(provider):
+    window = object.__new__(CatalogueWindow)
+    window.catalogue = Catalogue(id_provider=provider)
+    window._selected_map_id = None
+    window._selected_calibration_city_id = None
+    window._map_interaction_mode = "hand"
+    window._map_calibration = SimpleNamespace(is_readonly=lambda _catalogue_map: False)
+    window._map_description_entry = _ScaleWidget()
+    window._map_scale_entry = _ScaleWidget()
+    window._map_scale_slider = _ScaleWidget()
+    window._map_default_check = _ScaleWidget()
+    window._map_archive_button = _ScaleWidget()
+    window._map_delete_button = _ScaleWidget()
+    window._calibration_city_add_button = _ScaleWidget()
+    window._calibration_city_remove_button = _ScaleWidget()
+    window._map_add_button = _ScaleWidget()
+    window._map_role_label = _Label()
+    window._icon_archive = object()
+    window._icon_archive_off = object()
+    window._set_map_interaction_mode = lambda _mode: None
+    return window
+
+
+def test_map_add_button_is_enabled_for_both_catalogue_modes():
+    for provider in (SystemCatalogueIdProvider(), UserCatalogueIdProvider()):
+        window = _window_for_map_add_button(provider)
+
+        CatalogueWindow._update_map_action_buttons(window)
+
+        assert window._map_add_button.state == "normal"
 
 
 def _window_with_pointed_map():

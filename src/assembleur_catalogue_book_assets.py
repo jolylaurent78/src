@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.assembleur_catalogue import CatalogueBook
-from src.assembleur_catalogue_identity import is_system_catalogue_id, is_user_catalogue_id
+from src.assembleur_catalogue_identity import is_catalogue_book_id
 from src.assembleur_paths import ApplicationPaths
 
 
@@ -14,12 +14,9 @@ class CatalogueBookAssetResolver:
         self._paths = paths
 
     def resolve(self, book: CatalogueBook) -> Path:
-        if is_system_catalogue_id(book.book_id):
-            root = self._paths.default_catalogue_dir
-        elif is_user_catalogue_id(book.book_id):
-            root = self._paths.user_catalogue_dir
-        else:
+        if not is_catalogue_book_id(book.book_id):
             raise ValueError(f"Identifiant CatalogueBook invalide : {book.book_id!r}.")
+        root = self._paths.active_catalogue_dir
         candidate = (root / book.asset_file).resolve()
         try:
             candidate.relative_to(root.resolve())

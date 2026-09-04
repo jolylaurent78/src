@@ -13,10 +13,11 @@ from src.assembleur_scenario_map import ScenarioMapPosition, ScenarioMapState
 from src.assembleur_scenario_map_runtime import ScenarioMapResolver, resolve_scenario_map
 
 
-def _paths(tmp_path: Path) -> ApplicationPaths:
+def _paths(tmp_path: Path, *, catalogue_mode: str = "USER") -> ApplicationPaths:
     return ApplicationPaths.from_runtime(
         installation_root=tmp_path / "installation",
         user_data_root=tmp_path / "user-root",
+        catalogue_mode=catalogue_mode,
     )
 
 
@@ -47,7 +48,7 @@ def _catalogue(provider, *, archived: bool = False, calibrated: bool = True) -> 
 
 
 def _prepare_assets(paths: ApplicationPaths, map_id: str) -> None:
-    root = paths.default_catalogue_maps_dir if map_id.startswith("MAP-SYS-") else paths.user_catalogue_maps_dir
+    root = paths.active_catalogue_maps_dir
     _write_image(root / "map.jpg")
     _write_calibration(root / "map.json")
 
@@ -94,7 +95,7 @@ def test_state_rejects_invalid_scale_override(value):
 
 
 def test_resolver_uses_catalogue_defaults_and_preserves_visibility_opacity(tmp_path):
-    paths = _paths(tmp_path)
+    paths = _paths(tmp_path, catalogue_mode="SYS")
     catalogue, map_id = _catalogue(SystemCatalogueIdProvider())
     _prepare_assets(paths, map_id)
 
@@ -123,7 +124,7 @@ def test_resolver_supports_user_map_archived_map_scale_and_position_overrides(tm
     assert scale_resolved.world_rect == WorldRect(100, 200, 600, 300)
     assert scale_resolved.scale_factor == 18.0
 
-    system_paths = _paths(tmp_path / "archived")
+    system_paths = _paths(tmp_path / "archived", catalogue_mode="SYS")
     system_catalogue, system_map_id = _catalogue(SystemCatalogueIdProvider(), archived=True)
     _prepare_assets(system_paths, system_map_id)
     position_resolved = resolve_scenario_map(
@@ -137,7 +138,7 @@ def test_resolver_supports_user_map_archived_map_scale_and_position_overrides(tm
 
 
 def test_resolver_composes_position_and_scale_and_keeps_round_trips(tmp_path):
-    paths = _paths(tmp_path)
+    paths = _paths(tmp_path, catalogue_mode="SYS")
     catalogue, map_id = _catalogue(SystemCatalogueIdProvider())
     _prepare_assets(paths, map_id)
 
@@ -183,6 +184,7 @@ def test_real_default_map_resolves_and_round_trips_lambert_and_catalogue_cities(
     paths = ApplicationPaths.from_runtime(
         installation_root=root,
         user_data_root=root / ".scenario-map-runtime-test-root",
+        catalogue_mode="SYS",
     )
     catalogue = load_catalogue(paths.default_catalogue_path)
     resolved = resolve_scenario_map(
@@ -206,6 +208,7 @@ def test_real_default_map_composes_position_and_scale_without_changing_legacy_de
     paths = ApplicationPaths.from_runtime(
         installation_root=root,
         user_data_root=root / ".scenario-map-runtime-test-root",
+        catalogue_mode="SYS",
     )
     catalogue = load_catalogue(paths.default_catalogue_path)
     resolver = CatalogueMapAssetResolver(paths)
@@ -241,6 +244,7 @@ def test_real_default_transform_composes_catalogue_calibration_with_y_up_world()
     paths = ApplicationPaths.from_runtime(
         installation_root=root,
         user_data_root=root / ".scenario-map-runtime-test-root",
+        catalogue_mode="SYS",
     )
     catalogue = load_catalogue(paths.default_catalogue_path)
     resolved = resolve_scenario_map(

@@ -365,6 +365,73 @@ def test_preview_uses_the_temporary_cow_reference_before_validation():
     assert scenario.topoWorld.elements[element_id].vertex_labels[2] == "Temp Lumiere 25"
 
 
+def test_deleting_one_working_point_rebuilds_from_the_rebase_world():
+    catalogue, scenario, triangle, first_id = _scenario_with_catalogue_triangle()
+    second_triangle_id = scenario.hypothesis.triangle_ids_by_rank[23]
+    second = materialize_triangle(
+        GeometryReferenceResolver(catalogue, scenario.reference), second_triangle_id,
+    )
+    scenario.topoWorld.add_element_as_new_group(second)
+    second_id = second.element_id
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.catalogue = catalogue
+    viewer._get_active_scenario = lambda: scenario
+    viewer.status = type("Status", (), {"config": lambda self, **_kwargs: None})()
+    viewer._show_deformation_preview = lambda _world: None
+    viewer._refresh_deformation_window = lambda **_kwargs: None
+    state = viewer._deformation_state
+    state.enter()
+    state.select(first_id, scenario.topoWorld)
+    rebase_second = viewer._get_core_triangle_world_points(
+        scenario.topoWorld, second_id
+    )
+
+    first_base = GeometryReferenceResolver(catalogue, scenario.reference).get_city_lambert(
+        triangle.light_city_id
+    )
+    state.begin_drag("L")
+    state.ensure_working_point((first_id, "L"), first_base)
+    first_point = (700000.0, 6600000.0)
+    first_preview = viewer._apply_deformation_occurrence_overrides(
+        state.candidate_occurrence_overrides(first_point)
+    )
+    state.accept_occurrence_candidate(first_point, first_preview)
+    state.end_occurrence_drag()
+
+    state.select(second_id, state.last_accepted_world)
+    second_base = GeometryReferenceResolver(catalogue, scenario.reference).get_city_lambert(
+        scenario.topoWorld.elements[second_id].vertex_business_ids[2]
+    )
+    state.begin_drag("L")
+    state.ensure_working_point((second_id, "L"), second_base)
+    second_point = (710000.0, 6610000.0)
+    second_preview = viewer._apply_deformation_occurrence_overrides(
+        state.candidate_occurrence_overrides(second_point)
+    )
+    state.accept_occurrence_candidate(second_point, second_preview)
+    state.end_occurrence_drag()
+
+    state.select_occurrence(second_id, "L")
+    viewer._deformation_delete_selected()
+
+    assert (second_id, "L") not in {
+        occurrence
+        for point in state.working_points.values()
+        for occurrence in point.occurrences
+    }
+    assert (second_id, "L") not in state.modified_occurrences
+    assert (first_id, "L") in state.modified_occurrences
+    assert state.last_accepted_world is not None
+    np.testing.assert_allclose(
+        viewer._get_core_triangle_world_points(state.last_accepted_world, second_id)["L"],
+        rebase_second["L"],
+    )
+    assert not np.allclose(
+        viewer._get_core_triangle_world_points(state.last_accepted_world, first_id)["L"],
+        viewer._get_core_triangle_world_points(scenario.topoWorld, first_id)["L"],
+    )
+
+
 def test_temporary_city_rename_stays_in_working_reference_until_validation(monkeypatch):
     catalogue, scenario, triangle, element_id = _scenario_with_catalogue_triangle()
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)

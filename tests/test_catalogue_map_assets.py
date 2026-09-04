@@ -15,10 +15,11 @@ from src.assembleur_geo_map_view import CalibratedGeoMap
 from src.assembleur_paths import ApplicationPaths
 
 
-def _paths(tmp_path: Path) -> ApplicationPaths:
+def _paths(tmp_path: Path, *, catalogue_mode: str = "SYS") -> ApplicationPaths:
     return ApplicationPaths.from_runtime(
         installation_root=tmp_path / "installation",
         user_data_root=tmp_path / "user-root",
+        catalogue_mode=catalogue_mode,
     )
 
 
@@ -60,7 +61,7 @@ def test_resolver_resolves_system_assets_only_from_default_catalogue_maps(tmp_pa
 
 
 def test_resolver_resolves_user_assets_only_from_catalogue_maps_store(tmp_path):
-    paths = _paths(tmp_path)
+    paths = _paths(tmp_path, catalogue_mode="USER")
     paths.ensure_user_data_directories()
     _write_image(paths.user_catalogue_maps_dir / "image.jpg")
     _write_calibration(paths.user_catalogue_maps_dir / "calibration.json")
@@ -107,21 +108,13 @@ def test_legacy_calibration_points_reference_is_ignored_and_not_reserialized(tmp
     assert "calibrationPointsFile" not in catalogue_to_dict(loaded)["maps"][0]
 
 
-def test_resolver_never_falls_back_between_system_and_user_asset_roots(tmp_path):
-    paths = _paths(tmp_path)
-    _write_image(paths.resource_maps_dir / "image.jpg")
-    _write_image(paths.user_catalogue_maps_dir / "image.jpg")
+def test_resolver_never_falls_back_from_the_active_user_catalogue_root(tmp_path):
+    paths = _paths(tmp_path, catalogue_mode="USER")
+    _write_image(paths.default_catalogue_maps_dir / "image.jpg")
+    _write_calibration(paths.default_catalogue_maps_dir / "calibration.json")
 
     with pytest.raises(FileNotFoundError, match="MAP-SYS-000001.*image"):
         CatalogueMapAssetResolver(paths).resolve(_map("MAP-SYS-000001"))
-
-    user_paths = _paths(tmp_path / "other-installation")
-    _write_image(user_paths.resource_maps_dir / "image.jpg")
-    _write_image(user_paths.default_catalogue_maps_dir / "image.jpg")
-    with pytest.raises(FileNotFoundError, match="MAP-USR-550e8400-e29b-41d4-a716-446655440000.*image"):
-        CatalogueMapAssetResolver(user_paths).resolve(
-            _map("MAP-USR-550e8400-e29b-41d4-a716-446655440000")
-        )
 
 
 @pytest.mark.parametrize(
@@ -223,6 +216,7 @@ def test_default_catalogue_map_resolves_loads_and_round_trips_lambert():
     paths = ApplicationPaths.from_runtime(
         installation_root=root,
         user_data_root=root / ".pytest-user-root",
+        catalogue_mode="SYS",
     )
     catalogue = load_catalogue(paths.default_catalogue_path)
     catalogue_map = catalogue.get_map(catalogue.default_map_id)

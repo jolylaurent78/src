@@ -19,6 +19,7 @@ class ApplicationPaths:
 
     installation_root: Path
     user_data_root: Path
+    catalogue_mode: str = "USER"
 
     @classmethod
     def from_runtime(
@@ -27,6 +28,7 @@ class ApplicationPaths:
         environ: Mapping[str, str] | None = None,
         installation_root: str | Path | None = None,
         user_data_root: str | Path | None = None,
+        catalogue_mode: str | None = None,
     ) -> "ApplicationPaths":
         source = os.environ if environ is None else environ
         resolved_installation_root = (
@@ -42,7 +44,21 @@ class ApplicationPaths:
             if local_app_data
             else Path.home() / "AppData" / "Local" / _APPLICATION_NAME
         )
-        return cls(resolved_installation_root.resolve(), resolved_user_data_root.resolve())
+        resolved_catalogue_mode = str(
+            source.get("ASSEMBLEUR_MODE", "USER")
+            if catalogue_mode is None
+            else catalogue_mode
+        ).strip().upper()
+        if resolved_catalogue_mode not in {"SYS", "USER"}:
+            raise ValueError(
+                "Mode Assembleur inconnu : "
+                f"{resolved_catalogue_mode!r} (valeurs acceptees : SYS, USER)."
+            )
+        return cls(
+            resolved_installation_root.resolve(),
+            resolved_user_data_root.resolve(),
+            resolved_catalogue_mode,
+        )
 
     @staticmethod
     def _runtime_installation_root() -> Path:
@@ -83,6 +99,27 @@ class ApplicationPaths:
     @property
     def default_catalogue_books_dir(self) -> Path:
         return self.default_catalogue_dir / "books"
+
+    @property
+    def active_catalogue_dir(self) -> Path:
+        """Racine physique du catalogue actif, independante des IDs."""
+        if self.catalogue_mode == "SYS":
+            return self.default_catalogue_dir
+        return self.user_catalogue_dir
+
+    @property
+    def active_catalogue_maps_dir(self) -> Path:
+        return self.active_catalogue_dir / "maps"
+
+    @property
+    def active_catalogue_books_dir(self) -> Path:
+        return self.active_catalogue_dir / "books"
+
+    @property
+    def active_scenarios_dir(self) -> Path:
+        if self.catalogue_mode == "SYS":
+            return self.default_scenarios_dir
+        return self.user_scenarios_dir
 
     @property
     def default_scenarios_dir(self) -> Path:
@@ -296,7 +333,19 @@ class ApplicationPaths:
                 "Catalogue de référence absent pour initialiser la copie utilisateur : "
                 f"{self.default_catalogue_path}"
             )
-        shutil.copy2(self.default_catalogue_path, self.user_catalogue_path)
+        existing_user_files = [
+            path for path in self.user_catalogue_dir.rglob("*") if path.is_file()
+        ]
+        if existing_user_files:
+            raise FileExistsError(
+                "Initialisation du catalogue utilisateur impossible : des donnees "
+                f"existent deja sans catalogue.json : {self.user_catalogue_dir}"
+            )
+        shutil.copytree(
+            self.default_catalogue_dir,
+            self.user_catalogue_dir,
+            dirs_exist_ok=True,
+        )
         return self.user_catalogue_path
 
     def config_path_for_runtime(self) -> Path:

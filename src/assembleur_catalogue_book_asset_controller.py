@@ -85,7 +85,7 @@ class CatalogueBookAssetController:
         created: list[Path] = []
         for book_id, staged in self._staged.items():
             book = self.catalogue.get_book(book_id)
-            root = self.paths.default_catalogue_books_dir if is_system_catalogue_id(book_id) else self.paths.user_catalogue_books_dir
+            root = self.paths.active_catalogue_books_dir
             root.mkdir(parents=True, exist_ok=True)
             destination = root / book.asset_file.removeprefix("books/")
             self._publish(staged, destination, created)
@@ -114,7 +114,7 @@ class CatalogueBookAssetController:
         self._scheduled_deletions.clear()
 
     def _stage(self, book_id: str, source: Path) -> None:
-        staging_dir = self.paths.user_catalogue_books_dir / ".staging"
+        staging_dir = self.paths.active_catalogue_books_dir / ".staging"
         staging_dir.mkdir(parents=True, exist_ok=True)
         staged = staging_dir / f"{book_id}.txt"
         shutil.copy2(source, staged)

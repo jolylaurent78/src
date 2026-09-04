@@ -527,9 +527,11 @@ class TriangleViewerManual(
         # === Config (persistance des paramètres) ===
         load_project_dotenv()
         self.application_context = ApplicationContext.from_environment()
-        self.paths = ApplicationPaths.from_runtime()
+        self.paths = ApplicationPaths.from_runtime(
+            catalogue_mode=self.application_context.mode,
+        )
         self.paths.ensure_user_data_directories()
-        self.scenario_dir = str(self.paths.user_scenarios_dir)
+        self.scenario_dir = str(self.paths.active_scenarios_dir)
         self.exports_dir = str(self.paths.exports_dir)
         self.topo_xml_dir = str(self.paths.exports_dir / "TopoXML")
         self.images_dir = str(self.paths.images_dir)
@@ -1626,15 +1628,20 @@ class TriangleViewerManual(
         return hypothesis
 
     def _materialize_deformation_working_reference(
-        self, world: TopologyWorld
+        self,
+        world: TopologyWorld,
+        *,
+        reference=None,
+        hypothesis=None,
     ) -> TopologyWorld:
         """Projette les refs TRI/STRI effectives de session dans un world candidat."""
         scenario = self._get_active_scenario()
         if scenario.hypothesis is None:
             raise ValueError("ScenarioHypothesis absente")
-        working_hypothesis = self._deformation_working_hypothesis()
+        working_reference = reference or self._deformation_working_reference()
+        working_hypothesis = hypothesis or self._deformation_working_hypothesis()
         resolver = GeometryReferenceResolver(
-            self.catalogue, self._deformation_working_reference()
+            self.catalogue, working_reference
         )
         candidate_world = world.clonePhysicalState()
         for element_id, element in candidate_world.elements.items():
@@ -1646,6 +1653,10 @@ class TriangleViewerManual(
             # STRI doit toutefois toujours etre resolue dans le draft.
             if triangle_ref_id in working_hypothesis.triangle_ids_by_rank:
                 rank = working_hypothesis.get_rank_for_triangle_ref(triangle_ref_id)
+            elif triangle_ref_id in self._deformation_working_hypothesis().triangle_ids_by_rank:
+                rank = self._deformation_working_hypothesis().get_rank_for_triangle_ref(
+                    triangle_ref_id
+                )
             else:
                 rank = scenario.hypothesis.get_rank_for_triangle_ref(triangle_ref_id)
             effective_triangle_ref_id = working_hypothesis.triangle_ids_by_rank[rank - 1]
@@ -1655,6 +1666,38 @@ class TriangleViewerManual(
                     materialize_triangle(resolver, effective_triangle_ref_id),
                 )
         return candidate_world
+
+    def _apply_deformation_working_point_names(self, preview_commit) -> None:
+        """Rejoue les renommages temporaires sur les SCITY recrees par le COW."""
+        state = self._deformation_state
+        if not state.working_point_names:
+            return
+        resolver = GeometryReferenceResolver(self.catalogue, preview_commit.reference)
+        renamed_city_ids = set()
+        for point_id, name in state.working_point_names.items():
+            point = state.working_points.get(point_id)
+            if point is None:
+                continue
+            element_id, role = next(iter(point.occurrences))
+            element = preview_commit.world.elements[element_id]
+            if not element.source_triangle_id:
+                raise ValueError("Triangle de deformation sans source Catalogue")
+            city_id = resolver.city_ref_ids_by_role(element.source_triangle_id)[role]
+            preview_commit.reference.rename_city(city_id, name)
+            renamed_city_ids.add(city_id)
+
+        if not renamed_city_ids:
+            return
+        resolver = GeometryReferenceResolver(self.catalogue, preview_commit.reference)
+        for element_id, element in preview_commit.world.elements.items():
+            if not element.source_triangle_id:
+                raise ValueError("Triangle de deformation sans source Catalogue")
+            city_ids = resolver.city_ref_ids_by_role(element.source_triangle_id)
+            if renamed_city_ids.intersection(city_ids.values()):
+                preview_commit.world.replace_element_materialized_definition(
+                    element_id,
+                    materialize_triangle(resolver, element.source_triangle_id),
+                )
 
     def _close_deformation_window(self) -> None:
         window = self._deformation_window
@@ -2060,11 +2103,16 @@ class TriangleViewerManual(
             state.working_hypothesis = hypothesis.clone() if hypothesis is not None else None
             self._deformation_status_text = pivot_result.warning_reason or ""
             return pivot_result.world
+        scenario = self._get_active_scenario()
+        if scenario.hypothesis is None:
+            raise ValueError("ScenarioHypothesis absente")
         working_pivot_world = self._materialize_deformation_working_reference(
-            pivot_result.world
+            pivot_result.world,
+            reference=scenario.reference,
+            hypothesis=scenario.hypothesis,
         )
         resolver = GeometryReferenceResolver(
-            self.catalogue, self._deformation_working_reference()
+            self.catalogue, scenario.reference
         )
         result = simulate_occurrence_deformation(
             resolver=resolver,
@@ -2088,20 +2136,20 @@ class TriangleViewerManual(
         # Le commit COW est aussi le constructeur Core-first de la reference
         # temporaire : il materialise les STRI/SCITY candidates sans publier le
         # scenario actif. Le world retourne porte donc deja les labels Temp.
-        scenario = self._get_active_scenario()
         try:
             preview_commit = commit_deformation_copy_on_write(
                 catalogue=self.catalogue,
                 scenario=scenario,
                 preview_world=result.world,
                 working_points=candidate_points,
-                base_reference=self._deformation_working_reference(),
-                base_hypothesis=self._deformation_working_hypothesis(),
+                base_reference=scenario.reference,
+                base_hypothesis=scenario.hypothesis,
             )
         except (TypeError, ValueError, TopologyConstraintGeometryError) as exc:
             self._deformation_status_text = ""
             self.status.config(text=f"Candidat de deformation impossible : {exc}")
             return None
+        self._apply_deformation_working_point_names(preview_commit)
         state.working_reference = preview_commit.reference
         state.working_hypothesis = preview_commit.hypothesis
         self._deformation_status_text = (
@@ -2210,6 +2258,30 @@ class TriangleViewerManual(
         state = self._deformation_state
         if state.last_accepted_world is None:
             raise RuntimeError("World de preview DEFORM absent")
+        point = (
+            state.working_point_for_occurrence(state.selected_occurrence)
+            if state.selected_occurrence is not None
+            else None
+        )
+        if point is None:
+            resolver = GeometryReferenceResolver(
+                self.catalogue, self._deformation_working_reference()
+            )
+            point = next(
+                (
+                    working_point
+                    for working_point in state.working_points.values()
+                    if any(
+                        resolver.city_ref_ids_by_role(
+                            state.last_accepted_world.elements[element_id].source_triangle_id
+                        )[role] == city_ref_id
+                        for element_id, role in working_point.occurrences
+                    )
+                ),
+                None,
+            )
+        if point is None:
+            raise RuntimeError("WorkingPoint DEFORM absent")
         candidate_reference = self._deformation_working_reference().clone()
         candidate_reference.rename_city(city_ref_id, new_name)
         resolver = GeometryReferenceResolver(self.catalogue, candidate_reference)
@@ -2236,6 +2308,7 @@ class TriangleViewerManual(
                 + " ; ".join(str(error) for error in errors)
             )
         state.working_reference = candidate_reference
+        state.working_point_names[point.point_id] = new_name
         state.last_accepted_world = candidate_world
 
     def _deformation_rename_selected(self) -> None:

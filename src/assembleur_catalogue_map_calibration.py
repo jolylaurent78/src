@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 
 from src.assembleur_catalogue import Catalogue, CatalogueMap, centered_world_rect
-from src.assembleur_catalogue_identity import UserCatalogueIdProvider, is_system_catalogue_id
+from src.assembleur_catalogue_identity import is_system_catalogue_id
 from src.assembleur_catalogue_map_assets import CatalogueMapAssetResolver
 from src.assembleur_paths import ApplicationPaths
 
@@ -237,9 +237,7 @@ class CatalogueMapCalibrationController:
             raise ValueError("Cette ville est déjà utilisée pour la calibration.")
         self.catalogue.update_map(map_id, calibration_city_ids=[*catalogue_map.calibration_city_ids, city_id])
 
-    def stage_user_map(self, image_path: str | Path, *, name: str, description: str) -> str:
-        if not isinstance(self.catalogue.id_provider, UserCatalogueIdProvider):
-            raise ValueError("Une carte utilisateur ne peut être créée qu'en mode USER.")
+    def stage_map(self, image_path: str | Path, *, name: str, description: str) -> str:
         source = Path(image_path)
         if not source.is_file():
             raise FileNotFoundError(f"Image de carte introuvable : {source}")
@@ -264,7 +262,7 @@ class CatalogueMapCalibrationController:
             calibration_file=calibration_file,
             projection=None,
         )
-        staging_dir = self.paths.user_catalogue_maps_dir / ".staging"
+        staging_dir = self.paths.active_catalogue_maps_dir / ".staging"
         staging_dir.mkdir(parents=True, exist_ok=True)
         staged = staging_dir / image_file
         shutil.copy2(source, staged)
@@ -272,10 +270,14 @@ class CatalogueMapCalibrationController:
         self._documents[provisional] = {"points": []}
         return catalogue_map.map_id
 
+    # Compatibilite locale pour les appels existants pendant la transition de
+    # nommage : la destination depend desormais de la racine active.
+    stage_user_map = stage_map
+
     def commit(self) -> list[Path]:
         """Publie les fichiers différés ; les chemins retournés sont rollbackables."""
         created: list[Path] = []
-        root = self.paths.user_catalogue_maps_dir
+        root = self.paths.active_catalogue_maps_dir
         root.mkdir(parents=True, exist_ok=True)
         for map_id, staged in self._staged_images.items():
             destination = root / self.catalogue.get_map(map_id).image_file
@@ -288,12 +290,9 @@ class CatalogueMapCalibrationController:
             catalogue_map = self.catalogue.get_map(map_id)
             if catalogue_map.calibration_file is None:
                 continue
-            if is_system_catalogue_id(map_id):
-                if not self._allow_system_map_editing:
-                    continue
-                destination = self.paths.default_catalogue_maps_dir / catalogue_map.calibration_file
-            else:
-                destination = root / catalogue_map.calibration_file
+            if is_system_catalogue_id(map_id) and not self._allow_system_map_editing:
+                continue
+            destination = root / catalogue_map.calibration_file
             if destination.exists():
                 self._committed_backups[destination] = destination.read_bytes()
             else:
