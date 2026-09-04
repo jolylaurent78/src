@@ -44,7 +44,6 @@ class ScenarioMapState:
     position_override: ScenarioMapPosition | None = None
     scale_factor_override: float | None = None
     visible: bool = True
-    opacity: float = 1.0
 
     def __post_init__(self) -> None:
         if self.map_ref_id is not None:
@@ -64,12 +63,6 @@ class ScenarioMapState:
             )
         if not isinstance(self.visible, bool):
             raise ValueError("visible doit être un booléen.")
-        if isinstance(self.opacity, bool) or not isinstance(self.opacity, (int, float)):
-            raise ValueError("opacity doit être un nombre.")
-        opacity = float(self.opacity)
-        if not math.isfinite(opacity) or not 0.0 <= opacity <= 1.0:
-            raise ValueError("opacity doit être finie et comprise entre 0.0 et 1.0.")
-        object.__setattr__(self, "opacity", opacity)
 
 
 def scenario_map_state_to_xml_attributes(state: ScenarioMapState) -> dict[str, str]:
@@ -81,7 +74,6 @@ def scenario_map_state_to_xml_attributes(state: ScenarioMapState) -> dict[str, s
     attributes = {
         "refId": state.map_ref_id,
         "visible": "true" if state.visible else "false",
-        "opacity": f"{state.opacity:.12g}",
     }
     if state.position_override is not None:
         attributes["x0"] = f"{state.position_override.x0:.12g}"
@@ -118,7 +110,6 @@ def scenario_map_state_from_xml_attributes(attributes: dict[str, str]) -> Scenar
         position_override=position,
         scale_factor_override=scale,
         visible=_parse_map_visible(attributes.get("visible", "true")),
-        opacity=_parse_map_opacity(attributes.get("opacity", "1")),
     )
 
 
@@ -156,7 +147,6 @@ def migrate_legacy_map_attributes(
         position_override=None if same_position else ScenarioMapPosition(x0, y0),
         scale_factor_override=None if same_size else catalogue_map.default_scale_factor * width / default.w,
         visible=_parse_legacy_map_visible(attributes.get("visible", "1")),
-        opacity=_parse_legacy_map_opacity(attributes.get("opacity", "100")),
     )
 
 
@@ -183,20 +173,6 @@ def _parse_legacy_map_visible(value: object) -> bool:
     if normalized in {"0", "false"}:
         return False
     raise ValueError("Map scenario legacy invalide : visible doit être 0, 1, true ou false.")
-
-
-def _parse_map_opacity(value: object) -> float:
-    opacity = _parse_map_number(value, "opacity")
-    if not 0.0 <= opacity <= 1.0:
-        raise ValueError("Map scenario invalide : opacity doit être comprise entre 0 et 1.")
-    return opacity
-
-
-def _parse_legacy_map_opacity(value: object) -> float:
-    opacity = _parse_map_number(value, "opacity")
-    if not 0.0 <= opacity <= 100.0:
-        raise ValueError("Map scenario legacy invalide : opacity doit être comprise entre 0 et 100.")
-    return opacity / 100.0
 
 
 @dataclass(frozen=True)

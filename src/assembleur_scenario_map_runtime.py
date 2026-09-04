@@ -32,7 +32,6 @@ class ResolvedScenarioMap:
     world_rect: WorldRect
     scale_factor: float
     visible: bool
-    opacity: float
     transform: MapTransform
 
 
@@ -123,6 +122,5 @@ def resolve_scenario_map(
         world_rect=world_rect,
         scale_factor=scale_factor,
         visible=scenario_map_state.visible,
-        opacity=scenario_map_state.opacity,
         transform=transform,
     )

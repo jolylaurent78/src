@@ -5822,9 +5822,7 @@ class TriangleViewerManual(
             return
         scen.name = result["name"]
         if result["map_id"] != state.map_ref_id:
-            state = ScenarioMapState(
-                map_ref_id=result["map_id"], visible=state.visible, opacity=state.opacity
-            )
+            state = ScenarioMapState(map_ref_id=result["map_id"], visible=state.visible)
             scen.map_state = state
             self._apply_map_state(state)
         self._apply_scenario_book_selection(scen, result["book_id"])
@@ -6187,7 +6185,6 @@ class TriangleViewerManual(
         v = int(float(self.map_opacity.get()))
         v = max(0, min(100, v))
         self.map_opacity.set(v)
-        self._set_active_map_opacity(v / 100.0)
         self.setAppConfigValue("uiMapOpacity", int(v))
         if self._map_opacity_redraw_job is not None:
             self.after_cancel(self._map_opacity_redraw_job)

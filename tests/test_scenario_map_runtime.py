@@ -59,12 +59,6 @@ def test_state_none_resolves_to_no_map(tmp_path):
     assert resolve_scenario_map(catalogue, ScenarioMapState(None), CatalogueMapAssetResolver(_paths(tmp_path))) is None
 
 
-@pytest.mark.parametrize("opacity", [-0.1, 1.1, float("nan"), True])
-def test_state_rejects_invalid_opacity(opacity):
-    with pytest.raises(ValueError, match="opacity"):
-        ScenarioMapState(None, opacity=opacity)
-
-
 def test_state_rejects_invalid_visibility():
     with pytest.raises(ValueError, match="visible"):
         ScenarioMapState(None, visible=1)
@@ -94,13 +88,13 @@ def test_state_rejects_invalid_scale_override(value):
         ScenarioMapState("MAP-SYS-000001", scale_factor_override=value)
 
 
-def test_resolver_uses_catalogue_defaults_and_preserves_visibility_opacity(tmp_path):
+def test_resolver_uses_catalogue_defaults_and_preserves_visibility(tmp_path):
     paths = _paths(tmp_path, catalogue_mode="SYS")
     catalogue, map_id = _catalogue(SystemCatalogueIdProvider())
     _prepare_assets(paths, map_id)
 
     resolved = ScenarioMapResolver(catalogue, CatalogueMapAssetResolver(paths)).resolve(
-        ScenarioMapState(map_id, visible=False, opacity=0.35)
+        ScenarioMapState(map_id, visible=False)
     )
 
     assert resolved is not None
@@ -108,7 +102,6 @@ def test_resolver_uses_catalogue_defaults_and_preserves_visibility_opacity(tmp_p
     assert resolved.world_rect == WorldRect(100, 200, 400, 200)
     assert resolved.scale_factor == 12.0
     assert resolved.visible is False
-    assert resolved.opacity == 0.35
 
 
 def test_resolver_supports_user_map_archived_map_scale_and_position_overrides(tmp_path):

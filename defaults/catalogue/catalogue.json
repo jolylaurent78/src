@@ -1,9 +1,9 @@
 {
   "version": 5,
   "idCounters": {
-    "city": 106,
+    "city": 109,
     "beacon": 4,
-    "triangle": 57,
+    "triangle": 60,
     "template": 2,
     "map": 2,
     "book": 2
@@ -747,6 +747,27 @@
       "latitude": 48.43694444444444,
       "longitude": 7.404166666666667,
       "archived": false
+    },
+    {
+      "cityId": "CITY-SYS-000107",
+      "name": "Douvres",
+      "latitude": 51.129444444444445,
+      "longitude": 1.308888888888889,
+      "archived": false
+    },
+    {
+      "cityId": "CITY-SYS-000108",
+      "name": "Portsmouth",
+      "latitude": 50.80583333333333,
+      "longitude": -1.0869444444444443,
+      "archived": false
+    },
+    {
+      "cityId": "CITY-SYS-000109",
+      "name": "Quiberon",
+      "latitude": 47.5,
+      "longitude": -3.1333333333333333,
+      "archived": false
     }
   ],
   "beacons": [
@@ -1227,6 +1248,30 @@
       "baseCityId": "CITY-SYS-000030",
       "lightCityId": "CITY-SYS-000054",
       "archived": false
+    },
+    {
+      "triangleId": "TRI-SYS-000058",
+      "note": "SI",
+      "openingCityId": "CITY-SYS-000018",
+      "baseCityId": "CITY-SYS-000053",
+      "lightCityId": "CITY-SYS-000107",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-SYS-000059",
+      "note": "SI",
+      "openingCityId": "CITY-SYS-000018",
+      "baseCityId": "CITY-SYS-000053",
+      "lightCityId": "CITY-SYS-000108",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-SYS-000060",
+      "note": "SI",
+      "openingCityId": "CITY-SYS-000018",
+      "baseCityId": "CITY-SYS-000029",
+      "lightCityId": "CITY-SYS-000109",
+      "archived": false
     }
   ],
   "templates": [
@@ -1296,10 +1341,10 @@
         "TRI-SYS-000038",
         "TRI-SYS-000018",
         "TRI-SYS-000043",
-        "TRI-SYS-000020",
-        "TRI-SYS-000049",
-        "TRI-SYS-000048",
-        "TRI-SYS-000022",
+        "TRI-SYS-000058",
+        "TRI-SYS-000059",
+        "TRI-SYS-000060",
+        "TRI-SYS-000023",
         "TRI-SYS-000050",
         "TRI-SYS-000051",
         "TRI-SYS-000046",

@@ -32,7 +32,7 @@ def _catalogue() -> Catalogue:
         ScenarioMapState("MAP-SYS-000001"),
         ScenarioMapState("MAP-SYS-000001", ScenarioMapPosition(1, 2)),
         ScenarioMapState("MAP-SYS-000001", scale_factor_override=15),
-        ScenarioMapState("MAP-SYS-000001", ScenarioMapPosition(1, 2), 15, False, 0.35),
+        ScenarioMapState("MAP-SYS-000001", ScenarioMapPosition(1, 2), 15, False),
     ],
 )
 def test_xml_target_round_trip_preserves_all_supported_overrides(state) -> None:
@@ -52,7 +52,6 @@ def test_xml_target_round_trip_preserves_all_supported_overrides(state) -> None:
         {"refId": "MAP-SYS-000001", "scale": "0"},
         {"refId": "MAP-SYS-000001", "scale": "nan"},
         {"refId": "MAP-SYS-000001", "visible": "1"},
-        {"refId": "MAP-SYS-000001", "opacity": "1.1"},
     ],
 )
 def test_xml_target_rejects_invalid_values(attributes) -> None:
@@ -71,7 +70,16 @@ def test_legacy_default_pose_normalizes_without_false_overrides() -> None:
         "scale": "11.983520258273956", "visible": "1", "opacity": "70",
     }))
 
-    assert state == ScenarioMapState("MAP-SYS-000001", opacity=0.7)
+    assert state == ScenarioMapState("MAP-SYS-000001")
+
+
+def test_xml_opacity_is_ignored_for_legacy_compatibility_and_not_reserialized() -> None:
+    state = scenario_map_state_from_xml_attributes({
+        "refId": "MAP-SYS-000001", "opacity": "0.55",
+    })
+
+    assert state == ScenarioMapState("MAP-SYS-000001")
+    assert "opacity" not in scenario_map_state_to_xml_attributes(state)
 
 
 def test_legacy_six_significant_digit_rounding_normalizes_to_defaults() -> None:

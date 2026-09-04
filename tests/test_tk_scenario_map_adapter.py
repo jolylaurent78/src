@@ -55,9 +55,10 @@ def test_adapter_projects_resolved_map_and_uses_its_transform(tmp_path) -> None:
         encoding="utf-8",
     )
     scenario = ScenarioAssemblage("Carte")
-    state = ScenarioMapState(map_id, ScenarioMapPosition(30, 40), 18, False, 0.35)
+    state = ScenarioMapState(map_id, ScenarioMapPosition(30, 40), 18, False)
     scenario.map_state = state
     viewer = _Viewer(catalogue, paths, scenario)
+    viewer.map_opacity.set(20)
 
     viewer._apply_map_state(state, redraw=False)
 
@@ -65,5 +66,7 @@ def test_adapter_projects_resolved_map_and_uses_its_transform(tmp_path) -> None:
     assert viewer._bg["w"] == 600
     assert viewer._bg_base_pil.mode == "RGBA"
     assert viewer.show_map_layer.get() is False
-    assert viewer.map_opacity.get() == 35
+    # L'opacité est une préférence UI globale : appliquer l'état de cette
+    # carte ne peut pas la restaurer depuis le scénario.
+    assert viewer.map_opacity.get() == 20
     assert viewer._catalogue_lambert_to_world(0, 0) == (30, 340)

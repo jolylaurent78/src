@@ -71,7 +71,6 @@ class TriangleViewerScenarioMapMixin:
             self._bg_resizing = None
 
         self.show_map_layer.set(state.visible)
-        self.map_opacity.set(round(state.opacity * 100))
         if redraw:
             self._redraw_from(self._last_drawn)
 
@@ -118,7 +117,6 @@ class TriangleViewerScenarioMapMixin:
             position_override=None if same_position else ScenarioMapPosition(rect.x0, rect.y0),
             scale_factor_override=None if same_size else scale,
             visible=state.visible,
-            opacity=state.opacity,
         )
         scenario.map_state = updated
         resolved = getattr(self, "_resolved_scenario_map", None)
@@ -133,9 +131,6 @@ class TriangleViewerScenarioMapMixin:
     def _set_active_map_visibility(self, visible: bool) -> None:
         self._replace_active_map_state(visible=bool(visible))
 
-    def _set_active_map_opacity(self, opacity: float) -> None:
-        self._replace_active_map_state(opacity=float(opacity))
-
     def _replace_active_map_state(self, **changes: object) -> None:
         scenarios = getattr(self, "scenarios", ())
         index = getattr(self, "active_scenario_index", -1)
@@ -149,5 +144,5 @@ class TriangleViewerScenarioMapMixin:
         resolved = getattr(self, "_resolved_scenario_map", None)
         if resolved is not None:
             self._resolved_scenario_map = replace(
-                resolved, visible=updated.visible, opacity=updated.opacity
+                resolved, visible=updated.visible
             )
