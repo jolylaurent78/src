@@ -365,6 +365,97 @@ def test_preview_uses_the_temporary_cow_reference_before_validation():
     assert scenario.topoWorld.elements[element_id].vertex_labels[2] == "Temp Lumiere 25"
 
 
+def test_city_relocation_assigns_the_catalogue_city_name_to_the_working_point(monkeypatch):
+    viewer, _scenario, element_id = _viewer_with_dirty_cow_preview()
+    viewer._deformation_state.select_occurrence(element_id, "L")
+    chartres = viewer.catalogue.add_city("Chartres", 48.4469, 1.4890)
+
+    class _CitySelector:
+        def __init__(self, *_args):
+            pass
+
+        def show(self):
+            return chartres.city_id
+
+    monkeypatch.setattr("src.assembleur_tk.CitySelectionDialog", _CitySelector)
+
+    viewer._deformation_map_pin_selected()
+
+    state = viewer._deformation_state
+    working_point = state.working_point_for_occurrence((element_id, "L"))
+    assert working_point is not None
+    assert working_point.lambert_xy == viewer.catalogue.get_city_lambert(chartres.city_id)
+    assert state.working_point_names[working_point.point_id] == ">> Chartres"
+
+
+def test_city_relocation_name_is_visible_in_the_cow_preview(monkeypatch):
+    viewer, _scenario, element_id = _viewer_with_dirty_cow_preview()
+    viewer._deformation_state.select_occurrence(element_id, "L")
+    chartres = viewer.catalogue.add_city("Chartres", 48.4469, 1.4890)
+
+    class _CitySelector:
+        def __init__(self, *_args):
+            pass
+
+        def show(self):
+            return chartres.city_id
+
+    monkeypatch.setattr("src.assembleur_tk.CitySelectionDialog", _CitySelector)
+
+    viewer._deformation_map_pin_selected()
+
+    state = viewer._deformation_state
+    assert state.last_accepted_world.elements[element_id].vertex_labels[2] == ">> Chartres"
+    local_triangle = next(iter(state.working_reference.triangles.values()))
+    assert state.working_reference.cities[local_triangle.light_city_ref_id].name == ">> Chartres"
+
+
+def test_city_relocation_uses_the_selected_city_name(monkeypatch):
+    viewer, _scenario, element_id = _viewer_with_dirty_cow_preview()
+    viewer._deformation_state.select_occurrence(element_id, "L")
+    bourges = viewer.catalogue.add_city("Bourges", 47.0810, 2.3988)
+
+    class _CitySelector:
+        def __init__(self, *_args):
+            pass
+
+        def show(self):
+            return bourges.city_id
+
+    monkeypatch.setattr("src.assembleur_tk.CitySelectionDialog", _CitySelector)
+
+    viewer._deformation_map_pin_selected()
+
+    working_point = viewer._deformation_state.working_point_for_occurrence(
+        (element_id, "L")
+    )
+    assert working_point is not None
+    assert viewer._deformation_state.working_point_names[working_point.point_id] == ">> Bourges"
+
+
+def test_city_relocation_fails_explicitly_when_working_point_is_missing(monkeypatch):
+    viewer, _scenario, element_id = _viewer_with_dirty_cow_preview()
+    viewer._deformation_state.select_occurrence(element_id, "L")
+    chartres = viewer.catalogue.add_city("Chartres", 48.4469, 1.4890)
+
+    class _CitySelector:
+        def __init__(self, *_args):
+            pass
+
+        def show(self):
+            return chartres.city_id
+
+    monkeypatch.setattr("src.assembleur_tk.CitySelectionDialog", _CitySelector)
+    monkeypatch.setattr(
+        viewer._deformation_state,
+        "working_point_for_occurrence",
+        lambda _occurrence: None,
+    )
+
+    with pytest.raises(RuntimeError, match="WorkingPoint DEFORM absent apres relocalisation"):
+        viewer._deformation_map_pin_selected()
+
+
 def test_deleting_one_working_point_rebuilds_from_the_rebase_world():
     catalogue, scenario, triangle, first_id = _scenario_with_catalogue_triangle()
     second_triangle_id = scenario.hypothesis.triangle_ids_by_rank[23]

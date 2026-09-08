@@ -15,11 +15,13 @@ from src.assembleur_paths import ApplicationPaths
 
 
 def _paths(tmp_path: Path, mode: str) -> ApplicationPaths:
-    return ApplicationPaths.from_runtime(
+    paths = ApplicationPaths.from_runtime(
         installation_root=tmp_path / "installation",
         user_data_root=tmp_path / "user",
         catalogue_mode=mode,
     )
+    paths.default_scenarios_dir.mkdir(parents=True)
+    return paths
 
 
 @pytest.mark.parametrize(

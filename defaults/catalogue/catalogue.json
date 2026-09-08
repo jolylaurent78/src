@@ -1,9 +1,9 @@
 {
   "version": 5,
   "idCounters": {
-    "city": 109,
+    "city": 111,
     "beacon": 4,
-    "triangle": 60,
+    "triangle": 62,
     "template": 2,
     "map": 2,
     "book": 2
@@ -768,6 +768,20 @@
       "latitude": 47.5,
       "longitude": -3.1333333333333333,
       "archived": false
+    },
+    {
+      "cityId": "CITY-SYS-000110",
+      "name": "Dinard",
+      "latitude": 48.6325,
+      "longitude": -2.0613888888888887,
+      "archived": false
+    },
+    {
+      "cityId": "CITY-SYS-000111",
+      "name": "Plymouth",
+      "latitude": 50.37,
+      "longitude": -4.141944444444444,
+      "archived": false
     }
   ],
   "beacons": [
@@ -1272,6 +1286,22 @@
       "baseCityId": "CITY-SYS-000029",
       "lightCityId": "CITY-SYS-000109",
       "archived": false
+    },
+    {
+      "triangleId": "TRI-SYS-000061",
+      "note": "FA",
+      "openingCityId": "CITY-SYS-000018",
+      "baseCityId": "CITY-SYS-000034",
+      "lightCityId": "CITY-SYS-000110",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-SYS-000062",
+      "note": "FA",
+      "openingCityId": "CITY-SYS-000018",
+      "baseCityId": "CITY-SYS-000035",
+      "lightCityId": "CITY-SYS-000111",
+      "archived": false
     }
   ],
   "templates": [
@@ -1345,10 +1375,10 @@
         "TRI-SYS-000059",
         "TRI-SYS-000060",
         "TRI-SYS-000023",
-        "TRI-SYS-000050",
+        "TRI-SYS-000055",
+        "TRI-SYS-000062",
         "TRI-SYS-000051",
-        "TRI-SYS-000046",
-        "TRI-SYS-000028",
+        "TRI-SYS-000061",
         "TRI-SYS-000057",
         "TRI-SYS-000030",
         "TRI-SYS-000056",

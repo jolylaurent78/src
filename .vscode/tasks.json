@@ -1,0 +1,49 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "1 - Build EXE",
+            "type": "shell",
+            "command": "\"${command:python.interpreterPath}\" -m PyInstaller --clean --noconfirm AssembleurTriangles.spec",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "shell": {
+                    "executable": "cmd.exe",
+                    "args": [
+                        "/d",
+                        "/c"
+                    ]
+                }
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "2 - Reset USERDATA",
+            "type": "shell",
+            "command": "if exist \"%LOCALAPPDATA%\\AssembleurTriangles\" rmdir /S /Q \"%LOCALAPPDATA%\\AssembleurTriangles\"",
+            "options": {
+                "shell": {
+                    "executable": "cmd.exe",
+                    "args": [
+                        "/d",
+                        "/c"
+                    ]
+                }
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Build EXE + Reset USERDATA",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "1 - Build EXE",
+                "2 - Reset USERDATA"
+            ],
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        }
+    ]
+}

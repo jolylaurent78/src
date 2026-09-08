@@ -1,8 +1,9 @@
 
 import os
 import datetime as _dt
+import logging
 import math
-import xml.etree.ElementTree as ET
+import sys
 from math import atan2, pi
 import numpy as np
 import re
@@ -59,7 +60,7 @@ from src.assembleur_edgechoice import (
     previewManualAttachment,
 )
 from src.assembleur_beacon_runtime import BeaconWorldResolver
-from src.utils.logging_utils import get_mig_geo_logger
+from src.assembleur_logging import configure_logging
 from src.assembleur_topology_comparison import (
     build_topology_prefix_steps,
     differing_attachment_element_ids,
@@ -104,7 +105,9 @@ DEFORMATION_DRAG_REFRESH_MS = 40
 
 
 EPS_WORLD = 1e-6
-MIG_GEO_LOGGER = get_mig_geo_logger()
+_LOGGER_NAME = "src.assembleur_tk" if __name__ == "__main__" else __name__
+LOGGER = logging.getLogger(_LOGGER_NAME)
+MIG_GEO_LOGGER = logging.getLogger(f"{_LOGGER_NAME}.mig_geo")
 
 
 def _load_application_catalogue(catalogue_path: str, id_provider) -> Catalogue:
@@ -327,7 +330,7 @@ class DialogSimulationAssembler(tk.Toplevel):
                 messagebox.showerror("Assembler", "n doit être pair (minimum 2).")
                 return
             # n doit être pair : on ajuste silencieusement (pas de popup)
-            print(f"[SIM] n impair -> utilisation de n={n2}")
+            LOGGER.info("[SIM] n impair -> utilisation de n=%s", n2)
             n = n2
             self.var_nb_triangles.set(n)
 
@@ -385,6 +388,13 @@ class TriangleViewerManual(
 
     def __init__(self):
         super().__init__()
+
+        load_project_dotenv()
+        self.application_context = ApplicationContext.from_environment()
+        self.paths = ApplicationPaths.from_runtime(
+            catalogue_mode=self.application_context.mode,
+        )
+        self.iconbitmap(str(self.paths.app_icon_path))
         self.title("Assembleur de Triangles — Mode Manuel")
         self.geometry("1200x700")
 
@@ -525,11 +535,6 @@ class TriangleViewerManual(
         # Exports (artefacts diffables / validation)
         # Répertoire des icônes
         # === Config (persistance des paramètres) ===
-        load_project_dotenv()
-        self.application_context = ApplicationContext.from_environment()
-        self.paths = ApplicationPaths.from_runtime(
-            catalogue_mode=self.application_context.mode,
-        )
         self.paths.ensure_user_data_directories()
         self.scenario_dir = str(self.paths.active_scenarios_dir)
         self.exports_dir = str(self.paths.exports_dir)
@@ -1060,21 +1065,10 @@ class TriangleViewerManual(
         """Remplace le cache actif par une projection entièrement issue du Core."""
         scen = self._get_active_scenario()
         world = scen.topoWorld
-        previous_count = len(getattr(scen, "last_drawn", None) or ())
         projection = self._build_scenario_projection_from_core(scen)
         self._bind_canvas_objects(projection)
         self.canvas_objects.validate_against_world(world)
         scen.last_drawn = self._last_drawn
-        MIG_GEO_LOGGER.debug(
-            "Projection rebuilt from Core scenario=%s source_type=%s "
-            "groups=%s elements=%s previous_cache_entries=%s rebuilt_entries=%s",
-            scen.name,
-            scen.source_type,
-            len(world.getLiveGroupIds()),
-            len(world.elements),
-            previous_count,
-            len(projection),
-        )
 
     def _project_auto_scenario_from_core(self, scen: ScenarioAssemblage) -> None:
         """Régénère le cache AUTO depuis son monde et son ordre Core explicite."""
@@ -1134,24 +1128,7 @@ class TriangleViewerManual(
             out_path,
             orientation="cw",
         )
-        if self._geo_orient_debug_enabled():
-            self._append_geo_orient_debug_to_topodump(out_path, world)
         self.status.config(text=f"TopoDump exporté : {out_name}")
-
-    def _geo_orient_debug_enabled(self) -> bool:
-        """Retourne le mode GEO-ORIENT, initialisable par l'environnement."""
-        return bool(getattr(
-            self,
-            "debug_geo_orient",
-            os.environ.get("ASSEMBLEUR_DEBUG_GEO_ORIENT", "") in ("1", "true", "True"),
-        ))
-
-    def _toggle_geo_orient_debug(self, event=None):
-        """Bascule le diagnostic GEO-ORIENT à l'exécution (F12)."""
-        self.debug_geo_orient = not bool(getattr(self, "debug_geo_orient", False))
-        state = "ON" if self.debug_geo_orient else "OFF"
-        MIG_GEO_LOGGER.info("DEBUG GEO-ORIENT : %s", state)
-        return "break"
 
     @staticmethod
     def _geo_orient_from_points(points) -> tuple[str, float | None]:
@@ -1178,110 +1155,6 @@ class TriangleViewerManual(
             return f"({float(value[0]):.9g}, {float(value[1]):.9g})"
         except Exception:
             return "<absent>"
-
-    def _append_geo_orient_debug_to_topodump(self, out_path: str, world: TopologyWorld) -> None:
-        """Ajoute au TopoDump F11 un diagnostic non autoritaire Core/UI."""
-        try:
-            tree = ET.parse(out_path)
-            root = tree.getroot()
-            debug_el = ET.SubElement(root, "GeoOrientationDebug", {"version": "1"})
-
-            for entry in self._last_drawn:
-                topo_element_id = str((entry or {}).get("topoElementId", "") or "").strip()
-                element = self._get_core_element_from_last_drawn_entry(entry, world)
-                core_group_id = "<absent>"
-                if element is not None:
-                    try:
-                        core_group_id = world.get_group_of_element(topo_element_id)
-                    except Exception:
-                        core_group_id = "<invalide>"
-
-                triangle_el = ET.SubElement(debug_el, "Triangle", {
-                    "topoElementId": topo_element_id or "<absent>",
-                    "sourceTriangleId": (
-                        element.source_triangle_id if element is not None and element.source_triangle_id else "<absent>"
-                    ),
-                    "coreGroupId": core_group_id,
-                })
-
-                local_points = {}
-                core_attrs = {"rotation": "<absent>", "translation": "<absent>", "mirrored": "<absent>"}
-                if element is not None:
-                    try:
-                        R, T, core_mirrored = element.get_pose()
-                        core_attrs = {
-                            "rotation": np.array2string(np.asarray(R, dtype=float), precision=9, separator=", "),
-                            "translation": self._geo_orient_point_text(T),
-                            "mirrored": str(bool(core_mirrored)),
-                        }
-                    except Exception:
-                        pass
-                    for name, index in (("O", 0), ("B", 1), ("L", 2)):
-                        local_points[name] = (getattr(element, "vertex_local_xy", {}) or {}).get(index)
-
-                core_el = ET.SubElement(triangle_el, "Core", core_attrs)
-                local_el = ET.SubElement(core_el, "VertexLocalXY")
-                for name in ("O", "B", "L"):
-                    ET.SubElement(local_el, "Point", {"vertex": name, "value": self._geo_orient_point_text(local_points.get(name))})
-                labels = getattr(element, "vertex_labels", None) if element is not None else None
-                ET.SubElement(core_el, "VertexLabels", {"value": str(tuple(labels)) if labels is not None else "<absent>"})
-
-                pts = (entry or {}).get("pts") or {}
-                last_el = ET.SubElement(triangle_el, "LastDrawn", {
-                    "topoElementId": topo_element_id or "<absent>",
-                    "coreGroupId": core_group_id,
-                })
-                world_el = ET.SubElement(last_el, "Points")
-                for name in ("O", "B", "L"):
-                    ET.SubElement(world_el, "Point", {"vertex": name, "value": self._geo_orient_point_text(pts.get(name))})
-
-                local_orientation, local_cross = self._geo_orient_from_points(local_points)
-                world_orientation, world_cross = self._geo_orient_from_points(pts)
-                ET.SubElement(triangle_el, "GeometricOrientation", {
-                    "local": local_orientation,
-                    "localCross": "<absent>" if local_cross is None else f"{local_cross:.12g}",
-                    "world": world_orientation,
-                    "worldCross": "<absent>" if world_cross is None else f"{world_cross:.12g}",
-                })
-                ET.SubElement(triangle_el, "XML", {
-                    "topoElementId": topo_element_id or "<absent>",
-                    "mirrored": "1" if core_attrs["mirrored"] == "True" else "0",
-                })
-
-                MIG_GEO_LOGGER.debug(
-                    "[GEO-ORIENT]\n%s",
-                    "\n".join((
-                        "====================================================",
-                        f"Triangle : {topo_element_id or '<absent>'}",
-                        f"TopoElementId : {topo_element_id or '<absent>'}",
-                        f"TopoGroupId   : {core_group_id}",
-                        "====================================================",
-                        "CORE",
-                        f"rotation        : {core_attrs['rotation']}",
-                        f"translation     : {core_attrs['translation']}",
-                        f"mirrored        : {core_attrs['mirrored']}",
-                        f"vertex_local_xy O : {self._geo_orient_point_text(local_points.get('O'))}",
-                        f"vertex_local_xy B : {self._geo_orient_point_text(local_points.get('B'))}",
-                        f"vertex_local_xy L : {self._geo_orient_point_text(local_points.get('L'))}",
-                        f"vertex_labels   : {str(tuple(labels)) if labels is not None else '<absent>'}",
-                        "LAST_DRAWN",
-                        f"mirrored Core   : {core_attrs['mirrored']}",
-                        f"topoElementId   : {topo_element_id or '<absent>'}",
-                        f"topoGroupId     : {core_group_id}",
-                        f"pts O : {self._geo_orient_point_text(pts.get('O'))}",
-                        f"pts B : {self._geo_orient_point_text(pts.get('B'))}",
-                        f"pts L : {self._geo_orient_point_text(pts.get('L'))}",
-                        f"Orientation locale : {local_orientation} (cross={local_cross})",
-                        f"Orientation monde  : {world_orientation} (cross={world_cross})",
-                        "XML",
-                        f"topoElementId : {topo_element_id or '<absent>'}",
-                        f"mirrored      : {'1' if core_attrs['mirrored'] == 'True' else '0'}",
-                    )),
-                )
-
-            tree.write(out_path, encoding="utf-8", xml_declaration=True)
-        except Exception as exc:
-            MIG_GEO_LOGGER.debug("[GEO-ORIENT] diagnostic F11 ignoré: %s", exc)
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -2362,6 +2235,11 @@ class TriangleViewerManual(
         state.set_shared_working_point(
             occurrences, self.catalogue.get_city_lambert(target_city_id)
         )
+        working_point = state.working_point_for_occurrence(occurrence)
+        if working_point is None:
+            raise RuntimeError("WorkingPoint DEFORM absent apres relocalisation")
+        target_city = self.catalogue.get_city(target_city_id)
+        state.working_point_names[working_point.point_id] = f">> {target_city.name}"
         candidate_world = self._apply_deformation_occurrence_overrides(
             state.occurrence_lambert_overrides()
         )
@@ -6011,7 +5889,6 @@ class TriangleViewerManual(
 
         # Export TopoDump (manuel, snapshot volontaire) et toggle diagnostic.
         self.bind_all("<F11>", self._on_export_topodump_key)
-        self.bind_all("<F12>", self._toggle_geo_orient_debug)
 
         # Premier rendu de l'horloge (overlay)
         self._draw_clock_overlay()
@@ -10406,13 +10283,7 @@ class TriangleViewerManual(
         entries = list(
             self._get_projected_elements_for_core_group(core_group_id, effective_world)
         )
-        MIG_GEO_LOGGER.debug(
-            "[%s] topoElementId=%s CoreGroupId=%s Members=%s",
-            operation_name,
-            topo_element_id or "(absent)",
-            core_group_id,
-            ",".join(str(e.get("topoElementId", "")) for e in entries) or "(aucun)",
-        )
+
         if not entries:
             MIG_GEO_LOGGER.warning("[%s] aucun membre projete CoreGroupId=%s", operation_name, core_group_id)
         return {"core_group_id": core_group_id, "entries": entries}
@@ -10455,11 +10326,7 @@ class TriangleViewerManual(
             "node_id": str(node_id),
             "node_canon": str(node_canon),
         })
-        MIG_GEO_LOGGER.debug(
-            "[MOVE] Sommet sélectionné Element=%s Vertex=%s Node=%s CoreGroupId=%s Members=%s",
-            element_id, vkey, node_canon, core_group_id,
-            ",".join(str(entry.get("topoElementId", "")) for entry in entries),
-        )
+
         return result
 
     def _snapshot_mig_geo_entries(self, entries: List[Dict]) -> Dict[int, Dict]:
@@ -10648,7 +10515,6 @@ class TriangleViewerManual(
                 for vertex in ("O", "B", "L")
             }
         self._invalidate_pick_cache()
-        MIG_GEO_LOGGER.debug("[MIG-CACHE-TRANSFORM-001C] rotate preview angle=%s", angle)
 
     def _discard_manual_rotate_preview(self) -> bool:
         """Abandonne un aperçu ROTATE manuel et restaure la projection Core."""
@@ -10668,7 +10534,7 @@ class TriangleViewerManual(
         if core_group_id:
             self._project_core_group_to_last_drawn(world, str(core_group_id))
         self._sel = None
-        MIG_GEO_LOGGER.debug("[MIG-CACHE-TRANSFORM-001C] rotate discard group=%s", core_group_id)
+
         return True
 
     def _discard_manual_move_preview(self) -> bool:
@@ -10832,10 +10698,6 @@ class TriangleViewerManual(
                     )
                 final_core_group_id = world.get_group_of_element(str(element_ids[0]))
                 self._project_core_group_to_last_drawn(world, str(final_core_group_id))
-                MIG_GEO_LOGGER.debug(
-                    "[MIG-CACHE-TRANSFORM-001C] rotate commit group=%s angle=%s",
-                    final_core_group_id, angle_total,
-                )
 
             self._sel = None
             self._reset_assist()
@@ -11987,5 +11849,22 @@ class TriangleViewerManual(
 
 
 if __name__ == "__main__":
-    app = TriangleViewerManual()
-    app.mainloop()
+    load_project_dotenv()
+    application_context = ApplicationContext.from_environment()
+    paths = ApplicationPaths.from_runtime(catalogue_mode=application_context.mode)
+    configure_logging(paths)
+    LOGGER.info(
+        "Demarrage AssembleurTriangles mode=%s python=%s installation=%s userdata=%s catalogue=%s scenarios=%s",
+        application_context.mode,
+        sys.version.split()[0],
+        paths.installation_root,
+        paths.user_data_root,
+        paths.active_catalogue_dir,
+        paths.active_scenarios_dir,
+    )
+    try:
+        app = TriangleViewerManual()
+        app.mainloop()
+    except (OSError, RuntimeError, ValueError, tk.TclError):
+        LOGGER.exception("Erreur pendant le demarrage ou l'execution de l'application")
+        raise

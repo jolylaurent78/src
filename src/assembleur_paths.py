@@ -79,6 +79,14 @@ class ApplicationPaths:
         return self.resource_root / "images"
 
     @property
+    def app_icon_path(self) -> Path:
+        """Retourne l'icone applicative packagée, en validant sa présence."""
+        icon_path = self.resource_root / "icons" / "AssembleurTriangles.ico"
+        if not icon_path.is_file():
+            raise FileNotFoundError(f"Icone applicative absente : {icon_path}")
+        return icon_path
+
+    @property
     def resource_maps_dir(self) -> Path:
         return self.resource_root / "maps"
 
@@ -303,18 +311,40 @@ class ApplicationPaths:
                 pass
 
     def ensure_user_data_directories(self) -> None:
-        self.migrate_legacy_user_data_layout()
-        for directory in (
+        first_user_initialization = not self.user_data_root.exists()
+        seed_user_scenarios = (
+            self.catalogue_mode == "USER" and first_user_initialization
+        )
+        if seed_user_scenarios and not self.default_scenarios_dir.is_dir():
+            raise FileNotFoundError(
+                "Scenarios par defaut absents pour initialiser les scenarios "
+                f"utilisateur : {self.default_scenarios_dir}"
+            )
+
+        if self.catalogue_mode == "USER":
+            self.migrate_legacy_user_data_layout()
+
+        directories = (
             self.user_data_root,
             self.user_catalogue_dir,
             self.user_catalogue_maps_dir,
             self.user_catalogue_books_dir,
-            self.user_scenarios_dir,
             self.config_dir,
             self.exports_dir,
             self.logs_dir,
-        ):
+        )
+        if self.catalogue_mode == "USER":
+            directories += (self.user_scenarios_dir,)
+
+        for directory in directories:
             directory.mkdir(parents=True, exist_ok=True)
+
+        if seed_user_scenarios:
+            shutil.copytree(
+                self.default_scenarios_dir,
+                self.user_scenarios_dir,
+                dirs_exist_ok=True,
+            )
 
     def catalogue_path_for_mode(self, mode: str) -> Path:
         if mode == "SYS":

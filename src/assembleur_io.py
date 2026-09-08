@@ -10,10 +10,10 @@ Les fonctions prennent 'viewer' en paramètre (duck-typing) pour éviter les imp
 import os
 import json
 import datetime as _dt
+import logging
 import xml.etree.ElementTree as ET
 import re
 import tempfile
-import traceback
 from dataclasses import dataclass
 import numpy as np
 
@@ -37,24 +37,17 @@ from src.assembleur_scenario_map import (
 
 CFG_KEY_CHEMINS_BEACON_REF = "cheminsBeaconRefId"
 _SCENARIO_XML_VERSIONS = frozenset({"5", "6"})
+LOGGER = logging.getLogger(__name__)
 
 
 def _ioWarn(viewer, where: str, exc: Exception):
-    """
-    Best-effort logging (console) sans casser l'IHM.
-    Active si:
-      - viewer.debug_io == True
-      - ou variable d'env ASSEMBLEUR_DEBUG_IO=1
-    """
-    try:
-        if getattr(viewer, "debug_io", False) or os.environ.get("ASSEMBLEUR_DEBUG_IO", "") in ("1", "true", "True"):
-            msg = f"[IO][WARN] {where}: {type(exc).__name__}: {exc}"
-            print(msg)
-            # trace utile en dev
-            print(traceback.format_exc())
-    except Exception:
-        # dernier filet: on ne casse jamais sur le logger
-        return
+    """Journalise les diagnostics I/O explicitement demandes."""
+    if getattr(viewer, "debug_io", False) or os.environ.get(
+        "ASSEMBLEUR_DEBUG_IO", ""
+    ) in ("1", "true", "True"):
+        LOGGER.warning(
+            "[IO] %s: %s: %s", where, type(exc).__name__, exc, exc_info=True
+        )
 
 
 def loadAppConfig(viewer):

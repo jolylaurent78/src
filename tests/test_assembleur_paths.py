@@ -10,11 +10,15 @@ from src.assembleur_catalogue_io import load_catalogue, save_catalogue
 from src.assembleur_paths import ApplicationPaths
 
 
-def _paths(tmp_path):
-    return ApplicationPaths.from_runtime(
+def _paths(tmp_path, *, catalogue_mode: str = "USER", create_default_scenarios: bool = True):
+    paths = ApplicationPaths.from_runtime(
         installation_root=tmp_path / "installation",
         user_data_root=tmp_path / "user-space",
+        catalogue_mode=catalogue_mode,
     )
+    if create_default_scenarios:
+        paths.default_scenarios_dir.mkdir(parents=True)
+    return paths
 
 
 def _write_default_catalogue(paths: ApplicationPaths) -> None:
@@ -40,6 +44,29 @@ def test_roots_are_distinct_and_independent_from_cwd(tmp_path, monkeypatch) -> N
     assert paths.default_catalogue_path.is_file()
     runtime_paths = ApplicationPaths.from_runtime()
     assert runtime_paths.installation_root == Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize("catalogue_mode", ("SYS", "USER"))
+def test_app_icon_path_resolves_packaged_resource_independently_from_mode(
+    tmp_path, catalogue_mode: str
+) -> None:
+    paths = _paths(tmp_path, catalogue_mode=catalogue_mode)
+    expected_icon = paths.resource_root / "icons" / "AssembleurTriangles.ico"
+    expected_icon.parent.mkdir(parents=True)
+    expected_icon.touch()
+
+    assert paths.app_icon_path == expected_icon
+
+
+def test_app_icon_path_requires_packaged_resource(tmp_path) -> None:
+    paths = _paths(tmp_path)
+
+    with pytest.raises(FileNotFoundError, match="Icone applicative absente") as error:
+        _ = paths.app_icon_path
+
+    assert str(paths.resource_root / "icons" / "AssembleurTriangles.ico") in str(
+        error.value
+    )
 
 
 def test_user_first_run_copies_default_without_modifying_it(tmp_path) -> None:
@@ -111,6 +138,75 @@ def test_mutable_directories_are_created(tmp_path) -> None:
     )
     assert not (paths.user_data_root / "user_data").exists()
     assert not (paths.user_data_root / "user-data").exists()
+
+
+def test_first_user_initialization_copies_all_default_scenarios(tmp_path) -> None:
+    paths = _paths(tmp_path)
+    (paths.default_scenarios_dir / "reference.xml").write_text(
+        "<scenario>reference</scenario>", encoding="utf-8"
+    )
+    nested_default = paths.default_scenarios_dir / "samples" / "example.xml"
+    nested_default.parent.mkdir()
+    nested_default.write_text("<scenario>example</scenario>", encoding="utf-8")
+
+    paths.ensure_user_data_directories()
+
+    assert (paths.user_scenarios_dir / "reference.xml").read_text(
+        encoding="utf-8"
+    ) == "<scenario>reference</scenario>"
+    assert (paths.user_scenarios_dir / "samples" / "example.xml").read_text(
+        encoding="utf-8"
+    ) == "<scenario>example</scenario>"
+
+
+def test_subsequent_user_initialization_does_not_recopy_scenarios(tmp_path) -> None:
+    paths = _paths(tmp_path)
+    default_scenario = paths.default_scenarios_dir / "reference.xml"
+    default_scenario.write_text("version-1", encoding="utf-8")
+
+    paths.ensure_user_data_directories()
+    default_scenario.write_text("version-2", encoding="utf-8")
+    (paths.default_scenarios_dir / "new.xml").write_text("new", encoding="utf-8")
+    paths.ensure_user_data_directories()
+
+    assert (paths.user_scenarios_dir / "reference.xml").read_text(
+        encoding="utf-8"
+    ) == "version-1"
+    assert not (paths.user_scenarios_dir / "new.xml").exists()
+
+
+def test_user_scenario_deletion_is_preserved_after_first_initialization(tmp_path) -> None:
+    paths = _paths(tmp_path)
+    default_scenario = paths.default_scenarios_dir / "reference.xml"
+    default_scenario.write_text("reference", encoding="utf-8")
+
+    paths.ensure_user_data_directories()
+    (paths.user_scenarios_dir / "reference.xml").unlink()
+    paths.ensure_user_data_directories()
+
+    assert not (paths.user_scenarios_dir / "reference.xml").exists()
+
+
+def test_first_user_initialization_requires_default_scenarios_payload(tmp_path) -> None:
+    paths = _paths(tmp_path, create_default_scenarios=False)
+
+    with pytest.raises(FileNotFoundError, match="Scenarios par defaut absents") as error:
+        paths.ensure_user_data_directories()
+
+    assert str(paths.default_scenarios_dir) in str(error.value)
+    assert not paths.user_data_root.exists()
+
+
+def test_sys_uses_default_scenarios_without_creating_user_scenarios(tmp_path) -> None:
+    paths = _paths(tmp_path, catalogue_mode="SYS")
+    (paths.default_scenarios_dir / "reference.xml").write_text(
+        "reference", encoding="utf-8"
+    )
+
+    paths.ensure_user_data_directories()
+
+    assert paths.active_scenarios_dir == paths.default_scenarios_dir
+    assert not paths.user_scenarios_dir.exists()
 
 
 def test_runtime_default_uses_application_root_without_user_data_level(tmp_path) -> None:

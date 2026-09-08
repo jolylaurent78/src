@@ -20,6 +20,7 @@ def _paths_with_seed(tmp_path) -> ApplicationPaths:
         user_data_root=tmp_path / "user-root",
     )
     save_config_file({"uiMapOpacity": 70}, paths.default_config_path)
+    paths.default_scenarios_dir.mkdir(parents=True)
     return paths
 
 
@@ -61,6 +62,7 @@ def test_missing_default_config_fails_explicitly(tmp_path) -> None:
         installation_root=tmp_path / "installation",
         user_data_root=tmp_path / "user-root",
     )
+    paths.default_scenarios_dir.mkdir(parents=True)
 
     with pytest.raises(FileNotFoundError, match="Configuration par défaut absente"):
         paths.config_path_for_runtime()
