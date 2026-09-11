@@ -16,6 +16,7 @@ from tools.migrate_catalogue_v3_to_v4 import (
     migrate_catalogue_file_v3_to_v4,
 )
 from tools.migrate_catalogue_v4_to_v5 import migrate_catalogue_data_v4_to_v5
+from tools.migrate_catalogue_v5_to_v6 import migrate_catalogue_data_v5_to_v6
 
 
 def _maps_catalogue(*, calibrated_reference: bool = True) -> tuple[Catalogue, str, str]:
@@ -39,6 +40,7 @@ def _as_v3_fixture(data: dict) -> dict:
     data.pop("defaultBookId")
     data.pop("books")
     data.pop("catalogueReferenceMapId")
+    data.pop("geometricLayers")
     data["maps"] = data["maps"][:1]
     for catalogue_map in data["maps"]:
         catalogue_map["calibrationPointsFile"] = None
@@ -74,7 +76,10 @@ def test_v3_to_v4_migration_adds_the_reference_role_and_system_map() -> None:
     data = _as_v3_fixture(data)
 
     migrated = migrate_catalogue_data_v3_to_v4(data)
-    loaded = catalogue_from_dict(migrate_catalogue_data_v4_to_v5(migrated), id_provider=SystemCatalogueIdProvider())
+    loaded = catalogue_from_dict(
+        migrate_catalogue_data_v5_to_v6(migrate_catalogue_data_v4_to_v5(migrated)),
+        id_provider=SystemCatalogueIdProvider(),
+    )
 
     assert migrated["version"] == 4
     assert loaded.default_map_id == "MAP-SYS-000001"
@@ -155,11 +160,13 @@ def test_catalogue_window_loads_the_catalogue_reference_role(monkeypatch) -> Non
     window._map_view = MapView()
     window._beacon_map_view = MapView()
     window._triangle_map_view = MapView()
+    window._geometric_layer_map_view = MapView()
 
     CatalogueWindow._load_map(window)
 
     assert loaded_maps == [reference_id]
-    assert [view.map for view in (window._map_view, window._beacon_map_view, window._triangle_map_view)] == [
+    assert [view.map for view in (window._map_view, window._beacon_map_view, window._triangle_map_view, window._geometric_layer_map_view)] == [
+        calibrated_map,
         calibrated_map,
         calibrated_map,
         calibrated_map,

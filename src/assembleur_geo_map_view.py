@@ -256,6 +256,8 @@ class GeoMapView(tk.Frame):
         self._hover_root_position: tuple[int, int] | None = None
         self._polylines: list[GeoMapPolyline] = []
         self._pixel_polylines: list[GeoMapPixelPolyline] = []
+        self._background_canvas_overlay_drawer: Callable[[], None] | None = None
+        self._canvas_overlay_drawer: Callable[[], None] | None = None
         self._polygons: list[object] = []   # Extension prévue : géométries surfaciques.
         self._overlays: list[object] = []   # Extension prévue : overlays applicatifs.
 
@@ -304,6 +306,10 @@ class GeoMapView(tk.Frame):
         x_map, y_map = self.map.lambert_to_pixel(x_m, y_m)
         return self._map_to_screen(x_map, y_map)
 
+    def pixel_to_screen(self, x_pixel: float, y_pixel: float) -> tuple[float, float]:
+        """Convertit un pixel de l'image calibrée vers le Canvas courant."""
+        return self._map_to_screen(x_pixel, y_pixel)
+
     def set_markers(self, markers: Iterable[GeoMapMarker]) -> None:
         self._markers = list(markers)
         self._request_redraw()
@@ -329,6 +335,20 @@ class GeoMapView(tk.Frame):
     def set_overlays(self, overlays: Iterable[object]) -> None:
         """Réserve l'API pour de futurs overlays applicatifs."""
         self._overlays = list(overlays)
+        self._request_redraw()
+
+    def set_canvas_overlay_drawer(self, drawer: Callable[[], None] | None) -> None:
+        """Installe un dessin runtime rejoué après chaque redraw de la carte."""
+        self._canvas_overlay_drawer = drawer
+        self._request_redraw()
+
+    def set_background_canvas_overlay_drawer(self, drawer: Callable[[], None] | None) -> None:
+        """Installe un dessin runtime placé après la carte et avant ses contenus."""
+        self._background_canvas_overlay_drawer = drawer
+        self._request_redraw()
+
+    def request_redraw(self) -> None:
+        """Demande un redraw sans modifier le contenu cartographique."""
         self._request_redraw()
 
     def set_selected_marker(self, marker_id: object | None, *, recenter: bool = False) -> None:
@@ -713,6 +733,8 @@ class GeoMapView(tk.Frame):
             image=self._photo,
             anchor="center",
         )
+        if self._background_canvas_overlay_drawer is not None:
+            self._background_canvas_overlay_drawer()
         for polyline in self._polylines:
             screen_points = []
             for latitude, longitude in polyline.points:
@@ -742,6 +764,8 @@ class GeoMapView(tk.Frame):
             self._draw_marker(marker, x_map, y_map, selectable=True)
         for marker in self._pixel_markers:
             self._draw_marker(marker, marker.pixel_x, marker.pixel_y, selectable=marker.selectable)
+        if self._canvas_overlay_drawer is not None:
+            self._canvas_overlay_drawer()
 
     def _draw_marker(
         self,

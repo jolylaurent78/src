@@ -1,4 +1,4 @@
-"""Persistance JSON V5 du catalogue, indépendante de toute interface Tk."""
+"""Persistance JSON V7 du catalogue, indépendante de toute interface Tk."""
 
 from __future__ import annotations
 
@@ -12,19 +12,21 @@ from src.assembleur_catalogue import (
     CatalogueBeacon,
     CatalogueBook,
     CatalogueCity,
+    CatalogueGeometricLayer,
     CatalogueMap,
     CatalogueTriangle,
     HypothesisTemplate,
     WorldRect,
 )
 from src.assembleur_catalogue_identity import CATALOGUE_ID_KIND_ORDER, CatalogueIdProvider
+from src.assembleur_geometric_layer_display import GeometricLayerModuleDisplayOverride
 
 
 _VERSION = Catalogue.version
 
 
 def catalogue_to_dict(catalogue: Catalogue) -> dict[str, Any]:
-    """Produit la représentation JSON V5 déterministe d'un catalogue valide."""
+    """Produit la représentation JSON V7 déterministe d'un catalogue valide."""
     catalogue.validate()
     return {
         "version": _VERSION,
@@ -105,6 +107,19 @@ def catalogue_to_dict(catalogue: Catalogue) -> dict[str, Any]:
             }
             for book in catalogue.iter_books()
         ],
+        "geometricLayers": {
+            layer.base_city_id: {
+                "asset": layer.asset_file,
+                "displayOverrides": {
+                    module_id: {
+                        **({"colorBgr": list(override.color_bgr)} if override.color_bgr is not None else {}),
+                        **({"width": override.width} if override.width is not None else {}),
+                    }
+                    for module_id, override in sorted(layer.display_overrides.items())
+                },
+            }
+            for layer in catalogue.get_geometric_layers()
+        },
     }
 
 
@@ -201,6 +216,33 @@ def _require_rank_ids(value: object, label: str) -> list[str | None]:
     return list(ranks)
 
 
+def _geometric_layer_display_overrides_from_dict(value: object, label: str) -> dict[str, GeometricLayerModuleDisplayOverride]:
+    raw_overrides = _require_mapping(value, label)
+    overrides: dict[str, GeometricLayerModuleDisplayOverride] = {}
+    for module_id, raw_override in sorted(raw_overrides.items()):
+        if not isinstance(module_id, str) or not module_id.strip():
+            raise ValueError(f"Catalogue invalide : {label} contient un module_id vide.")
+        item = _require_mapping(raw_override, f"{label}.{module_id}")
+        if not item or not set(item) <= {"colorBgr", "width"}:
+            raise ValueError(f"Catalogue invalide : {label}.{module_id} doit contenir seulement colorBgr et/ou width.")
+        color_bgr = None
+        if "colorBgr" in item:
+            raw_color = item["colorBgr"]
+            if not isinstance(raw_color, list) or len(raw_color) != 3 or any(
+                isinstance(component, bool) or not isinstance(component, int) or not 0 <= component <= 255
+                for component in raw_color
+            ):
+                raise ValueError(f"Catalogue invalide : {label}.{module_id}.colorBgr doit contenir trois entiers entre 0 et 255.")
+            color_bgr = tuple(raw_color)
+        width = None
+        if "width" in item:
+            width = item["width"]
+            if isinstance(width, bool) or not isinstance(width, int) or width < 1:
+                raise ValueError(f"Catalogue invalide : {label}.{module_id}.width doit être un entier supérieur ou égal à 1.")
+        overrides[module_id] = GeometricLayerModuleDisplayOverride(color_bgr, width)
+    return overrides
+
+
 def _catalogue_map_from_dict(raw_map: object, index: int) -> CatalogueMap:
     label = f"maps[{index}]"
     item = _require_mapping(raw_map, label)
@@ -246,24 +288,27 @@ def _catalogue_map_from_dict(raw_map: object, index: int) -> CatalogueMap:
 
 
 def catalogue_from_dict(data: object, *, id_provider: CatalogueIdProvider | None = None) -> Catalogue:
-    """Réhydrate strictement un catalogue V5, sans régénérer les identifiants."""
+    """Réhydrate strictement un catalogue V7, sans régénérer les identifiants."""
     root = _require_mapping(data, "la racine")
     version = _require_field(root, "version")
     if isinstance(version, bool) or not isinstance(version, int):
         raise ValueError("Catalogue invalide : version doit être un entier.")
+    if version == 6:
+        from tools.migrate_catalogue_v6_to_v7 import migrate_catalogue_data_v6_to_v7
+
+        root = migrate_catalogue_data_v6_to_v7(root)
+        version = 7
     if version != _VERSION:
         raise ValueError(f"Version de catalogue non supportée : {version}")
     expected_root_keys = {
             "version", "idCounters", "defaultTemplateId", "defaultMapId", "catalogueReferenceMapId",
-            "cities", "beacons", "triangles", "templates", "maps", "defaultBookId", "books",
+            "cities", "beacons", "triangles", "templates", "maps", "defaultBookId", "books", "geometricLayers",
         }
     legacy_root_keys = expected_root_keys - {"defaultBookId", "books"}
     if set(root) not in (expected_root_keys, legacy_root_keys):
         _require_exact_keys(root, "la racine", expected_root_keys)
-    if set(root) == expected_root_keys:
-        pass
-    else:
-        # Boundary de migration des catalogues créés avant les livres Catalogue.
+    if set(root) == legacy_root_keys:
+        # Compatibilité de lecture avec les catalogues V5 produits avant les livres.
         root = dict(root)
         counters = dict(_require_mapping(root["idCounters"], "idCounters"))
         counters["book"] = 1
@@ -363,6 +408,19 @@ def catalogue_from_dict(data: object, *, id_provider: CatalogueIdProvider | None
             raise ValueError(f"Catalogue invalide : identifiant livre dupliqué : {book.book_id}.")
         catalogue.books[book.book_id] = book
 
+    for base_city_id, raw_layer in sorted(_require_mapping(_require_field(root, "geometricLayers"), "geometricLayers").items()):
+        layer = _require_mapping(raw_layer, f"geometricLayers.{base_city_id}")
+        _require_exact_keys(layer, f"geometricLayers.{base_city_id}", {"asset", "displayOverrides"})
+        if not isinstance(base_city_id, str):
+            raise ValueError("Catalogue invalide : la référence de Base d'un calque doit être une chaîne.")
+        catalogue.geometric_layers[base_city_id] = CatalogueGeometricLayer(
+            base_city_id,
+            _require_str(_require_field(layer, "asset"), f"geometricLayers.{base_city_id}.asset"),
+            _geometric_layer_display_overrides_from_dict(
+                _require_field(layer, "displayOverrides"), f"geometricLayers.{base_city_id}.displayOverrides"
+            ),
+        )
+
     catalogue.version = version
     catalogue.id_counters = id_counters
     catalogue.default_template_id = default_template_id
@@ -384,7 +442,7 @@ def load_catalogue(path: str | Path, *, id_provider: CatalogueIdProvider | None 
 
 
 def save_catalogue(catalogue: Catalogue, path: str | Path) -> None:
-    """Écrit atomiquement le JSON V5, sans altérer un fichier valide existant."""
+    """Écrit atomiquement le JSON V7, sans altérer un fichier valide existant."""
     data = catalogue_to_dict(catalogue)
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)

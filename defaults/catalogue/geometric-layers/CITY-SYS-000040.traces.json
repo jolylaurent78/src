@@ -1,0 +1,2674 @@
+{
+  "schema_version": 2,
+  "source": "AlgoSimulator",
+  "algorithm": "AlgorithmeCadranFinal",
+  "segment": "18 Mai 1152 : Mariage d’Aliénor d’Aquitaine",
+  "scope": {
+    "type": "automatic_aggregation"
+  },
+  "modules": [
+    {
+      "id": "lumiere",
+      "label": "lumiere",
+      "traces": [
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 89.65768547084272
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 08:01",
+              "Azimut %Sud Soleil =-72.99°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = -2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 90.00037354947614
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 15:59",
+              "Azimut %Sud Soleil =72.65°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = -2",
+              "- HeureampmLumiere = PM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 114.52131386364346
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 09:42",
+              "Azimut %Sud Soleil =-48.13°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Standard",
+              "- ChoixheureLumiere = -2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 114.91086958624305
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 14:18",
+              "Azimut %Sud Soleil =47.74°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Standard",
+              "- ChoixheureLumiere = -2",
+              "- HeureampmLumiere = PM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 122.57998125267454
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 10:09",
+              "Azimut %Sud Soleil =-40.07°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = 10:09",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 122.98920248691195
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 13:51",
+              "Azimut %Sud Soleil =39.66°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = 10:09",
+              "- HeureampmLumiere = PM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 127.69379975642335
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 10:25",
+              "Azimut %Sud Soleil =-34.95°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Standard",
+              "- ChoixheureLumiere = Clef",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 128.11524232582266
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 13:35",
+              "Azimut %Sud Soleil =34.53°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Standard",
+              "- ChoixheureLumiere = Clef",
+              "- HeureampmLumiere = PM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 138.30900268417076
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 10:56",
+              "Azimut %Sud Soleil =-24.34°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = 11:00",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 138.7530777766261
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 13:04",
+              "Azimut %Sud Soleil =23.89°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = 11:00",
+              "- HeureampmLumiere = PM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 153.9199571314737
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 11:38",
+              "Azimut %Sud Soleil =-8.73°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 154.38501798175727
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 12:22",
+              "Azimut %Sud Soleil =8.26°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = PM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 162.41272805277512
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 12:00",
+              "Azimut %Sud Soleil =-0.23°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = =",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 162.8809554677172
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 12:00",
+              "Azimut %Sud Soleil =-0.23°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = =",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 170.90866553873505
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 12:22",
+              "Azimut %Sud Soleil =8.26°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = PM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 171.37372638901863
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 11:38",
+              "Azimut %Sud Soleil =-8.73°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 186.54060574386622
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 13:04",
+              "Azimut %Sud Soleil =23.89°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = 11:00",
+              "- HeureampmLumiere = PM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 186.98468083632156
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 10:56",
+              "Azimut %Sud Soleil =-24.34°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = 11:00",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 197.17844119466966
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 13:35",
+              "Azimut %Sud Soleil =34.53°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Standard",
+              "- ChoixheureLumiere = Clef",
+              "- HeureampmLumiere = PM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 197.59988376406898
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 10:25",
+              "Azimut %Sud Soleil =-34.95°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Standard",
+              "- ChoixheureLumiere = Clef",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 202.30448103358037
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 13:51",
+              "Azimut %Sud Soleil =39.66°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = 10:09",
+              "- HeureampmLumiere = PM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 202.71370226781778
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 10:09",
+              "Azimut %Sud Soleil =-40.07°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = 10:09",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 210.38281393424927
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 14:18",
+              "Azimut %Sud Soleil =47.74°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Standard",
+              "- ChoixheureLumiere = -2",
+              "- HeureampmLumiere = PM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 210.77236965684887
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 09:42",
+              "Azimut %Sud Soleil =-48.13°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Standard",
+              "- ChoixheureLumiere = -2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 235.29330997101619
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 15:59",
+              "Azimut %Sud Soleil =72.65°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = -2",
+              "- HeureampmLumiere = PM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 654350.5461689354,
+            "y_l93": 6664713.848608277,
+            "azimuth_deg": 235.6359980496496
+          },
+          "graphics": {
+            "name": "Ligne Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 08:01",
+              "Azimut %Sud Soleil =-72.99°"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = -2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "circle",
+            "center_x_l93": 654350.5461689354,
+            "center_y_l93": 6664713.848608277,
+            "radius_km": 93.53907841387867
+          },
+          "graphics": {
+            "name": "Cercle Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 12:00",
+              "Hauteur Soleil =50.57°",
+              "Hauteur stylet =113.74km",
+              "Distance : 93.539078km"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = =",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "circle",
+            "center_x_l93": 654350.5461689354,
+            "center_y_l93": 6664713.848608277,
+            "radius_km": 94.39069470477382
+          },
+          "graphics": {
+            "name": "Cercle Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 12:22",
+              "Hauteur Soleil =50.31°",
+              "Hauteur stylet =113.74km",
+              "Distance : 94.390695km"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = PM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "circle",
+            "center_x_l93": 654350.5461689354,
+            "center_y_l93": 6664713.848608277,
+            "radius_km": 94.45157412893076
+          },
+          "graphics": {
+            "name": "Cercle Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 11:38",
+              "Hauteur Soleil =50.29°",
+              "Hauteur stylet =113.74km",
+              "Distance : 94.451574km"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "circle",
+            "center_x_l93": 654350.5461689354,
+            "center_y_l93": 6664713.848608277,
+            "radius_km": 100.93721680667574
+          },
+          "graphics": {
+            "name": "Cercle Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 13:04",
+              "Hauteur Soleil =48.41°",
+              "Hauteur stylet =113.74km",
+              "Distance : 100.937217km"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = 11:00",
+              "- HeureampmLumiere = PM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "circle",
+            "center_x_l93": 654350.5461689354,
+            "center_y_l93": 6664713.848608277,
+            "radius_km": 101.1136743079182
+          },
+          "graphics": {
+            "name": "Cercle Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 10:56",
+              "Hauteur Soleil =48.36°",
+              "Hauteur stylet =113.74km",
+              "Distance : 101.113674km"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = 11:00",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "circle",
+            "center_x_l93": 654350.5461689354,
+            "center_y_l93": 6664713.848608277,
+            "radius_km": 110.01603737169827
+          },
+          "graphics": {
+            "name": "Cercle Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 13:35",
+              "Hauteur Soleil =45.95°",
+              "Hauteur stylet =113.74km",
+              "Distance : 110.016037km"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Standard",
+              "- ChoixheureLumiere = Clef",
+              "- HeureampmLumiere = PM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "circle",
+            "center_x_l93": 654350.5461689354,
+            "center_y_l93": 6664713.848608277,
+            "radius_km": 110.27868726862897
+          },
+          "graphics": {
+            "name": "Cercle Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 10:25",
+              "Hauteur Soleil =45.89°",
+              "Hauteur stylet =113.74km",
+              "Distance : 110.278687km"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Standard",
+              "- ChoixheureLumiere = Clef",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "circle",
+            "center_x_l93": 654350.5461689354,
+            "center_y_l93": 6664713.848608277,
+            "radius_km": 116.20045677086253
+          },
+          "graphics": {
+            "name": "Cercle Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 13:51",
+              "Hauteur Soleil =44.39°",
+              "Hauteur stylet =113.74km",
+              "Distance : 116.200457km"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = 10:09",
+              "- HeureampmLumiere = PM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "circle",
+            "center_x_l93": 654350.5461689354,
+            "center_y_l93": 6664713.848608277,
+            "radius_km": 116.50922736892751
+          },
+          "graphics": {
+            "name": "Cercle Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 10:09",
+              "Hauteur Soleil =44.31°",
+              "Hauteur stylet =113.74km",
+              "Distance : 116.509227km"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = 10:09",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "circle",
+            "center_x_l93": 654350.5461689354,
+            "center_y_l93": 6664713.848608277,
+            "radius_km": 129.19556805697522
+          },
+          "graphics": {
+            "name": "Cercle Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 14:18",
+              "Hauteur Soleil =41.36°",
+              "Hauteur stylet =113.74km",
+              "Distance : 129.195568km"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Standard",
+              "- ChoixheureLumiere = -2",
+              "- HeureampmLumiere = PM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "circle",
+            "center_x_l93": 654350.5461689354,
+            "center_y_l93": 6664713.848608277,
+            "radius_km": 129.58781984105178
+          },
+          "graphics": {
+            "name": "Cercle Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 09:42",
+              "Hauteur Soleil =41.27°",
+              "Hauteur stylet =113.74km",
+              "Distance : 129.587820km"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Standard",
+              "- ChoixheureLumiere = -2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "circle",
+            "center_x_l93": 654350.5461689354,
+            "center_y_l93": 6664713.848608277,
+            "radius_km": 221.55130691403195
+          },
+          "graphics": {
+            "name": "Cercle Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 15:59",
+              "Hauteur Soleil =27.18°",
+              "Hauteur stylet =113.74km",
+              "Distance : 221.551307km"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = -2",
+              "- HeureampmLumiere = PM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "circle",
+            "center_x_l93": 654350.5461689354,
+            "center_y_l93": 6664713.848608277,
+            "radius_km": 222.4644333352429
+          },
+          "graphics": {
+            "name": "Cercle Lumiere",
+            "color_bgr": [
+              36,
+              28,
+              237
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "construction",
+              "module": "lumiere"
+            },
+            "tooltips": [
+              "Heure 08:01",
+              "Hauteur Soleil =27.08°",
+              "Hauteur stylet =113.74km",
+              "Distance : 222.464433km"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = -2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "ombre",
+      "label": "ombre",
+      "traces": [
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 86.40147604942544
+          },
+          "graphics": {
+            "name": "Ligne Horaire 08:01",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale AM: 08:01",
+              "Azimut % Midi : -76.25"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Envers"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 86.89220747106688
+          },
+          "graphics": {
+            "name": "Ligne Horaire 08:01",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale AM: 08:01",
+              "Azimut % Midi : -75.75"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 88.90147604942544
+          },
+          "graphics": {
+            "name": "Ligne Horaire 08:12",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale AM: 08:12",
+              "Azimut % Midi : -73.75"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Envers"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 89.39220747106688
+          },
+          "graphics": {
+            "name": "Ligne Horaire 08:12",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale AM: 08:12",
+              "Azimut % Midi : -73.25"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 110.90147604942544
+          },
+          "graphics": {
+            "name": "Ligne Horaire 09:42",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale AM: 09:42",
+              "Azimut % Midi : -51.75"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Envers"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 111.39220747106688
+          },
+          "graphics": {
+            "name": "Ligne Horaire 09:42",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale AM: 09:42",
+              "Azimut % Midi : -51.25"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 120.90147604942544
+          },
+          "graphics": {
+            "name": "Ligne Horaire 10:09",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale AM: 10:09",
+              "Azimut % Midi : -41.75"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Envers"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 121.39220747106688
+          },
+          "graphics": {
+            "name": "Ligne Horaire 10:09",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale AM: 10:09",
+              "Azimut % Midi : -41.25"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 124.40147604942544
+          },
+          "graphics": {
+            "name": "Ligne Horaire 10:25",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale AM: 10:25",
+              "Azimut % Midi : -38.25"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Envers"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 124.89220747106688
+          },
+          "graphics": {
+            "name": "Ligne Horaire 10:25",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale AM: 10:25",
+              "Azimut % Midi : -37.75"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 135.40147604942544
+          },
+          "graphics": {
+            "name": "Ligne Horaire 10:56",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale AM: 10:56",
+              "Azimut % Midi : -27.25"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Envers"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 135.89220747106688
+          },
+          "graphics": {
+            "name": "Ligne Horaire 10:56",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale AM: 10:56",
+              "Azimut % Midi : -26.75"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 152.40147604942544
+          },
+          "graphics": {
+            "name": "Ligne Horaire 11:38",
+            "color_bgr": [
+              164,
+              82,
+              0
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale AM: 11:38",
+              "Azimut % Midi : -10.25"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Envers"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 152.89220747106688
+          },
+          "graphics": {
+            "name": "Ligne Horaire 11:38",
+            "color_bgr": [
+              164,
+              82,
+              0
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale AM: 11:38",
+              "Azimut % Midi : -9.75"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 153.90147604942544
+          },
+          "graphics": {
+            "name": "Ligne Horaire 11:42",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale AM: 11:42",
+              "Azimut % Midi : -8.75"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Envers"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 154.39220747106688
+          },
+          "graphics": {
+            "name": "Ligne Horaire 11:42",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale AM: 11:42",
+              "Azimut % Midi : -8.25"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 161.40147604942544
+          },
+          "graphics": {
+            "name": "Ligne Horaire 12:00",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale AM: 12:00",
+              "Azimut % Midi : -1.25"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Envers"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 161.89220747106688
+          },
+          "graphics": {
+            "name": "Ligne Horaire 12:00",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale AM: 12:00",
+              "Azimut % Midi : -0.75"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 163.40147604942544
+          },
+          "graphics": {
+            "name": "Ligne Horaire 12:00",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale PM: 12:00",
+              "Azimut % Midi : 0.75"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Envers"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 163.89220747106688
+          },
+          "graphics": {
+            "name": "Ligne Horaire 12:00",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale PM: 12:00",
+              "Azimut % Midi : 1.25"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 170.90147604942544
+          },
+          "graphics": {
+            "name": "Ligne Horaire 12:18",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale PM: 12:18",
+              "Azimut % Midi : 8.25"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Envers"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 171.39220747106688
+          },
+          "graphics": {
+            "name": "Ligne Horaire 12:18",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale PM: 12:18",
+              "Azimut % Midi : 8.75"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 172.40147604942544
+          },
+          "graphics": {
+            "name": "Ligne Horaire 12:22",
+            "color_bgr": [
+              164,
+              82,
+              0
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale PM: 12:22",
+              "Azimut % Midi : 9.75"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Envers"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 172.89220747106688
+          },
+          "graphics": {
+            "name": "Ligne Horaire 12:22",
+            "color_bgr": [
+              164,
+              82,
+              0
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale PM: 12:22",
+              "Azimut % Midi : 10.25"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 189.40147604942544
+          },
+          "graphics": {
+            "name": "Ligne Horaire 13:04",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale PM: 13:04",
+              "Azimut % Midi : 26.75"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Envers"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 189.89220747106688
+          },
+          "graphics": {
+            "name": "Ligne Horaire 13:04",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale PM: 13:04",
+              "Azimut % Midi : 27.25"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 200.40147604942544
+          },
+          "graphics": {
+            "name": "Ligne Horaire 13:35",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale PM: 13:35",
+              "Azimut % Midi : 37.75"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Envers"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 200.89220747106688
+          },
+          "graphics": {
+            "name": "Ligne Horaire 13:35",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale PM: 13:35",
+              "Azimut % Midi : 38.25"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 203.90147604942544
+          },
+          "graphics": {
+            "name": "Ligne Horaire 13:51",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale PM: 13:51",
+              "Azimut % Midi : 41.25"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Envers"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 204.39220747106688
+          },
+          "graphics": {
+            "name": "Ligne Horaire 13:51",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale PM: 13:51",
+              "Azimut % Midi : 41.75"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 213.90147604942544
+          },
+          "graphics": {
+            "name": "Ligne Horaire 14:18",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale PM: 14:18",
+              "Azimut % Midi : 51.25"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Envers"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 214.39220747106688
+          },
+          "graphics": {
+            "name": "Ligne Horaire 14:18",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale PM: 14:18",
+              "Azimut % Midi : 51.75"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 235.90147604942544
+          },
+          "graphics": {
+            "name": "Ligne Horaire 15:48",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale PM: 15:48",
+              "Azimut % Midi : 73.25"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Envers"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 236.39220747106688
+          },
+          "graphics": {
+            "name": "Ligne Horaire 15:48",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale PM: 15:48",
+              "Azimut % Midi : 73.75"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 238.40147604942544
+          },
+          "graphics": {
+            "name": "Ligne Horaire 15:59",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale PM: 15:59",
+              "Azimut % Midi : 75.75"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Envers"
+            ]
+          }
+        },
+        {
+          "geometry": {
+            "type": "line_image_azimuth",
+            "x_l93": 584617.620072308,
+            "y_l93": 6895068.662510513,
+            "azimuth_deg": 238.89220747106688
+          },
+          "graphics": {
+            "name": "Ligne Horaire 15:59",
+            "color_bgr": [
+              255,
+              193,
+              132
+            ],
+            "width": 1,
+            "style": "plein",
+            "show_name": null,
+            "visible": true,
+            "tags": {
+              "level": "design",
+              "module": "ombre"
+            },
+            "tooltips": [
+              "Heure Locale PM: 15:59",
+              "Azimut % Midi : 76.25"
+            ],
+            "scenario_tooltips": [
+              "Paramètres du scénario:",
+              "- ChoixcalendrierLumiere = Déclinaison",
+              "- ChoixheureLumiere = +2",
+              "- HeureampmLumiere = AM",
+              "- SenscarteOmbre = Endroit"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

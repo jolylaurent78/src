@@ -1,9 +1,9 @@
 {
-  "version": 5,
+  "version": 7,
   "idCounters": {
-    "city": 111,
+    "city": 112,
     "beacon": 4,
-    "triangle": 62,
+    "triangle": 64,
     "template": 2,
     "map": 2,
     "book": 2
@@ -331,8 +331,8 @@
     {
       "cityId": "CITY-SYS-000046",
       "name": "La Ferté-Alais",
-      "latitude": 48.515,
-      "longitude": 2.4444444444444446,
+      "latitude": 48.48166666666667,
+      "longitude": 2.348055555555556,
       "archived": false
     },
     {
@@ -781,6 +781,13 @@
       "name": "Plymouth",
       "latitude": 50.37,
       "longitude": -4.141944444444444,
+      "archived": false
+    },
+    {
+      "cityId": "CITY-SYS-000112",
+      "name": "Frontière Sud Bretagne",
+      "latitude": 47.448055555555555,
+      "longitude": -2.5083333333333333,
       "archived": false
     }
   ],
@@ -1302,6 +1309,22 @@
       "baseCityId": "CITY-SYS-000035",
       "lightCityId": "CITY-SYS-000111",
       "archived": false
+    },
+    {
+      "triangleId": "TRI-SYS-000063",
+      "note": "LA",
+      "openingCityId": "CITY-SYS-000018",
+      "baseCityId": "CITY-SYS-000030",
+      "lightCityId": "CITY-SYS-000112",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-SYS-000064",
+      "note": "LA",
+      "openingCityId": "CITY-SYS-000018",
+      "baseCityId": "CITY-SYS-000031",
+      "lightCityId": "CITY-SYS-000046",
+      "archived": false
     }
   ],
   "templates": [
@@ -1379,10 +1402,10 @@
         "TRI-SYS-000062",
         "TRI-SYS-000051",
         "TRI-SYS-000061",
-        "TRI-SYS-000057",
         "TRI-SYS-000030",
-        "TRI-SYS-000056",
-        "TRI-SYS-000031"
+        "TRI-SYS-000063",
+        "TRI-SYS-000031",
+        "TRI-SYS-000064"
       ]
     }
   ],
@@ -1442,5 +1465,49 @@
       "archived": false,
       "description": ""
     }
-  ]
+  ],
+  "geometricLayers": {
+    "CITY-SYS-000040": {
+      "asset": "geometric-layers/CITY-SYS-000040.traces.json",
+      "displayOverrides": {
+        "lumiere": {
+          "colorBgr": [
+            128,
+            128,
+            255
+          ],
+          "width": 2
+        },
+        "ombre": {
+          "colorBgr": [
+            255,
+            128,
+            0
+          ],
+          "width": 2
+        }
+      }
+    },
+    "CITY-SYS-000041": {
+      "asset": "geometric-layers/CITY-SYS-000041.traces.json",
+      "displayOverrides": {
+        "lumiere": {
+          "colorBgr": [
+            128,
+            128,
+            255
+          ],
+          "width": 2
+        },
+        "ombre": {
+          "colorBgr": [
+            255,
+            128,
+            0
+          ],
+          "width": 2
+        }
+      }
+    }
+  }
 }

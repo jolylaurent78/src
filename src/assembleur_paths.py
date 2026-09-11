@@ -109,6 +109,10 @@ class ApplicationPaths:
         return self.default_catalogue_dir / "books"
 
     @property
+    def default_catalogue_geometric_layers_dir(self) -> Path:
+        return self.default_catalogue_dir / "geometric-layers"
+
+    @property
     def active_catalogue_dir(self) -> Path:
         """Racine physique du catalogue actif, independante des IDs."""
         if self.catalogue_mode == "SYS":
@@ -122,6 +126,10 @@ class ApplicationPaths:
     @property
     def active_catalogue_books_dir(self) -> Path:
         return self.active_catalogue_dir / "books"
+
+    @property
+    def active_catalogue_geometric_layers_dir(self) -> Path:
+        return self.active_catalogue_dir / "geometric-layers"
 
     @property
     def active_scenarios_dir(self) -> Path:
@@ -153,6 +161,10 @@ class ApplicationPaths:
     @property
     def user_catalogue_books_dir(self) -> Path:
         return self.user_catalogue_dir / "books"
+
+    @property
+    def user_catalogue_geometric_layers_dir(self) -> Path:
+        return self.user_catalogue_dir / "geometric-layers"
 
     @property
     def user_scenarios_dir(self) -> Path:
@@ -329,6 +341,7 @@ class ApplicationPaths:
             self.user_catalogue_dir,
             self.user_catalogue_maps_dir,
             self.user_catalogue_books_dir,
+            self.user_catalogue_geometric_layers_dir,
             self.config_dir,
             self.exports_dir,
             self.logs_dir,

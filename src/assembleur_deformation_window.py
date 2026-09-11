@@ -20,6 +20,9 @@ from src.assembleur_geo_map_view import (
     GeoMapPolyline,
     GeoMapView,
 )
+from src.assembleur_geometric_layer_display import GeometricLayerModuleDisplayOverride
+from src.assembleur_geometric_layer_io import GeometricLayerDocument
+from src.assembleur_geometric_layer_renderer import GeometricLayerRenderContext, GeometricLayerRenderer
 from src.assembleur_paths import ApplicationPaths
 from src.assembleur_tooltip import attach_tooltip
 
@@ -74,6 +77,7 @@ class DeformationWindow(tk.Toplevel):
         on_rename_selected: Callable[[], None],
         on_map_pin_selected: Callable[[], None],
         on_view_mode_changed: Callable[[str], None],
+        on_geometric_layer_visibility_changed: Callable[[bool], None],
         on_canvas_mode_changed: Callable[[str], None],
         on_validate: Callable[[], None],
         on_closed: Callable[[], None],
@@ -93,6 +97,7 @@ class DeformationWindow(tk.Toplevel):
         self._on_rename_selected = on_rename_selected
         self._on_map_pin_selected = on_map_pin_selected
         self._on_view_mode_changed = on_view_mode_changed
+        self._on_geometric_layer_visibility_changed = on_geometric_layer_visibility_changed
         self._on_canvas_mode_changed = on_canvas_mode_changed
         self._on_validate = on_validate
         self._on_closed = on_closed
@@ -100,6 +105,9 @@ class DeformationWindow(tk.Toplevel):
         self._assembly_rotation_deg = 0.0
         self._view_mode = tk.StringVar(value="north")
         self._canvas_mode = "select"
+        self._geometric_layer_visible = False
+        self._geometric_layer_document: GeometricLayerDocument | None = None
+        self._geometric_layer_display_overrides: Mapping[str, GeometricLayerModuleDisplayOverride] = {}
         self._closed = False
         self._occurrence_by_iid: dict[str, tuple[str, str]] = {}
         self._updating_occurrences = False
@@ -116,6 +124,7 @@ class DeformationWindow(tk.Toplevel):
         self._icon_pivot_attachment = tk.PhotoImage(file=str(images_dir / "rotate.png"))
         self._icon_select = tk.PhotoImage(file=str(images_dir / "click.png"))
         self._icon_move = tk.PhotoImage(file=str(images_dir / "hand-click.png"))
+        self._icon_geometric_layer = tk.PhotoImage(file=str(images_dir / "layers-selected-bottom.png"))
 
         content = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         content.pack(fill=tk.BOTH, expand=True, padx=8, pady=(8, 8))
@@ -217,8 +226,18 @@ class DeformationWindow(tk.Toplevel):
             bd=1,
         )
         self._assembly_button.pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Separator(view_toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=(10, 6))
+        self._geometric_layer_button = tk.Button(
+            view_toolbar,
+            image=self._icon_geometric_layer,
+            command=self._toggle_geometric_layer_visibility,
+            relief=tk.FLAT,
+            bd=1,
+        )
+        self._geometric_layer_button.pack(side=tk.LEFT)
         attach_tooltip(self._north_button, "Afficher la carte orientée au nord")
         attach_tooltip(self._assembly_button, "Orienter la carte comme l'assemblage")
+        attach_tooltip(self._geometric_layer_button, "Afficher ou masquer le calque géométrique de la Base")
         self._status = ttk.Label(view_toolbar, text="")
         self._status.pack(side=tk.RIGHT)
 
@@ -232,6 +251,7 @@ class DeformationWindow(tk.Toplevel):
         )
         self.map_view.pack(fill=tk.BOTH, expand=True)
         self.map_view.set_map(calibrated_map)
+        self.map_view.set_background_canvas_overlay_drawer(self._render_geometric_layer)
 
         footer = ttk.Frame(self, padding=(8, 0, 8, 8))
         footer.pack(fill=tk.X)
@@ -250,6 +270,24 @@ class DeformationWindow(tk.Toplevel):
     @property
     def canvas_mode(self) -> str:
         return self._canvas_mode
+
+    @property
+    def geometric_layer_visible(self) -> bool:
+        return self._geometric_layer_visible
+
+    def set_geometric_layer(
+        self,
+        document: GeometricLayerDocument | None,
+        *,
+        display_overrides: Mapping[str, GeometricLayerModuleDisplayOverride] | None = None,
+    ) -> None:
+        """Mémorise le document déjà validé, sans charger d'asset depuis Tk."""
+        self._geometric_layer_document = document
+        self._geometric_layer_display_overrides = dict(display_overrides or {})
+        self.map_view.request_redraw()
+
+    def clear_geometric_layer(self) -> None:
+        self.set_geometric_layer(None)
 
     def set_canvas_mode(self, mode: str) -> None:
         if mode not in {"select", "move"}:
@@ -408,6 +446,29 @@ class DeformationWindow(tk.Toplevel):
         north_active = self.view_mode == "north"
         self._north_button.configure(relief=tk.SUNKEN if north_active else tk.FLAT)
         self._assembly_button.configure(relief=tk.FLAT if north_active else tk.SUNKEN)
+
+    def _toggle_geometric_layer_visibility(self) -> None:
+        self._geometric_layer_visible = not self._geometric_layer_visible
+        self._geometric_layer_button.configure(relief=tk.SUNKEN if self._geometric_layer_visible else tk.FLAT)
+        if not self._geometric_layer_visible:
+            self.clear_geometric_layer()
+        self._on_geometric_layer_visibility_changed(self._geometric_layer_visible)
+
+    def _render_geometric_layer(self) -> None:
+        document = self._geometric_layer_document
+        if not self._geometric_layer_visible or document is None or self.map_view.map is None:
+            return
+        context = GeometricLayerRenderContext(
+            self.map_view.map.image_size,
+            self.map_view.map.lambert_to_pixel,
+            self.map_view.pixel_to_screen,
+        )
+        GeometricLayerRenderer(self.map_view.canvas, context).render_document(
+            document,
+            module_ids=None,
+            display_overrides=self._geometric_layer_display_overrides,
+            clear=False,
+        )
 
     def _marker_drag_started(self, marker_id: object) -> None:
         self._on_vertex_drag_started(str(marker_id))

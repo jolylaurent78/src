@@ -91,6 +91,8 @@ from src.assembleur_deformation_window import (
 )
 from src.assembleur_tooltip import attach_tooltip
 from src.assembleur_catalogue_map_assets import CatalogueMapAssetResolver, load_calibrated_catalogue_map
+from src.assembleur_catalogue_geometric_layer_assets import CatalogueGeometricLayerAssetResolver
+from src.assembleur_geometric_layer_io import load_geometric_layer_document
 from src.assembleur_scenario_map import ScenarioMapState
 from src.assembleur_scenario import (
     ScenarioHypothesis,
@@ -108,6 +110,16 @@ EPS_WORLD = 1e-6
 _LOGGER_NAME = "src.assembleur_tk" if __name__ == "__main__" else __name__
 LOGGER = logging.getLogger(_LOGGER_NAME)
 MIG_GEO_LOGGER = logging.getLogger(f"{_LOGGER_NAME}.mig_geo")
+
+
+def resolve_catalogue_base_city_id_for_deformation_triangle(
+    resolver: GeometryReferenceResolver,
+    triangle_ref_id: str,
+) -> str | None:
+    """Résout la Base Catalogue d'un TRI ou STRI sans heuristique de secours."""
+    triangle = resolver.resolve_triangle(triangle_ref_id)
+    base_city = resolver.resolve_city(triangle.base_city_ref_id)
+    return base_city.catalogue_source_city_id
 
 
 def _load_application_catalogue(catalogue_path: str, id_provider) -> Catalogue:
@@ -384,6 +396,7 @@ class TriangleViewerManual(
         instance._deformation_drag_pending_role = None
         instance._deformation_drag_pending_point = None
         instance._deformation_status_text = ""
+        instance._deformation_geometric_layer_source_triangle_id = None
         return instance
 
     def __init__(self):
@@ -439,6 +452,7 @@ class TriangleViewerManual(
         self._deformation_drag_pending_role = None
         self._deformation_drag_pending_point = None
         self._deformation_status_text = ""
+        self._deformation_geometric_layer_source_triangle_id: str | None = None
         self._deformation_window: DeformationWindow | None = None
         self._deformation_map_cache_id: str | None = None
         self._deformation_map_cache = None
@@ -1646,6 +1660,7 @@ class TriangleViewerManual(
             on_rename_selected=self._deformation_rename_selected,
             on_map_pin_selected=self._deformation_map_pin_selected,
             on_view_mode_changed=self._deformation_window_view_mode_changed,
+            on_geometric_layer_visibility_changed=self._deformation_geometric_layer_visibility_changed,
             on_canvas_mode_changed=self._deformation_canvas_mode_changed,
             on_validate=self._validate_deformation_session,
             on_closed=self._on_deformation_window_closed,
@@ -1745,6 +1760,7 @@ class TriangleViewerManual(
             ),
             status_text=status_text,
         )
+        self._refresh_deformation_geometric_layer()
 
     def _deformation_display_occurrences(self) -> tuple[tuple[str, str, str, bool, bool], ...]:
         state = self._deformation_state
@@ -1931,6 +1947,51 @@ class TriangleViewerManual(
 
     def _deformation_window_view_mode_changed(self, _mode: str) -> None:
         self._refresh_deformation_window(refresh_occurrences=False)
+
+    def _deformation_geometric_layer_visibility_changed(self, visible: bool) -> None:
+        """Charge le calque uniquement à l'activation métier du toggle."""
+        self._deformation_geometric_layer_source_triangle_id = None
+        window = self._deformation_window
+        if not visible:
+            if window is not None and window.winfo_exists():
+                window.clear_geometric_layer()
+            return
+        self._refresh_deformation_geometric_layer()
+
+    def _refresh_deformation_geometric_layer(self) -> None:
+        """Fournit au widget le document déjà parsé de la Base actuellement affichée."""
+        window = self._deformation_window
+        if window is None or not window.winfo_exists() or not window.geometric_layer_visible:
+            return
+        state = self._deformation_state
+        world = state.last_accepted_world or state.reference_world
+        if state.element_id is None or world is None:
+            window.clear_geometric_layer()
+            return
+        element = world.elements.get(state.element_id)
+        if element is None or not element.source_triangle_id:
+            raise ValueError("Triangle de deformation sans source Catalogue")
+        source_triangle_id = element.source_triangle_id
+        if source_triangle_id == self._deformation_geometric_layer_source_triangle_id:
+            return
+        self._deformation_geometric_layer_source_triangle_id = source_triangle_id
+        resolver = GeometryReferenceResolver(self.catalogue, self._deformation_working_reference())
+        catalogue_base_city_id = resolve_catalogue_base_city_id_for_deformation_triangle(resolver, source_triangle_id)
+        if catalogue_base_city_id is None:
+            window.clear_geometric_layer()
+            return
+        layer = self.catalogue.get_geometric_layer(catalogue_base_city_id)
+        if layer is None:
+            window.clear_geometric_layer()
+            return
+        try:
+            asset_path = CatalogueGeometricLayerAssetResolver(self.paths).resolve(layer.asset_file)
+            document = load_geometric_layer_document(asset_path)
+        except (OSError, ValueError) as exc:
+            window.clear_geometric_layer()
+            messagebox.showerror("Calque géométrique", str(exc), parent=window)
+            return
+        window.set_geometric_layer(document, display_overrides=layer.display_overrides)
 
     def _deformation_window_vertex_selected(self, role: str) -> None:
         state = self._deformation_state

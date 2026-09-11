@@ -5,20 +5,28 @@ from __future__ import annotations
 from dataclasses import dataclass
 import csv
 import math
+import shutil
 import unicodedata
 from pathlib import Path
 from typing import Callable
 import tkinter as tk
 from tkinter import font as tkfont
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import colorchooser, filedialog, messagebox, simpledialog, ttk
 from tksheet import Sheet
 from src.DictionnaireEnigmes import parse_book_file
 from src.assembleur_catalogue import Catalogue, CatalogueBook, CatalogueCity, CatalogueTriangle as ModelCatalogueTriangle, HypothesisTemplate
 from src.assembleur_catalogue_book_asset_controller import CatalogueBookAssetController
+from src.assembleur_catalogue_geometric_layer_assets import (
+    CatalogueGeometricLayerAssetController,
+    CatalogueGeometricLayerAssetResolver,
+)
 from src.assembleur_catalogue_map_assets import CatalogueMapAssetResolver, load_calibrated_catalogue_map
 from src.assembleur_catalogue_map_calibration import CatalogueMapCalibrationController, STATUS_VALID
 from src.assembleur_catalogue_identity import ApplicationContext, is_system_catalogue_id
 from src.assembleur_catalogue_io import save_catalogue
+from src.assembleur_geometric_layer_io import GeometricLayerDocument, GeometricLayerModule, load_geometric_layer_document
+from src.assembleur_geometric_layer_renderer import GeometricLayerRenderContext, GeometricLayerRenderer
+from src.assembleur_geometric_layer_display import GeometricLayerModuleDisplayOverride
 from src.assembleur_paths import ApplicationPaths
 from src.assembleur_tooltip import attach_tooltip
 
@@ -88,12 +96,33 @@ class CityCsvImportResult:
     def updated_count(self) -> int:
         return len(self.updated_city_ids)
 
+
+@dataclass(frozen=True)
+class GeometricLayerCsvImportResult:
+    staged_base_city_ids: tuple[str, ...]
+    already_present_count: int
+    errors: tuple[str, ...]
+
+    @property
+    def staged_count(self) -> int:
+        return len(self.staged_base_city_ids)
+
 def _normalize_search_text(value: str) -> str:
     return "".join(
         char
         for char in unicodedata.normalize("NFD", value)
         if unicodedata.category(char) != "Mn"
     ).casefold()
+
+
+def _bgr_to_rgb_hex(color_bgr: tuple[int, int, int]) -> str:
+    return f"#{color_bgr[2]:02X}{color_bgr[1]:02X}{color_bgr[0]:02X}"
+
+
+def _rgb_hex_to_bgr(value: str) -> tuple[int, int, int]:
+    if len(value) != 7 or not value.startswith("#"):
+        raise ValueError("Couleur RGB hexadécimale invalide.")
+    return (int(value[5:7], 16), int(value[3:5], 16), int(value[1:3], 16))
 
 class CitySelectionDialog(tk.Toplevel):
     """Sélecteur générique d'un objet ville par recherche filtrante."""
@@ -163,6 +192,154 @@ class CitySelectionDialog(tk.Toplevel):
         if selection:
             self.result = visible[selection[0]].city_id
             self.destroy()
+
+
+class GeometricLayerCreationDialog(tk.Toplevel):
+    """Collecte une Base et un fichier avant le staging d'un nouveau calque."""
+
+    def __init__(self, parent, cities: list[CatalogueCity], on_stage: Callable[[str, str], bool]):
+        super().__init__(parent)
+        self.title("Ajouter un calque géométrique")
+        self.transient(parent)
+        self.resizable(False, False)
+        self._on_stage = on_stage
+        self._cities_by_name = {city.name: city for city in cities}
+        self._base_var = tk.StringVar()
+        self._source_var = tk.StringVar()
+        root = ttk.Frame(self, padding=10)
+        root.grid(sticky="nsew")
+        root.columnconfigure(1, weight=1)
+        ttk.Label(root, text="Base :").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self._base_selector = ttk.Combobox(
+            root,
+            textvariable=self._base_var,
+            values=tuple(city.name for city in cities),
+            state="readonly",
+            width=36,
+        )
+        self._base_selector.grid(row=0, column=1, columnspan=2, sticky="ew")
+        ttk.Label(root, text="Fichier Traces :").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
+        ttk.Entry(root, textvariable=self._source_var, state="readonly", width=36).grid(
+            row=1, column=1, sticky="ew", pady=(8, 0)
+        )
+        ttk.Button(root, image=parent._icon_open, command=self._choose_source).grid(
+            row=1, column=2, sticky="w", padx=(6, 0), pady=(8, 0)
+        )
+        buttons = ttk.Frame(root)
+        buttons.grid(row=2, column=1, columnspan=2, sticky="e", pady=(12, 0))
+        self._confirm_button = ttk.Button(buttons, text="OK", command=self._confirm, state=tk.DISABLED)
+        self._confirm_button.pack(side=tk.LEFT)
+        ttk.Button(buttons, text="Annuler", command=self.destroy).pack(side=tk.LEFT, padx=(6, 0))
+        self._base_var.trace_add("write", lambda *_: self._update_confirm_state())
+        self._source_var.trace_add("write", lambda *_: self._update_confirm_state())
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self.grab_set()
+        self._base_selector.focus_set()
+
+    def show(self) -> None:
+        self.wait_window()
+
+    def _choose_source(self) -> None:
+        source = filedialog.askopenfilename(
+            parent=self,
+            title="Choisir un fichier Traces",
+            filetypes=[("Fichiers Traces", "*.traces.json"), ("Tous les fichiers", "*.*")],
+        )
+        if source:
+            self._source_var.set(source)
+
+    def _update_confirm_state(self) -> None:
+        enabled = self._base_var.get() in self._cities_by_name and bool(self._source_var.get())
+        self._confirm_button.configure(state=tk.NORMAL if enabled else tk.DISABLED)
+
+    def _confirm(self) -> None:
+        city = self._cities_by_name.get(self._base_var.get())
+        source = self._source_var.get()
+        if city is not None and source and self._on_stage(city.city_id, source):
+            self.destroy()
+
+
+class GeometricLayerModuleDisplayDialog(tk.Toplevel):
+    """Édition locale d'une surcharge couleur/épaisseur pour un module."""
+
+    def __init__(
+        self,
+        parent,
+        module: GeometricLayerModule,
+        override: GeometricLayerModuleDisplayOverride | None,
+        on_confirm: Callable[[tuple[int, int, int] | None, int | None], None],
+    ):
+        super().__init__(parent)
+        self.title(f"Affichage — {module.label}")
+        self.transient(parent)
+        self.resizable(False, False)
+        self._on_confirm = on_confirm
+        self._color_bgr = override.color_bgr if override is not None else None
+        self._color_mode = tk.StringVar(value="custom" if self._color_bgr is not None else "origin")
+        self._width_mode = tk.StringVar(value="custom" if override is not None and override.width is not None else "origin")
+        self._width_var = tk.StringVar(value=str(override.width if override is not None and override.width is not None else 1))
+        root = ttk.Frame(self, padding=10)
+        root.grid(sticky="nsew")
+        color_group = ttk.LabelFrame(root, text="Couleur", padding=6)
+        color_group.grid(row=0, column=0, sticky="ew")
+        ttk.Radiobutton(color_group, text="Par défaut", variable=self._color_mode, value="origin", command=self._update_states).grid(
+            row=0, column=0, columnspan=3, sticky="w"
+        )
+        ttk.Radiobutton(color_group, text="Personnalisée", variable=self._color_mode, value="custom", command=self._update_states).grid(
+            row=1, column=0, sticky="w", pady=(4, 0)
+        )
+        self._color_preview = tk.Label(color_group, width=3, relief=tk.SUNKEN)
+        self._color_preview.grid(row=1, column=1, sticky="w", padx=(6, 0), pady=(4, 0))
+        self._choose_color_button = ttk.Button(color_group, image=parent._icon_palette, command=self._choose_color)
+        self._choose_color_button.grid(row=1, column=2, sticky="w", padx=(4, 0), pady=(4, 0))
+        parent._attach_tooltip(self._choose_color_button, "Choisir une couleur")
+        width_group = ttk.LabelFrame(root, text="Épaisseur", padding=6)
+        width_group.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        ttk.Radiobutton(width_group, text="Par défaut", variable=self._width_mode, value="origin", command=self._update_states).grid(
+            row=0, column=0, columnspan=2, sticky="w"
+        )
+        ttk.Radiobutton(width_group, text="Personnalisée", variable=self._width_mode, value="custom", command=self._update_states).grid(
+            row=1, column=0, sticky="w", pady=(4, 0)
+        )
+        self._width_spinbox = ttk.Spinbox(width_group, from_=1, to=10, increment=1, textvariable=self._width_var, width=5)
+        self._width_spinbox.grid(row=1, column=1, sticky="w", padx=(6, 0), pady=(4, 0))
+        buttons = ttk.Frame(root)
+        buttons.grid(row=2, column=0, sticky="e", pady=(10, 0))
+        ttk.Button(buttons, text="Annuler", command=self.destroy).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="OK", command=self._confirm).pack(side=tk.RIGHT, padx=(0, 6))
+        self._update_states()
+        self.grab_set()
+
+    def _update_states(self) -> None:
+        custom_color = self._color_mode.get() == "custom"
+        self._choose_color_button.configure(state=tk.NORMAL if custom_color else tk.DISABLED)
+        self._color_preview.configure(bg=_bgr_to_rgb_hex(self._color_bgr) if self._color_bgr is not None else self.cget("bg"))
+        self._width_spinbox.configure(state=tk.NORMAL if self._width_mode.get() == "custom" else tk.DISABLED)
+
+    def _choose_color(self) -> None:
+        _rgb, hex_color = colorchooser.askcolor(
+            color=_bgr_to_rgb_hex(self._color_bgr) if self._color_bgr is not None else None,
+            parent=self,
+        )
+        if hex_color is not None:
+            self._color_bgr = _rgb_hex_to_bgr(hex_color)
+            self._color_mode.set("custom")
+            self._update_states()
+
+    def _confirm(self) -> None:
+        color = self._color_bgr if self._color_mode.get() == "custom" else None
+        width = None
+        if self._width_mode.get() == "custom":
+            try:
+                width = int(self._width_var.get())
+            except ValueError:
+                messagebox.showerror("Affichage du module", "L’épaisseur doit être un entier entre 1 et 10.", parent=self)
+                return
+            if not 1 <= width <= 10:
+                messagebox.showerror("Affichage du module", "L’épaisseur doit être comprise entre 1 et 10.", parent=self)
+                return
+        self._on_confirm(color, width)
+        self.destroy()
 
 
 class TriangleEditorDialog(tk.Toplevel):
@@ -378,6 +555,7 @@ class CatalogueWindow(tk.Toplevel):
     _CITY_CSV_HEADER = ("Nom", "Latitude", "Longitude")
     _BEACON_XLSX_HEADER = ("Nom",)
     _TRIANGLE_CSV_HEADER = ("Note", "Ouverture", "Base", "Lumiere")
+    _GEOMETRIC_LAYER_CSV_HEADER = ("Base", "Fichier")
     _TEMPLATE_CSV_HEADER = ("Rang", "Ouverture", "Base", "Lumiere")
     _TEMPLATE_NOTE_ORDER = {"do": 0, "si": 1, "la": 2, "sol": 3, "fa": 4, "mi": 5, "re": 6, "zone": 7}
 
@@ -415,6 +593,13 @@ class CatalogueWindow(tk.Toplevel):
         self._selected_template_id: str | None = self.catalogue.default_template_id
         self._selected_map_id: str | None = self.catalogue.default_map_id
         self._selected_book_id: str | None = self.catalogue.default_book_id
+        self._selected_geometric_layer_base_city_id: str | None = None
+        self._geometric_layer_preview_document: GeometricLayerDocument | None = None
+        self._geometric_layer_module_vars: dict[str, tk.BooleanVar] = {}
+        self._staged_geometric_layer_base_city_ids: set[str] = set()
+        self._staged_geometric_layer_documents: dict[str, GeometricLayerDocument] = {}
+        self._pending_geometric_layer_display_overrides: dict[str, dict[str, GeometricLayerModuleDisplayOverride]] = {}
+        self._deleted_geometric_layer_base_city_ids: set[str] = set()
         self._selected_calibration_city_id: str | None = None
         self._selected_template_triangle_id: str | None = None
         self._selected_template_rank_slot: TemplateRankSlot | None = None
@@ -441,6 +626,7 @@ class CatalogueWindow(tk.Toplevel):
             self._paths,
             allow_system_book_editing=self._application_context.mode == "SYS",
         )
+        self._geometric_layer_assets = CatalogueGeometricLayerAssetController(self.catalogue, self._paths)
 
         self._search_var = tk.StringVar()
         self._show_archived_var = tk.BooleanVar(value=False)
@@ -469,6 +655,7 @@ class CatalogueWindow(tk.Toplevel):
         self._book_description_var = tk.StringVar()
         self._book_default_var = tk.BooleanVar(value=False)
         self._updating_book_detail = False
+        self._geometric_layer_search_var = tk.StringVar()
 
         self._load_icons()
         self._build_ui()
@@ -477,6 +664,7 @@ class CatalogueWindow(tk.Toplevel):
         self._refresh_triangle_tree()
         self._refresh_maps()
         self._refresh_books()
+        self._refresh_geometric_layer_list()
         self._load_map()
         self.protocol("WM_DELETE_WINDOW", self.request_close)
 
@@ -495,6 +683,9 @@ class CatalogueWindow(tk.Toplevel):
         self._icon_focus = tk.PhotoImage(file=images_dir / "focus.png")
         self._icon_hand = tk.PhotoImage(file=images_dir / "hand-click.png")
         self._icon_book_add = tk.PhotoImage(file=images_dir / "book - plus.png")
+        self._icon_open = tk.PhotoImage(file=images_dir / "open.png")
+        self._icon_refresh = tk.PhotoImage(file=images_dir / "refresh-cw.png")
+        self._icon_palette = tk.PhotoImage(file=images_dir / "palette.png")
 
     def _attach_tooltip(self, widget, text: str):
         return attach_tooltip(widget, text)
@@ -521,12 +712,14 @@ class CatalogueWindow(tk.Toplevel):
         self._templates_tab = ttk.Frame(notebook, padding=8)
         self._maps_tab = ttk.Frame(notebook, padding=8)
         self._books_tab = ttk.Frame(notebook, padding=8)
+        self._geometric_layers_tab = ttk.Frame(notebook, padding=8)
         notebook.add(self._cities_tab, text="Villes (0)")
         notebook.add(self._beacons_tab, text="Balises (0)")
         notebook.add(self._triangles_tab, text="Triangles (0)")
         notebook.add(self._templates_tab, text="Templates (0)")
         notebook.add(self._maps_tab, text="Cartes (0)")
         notebook.add(self._books_tab, text="Livres (0)")
+        notebook.add(self._geometric_layers_tab, text="Calques géométriques (0)")
         self._catalogue_notebook = notebook
         self._build_cities_tab()
         self._build_beacons_tab()
@@ -534,6 +727,7 @@ class CatalogueWindow(tk.Toplevel):
         self._build_templates_tab()
         self._build_maps_tab()
         self._build_books_tab()
+        self._build_geometric_layers_tab()
 
         bottom = ttk.Frame(root)
         bottom.grid(row=1, column=0, sticky="ew", pady=(10, 0))
@@ -729,6 +923,7 @@ class CatalogueWindow(tk.Toplevel):
             self._map_view.set_map(calibrated_map)
             self._beacon_map_view.set_map(calibrated_map)
             self._triangle_map_view.set_map(calibrated_map)
+            self._geometric_layer_map_view.set_map(calibrated_map)
         except (FileNotFoundError, OSError, ValueError) as exc:
             messagebox.showwarning("Carte du catalogue", str(exc), parent=self)
 
@@ -766,6 +961,9 @@ class CatalogueWindow(tk.Toplevel):
                 command=self._export_selected_book,
                 state=tk.NORMAL if selected is not None else tk.DISABLED,
             )
+        elif active_tab == str(self._geometric_layers_tab):
+            self._import_button.configure(command=self._import_geometric_layers_csv, state=tk.NORMAL)
+            self._export_button.configure(command=self._export_geometric_layers_csv, state=tk.NORMAL)
         else:
             self._import_button.configure(command=lambda: None, state=tk.DISABLED)
             self._export_button.configure(command=lambda: None, state=tk.DISABLED)
@@ -826,6 +1024,34 @@ class CatalogueWindow(tk.Toplevel):
                 for triangle in sorted(self.catalogue.iter_triangles(), key=self._triangle_sort_key)
                 for opening, base, light in (self._model_triangle_cities(triangle),)
             )
+
+    def _geometric_layer_export_rows(self) -> list[tuple[str, str]]:
+        return [
+            (self.catalogue.get_city(layer.base_city_id).name, Path(layer.asset_file).name)
+            for layer in sorted(
+                self.catalogue.get_geometric_layers(),
+                key=lambda item: (self.catalogue.get_city(item.base_city_id).name.casefold(), item.base_city_id),
+            )
+        ]
+
+    def _export_geometric_layers_csv(self):
+        path = self._choose_export_path("Exporter les calques géométriques", initialfile="calques-geometriques.csv")
+        if not path:
+            return
+        destination_csv = Path(path)
+        try:
+            with destination_csv.open("w", encoding="utf-8-sig", newline="") as csv_file:
+                writer = csv.writer(csv_file, delimiter=";")
+                writer.writerow(self._GEOMETRIC_LAYER_CSV_HEADER)
+                writer.writerows(self._geometric_layer_export_rows())
+            resolver = CatalogueGeometricLayerAssetResolver(self._paths)
+            for layer in self.catalogue.get_geometric_layers():
+                source = resolver.resolve(layer.asset_file)
+                destination = destination_csv.parent / Path(layer.asset_file).name
+                if source.resolve() != destination.resolve():
+                    shutil.copy2(source, destination)
+        except (FileNotFoundError, OSError, ValueError, csv.Error) as exc:
+            messagebox.showerror("Exporter les calques géométriques", str(exc), parent=self)
 
     @staticmethod
     def _template_export_filename(template_name: str) -> str:
@@ -1209,6 +1435,277 @@ class CatalogueWindow(tk.Toplevel):
 
     def _get_selected_book(self) -> CatalogueBook | None:
         return self.catalogue.get_book(self._selected_book_id) if self._selected_book_id is not None else None
+
+    def _build_geometric_layers_tab(self) -> None:
+        self._geometric_layers_tab.rowconfigure(0, weight=1)
+        self._geometric_layers_tab.columnconfigure(0, weight=1)
+        panes = ttk.PanedWindow(self._geometric_layers_tab, orient=tk.HORIZONTAL)
+        panes.grid(row=0, column=0, sticky="nsew")
+        master = ttk.Frame(panes, padding=(0, 0, 8, 0))
+        detail = ttk.Frame(panes, padding=(8, 0, 0, 0))
+        panes.add(master, weight=1)
+        panes.add(detail, weight=2)
+        master.rowconfigure(3, weight=1)
+        master.columnconfigure(0, weight=1)
+        ttk.Label(master, text="Rechercher").grid(row=0, column=0, sticky="w")
+        entry = ttk.Entry(master, textvariable=self._geometric_layer_search_var)
+        entry.grid(row=1, column=0, sticky="ew", pady=(2, 8))
+        self._geometric_layer_search_var.trace_add("write", lambda *_: self._refresh_geometric_layer_list())
+        actions = ttk.Frame(master)
+        actions.grid(row=2, column=0, sticky="w", pady=(0, 8))
+        self._geometric_layer_add_button = ttk.Button(actions, image=self._icon_map_pin_plus, command=self._add_geometric_layer)
+        self._geometric_layer_add_button.pack(side=tk.LEFT)
+        self._attach_tooltip(self._geometric_layer_add_button, "Ajouter un calque géométrique")
+        self._geometric_layer_reimport_button = ttk.Button(
+            actions,
+            image=self._icon_refresh,
+            command=self._reimport_selected_geometric_layer,
+            state=tk.DISABLED,
+        )
+        self._geometric_layer_reimport_button.pack(side=tk.LEFT, padx=(4, 0))
+        self._attach_tooltip(self._geometric_layer_reimport_button, "Réimporter / remplacer le fichier Traces")
+        self._geometric_layer_delete_button = ttk.Button(actions, image=self._icon_trash, command=self._delete_selected_geometric_layer)
+        self._geometric_layer_delete_button.pack(side=tk.LEFT, padx=(4, 0))
+        self._attach_tooltip(self._geometric_layer_delete_button, "Supprimer le calque géométrique")
+        list_frame = ttk.Frame(master)
+        list_frame.grid(row=3, column=0, sticky="nsew")
+        self._geometric_layer_listbox = tk.Listbox(list_frame, exportselection=False)
+        self._geometric_layer_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self._geometric_layer_listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self._geometric_layer_listbox.configure(yscrollcommand=scrollbar.set)
+        self._geometric_layer_listbox.bind("<<ListboxSelect>>", self._on_geometric_layer_selected)
+
+        detail.columnconfigure(0, weight=1)
+        detail.rowconfigure(1, weight=1)
+        self._geometric_layer_modules_label = ttk.Label(detail, text="Contenu :", state=tk.DISABLED)
+        self._geometric_layer_modules_label.grid(row=0, column=0, sticky="nw")
+        self._geometric_layer_modules_frame = ttk.Frame(detail)
+        self._geometric_layer_modules_frame.grid(row=0, column=1, sticky="ew", pady=(0, 8))
+        self._geometric_layer_map_view = GeoMapView(detail, maximum_zoom=_CALIBRATION_MAP_MAXIMUM_ZOOM)
+        self._geometric_layer_map_view.grid(row=1, column=0, columnspan=2, sticky="nsew")
+        self._geometric_layer_map_view.set_canvas_overlay_drawer(self._render_geometric_layer_preview)
+
+    def _visible_geometric_layer_base_city_ids(self) -> list[str]:
+        search = _normalize_search_text(self._geometric_layer_search_var.get().strip())
+        city_ids = set(self.catalogue.geometric_layers) | self._staged_geometric_layer_base_city_ids
+        city_ids -= self._deleted_geometric_layer_base_city_ids
+        return sorted(
+            (city_id for city_id in city_ids if not search or search in _normalize_search_text(self.catalogue.get_city(city_id).name) or search in _normalize_search_text(city_id)),
+            key=lambda city_id: (self.catalogue.get_city(city_id).name.casefold(), city_id),
+        )
+
+    def _available_geometric_layer_bases(self) -> list[CatalogueCity]:
+        return [
+            city for city in self.catalogue.iter_cities()
+            if self.catalogue.is_triangle_base_city(city.city_id)
+            and (self.catalogue.get_geometric_layer(city.city_id) is None or city.city_id in self._deleted_geometric_layer_base_city_ids)
+            and city.city_id not in self._staged_geometric_layer_base_city_ids
+        ]
+
+    def _refresh_geometric_layer_list(self) -> None:
+        visible = self._visible_geometric_layer_base_city_ids()
+        selected_id = self._selected_geometric_layer_base_city_id
+        self._geometric_layer_listbox.delete(0, tk.END)
+        for city_id in visible:
+            self._geometric_layer_listbox.insert(tk.END, self.catalogue.get_city(city_id).name)
+        if selected_id in visible:
+            index = visible.index(selected_id)
+            self._geometric_layer_listbox.selection_set(index)
+            self._geometric_layer_listbox.activate(index)
+            self._geometric_layer_listbox.see(index)
+        elif selected_id is not None:
+            self._selected_geometric_layer_base_city_id = None
+            self._set_geometric_layer_preview_document(None)
+        self._catalogue_notebook.tab(self._geometric_layers_tab, text=f"Calques géométriques ({len(visible)})")
+        self._load_selected_geometric_layer()
+
+    def _on_geometric_layer_selected(self, _event=None) -> None:
+        selection = self._geometric_layer_listbox.curselection()
+        visible = self._visible_geometric_layer_base_city_ids()
+        self._selected_geometric_layer_base_city_id = visible[selection[0]] if selection else None
+        self._set_geometric_layer_preview_document(None)
+        self._load_selected_geometric_layer()
+
+    def _add_geometric_layer(self) -> None:
+        cities = self._available_geometric_layer_bases()
+        if not cities:
+            messagebox.showinfo("Ajouter un calque géométrique", "Aucune Base disponible sans calque.", parent=self)
+            return
+        GeometricLayerCreationDialog(self, cities, self._stage_new_geometric_layer).show()
+
+    def _load_selected_geometric_layer(self) -> None:
+        base_city_id = self._selected_geometric_layer_base_city_id
+        layer = self.catalogue.get_geometric_layer(base_city_id) if base_city_id is not None else None
+        if base_city_id in self._deleted_geometric_layer_base_city_ids:
+            layer = None
+        if base_city_id in self._staged_geometric_layer_documents:
+            self._set_geometric_layer_preview_document(self._staged_geometric_layer_documents[base_city_id])
+        elif layer is not None and self._geometric_layer_preview_document is None:
+            try:
+                path = CatalogueGeometricLayerAssetResolver(self._paths).resolve(layer.asset_file)
+                self._set_geometric_layer_preview_document(load_geometric_layer_document(path))
+            except (FileNotFoundError, ValueError) as exc:
+                messagebox.showerror("Calque géométrique", str(exc), parent=self)
+        can_delete = layer is not None or base_city_id in self._staged_geometric_layer_base_city_ids
+        self._geometric_layer_delete_button.configure(state=tk.NORMAL if can_delete else tk.DISABLED)
+        self._geometric_layer_reimport_button.configure(state=tk.NORMAL if can_delete else tk.DISABLED)
+        self._geometric_layer_map_view._request_redraw()
+
+    def _stage_new_geometric_layer(self, base_city_id: str, source: str) -> bool:
+        return self._stage_geometric_layer(base_city_id, source, select=True)
+
+    def _reimport_selected_geometric_layer(self) -> None:
+        base_city_id = self._selected_geometric_layer_base_city_id
+        if base_city_id is None:
+            return
+        source = filedialog.askopenfilename(
+            parent=self,
+            title="Réimporter un fichier Traces",
+            initialdir=self._paths.exports_dir,
+            filetypes=[("Fichiers Traces", "*.traces.json"), ("Tous les fichiers", "*.*")],
+        )
+        if not source:
+            return
+        self._stage_geometric_layer(base_city_id, source, select=True)
+
+    def _stage_geometric_layer(self, base_city_id: str, source: str, *, select: bool) -> bool:
+        try:
+            document = self._geometric_layer_assets.stage_geometric_layer(base_city_id, source)
+        except (OSError, ValueError, KeyError) as exc:
+            messagebox.showerror("Calque géométrique", str(exc), parent=self)
+            return False
+        self._deleted_geometric_layer_base_city_ids.discard(base_city_id)
+        self._staged_geometric_layer_base_city_ids.add(base_city_id)
+        self._staged_geometric_layer_documents[base_city_id] = document
+        if select:
+            self._selected_geometric_layer_base_city_id = base_city_id
+            self._set_geometric_layer_preview_document(document)
+        self._refresh_geometric_layer_list()
+        self._mark_dirty()
+        return True
+
+    def _delete_selected_geometric_layer(self) -> None:
+        base_city_id = self._selected_geometric_layer_base_city_id
+        if base_city_id is None:
+            return
+        try:
+            self._geometric_layer_assets.delete_geometric_layer_asset(base_city_id)
+        except (FileNotFoundError, ValueError, KeyError) as exc:
+            messagebox.showerror("Calque géométrique", str(exc), parent=self)
+            return
+        self._staged_geometric_layer_base_city_ids.discard(base_city_id)
+        self._staged_geometric_layer_documents.pop(base_city_id, None)
+        self._pending_geometric_layer_display_overrides.pop(base_city_id, None)
+        self._deleted_geometric_layer_base_city_ids.add(base_city_id)
+        self._selected_geometric_layer_base_city_id = None
+        self._set_geometric_layer_preview_document(None)
+        self._refresh_geometric_layer_list()
+        self._mark_dirty()
+
+    def _render_geometric_layer_preview(self) -> None:
+        document = self._geometric_layer_preview_document
+        view = self._geometric_layer_map_view
+        if document is None or view.map is None:
+            return
+        context = GeometricLayerRenderContext(
+            view.map.image_size,
+            view.map.lambert_to_pixel,
+            view._map_to_screen,
+        )
+        GeometricLayerRenderer(view.canvas, context).render_document(
+            document,
+            module_ids=self._selected_geometric_layer_module_ids(),
+            display_overrides=self._current_geometric_layer_display_overrides(),
+            clear=True,
+        )
+
+    def _set_geometric_layer_preview_document(self, document: GeometricLayerDocument | None) -> None:
+        self._geometric_layer_preview_document = document
+        self._geometric_layer_module_vars.clear()
+        for child in self._geometric_layer_modules_frame.winfo_children():
+            child.destroy()
+        self._geometric_layer_modules_label.configure(state=tk.NORMAL if document is not None else tk.DISABLED)
+        if document is None:
+            return
+        for index, module in enumerate(document.modules):
+            variable = tk.BooleanVar(master=self, value=True)
+            self._geometric_layer_module_vars[module.module_id] = variable
+            checkbox = ttk.Checkbutton(
+                self._geometric_layer_modules_frame,
+                text=module.label,
+                variable=variable,
+                command=self._on_geometric_layer_module_selection_changed,
+            )
+            checkbox.grid(row=0, column=index * 2, sticky="w")
+            customize = ttk.Button(
+                self._geometric_layer_modules_frame,
+                text="...",
+                width=3,
+                command=lambda current_module=module: self._customize_geometric_layer_module(current_module),
+            )
+            customize.grid(row=0, column=index * 2 + 1, sticky="w", padx=(2, 8))
+            self._attach_tooltip(customize, f"Personnaliser l’affichage de {module.label}")
+
+    def _selected_geometric_layer_module_ids(self) -> set[str]:
+        return {
+            module_id
+            for module_id, variable in self._geometric_layer_module_vars.items()
+            if variable.get()
+        }
+
+    def _on_geometric_layer_module_selection_changed(self) -> None:
+        self._geometric_layer_map_view._request_redraw()
+
+    def _current_geometric_layer_display_overrides(self) -> dict[str, GeometricLayerModuleDisplayOverride]:
+        base_city_id = self._selected_geometric_layer_base_city_id
+        if base_city_id is None:
+            return {}
+        layer = self.catalogue.get_geometric_layer(base_city_id)
+        if layer is not None:
+            return dict(layer.display_overrides)
+        return dict(self._pending_geometric_layer_display_overrides.get(base_city_id, {}))
+
+    def _customize_geometric_layer_module(self, module: GeometricLayerModule) -> None:
+        GeometricLayerModuleDisplayDialog(
+            self,
+            module,
+            self._current_geometric_layer_display_overrides().get(module.module_id),
+            lambda color_bgr, width: self._set_geometric_layer_module_display_override(
+                module.module_id,
+                color_bgr=color_bgr,
+                width=width,
+            ),
+        )
+
+    def _set_geometric_layer_module_display_override(
+        self,
+        module_id: str,
+        *,
+        color_bgr: tuple[int, int, int] | None,
+        width: int | None,
+    ) -> None:
+        base_city_id = self._selected_geometric_layer_base_city_id
+        if base_city_id is None:
+            return
+        layer = self.catalogue.get_geometric_layer(base_city_id)
+        if layer is not None:
+            self.catalogue.set_geometric_layer_display_override(
+                base_city_id,
+                module_id,
+                color_bgr=color_bgr,
+                width=width,
+            )
+        else:
+            overrides = self._pending_geometric_layer_display_overrides.setdefault(base_city_id, {})
+            if color_bgr is None and width is None:
+                overrides.pop(module_id, None)
+                if not overrides:
+                    self._pending_geometric_layer_display_overrides.pop(base_city_id, None)
+            else:
+                overrides[module_id] = GeometricLayerModuleDisplayOverride(color_bgr, width)
+        self._geometric_layer_map_view._request_redraw()
+        self._mark_dirty()
 
     def _refresh_books(self) -> None:
         books = [book for book in self.catalogue.iter_books() if not book.archived]
@@ -2063,17 +2560,29 @@ class CatalogueWindow(tk.Toplevel):
         self.catalogue = catalogue
         self._map_calibration.rebind_catalogue(catalogue)
         self._book_assets.rebind_catalogue(catalogue)
+        self._geometric_layer_assets.rebind_catalogue(catalogue)
 
     def _apply_changes(self) -> None:
         """Valide uniquement l'état courant de cette session, sans persistance."""
         created_assets: list[Path] = []
         created_book_assets: list[Path] = []
+        created_geometric_layer_assets: list[Path] = []
         try:
             self.catalogue.validate()
             created_assets = self._map_calibration.commit()
             created_book_assets = self._book_assets.commit()
+            created_geometric_layer_assets = self._geometric_layer_assets.commit()
+            for base_city_id, overrides in self._pending_geometric_layer_display_overrides.items():
+                for module_id, override in overrides.items():
+                    self.catalogue.set_geometric_layer_display_override(
+                        base_city_id,
+                        module_id,
+                        color_bgr=override.color_bgr,
+                        width=override.width,
+                    )
             save_catalogue(self.catalogue, self._catalogue_path)
         except (OSError, ValueError, TypeError) as exc:
+            self._geometric_layer_assets.rollback(created_geometric_layer_assets)
             self._map_calibration.rollback(created_assets)
             self._book_assets.rollback(created_book_assets)
             messagebox.showerror("Catalogue", str(exc), parent=self)
@@ -2083,6 +2592,12 @@ class CatalogueWindow(tk.Toplevel):
         self._validated_catalogue = self.catalogue.clone()
         self._map_calibration.finalize_commit()
         self._book_assets.finalize_commit()
+        self._geometric_layer_assets.finalize_commit()
+        self._staged_geometric_layer_base_city_ids.clear()
+        self._staged_geometric_layer_documents.clear()
+        self._pending_geometric_layer_display_overrides.clear()
+        self._deleted_geometric_layer_base_city_ids.clear()
+        self._refresh_geometric_layer_list()
         self._set_dirty(False)
 
     def _cancel_changes(self) -> None:
@@ -2091,6 +2606,7 @@ class CatalogueWindow(tk.Toplevel):
             self._selected_template_rank_slot.set_selected(False)
         self._map_calibration.discard()
         self._book_assets.discard()
+        self._geometric_layer_assets.discard()
         self._replace_working_catalogue(self._validated_catalogue.clone())
         self._selected_city_id = None
         self._selected_beacon_id = None
@@ -2098,6 +2614,12 @@ class CatalogueWindow(tk.Toplevel):
         self._selected_template_id = self.catalogue.default_template_id
         self._selected_map_id = self.catalogue.default_map_id
         self._selected_book_id = self.catalogue.default_book_id
+        self._selected_geometric_layer_base_city_id = None
+        self._set_geometric_layer_preview_document(None)
+        self._staged_geometric_layer_base_city_ids.clear()
+        self._staged_geometric_layer_documents.clear()
+        self._pending_geometric_layer_display_overrides.clear()
+        self._deleted_geometric_layer_base_city_ids.clear()
         self._selected_calibration_city_id = None
         self._selected_template_triangle_id = None
         self._selected_template_rank_slot = None
@@ -2106,6 +2628,7 @@ class CatalogueWindow(tk.Toplevel):
         self._refresh_triangle_tree()
         self._refresh_maps()
         self._refresh_books()
+        self._refresh_geometric_layer_list()
         self._refresh_templates()
         self._update_context_actions()
         self._load_selected_city()
@@ -2122,6 +2645,7 @@ class CatalogueWindow(tk.Toplevel):
                 return False
             self._map_calibration.discard()
             self._book_assets.discard()
+            self._geometric_layer_assets.discard()
         self.destroy()
         return True
 
@@ -2281,6 +2805,115 @@ class CatalogueWindow(tk.Toplevel):
         if result.errors:
             lines.extend(("", f"{len(result.errors)} ligne(s) n'ont pas pu être importée(s) :", "\n".join(result.errors[:12])))
         return "\n".join(lines)
+
+    def _import_geometric_layers_csv(self):
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="Importer des calques géométriques",
+            initialdir=self._paths.exports_dir,
+            filetypes=[("Fichiers CSV", "*.csv"), ("Tous les fichiers", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            result = self._read_geometric_layers_csv(path)
+        except (OSError, UnicodeError, ValueError, csv.Error) as exc:
+            messagebox.showerror("Importer des calques géométriques", str(exc), parent=self)
+            return
+        if result.staged_count:
+            self._refresh_geometric_layer_list()
+            self._mark_dirty()
+        summary = self._format_geometric_layer_import_summary(result)
+        if result.errors:
+            messagebox.showwarning("Import des calques géométriques", summary, parent=self)
+        else:
+            messagebox.showinfo("Import des calques géométriques", summary, parent=self)
+
+    @staticmethod
+    def _format_geometric_layer_import_summary(result: GeometricLayerCsvImportResult) -> str:
+        lines = ["Import terminé.", ""]
+        lines.append(f"{result.staged_count} ajouté(s) ou remplacé(s).")
+        lines.append(f"{result.already_present_count} déjà présent(s).")
+        lines.append(f"{len(result.errors)} erreur(s).")
+        if result.errors:
+            lines.extend(("", "\n".join(result.errors[:12])))
+        return "\n".join(lines)
+
+    def _read_geometric_layers_csv(self, path: str) -> GeometricLayerCsvImportResult:
+        csv_path = Path(path).resolve()
+        with csv_path.open("r", encoding="utf-8-sig", newline="") as csv_file:
+            rows = [
+                (line_number, row)
+                for line_number, row in enumerate(csv.reader(csv_file, delimiter=";"), start=1)
+                if any(str(value).strip() for value in row)
+            ]
+        if not rows:
+            raise ValueError("Le fichier CSV calques est vide.")
+        if tuple(str(value).strip() for value in rows[0][1]) != self._GEOMETRIC_LAYER_CSV_HEADER:
+            raise ValueError("L'en-tête CSV doit être : Base;Fichier")
+        cities_by_name: dict[str, list[CatalogueCity]] = {}
+        for city in self.catalogue.iter_cities():
+            cities_by_name.setdefault(city.name.strip().casefold(), []).append(city)
+        seen_base_city_ids: set[str] = set()
+        staged_base_city_ids: list[str] = []
+        already_present_count = 0
+        errors: list[str] = []
+        resolver = CatalogueGeometricLayerAssetResolver(self._paths)
+        root = csv_path.parent.resolve()
+        for line_number, row in rows[1:]:
+            if len(row) != 2:
+                errors.append(f"Ligne {line_number} : deux colonnes Base;Fichier sont attendues.")
+                continue
+            base_name, filename = (str(value).strip() for value in row)
+            if not base_name or not filename:
+                errors.append(f"Ligne {line_number} : Base et Fichier ne peuvent pas être vides.")
+                continue
+            cities = cities_by_name.get(base_name.casefold(), [])
+            if len(cities) != 1:
+                detail = "Base inconnue" if not cities else "nom de Base ambigu"
+                errors.append(f"Ligne {line_number} : {detail} : {base_name}.")
+                continue
+            city = cities[0]
+            if city.city_id in seen_base_city_ids:
+                errors.append(f"Ligne {line_number} : Base dupliquée : {base_name}.")
+                continue
+            seen_base_city_ids.add(city.city_id)
+            if not self.catalogue.is_triangle_base_city(city.city_id):
+                errors.append(f"Ligne {line_number} : {base_name} n'est la Base d'aucun triangle.")
+                continue
+            relative_source = Path(filename)
+            if relative_source.is_absolute() or relative_source.drive or ".." in relative_source.parts:
+                errors.append(f"Ligne {line_number} : Fichier doit rester dans le dossier du CSV.")
+                continue
+            source = (root / relative_source).resolve()
+            try:
+                source.relative_to(root)
+            except ValueError:
+                errors.append(f"Ligne {line_number} : Fichier doit rester dans le dossier du CSV.")
+                continue
+            layer = self.catalogue.get_geometric_layer(city.city_id)
+            try:
+                is_same_asset = (
+                    layer is not None
+                    and Path(layer.asset_file).name == relative_source.name
+                    and resolver.resolve(layer.asset_file).read_bytes() == source.read_bytes()
+                )
+                if is_same_asset:
+                    already_present_count += 1
+                    continue
+                document = self._geometric_layer_assets.stage_geometric_layer(city.city_id, source)
+            except (FileNotFoundError, OSError, ValueError, KeyError) as exc:
+                errors.append(f"Ligne {line_number} : {exc}")
+                continue
+            self._deleted_geometric_layer_base_city_ids.discard(city.city_id)
+            self._staged_geometric_layer_base_city_ids.add(city.city_id)
+            self._staged_geometric_layer_documents[city.city_id] = document
+            staged_base_city_ids.append(city.city_id)
+        return GeometricLayerCsvImportResult(
+            staged_base_city_ids=tuple(staged_base_city_ids),
+            already_present_count=already_present_count,
+            errors=tuple(errors),
+        )
 
     def _import_triangles_csv(self):
         path = filedialog.askopenfilename(

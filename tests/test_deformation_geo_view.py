@@ -2,6 +2,7 @@ import inspect
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from src.assembleur_deformation_window import (
     DEFORMATION_MAXIMUM_ZOOM,
@@ -9,6 +10,7 @@ from src.assembleur_deformation_window import (
 )
 from src.assembleur_geo_map_view import GeoMapView
 from src.assembleur_geo_map_view import GeoMapPixelMarker
+from src.assembleur_geo_map_view import GeoMapMarker, GeoMapPolyline
 
 
 def _rotated_view(rotation_deg: float) -> GeoMapView:
@@ -37,6 +39,14 @@ def test_rotated_geo_view_screen_to_lambert_uses_inverse_view_rotation():
     view.map = SimpleNamespace(pixel_to_lambert=lambda x, y: (x * 10.0, y * 10.0))
     point = (42.0, 81.0)
     assert view.screen_to_lambert(*view._map_to_screen(*point)) == pytest.approx((420.0, 810.0))
+
+
+@pytest.mark.parametrize("rotation_deg", (0.0, 37.5, 90.0, 181.0, 270.0))
+def test_pixel_to_screen_uses_the_existing_rotated_map_transform(rotation_deg):
+    view = _rotated_view(rotation_deg)
+    point = (125.5, 87.25)
+
+    assert view.pixel_to_screen(*point) == pytest.approx(view._map_to_screen(*point))
 
 
 def test_assembly_view_rotation_aligns_ob_vectors():
@@ -166,3 +176,45 @@ def test_recenter_on_pixel_marker_uses_its_observed_position():
 def test_deformation_window_allows_four_times_the_standard_maximum_zoom():
     standard = inspect.signature(GeoMapView).parameters["maximum_zoom"].default
     assert DEFORMATION_MAXIMUM_ZOOM == pytest.approx(standard * 4)
+
+
+def test_background_overlay_is_drawn_after_map_and_before_triangle_and_markers(monkeypatch):
+    calls = []
+
+    class _Canvas:
+        def delete(self, _tag):
+            pass
+
+        def create_image(self, *_args, **_kwargs):
+            calls.append("map")
+
+        def create_line(self, *_args, **_kwargs):
+            calls.append("triangle")
+
+    view = object.__new__(GeoMapView)
+    view._redraw_after_id = None
+    view._hide_tooltip = lambda: None
+    view.canvas = _Canvas()
+    view._marker_screen_positions = {}
+    view.map = SimpleNamespace(
+        image_size=(100, 80),
+        geographic_to_pixel=lambda latitude, longitude: (longitude, latitude),
+    )
+    view._source_image = Image.new("RGB", (100, 80), "white")
+    view._canvas_size = lambda: (100, 80)
+    view._screen_to_map = lambda x, y: (x, y)
+    view._map_to_screen = lambda x, y: (x, y)
+    view._view_scale = 1.0
+    view._view_rotation_deg = 0.0
+    view._polylines = [GeoMapPolyline(((10.0, 10.0), (20.0, 20.0)), closed=False)]
+    view._pixel_polylines = []
+    view._markers = [GeoMapMarker("O", 30.0, 30.0, "O")]
+    view._pixel_markers = []
+    view._draw_marker = lambda *_args, **_kwargs: calls.append("marker")
+    view._background_canvas_overlay_drawer = lambda: calls.append("layer")
+    view._canvas_overlay_drawer = None
+    monkeypatch.setattr("src.assembleur_geo_map_view.ImageTk.PhotoImage", lambda image: image)
+
+    view._redraw()
+
+    assert calls == ["map", "layer", "triangle", "marker"]
