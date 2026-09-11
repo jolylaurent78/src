@@ -87,7 +87,7 @@ def _viewer_for_loading(catalogue, reference, source_triangle_id):
 def test_owner_loads_once_and_forwards_persisted_overrides(monkeypatch):
     catalogue, base, triangle, reference = _catalogue_and_resolver()
     catalogue.set_geometric_layer(base.city_id, f"geometric-layers/{base.city_id}.traces.json")
-    catalogue.set_geometric_layer_display_override(base.city_id, "lumiere", color_bgr=(1, 2, 3), width=4)
+    catalogue.set_geometric_layer_display_override("lumiere", color_bgr=(1, 2, 3), width=4)
     viewer = _viewer_for_loading(catalogue, reference, triangle.triangle_id)
     resolved, parsed = [], []
 

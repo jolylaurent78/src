@@ -9,7 +9,7 @@
   "modules": [
     {
       "id": "lumiere",
-      "label": "lumiere",
+      "label": "Lumière",
       "traces": [
         {
           "geometry": {
@@ -894,487 +894,19 @@
               "- HeureampmLumiere = AM"
             ]
           }
-        },
-        {
-          "geometry": {
-            "type": "circle",
-            "center_x_l93": 654350.5461689354,
-            "center_y_l93": 6664713.848608277,
-            "radius_km": 157.31335144873336
-          },
-          "graphics": {
-            "name": "Cercle Lumiere",
-            "color_bgr": [
-              36,
-              28,
-              237
-            ],
-            "width": 1,
-            "style": "plein",
-            "show_name": null,
-            "visible": true,
-            "tags": {
-              "level": "construction",
-              "module": "lumiere"
-            },
-            "tooltips": [
-              "Heure 12:00",
-              "Hauteur Soleil =50.57°",
-              "Hauteur stylet =191.29km",
-              "Distance : 157.313351km"
-            ],
-            "scenario_tooltips": [
-              "Paramètres du scénario:",
-              "- ChoixcalendrierLumiere = Déclinaison",
-              "- ChoixheureLumiere = =",
-              "- HeureampmLumiere = AM"
-            ]
-          }
-        },
-        {
-          "geometry": {
-            "type": "circle",
-            "center_x_l93": 654350.5461689354,
-            "center_y_l93": 6664713.848608277,
-            "radius_km": 158.74559362110415
-          },
-          "graphics": {
-            "name": "Cercle Lumiere",
-            "color_bgr": [
-              36,
-              28,
-              237
-            ],
-            "width": 1,
-            "style": "plein",
-            "show_name": null,
-            "visible": true,
-            "tags": {
-              "level": "construction",
-              "module": "lumiere"
-            },
-            "tooltips": [
-              "Heure 12:22",
-              "Hauteur Soleil =50.31°",
-              "Hauteur stylet =191.29km",
-              "Distance : 158.745594km"
-            ],
-            "scenario_tooltips": [
-              "Paramètres du scénario:",
-              "- ChoixcalendrierLumiere = Déclinaison",
-              "- ChoixheureLumiere = +2",
-              "- HeureampmLumiere = PM"
-            ]
-          }
-        },
-        {
-          "geometry": {
-            "type": "circle",
-            "center_x_l93": 654350.5461689354,
-            "center_y_l93": 6664713.848608277,
-            "radius_km": 158.8479802001767
-          },
-          "graphics": {
-            "name": "Cercle Lumiere",
-            "color_bgr": [
-              36,
-              28,
-              237
-            ],
-            "width": 1,
-            "style": "plein",
-            "show_name": null,
-            "visible": true,
-            "tags": {
-              "level": "construction",
-              "module": "lumiere"
-            },
-            "tooltips": [
-              "Heure 11:38",
-              "Hauteur Soleil =50.29°",
-              "Hauteur stylet =191.29km",
-              "Distance : 158.847980km"
-            ],
-            "scenario_tooltips": [
-              "Paramètres du scénario:",
-              "- ChoixcalendrierLumiere = Déclinaison",
-              "- ChoixheureLumiere = +2",
-              "- HeureampmLumiere = AM"
-            ]
-          }
-        },
-        {
-          "geometry": {
-            "type": "circle",
-            "center_x_l93": 654350.5461689354,
-            "center_y_l93": 6664713.848608277,
-            "radius_km": 169.75548755684122
-          },
-          "graphics": {
-            "name": "Cercle Lumiere",
-            "color_bgr": [
-              36,
-              28,
-              237
-            ],
-            "width": 1,
-            "style": "plein",
-            "show_name": null,
-            "visible": true,
-            "tags": {
-              "level": "construction",
-              "module": "lumiere"
-            },
-            "tooltips": [
-              "Heure 13:04",
-              "Hauteur Soleil =48.41°",
-              "Hauteur stylet =191.29km",
-              "Distance : 169.755488km"
-            ],
-            "scenario_tooltips": [
-              "Paramètres du scénario:",
-              "- ChoixcalendrierLumiere = Déclinaison",
-              "- ChoixheureLumiere = 11:00",
-              "- HeureampmLumiere = PM"
-            ]
-          }
-        },
-        {
-          "geometry": {
-            "type": "circle",
-            "center_x_l93": 654350.5461689354,
-            "center_y_l93": 6664713.848608277,
-            "radius_km": 170.05225251732006
-          },
-          "graphics": {
-            "name": "Cercle Lumiere",
-            "color_bgr": [
-              36,
-              28,
-              237
-            ],
-            "width": 1,
-            "style": "plein",
-            "show_name": null,
-            "visible": true,
-            "tags": {
-              "level": "construction",
-              "module": "lumiere"
-            },
-            "tooltips": [
-              "Heure 10:56",
-              "Hauteur Soleil =48.36°",
-              "Hauteur stylet =191.29km",
-              "Distance : 170.052253km"
-            ],
-            "scenario_tooltips": [
-              "Paramètres du scénario:",
-              "- ChoixcalendrierLumiere = Déclinaison",
-              "- ChoixheureLumiere = 11:00",
-              "- HeureampmLumiere = AM"
-            ]
-          }
-        },
-        {
-          "geometry": {
-            "type": "circle",
-            "center_x_l93": 654350.5461689354,
-            "center_y_l93": 6664713.848608277,
-            "radius_km": 185.02418289255954
-          },
-          "graphics": {
-            "name": "Cercle Lumiere",
-            "color_bgr": [
-              36,
-              28,
-              237
-            ],
-            "width": 1,
-            "style": "plein",
-            "show_name": null,
-            "visible": true,
-            "tags": {
-              "level": "construction",
-              "module": "lumiere"
-            },
-            "tooltips": [
-              "Heure 13:35",
-              "Hauteur Soleil =45.95°",
-              "Hauteur stylet =191.29km",
-              "Distance : 185.024183km"
-            ],
-            "scenario_tooltips": [
-              "Paramètres du scénario:",
-              "- ChoixcalendrierLumiere = Standard",
-              "- ChoixheureLumiere = Clef",
-              "- HeureampmLumiere = PM"
-            ]
-          }
-        },
-        {
-          "geometry": {
-            "type": "circle",
-            "center_x_l93": 654350.5461689354,
-            "center_y_l93": 6664713.848608277,
-            "radius_km": 185.4659056061511
-          },
-          "graphics": {
-            "name": "Cercle Lumiere",
-            "color_bgr": [
-              36,
-              28,
-              237
-            ],
-            "width": 1,
-            "style": "plein",
-            "show_name": null,
-            "visible": true,
-            "tags": {
-              "level": "construction",
-              "module": "lumiere"
-            },
-            "tooltips": [
-              "Heure 10:25",
-              "Hauteur Soleil =45.89°",
-              "Hauteur stylet =191.29km",
-              "Distance : 185.465906km"
-            ],
-            "scenario_tooltips": [
-              "Paramètres du scénario:",
-              "- ChoixcalendrierLumiere = Standard",
-              "- ChoixheureLumiere = Clef",
-              "- HeureampmLumiere = AM"
-            ]
-          }
-        },
-        {
-          "geometry": {
-            "type": "circle",
-            "center_x_l93": 654350.5461689354,
-            "center_y_l93": 6664713.848608277,
-            "radius_km": 195.42509509892503
-          },
-          "graphics": {
-            "name": "Cercle Lumiere",
-            "color_bgr": [
-              36,
-              28,
-              237
-            ],
-            "width": 1,
-            "style": "plein",
-            "show_name": null,
-            "visible": true,
-            "tags": {
-              "level": "construction",
-              "module": "lumiere"
-            },
-            "tooltips": [
-              "Heure 13:51",
-              "Hauteur Soleil =44.39°",
-              "Hauteur stylet =191.29km",
-              "Distance : 195.425095km"
-            ],
-            "scenario_tooltips": [
-              "Paramètres du scénario:",
-              "- ChoixcalendrierLumiere = Déclinaison",
-              "- ChoixheureLumiere = 10:09",
-              "- HeureampmLumiere = PM"
-            ]
-          }
-        },
-        {
-          "geometry": {
-            "type": "circle",
-            "center_x_l93": 654350.5461689354,
-            "center_y_l93": 6664713.848608277,
-            "radius_km": 195.9443832770222
-          },
-          "graphics": {
-            "name": "Cercle Lumiere",
-            "color_bgr": [
-              36,
-              28,
-              237
-            ],
-            "width": 1,
-            "style": "plein",
-            "show_name": null,
-            "visible": true,
-            "tags": {
-              "level": "construction",
-              "module": "lumiere"
-            },
-            "tooltips": [
-              "Heure 10:09",
-              "Hauteur Soleil =44.31°",
-              "Hauteur stylet =191.29km",
-              "Distance : 195.944383km"
-            ],
-            "scenario_tooltips": [
-              "Paramètres du scénario:",
-              "- ChoixcalendrierLumiere = Déclinaison",
-              "- ChoixheureLumiere = 10:09",
-              "- HeureampmLumiere = AM"
-            ]
-          }
-        },
-        {
-          "geometry": {
-            "type": "circle",
-            "center_x_l93": 654350.5461689354,
-            "center_y_l93": 6664713.848608277,
-            "radius_km": 217.28018009155554
-          },
-          "graphics": {
-            "name": "Cercle Lumiere",
-            "color_bgr": [
-              36,
-              28,
-              237
-            ],
-            "width": 1,
-            "style": "plein",
-            "show_name": null,
-            "visible": true,
-            "tags": {
-              "level": "construction",
-              "module": "lumiere"
-            },
-            "tooltips": [
-              "Heure 14:18",
-              "Hauteur Soleil =41.36°",
-              "Hauteur stylet =191.29km",
-              "Distance : 217.280180km"
-            ],
-            "scenario_tooltips": [
-              "Paramètres du scénario:",
-              "- ChoixcalendrierLumiere = Standard",
-              "- ChoixheureLumiere = -2",
-              "- HeureampmLumiere = PM"
-            ]
-          }
-        },
-        {
-          "geometry": {
-            "type": "circle",
-            "center_x_l93": 654350.5461689354,
-            "center_y_l93": 6664713.848608277,
-            "radius_km": 217.93986632976925
-          },
-          "graphics": {
-            "name": "Cercle Lumiere",
-            "color_bgr": [
-              36,
-              28,
-              237
-            ],
-            "width": 1,
-            "style": "plein",
-            "show_name": null,
-            "visible": true,
-            "tags": {
-              "level": "construction",
-              "module": "lumiere"
-            },
-            "tooltips": [
-              "Heure 09:42",
-              "Hauteur Soleil =41.27°",
-              "Hauteur stylet =191.29km",
-              "Distance : 217.939866km"
-            ],
-            "scenario_tooltips": [
-              "Paramètres du scénario:",
-              "- ChoixcalendrierLumiere = Standard",
-              "- ChoixheureLumiere = -2",
-              "- HeureampmLumiere = AM"
-            ]
-          }
-        },
-        {
-          "geometry": {
-            "type": "circle",
-            "center_x_l93": 654350.5461689354,
-            "center_y_l93": 6664713.848608277,
-            "radius_km": 372.6033995575699
-          },
-          "graphics": {
-            "name": "Cercle Lumiere",
-            "color_bgr": [
-              36,
-              28,
-              237
-            ],
-            "width": 1,
-            "style": "plein",
-            "show_name": null,
-            "visible": true,
-            "tags": {
-              "level": "construction",
-              "module": "lumiere"
-            },
-            "tooltips": [
-              "Heure 15:59",
-              "Hauteur Soleil =27.18°",
-              "Hauteur stylet =191.29km",
-              "Distance : 372.603400km"
-            ],
-            "scenario_tooltips": [
-              "Paramètres du scénario:",
-              "- ChoixcalendrierLumiere = Déclinaison",
-              "- ChoixheureLumiere = -2",
-              "- HeureampmLumiere = PM"
-            ]
-          }
-        },
-        {
-          "geometry": {
-            "type": "circle",
-            "center_x_l93": 654350.5461689354,
-            "center_y_l93": 6664713.848608277,
-            "radius_km": 374.13908902610933
-          },
-          "graphics": {
-            "name": "Cercle Lumiere",
-            "color_bgr": [
-              36,
-              28,
-              237
-            ],
-            "width": 1,
-            "style": "plein",
-            "show_name": null,
-            "visible": true,
-            "tags": {
-              "level": "construction",
-              "module": "lumiere"
-            },
-            "tooltips": [
-              "Heure 08:01",
-              "Hauteur Soleil =27.08°",
-              "Hauteur stylet =191.29km",
-              "Distance : 374.139089km"
-            ],
-            "scenario_tooltips": [
-              "Paramètres du scénario:",
-              "- ChoixcalendrierLumiere = Déclinaison",
-              "- ChoixheureLumiere = -2",
-              "- HeureampmLumiere = AM"
-            ]
-          }
         }
       ]
     },
     {
       "id": "ombre",
-      "label": "ombre",
+      "label": "Ombre",
       "traces": [
         {
           "geometry": {
             "type": "line_image_azimuth",
             "x_l93": 308183.83000937954,
             "y_l93": 6656279.69596811,
-            "azimuth_deg": 11.811273995787104
+            "azimuth_deg": 12.302005417428546
           },
           "graphics": {
             "name": "Ligne Horaire 08:01",
@@ -1393,7 +925,7 @@
             },
             "tooltips": [
               "Heure Locale AM: 08:01",
-              "Azimut % Midi : -76.25"
+              "Azimut % Midi : -75.75"
             ],
             "scenario_tooltips": [
               "Paramètres du scénario:",
@@ -1408,7 +940,7 @@
             "type": "line_image_azimuth",
             "x_l93": 308183.83000937954,
             "y_l93": 6656279.69596811,
-            "azimuth_deg": 14.311273995787104
+            "azimuth_deg": 14.802005417428546
           },
           "graphics": {
             "name": "Ligne Horaire 08:12",
@@ -1427,7 +959,7 @@
             },
             "tooltips": [
               "Heure Locale AM: 08:12",
-              "Azimut % Midi : -73.75"
+              "Azimut % Midi : -73.25"
             ],
             "scenario_tooltips": [
               "Paramètres du scénario:",
@@ -1442,14 +974,14 @@
             "type": "line_image_azimuth",
             "x_l93": 308183.83000937954,
             "y_l93": 6656279.69596811,
-            "azimuth_deg": 36.311273995787104
+            "azimuth_deg": 36.802005417428546
           },
           "graphics": {
             "name": "Ligne Horaire 09:42",
             "color_bgr": [
-              255,
-              193,
-              132
+              164,
+              82,
+              0
             ],
             "width": 1,
             "style": "plein",
@@ -1461,7 +993,7 @@
             },
             "tooltips": [
               "Heure Locale AM: 09:42",
-              "Azimut % Midi : -51.75"
+              "Azimut % Midi : -51.25"
             ],
             "scenario_tooltips": [
               "Paramètres du scénario:",
@@ -1476,7 +1008,7 @@
             "type": "line_image_azimuth",
             "x_l93": 308183.83000937954,
             "y_l93": 6656279.69596811,
-            "azimuth_deg": 46.311273995787104
+            "azimuth_deg": 46.802005417428546
           },
           "graphics": {
             "name": "Ligne Horaire 10:09",
@@ -1495,7 +1027,7 @@
             },
             "tooltips": [
               "Heure Locale AM: 10:09",
-              "Azimut % Midi : -41.75"
+              "Azimut % Midi : -41.25"
             ],
             "scenario_tooltips": [
               "Paramètres du scénario:",
@@ -1510,7 +1042,7 @@
             "type": "line_image_azimuth",
             "x_l93": 308183.83000937954,
             "y_l93": 6656279.69596811,
-            "azimuth_deg": 49.811273995787104
+            "azimuth_deg": 50.302005417428546
           },
           "graphics": {
             "name": "Ligne Horaire 10:25",
@@ -1529,7 +1061,7 @@
             },
             "tooltips": [
               "Heure Locale AM: 10:25",
-              "Azimut % Midi : -38.25"
+              "Azimut % Midi : -37.75"
             ],
             "scenario_tooltips": [
               "Paramètres du scénario:",
@@ -1544,7 +1076,7 @@
             "type": "line_image_azimuth",
             "x_l93": 308183.83000937954,
             "y_l93": 6656279.69596811,
-            "azimuth_deg": 60.811273995787104
+            "azimuth_deg": 61.302005417428546
           },
           "graphics": {
             "name": "Ligne Horaire 10:56",
@@ -1563,7 +1095,7 @@
             },
             "tooltips": [
               "Heure Locale AM: 10:56",
-              "Azimut % Midi : -27.25"
+              "Azimut % Midi : -26.75"
             ],
             "scenario_tooltips": [
               "Paramètres du scénario:",
@@ -1578,14 +1110,14 @@
             "type": "line_image_azimuth",
             "x_l93": 308183.83000937954,
             "y_l93": 6656279.69596811,
-            "azimuth_deg": 77.8112739957871
+            "azimuth_deg": 78.30200541742855
           },
           "graphics": {
             "name": "Ligne Horaire 11:38",
             "color_bgr": [
-              164,
-              82,
-              0
+              255,
+              193,
+              132
             ],
             "width": 1,
             "style": "plein",
@@ -1597,7 +1129,7 @@
             },
             "tooltips": [
               "Heure Locale AM: 11:38",
-              "Azimut % Midi : -10.25"
+              "Azimut % Midi : -9.75"
             ],
             "scenario_tooltips": [
               "Paramètres du scénario:",
@@ -1612,7 +1144,7 @@
             "type": "line_image_azimuth",
             "x_l93": 308183.83000937954,
             "y_l93": 6656279.69596811,
-            "azimuth_deg": 79.3112739957871
+            "azimuth_deg": 79.80200541742855
           },
           "graphics": {
             "name": "Ligne Horaire 11:42",
@@ -1631,7 +1163,7 @@
             },
             "tooltips": [
               "Heure Locale AM: 11:42",
-              "Azimut % Midi : -8.75"
+              "Azimut % Midi : -8.25"
             ],
             "scenario_tooltips": [
               "Paramètres du scénario:",
@@ -1646,7 +1178,7 @@
             "type": "line_image_azimuth",
             "x_l93": 308183.83000937954,
             "y_l93": 6656279.69596811,
-            "azimuth_deg": 86.8112739957871
+            "azimuth_deg": 87.30200541742855
           },
           "graphics": {
             "name": "Ligne Horaire 12:00",
@@ -1665,7 +1197,7 @@
             },
             "tooltips": [
               "Heure Locale AM: 12:00",
-              "Azimut % Midi : -1.25"
+              "Azimut % Midi : -0.75"
             ],
             "scenario_tooltips": [
               "Paramètres du scénario:",
@@ -1680,7 +1212,7 @@
             "type": "line_image_azimuth",
             "x_l93": 308183.83000937954,
             "y_l93": 6656279.69596811,
-            "azimuth_deg": 88.8112739957871
+            "azimuth_deg": 89.30200541742855
           },
           "graphics": {
             "name": "Ligne Horaire 12:00",
@@ -1699,7 +1231,7 @@
             },
             "tooltips": [
               "Heure Locale PM: 12:00",
-              "Azimut % Midi : 0.75"
+              "Azimut % Midi : 1.25"
             ],
             "scenario_tooltips": [
               "Paramètres du scénario:",
@@ -1714,7 +1246,7 @@
             "type": "line_image_azimuth",
             "x_l93": 308183.83000937954,
             "y_l93": 6656279.69596811,
-            "azimuth_deg": 96.3112739957871
+            "azimuth_deg": 96.80200541742855
           },
           "graphics": {
             "name": "Ligne Horaire 12:18",
@@ -1733,7 +1265,7 @@
             },
             "tooltips": [
               "Heure Locale PM: 12:18",
-              "Azimut % Midi : 8.25"
+              "Azimut % Midi : 8.75"
             ],
             "scenario_tooltips": [
               "Paramètres du scénario:",
@@ -1748,14 +1280,14 @@
             "type": "line_image_azimuth",
             "x_l93": 308183.83000937954,
             "y_l93": 6656279.69596811,
-            "azimuth_deg": 97.8112739957871
+            "azimuth_deg": 98.30200541742855
           },
           "graphics": {
             "name": "Ligne Horaire 12:22",
             "color_bgr": [
-              164,
-              82,
-              0
+              255,
+              193,
+              132
             ],
             "width": 1,
             "style": "plein",
@@ -1767,7 +1299,7 @@
             },
             "tooltips": [
               "Heure Locale PM: 12:22",
-              "Azimut % Midi : 9.75"
+              "Azimut % Midi : 10.25"
             ],
             "scenario_tooltips": [
               "Paramètres du scénario:",
@@ -1782,7 +1314,7 @@
             "type": "line_image_azimuth",
             "x_l93": 308183.83000937954,
             "y_l93": 6656279.69596811,
-            "azimuth_deg": 114.8112739957871
+            "azimuth_deg": 115.30200541742855
           },
           "graphics": {
             "name": "Ligne Horaire 13:04",
@@ -1801,7 +1333,7 @@
             },
             "tooltips": [
               "Heure Locale PM: 13:04",
-              "Azimut % Midi : 26.75"
+              "Azimut % Midi : 27.25"
             ],
             "scenario_tooltips": [
               "Paramètres du scénario:",
@@ -1816,7 +1348,7 @@
             "type": "line_image_azimuth",
             "x_l93": 308183.83000937954,
             "y_l93": 6656279.69596811,
-            "azimuth_deg": 125.8112739957871
+            "azimuth_deg": 126.30200541742855
           },
           "graphics": {
             "name": "Ligne Horaire 13:35",
@@ -1835,7 +1367,7 @@
             },
             "tooltips": [
               "Heure Locale PM: 13:35",
-              "Azimut % Midi : 37.75"
+              "Azimut % Midi : 38.25"
             ],
             "scenario_tooltips": [
               "Paramètres du scénario:",
@@ -1850,7 +1382,7 @@
             "type": "line_image_azimuth",
             "x_l93": 308183.83000937954,
             "y_l93": 6656279.69596811,
-            "azimuth_deg": 129.3112739957871
+            "azimuth_deg": 129.80200541742855
           },
           "graphics": {
             "name": "Ligne Horaire 13:51",
@@ -1869,7 +1401,7 @@
             },
             "tooltips": [
               "Heure Locale PM: 13:51",
-              "Azimut % Midi : 41.25"
+              "Azimut % Midi : 41.75"
             ],
             "scenario_tooltips": [
               "Paramètres du scénario:",
@@ -1884,14 +1416,14 @@
             "type": "line_image_azimuth",
             "x_l93": 308183.83000937954,
             "y_l93": 6656279.69596811,
-            "azimuth_deg": 139.3112739957871
+            "azimuth_deg": 139.80200541742855
           },
           "graphics": {
             "name": "Ligne Horaire 14:18",
             "color_bgr": [
-              255,
-              193,
-              132
+              164,
+              82,
+              0
             ],
             "width": 1,
             "style": "plein",
@@ -1903,7 +1435,7 @@
             },
             "tooltips": [
               "Heure Locale PM: 14:18",
-              "Azimut % Midi : 51.25"
+              "Azimut % Midi : 51.75"
             ],
             "scenario_tooltips": [
               "Paramètres du scénario:",
@@ -1918,7 +1450,7 @@
             "type": "line_image_azimuth",
             "x_l93": 308183.83000937954,
             "y_l93": 6656279.69596811,
-            "azimuth_deg": 161.3112739957871
+            "azimuth_deg": 161.80200541742855
           },
           "graphics": {
             "name": "Ligne Horaire 15:48",
@@ -1937,7 +1469,7 @@
             },
             "tooltips": [
               "Heure Locale PM: 15:48",
-              "Azimut % Midi : 73.25"
+              "Azimut % Midi : 73.75"
             ],
             "scenario_tooltips": [
               "Paramètres du scénario:",
@@ -1952,7 +1484,7 @@
             "type": "line_image_azimuth",
             "x_l93": 308183.83000937954,
             "y_l93": 6656279.69596811,
-            "azimuth_deg": 163.8112739957871
+            "azimuth_deg": 164.30200541742855
           },
           "graphics": {
             "name": "Ligne Horaire 15:59",
@@ -1971,7 +1503,7 @@
             },
             "tooltips": [
               "Heure Locale PM: 15:59",
-              "Azimut % Midi : 75.75"
+              "Azimut % Midi : 76.25"
             ],
             "scenario_tooltips": [
               "Paramètres du scénario:",

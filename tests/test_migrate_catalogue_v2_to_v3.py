@@ -44,6 +44,8 @@ def _catalogue_v2(provider=None) -> dict:
     data.pop("defaultMapId")
     data.pop("catalogueReferenceMapId")
     data.pop("maps")
+    data.pop("geometricLayerDisplayOverrides")
+    data.pop("geometricLayers")
     assert beacon.beacon_id in data["beacons"][0]["beaconId"]
     return data
 

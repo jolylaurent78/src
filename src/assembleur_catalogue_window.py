@@ -598,7 +598,6 @@ class CatalogueWindow(tk.Toplevel):
         self._geometric_layer_module_vars: dict[str, tk.BooleanVar] = {}
         self._staged_geometric_layer_base_city_ids: set[str] = set()
         self._staged_geometric_layer_documents: dict[str, GeometricLayerDocument] = {}
-        self._pending_geometric_layer_display_overrides: dict[str, dict[str, GeometricLayerModuleDisplayOverride]] = {}
         self._deleted_geometric_layer_base_city_ids: set[str] = set()
         self._selected_calibration_city_id: str | None = None
         self._selected_template_triangle_id: str | None = None
@@ -1596,7 +1595,6 @@ class CatalogueWindow(tk.Toplevel):
             return
         self._staged_geometric_layer_base_city_ids.discard(base_city_id)
         self._staged_geometric_layer_documents.pop(base_city_id, None)
-        self._pending_geometric_layer_display_overrides.pop(base_city_id, None)
         self._deleted_geometric_layer_base_city_ids.add(base_city_id)
         self._selected_geometric_layer_base_city_id = None
         self._set_geometric_layer_preview_document(None)
@@ -1645,7 +1643,7 @@ class CatalogueWindow(tk.Toplevel):
                 command=lambda current_module=module: self._customize_geometric_layer_module(current_module),
             )
             customize.grid(row=0, column=index * 2 + 1, sticky="w", padx=(2, 8))
-            self._attach_tooltip(customize, f"Personnaliser l’affichage de {module.label}")
+            self._attach_tooltip(customize, f"Personnaliser l’affichage global de {module.label}")
 
     def _selected_geometric_layer_module_ids(self) -> set[str]:
         return {
@@ -1658,13 +1656,7 @@ class CatalogueWindow(tk.Toplevel):
         self._geometric_layer_map_view._request_redraw()
 
     def _current_geometric_layer_display_overrides(self) -> dict[str, GeometricLayerModuleDisplayOverride]:
-        base_city_id = self._selected_geometric_layer_base_city_id
-        if base_city_id is None:
-            return {}
-        layer = self.catalogue.get_geometric_layer(base_city_id)
-        if layer is not None:
-            return dict(layer.display_overrides)
-        return dict(self._pending_geometric_layer_display_overrides.get(base_city_id, {}))
+        return self.catalogue.get_geometric_layer_display_overrides()
 
     def _customize_geometric_layer_module(self, module: GeometricLayerModule) -> None:
         GeometricLayerModuleDisplayDialog(
@@ -1685,25 +1677,11 @@ class CatalogueWindow(tk.Toplevel):
         color_bgr: tuple[int, int, int] | None,
         width: int | None,
     ) -> None:
-        base_city_id = self._selected_geometric_layer_base_city_id
-        if base_city_id is None:
-            return
-        layer = self.catalogue.get_geometric_layer(base_city_id)
-        if layer is not None:
-            self.catalogue.set_geometric_layer_display_override(
-                base_city_id,
-                module_id,
-                color_bgr=color_bgr,
-                width=width,
-            )
-        else:
-            overrides = self._pending_geometric_layer_display_overrides.setdefault(base_city_id, {})
-            if color_bgr is None and width is None:
-                overrides.pop(module_id, None)
-                if not overrides:
-                    self._pending_geometric_layer_display_overrides.pop(base_city_id, None)
-            else:
-                overrides[module_id] = GeometricLayerModuleDisplayOverride(color_bgr, width)
+        self.catalogue.set_geometric_layer_display_override(
+            module_id,
+            color_bgr=color_bgr,
+            width=width,
+        )
         self._geometric_layer_map_view._request_redraw()
         self._mark_dirty()
 
@@ -2572,14 +2550,6 @@ class CatalogueWindow(tk.Toplevel):
             created_assets = self._map_calibration.commit()
             created_book_assets = self._book_assets.commit()
             created_geometric_layer_assets = self._geometric_layer_assets.commit()
-            for base_city_id, overrides in self._pending_geometric_layer_display_overrides.items():
-                for module_id, override in overrides.items():
-                    self.catalogue.set_geometric_layer_display_override(
-                        base_city_id,
-                        module_id,
-                        color_bgr=override.color_bgr,
-                        width=override.width,
-                    )
             save_catalogue(self.catalogue, self._catalogue_path)
         except (OSError, ValueError, TypeError) as exc:
             self._geometric_layer_assets.rollback(created_geometric_layer_assets)
@@ -2595,7 +2565,6 @@ class CatalogueWindow(tk.Toplevel):
         self._geometric_layer_assets.finalize_commit()
         self._staged_geometric_layer_base_city_ids.clear()
         self._staged_geometric_layer_documents.clear()
-        self._pending_geometric_layer_display_overrides.clear()
         self._deleted_geometric_layer_base_city_ids.clear()
         self._refresh_geometric_layer_list()
         self._set_dirty(False)
@@ -2618,7 +2587,6 @@ class CatalogueWindow(tk.Toplevel):
         self._set_geometric_layer_preview_document(None)
         self._staged_geometric_layer_base_city_ids.clear()
         self._staged_geometric_layer_documents.clear()
-        self._pending_geometric_layer_display_overrides.clear()
         self._deleted_geometric_layer_base_city_ids.clear()
         self._selected_calibration_city_id = None
         self._selected_template_triangle_id = None

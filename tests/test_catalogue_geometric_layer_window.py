@@ -125,7 +125,6 @@ def _window_for_layer_logic(catalogue):
     window._geometric_layer_preview_document = None
     window._staged_geometric_layer_base_city_ids = set()
     window._staged_geometric_layer_documents = {}
-    window._pending_geometric_layer_display_overrides = {}
     window._deleted_geometric_layer_base_city_ids = set()
     window._geometric_layer_module_vars = {}
     window._geometric_layer_modules_frame = _ModuleFrame()
@@ -448,7 +447,7 @@ def test_preview_renderer_uses_catalogue_map_transform_and_all_modules(monkeypat
     window._geometric_layer_preview_document = document
     window._geometric_layer_module_vars = {"m1": _ModuleVariable(value=True)}
     window._selected_geometric_layer_base_city_id = None
-    window._pending_geometric_layer_display_overrides = {}
+    window.catalogue = Catalogue()
     window._geometric_layer_map_view = SimpleNamespace(map=map_object, canvas=canvas, _map_to_screen=lambda x, y: (x + 1, y + 2))
     monkeypatch.setattr("src.assembleur_catalogue_window.GeometricLayerRenderer", _Renderer)
 
@@ -502,7 +501,7 @@ def test_each_module_has_a_customization_button_for_its_own_identity(monkeypatch
 
 def test_customization_dialog_receives_the_existing_module_override(monkeypatch):
     catalogue, _base, layered_base, _archived_base, _non_base = _catalogue_with_bases()
-    catalogue.set_geometric_layer_display_override(layered_base, "light", color_bgr=(3, 2, 1), width=5)
+    catalogue.set_geometric_layer_display_override("light", color_bgr=(3, 2, 1), width=5)
     window = _window_for_layer_logic(catalogue)
     window._selected_geometric_layer_base_city_id = layered_base
     captured = []
@@ -588,7 +587,7 @@ def test_catalogue_window_loads_the_supplied_palette_icon_once(monkeypatch):
     assert [path.name for path in loaded].count("palette.png") == 1
 
 
-def test_staged_layer_override_is_previewed_without_mutating_catalogue(monkeypatch):
+def test_staged_layer_override_is_global_and_previewed(monkeypatch):
     catalogue, base, _layered_base, _archived_base, _non_base = _catalogue_with_bases()
     window = _window_for_layer_logic(catalogue)
     window._selected_geometric_layer_base_city_id = base
@@ -605,9 +604,7 @@ def test_staged_layer_override_is_previewed_without_mutating_catalogue(monkeypat
 
     CatalogueWindow._set_geometric_layer_module_display_override(window, "m1", color_bgr=(7, 8, 9), width=3)
     assert catalogue.get_geometric_layer(base) is None
-    assert window._pending_geometric_layer_display_overrides == {
-        base: {"m1": GeometricLayerModuleDisplayOverride((7, 8, 9), 3)},
-    }
+    assert catalogue.get_geometric_layer_display_override("m1") == GeometricLayerModuleDisplayOverride((7, 8, 9), 3)
     window._geometric_layer_preview_document = _document_with_modules(("m1", "Module"))
     window._geometric_layer_module_vars = {"m1": _ModuleVariable(value=True)}
     window._geometric_layer_map_view = SimpleNamespace(
@@ -728,6 +725,7 @@ def test_cancel_discards_staged_geometric_asset_and_restores_the_working_catalog
     window = object.__new__(CatalogueWindow)
     window.catalogue = catalogue
     window._validated_catalogue = catalogue.clone()
+    window.catalogue.set_geometric_layer_display_override("m1", width=2)
     window._map_calibration = SimpleNamespace(discard=lambda: None, rebind_catalogue=lambda _catalogue: None)
     window._book_assets = SimpleNamespace(discard=lambda: None, rebind_catalogue=lambda _catalogue: None)
     window._geometric_layer_assets = controller
@@ -745,9 +743,6 @@ def test_cancel_discards_staged_geometric_asset_and_restores_the_working_catalog
     window._geometric_layer_modules_label = _Widget()
     window._staged_geometric_layer_base_city_ids = {base}
     window._staged_geometric_layer_documents = {}
-    window._pending_geometric_layer_display_overrides = {
-        base: {"m1": GeometricLayerModuleDisplayOverride((1, 2, 3), 2)},
-    }
     window._deleted_geometric_layer_base_city_ids = set()
     window._selected_calibration_city_id = None
     window._selected_template_triangle_id = None
@@ -767,8 +762,8 @@ def test_cancel_discards_staged_geometric_asset_and_restores_the_working_catalog
     assert not staged.exists()
     assert controller._staged == {}
     assert window.catalogue.get_geometric_layer(base) is None
+    assert window.catalogue.get_geometric_layer_display_override("m1") is None
     assert window._selected_geometric_layer_base_city_id is None
-    assert window._pending_geometric_layer_display_overrides == {}
     assert window.dirty is False
 
 
@@ -798,7 +793,6 @@ def _window_for_apply(calls):
     window._validated_catalogue = None
     window._staged_geometric_layer_base_city_ids = {"CITY-USR-1"}
     window._staged_geometric_layer_documents = {}
-    window._pending_geometric_layer_display_overrides = {}
     window._deleted_geometric_layer_base_city_ids = {"CITY-USR-2"}
     window._refresh_geometric_layer_list = lambda: calls.append("refresh")
     window._set_dirty = lambda value: calls.append(("dirty", value))
@@ -820,7 +814,7 @@ def test_apply_commits_layer_assets_before_save_and_finalizes_only_after_success
     assert window._deleted_geometric_layer_base_city_ids == set()
 
 
-def test_apply_persists_pending_staged_layer_override_before_saving(monkeypatch, tmp_path):
+def test_apply_saves_global_override_alongside_a_staged_layer(monkeypatch, tmp_path):
     catalogue, base, _layered_base, _archived_base, _non_base = _catalogue_with_bases()
     paths = ApplicationPaths.from_runtime(installation_root=tmp_path / "installation", user_data_root=tmp_path / "user")
     source = tmp_path / "source.traces.json"
@@ -836,9 +830,7 @@ def test_apply_persists_pending_staged_layer_override_before_saving(monkeypatch,
     window._on_catalogue_applied = None
     window._validated_catalogue = catalogue.clone()
     window._staged_geometric_layer_base_city_ids = {base}
-    window._pending_geometric_layer_display_overrides = {
-        base: {"m1": GeometricLayerModuleDisplayOverride((9, 8, 7), 4)},
-    }
+    catalogue.set_geometric_layer_display_override("m1", color_bgr=(9, 8, 7), width=4)
     window._refresh_geometric_layer_list = lambda: None
     window._set_dirty = lambda value: setattr(window, "dirty", value)
     saved = []
@@ -846,9 +838,8 @@ def test_apply_persists_pending_staged_layer_override_before_saving(monkeypatch,
 
     CatalogueWindow._apply_changes(window)
 
-    assert catalogue.get_geometric_layer_display_override(base, "m1") == GeometricLayerModuleDisplayOverride((9, 8, 7), 4)
-    assert saved[0].get_geometric_layer_display_override(base, "m1") == GeometricLayerModuleDisplayOverride((9, 8, 7), 4)
-    assert window._pending_geometric_layer_display_overrides == {}
+    assert catalogue.get_geometric_layer_display_override("m1") == GeometricLayerModuleDisplayOverride((9, 8, 7), 4)
+    assert saved[0].get_geometric_layer_display_override("m1") == GeometricLayerModuleDisplayOverride((9, 8, 7), 4)
     assert window.dirty is False
 
 

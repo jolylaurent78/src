@@ -1991,7 +1991,10 @@ class TriangleViewerManual(
             window.clear_geometric_layer()
             messagebox.showerror("Calque géométrique", str(exc), parent=window)
             return
-        window.set_geometric_layer(document, display_overrides=layer.display_overrides)
+        window.set_geometric_layer(
+            document,
+            display_overrides=self.catalogue.get_geometric_layer_display_overrides(),
+        )
 
     def _deformation_window_vertex_selected(self, role: str) -> None:
         state = self._deformation_state
@@ -10127,14 +10130,6 @@ class TriangleViewerManual(
             )
         self._project_core_group_to_last_drawn(world, str(final_core_group_id))
         self._invalidate_pick_cache()
-        MIG_GEO_LOGGER.info(
-            "[MIG-CACHE-TRANSFORM-001C2] orient-north commit "
-            "element=%s group=%s segment=%s pivot=(%.9g, %.9g) "
-            "currentAngleDeg=%.9g targetAngleDeg=%.9g deltaAngleDeg=%.9g",
-            element_id, final_core_group_id, f"{from_key}->{to_key}",
-            float(pivot[0]), float(pivot[1]), current_angle_deg,
-            target_angle_deg, angle_deg,
-        )
         self._redraw_from(self._last_drawn)
         self.status.config(text=f"Orientation appliquée : GROUPE — {status_label} au Nord (0°).")
 

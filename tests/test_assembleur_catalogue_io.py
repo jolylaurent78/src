@@ -22,7 +22,7 @@ def _catalogue() -> Catalogue:
     return catalogue
 
 
-def test_v7_round_trip_keeps_ids_references_counters_and_injected_provider(tmp_path):
+def test_v8_round_trip_keeps_ids_references_counters_and_injected_provider(tmp_path):
     catalogue = _catalogue()
     city_ids = list(catalogue.cities)
     beacon_one = catalogue.add_beacon(city_ids[0])
@@ -39,7 +39,7 @@ def test_v7_round_trip_keeps_ids_references_counters_and_injected_provider(tmp_p
     serialized = json.loads(path.read_text(encoding="utf-8"))
     loaded = load_catalogue(path, id_provider=user_provider)
 
-    assert serialized["version"] == 7
+    assert serialized["version"] == 8
     assert serialized["idCounters"] == {"city": 3, "beacon": 2, "triangle": 1, "template": 1, "map": 0, "book": 0}
     assert list(serialized["idCounters"]) == ["city", "beacon", "triangle", "template", "map", "book"]
     assert set(loaded.cities) == set(catalogue.cities)
@@ -195,6 +195,6 @@ def test_save_replaces_existing_file_atomically(tmp_path):
     save_catalogue(second, path)
 
     data = json.loads(path.read_text(encoding="utf-8"))
-    assert data["version"] == 7
+    assert data["version"] == 8
     assert data["templates"][0]["description"] == "Nouvelle description"
     assert not path.with_suffix(".json.tmp").exists()

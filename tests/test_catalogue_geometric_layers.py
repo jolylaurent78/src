@@ -98,14 +98,16 @@ def test_geometric_layers_round_trip_uses_camel_case_and_migrates_v5(tmp_path) -
     save_catalogue(catalogue, path)
     serialized = json.loads(path.read_text(encoding="utf-8"))
     assert serialized["geometricLayers"] == {
-        base: {"asset": "geometric-layers/a.traces.json", "displayOverrides": {}},
+        base: {"asset": "geometric-layers/a.traces.json"},
     }
+    assert serialized["geometricLayerDisplayOverrides"] == {}
     assert "geometric_layers" not in serialized
     assert catalogue_to_dict(load_catalogue(path)) == serialized
 
     v5 = dict(serialized)
     v5["version"] = 5
     v5.pop("geometricLayers")
+    v5.pop("geometricLayerDisplayOverrides")
     migrated = migrate_catalogue_data_v5_to_v6(v5)
     assert migrated["version"] == 6
     assert migrated["geometricLayers"] == {}

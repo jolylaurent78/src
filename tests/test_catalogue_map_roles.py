@@ -40,6 +40,7 @@ def _as_v3_fixture(data: dict) -> dict:
     data.pop("defaultBookId")
     data.pop("books")
     data.pop("catalogueReferenceMapId")
+    data.pop("geometricLayerDisplayOverrides")
     data.pop("geometricLayers")
     data["maps"] = data["maps"][:1]
     for catalogue_map in data["maps"]:

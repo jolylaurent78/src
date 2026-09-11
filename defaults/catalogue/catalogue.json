@@ -1,5 +1,5 @@
 {
-  "version": 7,
+  "version": 8,
   "idCounters": {
     "city": 112,
     "beacon": 4,
@@ -1466,48 +1466,66 @@
       "description": ""
     }
   ],
+  "geometricLayerDisplayOverrides": {
+    "lumiere": {
+      "colorBgr": [
+        159,
+        159,
+        255
+      ],
+      "width": 2
+    },
+    "ombre": {
+      "colorBgr": [
+        255,
+        196,
+        136
+      ],
+      "width": 2
+    }
+  },
   "geometricLayers": {
+    "CITY-SYS-000026": {
+      "asset": "geometric-layers/CITY-SYS-000026.traces.json"
+    },
+    "CITY-SYS-000027": {
+      "asset": "geometric-layers/CITY-SYS-000027.traces.json"
+    },
+    "CITY-SYS-000029": {
+      "asset": "geometric-layers/CITY-SYS-000029.traces.json"
+    },
+    "CITY-SYS-000030": {
+      "asset": "geometric-layers/CITY-SYS-000030.traces.json"
+    },
+    "CITY-SYS-000031": {
+      "asset": "geometric-layers/CITY-SYS-000031.traces.json"
+    },
+    "CITY-SYS-000032": {
+      "asset": "geometric-layers/CITY-SYS-000032.traces.json"
+    },
+    "CITY-SYS-000033": {
+      "asset": "geometric-layers/CITY-SYS-000033.traces.json"
+    },
+    "CITY-SYS-000034": {
+      "asset": "geometric-layers/CITY-SYS-000034.traces.json"
+    },
+    "CITY-SYS-000035": {
+      "asset": "geometric-layers/CITY-SYS-000035.traces.json"
+    },
+    "CITY-SYS-000036": {
+      "asset": "geometric-layers/CITY-SYS-000036.traces.json"
+    },
+    "CITY-SYS-000037": {
+      "asset": "geometric-layers/CITY-SYS-000037.traces.json"
+    },
     "CITY-SYS-000040": {
-      "asset": "geometric-layers/CITY-SYS-000040.traces.json",
-      "displayOverrides": {
-        "lumiere": {
-          "colorBgr": [
-            128,
-            128,
-            255
-          ],
-          "width": 2
-        },
-        "ombre": {
-          "colorBgr": [
-            255,
-            128,
-            0
-          ],
-          "width": 2
-        }
-      }
+      "asset": "geometric-layers/CITY-SYS-000040.traces.json"
     },
     "CITY-SYS-000041": {
-      "asset": "geometric-layers/CITY-SYS-000041.traces.json",
-      "displayOverrides": {
-        "lumiere": {
-          "colorBgr": [
-            128,
-            128,
-            255
-          ],
-          "width": 2
-        },
-        "ombre": {
-          "colorBgr": [
-            255,
-            128,
-            0
-          ],
-          "width": 2
-        }
-      }
+      "asset": "geometric-layers/CITY-SYS-000041.traces.json"
+    },
+    "CITY-SYS-000053": {
+      "asset": "geometric-layers/CITY-SYS-000053.traces.json"
     }
   }
 }

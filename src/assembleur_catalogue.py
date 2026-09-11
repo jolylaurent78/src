@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 from pathlib import PurePosixPath, PureWindowsPath
-from types import MappingProxyType
 from typing import Mapping
 
 from pyproj import Transformer
@@ -105,10 +104,6 @@ class CatalogueGeometricLayer:
 
     base_city_id: str
     asset_file: str
-    display_overrides: Mapping[str, GeometricLayerModuleDisplayOverride] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "display_overrides", MappingProxyType(dict(self.display_overrides)))
 
 
 @dataclass(frozen=True)
@@ -132,7 +127,7 @@ class TemplateValidationStatus:
 class Catalogue:
     """Agrégat racine du catalogue persistant futur."""
 
-    version = 7
+    version = 8
     _MIN_EDGE_LENGTH_M = 1e-6
     _MIN_DOUBLE_AREA_M2 = 1e-6
 
@@ -155,6 +150,7 @@ class Catalogue:
         self.maps: dict[str, CatalogueMap] = {}
         self.books: dict[str, CatalogueBook] = {}
         self.geometric_layers: dict[str, CatalogueGeometricLayer] = {}
+        self.geometric_layer_display_overrides: dict[str, GeometricLayerModuleDisplayOverride] = {}
         self.default_template_id: str | None = None
         self.default_map_id: str | None = None
         self.default_book_id: str | None = None
@@ -221,9 +217,10 @@ class Catalogue:
             for book_id, book in self.books.items()
         }
         cloned.geometric_layers = {
-            base_city_id: CatalogueGeometricLayer(layer.base_city_id, layer.asset_file, layer.display_overrides)
+            base_city_id: CatalogueGeometricLayer(layer.base_city_id, layer.asset_file)
             for base_city_id, layer in self.geometric_layers.items()
         }
+        cloned.geometric_layer_display_overrides = dict(self.geometric_layer_display_overrides)
         cloned.default_template_id = self.default_template_id
         cloned.default_map_id = self.default_map_id
         cloned.default_book_id = self.default_book_id
@@ -308,9 +305,7 @@ class Catalogue:
         self.get_city(base_city_id)
         if not self.is_triangle_base_city(base_city_id):
             raise ValueError(f"Calque géométrique : la ville {base_city_id} n'est la Base d'aucun triangle.")
-        current = self.geometric_layers.get(base_city_id)
-        overrides = current.display_overrides if current is not None else {}
-        layer = CatalogueGeometricLayer(base_city_id, self._validate_geometric_layer_asset_file(asset_file), overrides)
+        layer = CatalogueGeometricLayer(base_city_id, self._validate_geometric_layer_asset_file(asset_file))
         self.geometric_layers[base_city_id] = layer
         return layer
 
@@ -338,37 +333,29 @@ class Catalogue:
             raise ValueError("width doit être un entier supérieur ou égal à 1.")
         return width
 
-    def get_geometric_layer_display_override(
-        self, base_city_id: str, module_id: str
-    ) -> GeometricLayerModuleDisplayOverride | None:
-        layer = self.get_geometric_layer(base_city_id)
-        if layer is None:
-            raise ValueError(f"La Base {base_city_id} ne possède aucun calque géométrique.")
-        return layer.display_overrides.get(self._validate_geometric_layer_module_id(module_id))
+    def get_geometric_layer_display_override(self, module_id: str) -> GeometricLayerModuleDisplayOverride | None:
+        return self.geometric_layer_display_overrides.get(self._validate_geometric_layer_module_id(module_id))
+
+    def get_geometric_layer_display_overrides(self) -> dict[str, GeometricLayerModuleDisplayOverride]:
+        return dict(self.geometric_layer_display_overrides)
 
     def set_geometric_layer_display_override(
         self,
-        base_city_id: str,
         module_id: str,
         *,
         color_bgr: tuple[int, int, int] | None = None,
         width: int | None = None,
     ) -> None:
-        layer = self.get_geometric_layer(base_city_id)
-        if layer is None:
-            raise ValueError(f"La Base {base_city_id} ne possède aucun calque géométrique.")
         module_id = self._validate_geometric_layer_module_id(module_id)
         color = None if color_bgr is None else self._validate_geometric_layer_color_bgr(color_bgr)
         line_width = None if width is None else self._validate_geometric_layer_width(width)
-        overrides = dict(layer.display_overrides)
         if color is None and line_width is None:
-            overrides.pop(module_id, None)
+            self.geometric_layer_display_overrides.pop(module_id, None)
         else:
-            overrides[module_id] = GeometricLayerModuleDisplayOverride(color, line_width)
-        self.geometric_layers[base_city_id] = CatalogueGeometricLayer(layer.base_city_id, layer.asset_file, overrides)
+            self.geometric_layer_display_overrides[module_id] = GeometricLayerModuleDisplayOverride(color, line_width)
 
-    def remove_geometric_layer_display_override(self, base_city_id: str, module_id: str) -> None:
-        self.set_geometric_layer_display_override(base_city_id, module_id, color_bgr=None, width=None)
+    def remove_geometric_layer_display_override(self, module_id: str) -> None:
+        self.set_geometric_layer_display_override(module_id, color_bgr=None, width=None)
 
     @staticmethod
     def _validate_name(name: str, label: str) -> str:
@@ -1122,18 +1109,18 @@ class Catalogue:
                     f"Calque géométrique : la ville {layer.base_city_id} n'est la Base d'aucun triangle."
                 )
             self._validate_geometric_layer_asset_file(layer.asset_file)
-            if not isinstance(layer.display_overrides, Mapping):
-                raise ValueError(f"Calque géométrique {base_city_id} : display_overrides invalide.")
-            for module_id, override in layer.display_overrides.items():
-                self._validate_geometric_layer_module_id(module_id)
-                if not isinstance(override, GeometricLayerModuleDisplayOverride):
-                    raise ValueError(f"Calque géométrique {base_city_id} : override de module invalide.")
-                if override.color_bgr is None and override.width is None:
-                    raise ValueError(f"Calque géométrique {base_city_id} : override vide pour {module_id}.")
-                if override.color_bgr is not None:
-                    self._validate_geometric_layer_color_bgr(override.color_bgr)
-                if override.width is not None:
-                    self._validate_geometric_layer_width(override.width)
+        if not isinstance(self.geometric_layer_display_overrides, Mapping):
+            raise ValueError("Overrides graphiques globaux invalides.")
+        for module_id, override in self.geometric_layer_display_overrides.items():
+            self._validate_geometric_layer_module_id(module_id)
+            if not isinstance(override, GeometricLayerModuleDisplayOverride):
+                raise ValueError(f"Override graphique global invalide pour {module_id}.")
+            if override.color_bgr is None and override.width is None:
+                raise ValueError(f"Override graphique global vide pour {module_id}.")
+            if override.color_bgr is not None:
+                self._validate_geometric_layer_color_bgr(override.color_bgr)
+            if override.width is not None:
+                self._validate_geometric_layer_width(override.width)
         if self.default_book_id is not None:
             if not is_catalogue_book_id(self.default_book_id):
                 raise ValueError(f"defaultBookId invalide : {self.default_book_id!r}.")
