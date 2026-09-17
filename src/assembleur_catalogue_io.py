@@ -1,4 +1,4 @@
-"""Persistance JSON V8 du catalogue, indépendante de toute interface Tk."""
+"""Persistance JSON V10 du catalogue, indépendante de toute interface Tk."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ _VERSION = Catalogue.version
 
 
 def catalogue_to_dict(catalogue: Catalogue) -> dict[str, Any]:
-    """Produit la représentation JSON V8 déterministe d'un catalogue valide."""
+    """Produit la représentation JSON V10 déterministe d'un catalogue valide."""
     catalogue.validate()
     return {
         "version": _VERSION,
@@ -38,6 +38,10 @@ def catalogue_to_dict(catalogue: Catalogue) -> dict[str, Any]:
         "defaultMapId": catalogue.default_map_id,
         "defaultBookId": catalogue.default_book_id,
         "catalogueReferenceMapId": catalogue.catalogue_reference_map_id,
+        "beaconGroupColors": {
+            group: catalogue.beacon_group_colors[group]
+            for group in sorted(catalogue.beacon_group_colors)
+        },
         "cities": [
             {
                 "cityId": city.city_id,
@@ -52,6 +56,10 @@ def catalogue_to_dict(catalogue: Catalogue) -> dict[str, Any]:
             {
                 "beaconId": beacon.beacon_id,
                 "cityId": beacon.city_id,
+                "group": beacon.group,
+                "order": beacon.order,
+                "usableAsAnchor": beacon.usable_as_anchor,
+                "note": beacon.note,
                 "archived": beacon.archived,
             }
             for beacon in catalogue.iter_beacons()
@@ -161,6 +169,14 @@ def _require_number(value: object, label: str) -> float:
 def _require_optional_str(value: object, label: str) -> str | None:
     if value is not None and not isinstance(value, str):
         raise ValueError(f"Catalogue invalide : {label} doit être une chaîne ou null.")
+    return value
+
+
+def _require_optional_positive_int(value: object, label: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"Catalogue invalide : {label} doit être un entier strictement positif ou null.")
     return value
 
 
@@ -286,7 +302,7 @@ def _catalogue_map_from_dict(raw_map: object, index: int) -> CatalogueMap:
 
 
 def catalogue_from_dict(data: object, *, id_provider: CatalogueIdProvider | None = None) -> Catalogue:
-    """Réhydrate strictement un catalogue V8, sans régénérer les identifiants."""
+    """Réhydrate strictement un catalogue V10, sans régénérer les identifiants."""
     root = _require_mapping(data, "la racine")
     version = _require_field(root, "version")
     if isinstance(version, bool) or not isinstance(version, int):
@@ -301,11 +317,21 @@ def catalogue_from_dict(data: object, *, id_provider: CatalogueIdProvider | None
 
         root = migrate_catalogue_data_v7_to_v8(root)
         version = 8
+    if version == 8:
+        from tools.migrate_catalogue_v8_to_v9 import migrate_catalogue_data_v8_to_v9
+
+        root = migrate_catalogue_data_v8_to_v9(root)
+        version = 9
+    if version == 9:
+        from tools.migrate_catalogue_v9_to_v10 import migrate_catalogue_data_v9_to_v10
+
+        root = migrate_catalogue_data_v9_to_v10(root)
+        version = 10
     if version != _VERSION:
         raise ValueError(f"Version de catalogue non supportée : {version}")
     expected_root_keys = {
             "version", "idCounters", "defaultTemplateId", "defaultMapId", "catalogueReferenceMapId",
-            "cities", "beacons", "triangles", "templates", "maps", "defaultBookId", "books",
+            "cities", "beacons", "triangles", "templates", "maps", "defaultBookId", "books", "beaconGroupColors",
             "geometricLayerDisplayOverrides", "geometricLayers",
         }
     legacy_root_keys = expected_root_keys - {"defaultBookId", "books"}
@@ -353,10 +379,19 @@ def catalogue_from_dict(data: object, *, id_provider: CatalogueIdProvider | None
 
     for index, raw_beacon in enumerate(_require_list(_require_field(root, "beacons"), "beacons"), start=1):
         item = _require_mapping(raw_beacon, f"beacons[{index}]")
+        _require_exact_keys(
+            item,
+            f"beacons[{index}]",
+            {"beaconId", "cityId", "group", "order", "usableAsAnchor", "note", "archived"},
+        )
         beacon = CatalogueBeacon(
-            _require_str(item["beaconId"], "beaconId"),
-            _require_str(item["cityId"], "cityId"),
-            _require_bool(item["archived"], "archived"),
+            _require_str(_require_field(item, "beaconId"), f"beacons[{index}].beaconId"),
+            _require_str(_require_field(item, "cityId"), f"beacons[{index}].cityId"),
+            Catalogue._validate_beacon_group(_require_str(_require_field(item, "group"), f"beacons[{index}].group")),
+            Catalogue._validate_beacon_order(_require_optional_positive_int(_require_field(item, "order"), f"beacons[{index}].order")),
+            Catalogue._validate_beacon_usable_as_anchor(_require_bool(_require_field(item, "usableAsAnchor"), f"beacons[{index}].usableAsAnchor")),
+            Catalogue._validate_beacon_note(_require_str(_require_field(item, "note"), f"beacons[{index}].note")),
+            _require_bool(_require_field(item, "archived"), f"beacons[{index}].archived"),
         )
         if beacon.beacon_id in catalogue.beacons:
             raise ValueError(f"Catalogue invalide : identifiant balise dupliqué : {beacon.beacon_id}.")
@@ -430,6 +465,16 @@ def catalogue_from_dict(data: object, *, id_provider: CatalogueIdProvider | None
     catalogue.default_map_id = default_map_id
     catalogue.default_book_id = default_book_id
     catalogue.catalogue_reference_map_id = catalogue_reference_map_id
+    raw_group_colors = _require_mapping(_require_field(root, "beaconGroupColors"), "beaconGroupColors")
+    catalogue.beacon_group_colors = {}
+    for group, color in raw_group_colors.items():
+        normalized_group = Catalogue._validate_beacon_group_color_key(group)
+        if normalized_group != group:
+            raise ValueError("Catalogue invalide : une clé beaconGroupColors doit être normalisée.")
+        normalized_color = Catalogue._validate_beacon_group_color(color)
+        if normalized_color != color:
+            raise ValueError("Catalogue invalide : une couleur beaconGroupColors doit être en majuscules.")
+        catalogue.beacon_group_colors[group] = color
     catalogue.validate()
     return catalogue
 
@@ -445,7 +490,7 @@ def load_catalogue(path: str | Path, *, id_provider: CatalogueIdProvider | None 
 
 
 def save_catalogue(catalogue: Catalogue, path: str | Path) -> None:
-    """Écrit atomiquement le JSON V8, sans altérer un fichier valide existant."""
+    """Écrit atomiquement le JSON V10, sans altérer un fichier valide existant."""
     data = catalogue_to_dict(catalogue)
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)

@@ -9,6 +9,7 @@ from src.assembleur_catalogue_identity import (
     is_user_catalogue_id,
 )
 from src.assembleur_catalogue_io import catalogue_from_dict, catalogue_to_dict, load_catalogue, save_catalogue
+from tools.migrate_catalogue_v8_to_v9 import migrate_catalogue_data_v8_to_v9, migrate_catalogue_file_v8_to_v9
 
 
 def _catalogue() -> Catalogue:
@@ -22,11 +23,11 @@ def _catalogue() -> Catalogue:
     return catalogue
 
 
-def test_v8_round_trip_keeps_ids_references_counters_and_injected_provider(tmp_path):
+def test_v10_round_trip_keeps_ids_references_counters_and_injected_provider(tmp_path):
     catalogue = _catalogue()
     city_ids = list(catalogue.cities)
-    beacon_one = catalogue.add_beacon(city_ids[0])
-    beacon_two = catalogue.add_beacon(city_ids[1])
+    beacon_one = catalogue.add_beacon(city_ids[0], group="Assemblage", order=1, note="Nord")
+    beacon_two = catalogue.add_beacon(city_ids[1], group="Ligne", order=2, usable_as_anchor=False)
     catalogue.update_beacon(beacon_two.beacon_id, archived=True)
     catalogue.update_city(city_ids[1], archived=True)
     triangle_id = next(iter(catalogue.triangles))
@@ -39,7 +40,7 @@ def test_v8_round_trip_keeps_ids_references_counters_and_injected_provider(tmp_p
     serialized = json.loads(path.read_text(encoding="utf-8"))
     loaded = load_catalogue(path, id_provider=user_provider)
 
-    assert serialized["version"] == 8
+    assert serialized["version"] == 10
     assert serialized["idCounters"] == {"city": 3, "beacon": 2, "triangle": 1, "template": 1, "map": 0, "book": 0}
     assert list(serialized["idCounters"]) == ["city", "beacon", "triangle", "template", "map", "book"]
     assert set(loaded.cities) == set(catalogue.cities)
@@ -51,6 +52,8 @@ def test_v8_round_trip_keeps_ids_references_counters_and_injected_provider(tmp_p
     assert loaded.id_counters == catalogue.id_counters
     assert loaded.id_provider is user_provider
     assert loaded.get_beacon(beacon_one.beacon_id).city_id == city_ids[0]
+    assert (loaded.get_beacon(beacon_one.beacon_id).group, loaded.get_beacon(beacon_one.beacon_id).order, loaded.get_beacon(beacon_one.beacon_id).note) == ("Assemblage", 1, "Nord")
+    assert loaded.get_beacon(beacon_two.beacon_id).usable_as_anchor is False
     assert loaded.get_beacon(beacon_two.beacon_id).archived is True
     assert loaded._city_lambert_cache == {}
     created = loaded.add_city("Ville utilisateur", 42.0, 0.0)
@@ -195,6 +198,47 @@ def test_save_replaces_existing_file_atomically(tmp_path):
     save_catalogue(second, path)
 
     data = json.loads(path.read_text(encoding="utf-8"))
-    assert data["version"] == 8
+    assert data["version"] == 10
     assert data["templates"][0]["description"] == "Nouvelle description"
     assert not path.with_suffix(".json.tmp").exists()
+
+
+def test_v8_to_v9_migration_keeps_beacon_identity_and_historical_anchor_capability(tmp_path):
+    catalogue = _catalogue()
+    city_ids = list(catalogue.cities)
+    first = catalogue.add_beacon(city_ids[0])
+    second = catalogue.add_beacon(city_ids[1])
+    catalogue.update_beacon(second.beacon_id, archived=True)
+    v9 = catalogue_to_dict(catalogue)
+    v8 = dict(v9)
+    v8.pop("beaconGroupColors")
+    v8["version"] = 8
+    v8["beacons"] = [
+        {key: raw_beacon[key] for key in ("beaconId", "cityId", "archived")}
+        for raw_beacon in v9["beacons"]
+    ]
+
+    migrated = migrate_catalogue_data_v8_to_v9(v8)
+    assert migrated["version"] == 9
+    assert migrated["beacons"] == [
+        {"beaconId": first.beacon_id, "cityId": first.city_id, "group": "", "order": None, "usableAsAnchor": True, "note": "", "archived": False},
+        {"beaconId": second.beacon_id, "cityId": second.city_id, "group": "", "order": None, "usableAsAnchor": True, "note": "", "archived": True},
+    ]
+    assert catalogue_from_dict(v8).version == 10
+
+    source = tmp_path / "catalogue-v8.json"
+    source.write_text(json.dumps(v8), encoding="utf-8")
+    backup = migrate_catalogue_file_v8_to_v9(source)
+    assert backup.exists()
+    assert json.loads(source.read_text(encoding="utf-8"))["version"] == 9
+
+
+@pytest.mark.parametrize("field", ["group", "order", "usableAsAnchor", "note"])
+def test_v9_beacon_json_is_strict(field):
+    catalogue = _catalogue()
+    catalogue.add_beacon(next(iter(catalogue.cities)))
+    data = catalogue_to_dict(catalogue)
+    data["beacons"][0].pop(field)
+
+    with pytest.raises(ValueError, match="structure invalide"):
+        catalogue_from_dict(data)

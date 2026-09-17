@@ -164,6 +164,54 @@ def test_reference_clone_is_independent_and_keeps_next_ids_coherent():
     assert cloned.create_triangle("Second clone", "CITY-0003", "CITY-0004", "CITY-0005").triangle_ref_id == "STRI-0002"
 
 
+def test_scenario_reference_renames_and_removes_an_unreferenced_city():
+    reference = ScenarioReference()
+    city = reference.create_city("Temp", 48.0, 2.0)
+
+    reference.rename_city(city.city_ref_id, "Renommee")
+    reference.remove_city(city.city_ref_id)
+
+    assert city.name == "Renommee"
+    assert city.city_ref_id not in reference.cities
+
+
+@pytest.mark.parametrize("role", ["opening", "base", "light"])
+def test_scenario_reference_finds_city_references_for_each_triangle_role(role):
+    reference = ScenarioReference()
+    cities = [reference.create_city(f"Ville {index}", 45.0 + index, 2.0) for index in range(3)]
+    city_ids = [city.city_ref_id for city in cities]
+    target_index = {"opening": 0, "base": 1, "light": 2}[role]
+    triangle = reference.create_triangle("Local", *city_ids)
+
+    referencing = reference.get_triangles_referencing_city(city_ids[target_index])
+
+    assert referencing == [triangle]
+
+
+def test_scenario_reference_remove_city_refuses_referenced_city_then_allows_after_triangle_removal():
+    reference = ScenarioReference()
+    cities = [reference.create_city(f"Ville {index}", 45.0 + index, 2.0) for index in range(3)]
+    triangle = reference.create_triangle("Local", *(city.city_ref_id for city in cities))
+
+    with pytest.raises(ValueError, match="encore referencee"):
+        reference.remove_city(cities[0].city_ref_id)
+    reference.remove_triangle(triangle.triangle_ref_id)
+    reference.remove_city(cities[0].city_ref_id)
+
+    assert triangle.triangle_ref_id not in reference.triangles
+    assert cities[0].city_ref_id not in reference.cities
+
+
+def test_scenario_reference_returns_all_triangles_referencing_a_city():
+    reference = ScenarioReference()
+    target = reference.create_city("Cible", 45.0, 2.0)
+    others = [reference.create_city(f"Ville {index}", 46.0 + index, 2.0) for index in range(4)]
+    first = reference.create_triangle("Premier", target.city_ref_id, others[0].city_ref_id, others[1].city_ref_id)
+    second = reference.create_triangle("Second", others[2].city_ref_id, target.city_ref_id, others[3].city_ref_id)
+
+    assert reference.get_triangles_referencing_city(target.city_ref_id) == [first, second]
+
+
 def test_hypothesis_accepts_local_triangle_when_validated_with_resolver():
     catalogue, triangle_ids = _catalogue_with_complete_hypothesis()
     reference = ScenarioReference()

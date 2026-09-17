@@ -175,6 +175,34 @@ def analyze_hypothesis_change(
     return ScenarioHypothesisChangePlan(template_changed, global_impact, changes)
 
 
+def _active_reference_changed_triangle_ids(
+    catalogue: Catalogue,
+    active_triangle_ids: list[str],
+    old_reference: ScenarioReference,
+    new_reference: ScenarioReference,
+) -> set[str]:
+    """Retourne les triangles actifs dont la definition resolue a change."""
+    old_resolver = GeometryReferenceResolver(catalogue, old_reference)
+    new_resolver = GeometryReferenceResolver(catalogue, new_reference)
+    affected: set[str] = set()
+    for triangle_ref_id in active_triangle_ids:
+        old_triangle = old_resolver.resolve_triangle(triangle_ref_id)
+        new_triangle = new_resolver.resolve_triangle(triangle_ref_id)
+        if old_triangle != new_triangle:
+            affected.add(triangle_ref_id)
+            continue
+        if any(
+            old_resolver.resolve_city(city_ref_id) != new_resolver.resolve_city(city_ref_id)
+            for city_ref_id in (
+                old_triangle.opening_city_ref_id,
+                old_triangle.base_city_ref_id,
+                old_triangle.light_city_ref_id,
+            )
+        ):
+            affected.add(triangle_ref_id)
+    return affected
+
+
 def create_hypothesis_from_template(catalogue: Catalogue, template: HypothesisTemplate) -> ScenarioHypothesis:
     """Instancie une copie autonome des rangs d'un template Catalogue."""
     hypothesis = ScenarioHypothesis(list(template.triangle_ids_by_rank), template.template_id)
@@ -291,21 +319,28 @@ def apply_hypothesis_change_to_manual_scenario(
     plan = analyze_hypothesis_change(resolver, scenario.hypothesis, candidate)
     if not plan.rank_changes:
         if draft_reference is not None:
-            candidate_world = scenario.topoWorld.clonePhysicalState()
-            for element_id, element in candidate_world.elements.items():
-                if element.source_triangle_id:
-                    candidate_world.replace_element_materialized_definition(
-                        element_id,
-                        materialize_triangle(resolver, element.source_triangle_id),
+            affected_triangle_ids = _active_reference_changed_triangle_ids(
+                catalogue,
+                candidate.triangle_ids_by_rank,
+                scenario.reference,
+                candidate_reference,
+            )
+            if affected_triangle_ids:
+                candidate_world = scenario.topoWorld.clonePhysicalState()
+                for element_id, element in candidate_world.elements.items():
+                    if element.source_triangle_id in affected_triangle_ids:
+                        candidate_world.replace_element_materialized_definition(
+                            element_id,
+                            materialize_triangle(resolver, element.source_triangle_id),
+                        )
+                errors = candidate_world.validate_world()
+                if errors:
+                    raise ValueError(
+                        "Référentiel de scénario invalide : "
+                        + " ; ".join(str(error) for error in errors)
                     )
-            errors = candidate_world.validate_world()
-            if errors:
-                raise ValueError(
-                    "Référentiel de scénario invalide : "
-                    + " ; ".join(str(error) for error in errors)
-                )
+                scenario.topoWorld = candidate_world
             scenario.reference = candidate_reference
-            scenario.topoWorld = candidate_world
         scenario.hypothesis = candidate
         return HypothesisTopologyApplyResult(plan, (), 0)
 

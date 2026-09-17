@@ -102,6 +102,30 @@ from src.assembleur_scenario import (
     create_default_scenario_hypothesis,
     materialize_triangle,
 )
+from src.assembleur_map_print import (
+    AssembleurPrintBeacon,
+    AssembleurPrintMap,
+    AssembleurPrintSettings,
+    AssembleurPrintSnapshot,
+    AssembleurPrintTriangle,
+    AssembleurPrintViewport,
+    fit_initial_viewport,
+)
+from src.assembleur_map_print_dialog import AssembleurMapPrintDialog
+from src.assembleur_chemins_export_dialog import CheminsExportDialog
+
+
+def get_anchor_beacon_candidates(catalogue: Catalogue):
+    """Balises actives autorisées pour la création d'un GroupAnchor."""
+    return tuple(
+        beacon for beacon in catalogue.iter_beacons()
+        if not beacon.archived and beacon.usable_as_anchor
+    )
+
+
+def get_geometric_reference_beacon_candidates(catalogue: Catalogue):
+    """Balises actives disponibles comme repères géométriques."""
+    return tuple(beacon for beacon in catalogue.iter_beacons() if not beacon.archived)
 
 DEFORMATION_DRAG_REFRESH_MS = 40
 
@@ -1326,8 +1350,7 @@ class TriangleViewerManual(
                 beacon.beacon_id,
                 f"{self.catalogue.get_city(beacon.city_id).name} ({beacon.beacon_id})",
             )
-            for beacon in self.catalogue.iter_beacons()
-            if not beacon.archived
+            for beacon in get_anchor_beacon_candidates(self.catalogue)
         ]
         if not beacon_items:
             messagebox.showwarning(
@@ -3908,7 +3931,7 @@ class TriangleViewerManual(
         if not hasattr(self, "chemins_balise_ref_combo"):
             return
 
-        beacons = [beacon for beacon in self.catalogue.iter_beacons() if not beacon.archived]
+        beacons = list(get_geometric_reference_beacon_candidates(self.catalogue))
         option_to_id = {
             f"{self.catalogue.get_city(beacon.city_id).name} ({beacon.beacon_id})": beacon.beacon_id
             for beacon in beacons
@@ -4036,116 +4059,40 @@ class TriangleViewerManual(
             iid = tree.insert("", tk.END, values=tuple(values))
             self._cheminsTripletByIid[iid] = t
 
-    def _getCheminsVisibleColumnsForExport(self) -> list[dict]:
-        """Retourne les colonnes visibles de la TreeView Chemins, dans l'ordre affiche."""
-        if not hasattr(self, "chemins_tree"):
-            raise RuntimeError("Export Chemins impossible: TreeView introuvable.")
-
-        tree = self.chemins_tree
-        mesuresSpecs = TopologyCheminTriplet.getMesuresSpecs()
-        specsByKey = {str(s.get("key")): dict(s) for s in (mesuresSpecs or []) if s.get("key")}
-
-        raw_columns = tree.cget("columns")
-        if isinstance(raw_columns, str):
-            all_columns = [str(c) for c in tree.tk.splitlist(raw_columns)]
-        else:
-            all_columns = [str(c) for c in list(raw_columns)]
-
-        raw_display = tree.cget("displaycolumns")
-        if isinstance(raw_display, str):
-            if str(raw_display).strip() == "#all":
-                display_columns = list(all_columns)
-            else:
-                display_columns = [str(c) for c in tree.tk.splitlist(raw_display)]
-        else:
-            display_columns = [str(c) for c in list(raw_display)]
-
-        if not display_columns:
-            display_columns = list(all_columns)
-
-        ordered_keys: list[str] = []
-        seen: set[str] = set()
-        for raw_key in display_columns:
-            key = str(raw_key)
-            if key == "#all":
-                for c in all_columns:
-                    if c in seen:
-                        continue
-                    seen.add(c)
-                    ordered_keys.append(c)
-                continue
-            if key in seen:
-                continue
-            seen.add(key)
-            ordered_keys.append(key)
-
-        columns: list[dict] = []
-        for key in ordered_keys:
-            if key not in all_columns:
-                raise RuntimeError(f"Export Chemins impossible: colonne inconnue '{key}'.")
-
-            heading_cfg = tree.heading(key)
-            label = str((heading_cfg or {}).get("text", "") or "").strip()
-            if not label:
-                label = key
-
-            if key == "triplet":
-                columns.append({"key": "triplet", "label": label, "kind": "text"})
-                continue
-
-            spec = specsByKey.get(key)
-            if spec is None:
-                raise RuntimeError(f"Export Chemins impossible: spec de colonne manquante '{key}'.")
-            kind = str(spec.get("kind", "") or "").strip().lower()
-            if kind not in ("angle", "distance"):
-                raise RuntimeError(f"Export Chemins impossible: kind invalide pour '{key}' ({kind}).")
-            columns.append({"key": key, "label": label, "kind": kind})
-
-        if not columns:
-            raise RuntimeError("Export Chemins impossible: aucune colonne visible.")
-        return columns
 
     def onExporterCheminsExcel(self) -> None:
         scen = self._get_active_scenario()
         if scen is None:
             return
         world = scen.topoWorld
-        tc = world.topologyChemins
-        if not tc.isDefined:
+        chemins = world.topologyChemins
+        if not chemins.isDefined:
             return
-
         if not os.path.isdir(self.exports_dir):
             raise FileNotFoundError(f"Répertoire d'export introuvable: {self.exports_dir}")
 
-        scenarioName = str(getattr(scen, "name", "") or "").strip()
-        if not scenarioName:
-            scenarioName = "Scenario"
-        initial_name = f"Chemin {scenarioName}.xlsx"
-
-        path = filedialog.asksaveasfilename(
-            title="Exporter en Excel",
-            defaultextension=".xlsx",
-            filetypes=[("Excel", "*.xlsx")],
-            initialdir=self.exports_dir,
-            initialfile=initial_name,
-            parent=self,
+        scenario_name = str(scen.name or "").strip() or "Scenario"
+        beacons = list(get_geometric_reference_beacon_candidates(self.catalogue))
+        beacon_options = [
+            (beacon.beacon_id, f"{self.catalogue.get_city(beacon.city_id).name} ({beacon.beacon_id})")
+            for beacon in beacons
+        ]
+        resolved_map = getattr(self, "_resolved_scenario_map", None)
+        CheminsExportDialog(
+            self,
+            world=world,
+            chemins=chemins,
+            scenario_name=scenario_name,
+            exports_dir=self.exports_dir,
+            catalogue=self.catalogue,
+            beacon_options=beacon_options,
+            selected_beacon_id=self._getCheminsBeaconRefId(),
+            map_transform=None if resolved_map is None else resolved_map.transform,
+            map_name=None if resolved_map is None else resolved_map.catalogue_map.name,
+            beacon_world_resolver=self._beacon_world_resolver.get_world,
+            on_success=lambda path: self.status.config(text=f"Chemins exportés : {path}"),
         )
-        if not path:
-            return
-        path = os.path.normpath(path)
 
-        if os.path.exists(path):
-            overwrite = messagebox.askyesno(
-                "Écraser ?",
-                f"Le fichier existe déjà : {os.path.basename(path)}\n\nÉcraser ce fichier ?",
-                parent=self,
-            )
-            if not overwrite:
-                return
-
-        columns = self._getCheminsVisibleColumnsForExport()
-        world.topologyChemins.exportXlsx(path, columns, scenarioName)
-        self.status.config(text=f"Chemins exportés : {path}")
 
     def onEditerChemin(self) -> None:
         """Édition V6 du chemin: orientationUser + selectionMask (ordre snapshot)."""
@@ -5423,8 +5370,11 @@ class TriangleViewerManual(
         self._attach_beacon_resolver_to_world(world)
         if beacon_id not in self.catalogue.beacons:
             raise ValueError(f"Simulation AUTO: balise inconnue {beacon_id!r}")
-        if self.catalogue.get_beacon(beacon_id).archived:
+        beacon = self.catalogue.get_beacon(beacon_id)
+        if beacon.archived:
             raise ValueError(f"Simulation AUTO: balise archiv\u00c3\u00a9e {beacon_id!r}")
+        if not beacon.usable_as_anchor:
+            raise ValueError(f"Simulation AUTO: balise non utilisable comme ancrage {beacon_id!r}")
         ordered_element_ids = scen.orderedElementIds
         if not ordered_element_ids:
             raise ValueError("Simulation AUTO: orderedElementIds vide")
@@ -6995,10 +6945,11 @@ class TriangleViewerManual(
 
             sx, sy = self._world_to_screen((wx, wy))
             r = self._marker_px
+            color = self.catalogue.get_beacon_group_color(beacon.group) if beacon.group else None
             self.canvas.create_oval(
                 sx - r, sy - r, sx + r, sy + r,
-                fill="#000000",
-                outline="#000000",
+                fill=color or "#000000",
+                outline=color or "#000000",
                 tags=("balises_layer",),
             )
             self.canvas.create_text(
@@ -7747,9 +7698,7 @@ class TriangleViewerManual(
         origin = np.asarray(v_world, dtype=float)
         best = None
         best_d2 = None
-        for beacon in self.catalogue.iter_beacons():
-            if beacon.archived:
-                continue
+        for beacon in get_anchor_beacon_candidates(self.catalogue):
             world_pos = np.asarray(self._beacon_world_resolver.get_world(beacon.beacon_id), dtype=float)
             if world_pos.shape != (2,) or not np.all(np.isfinite(world_pos)):
                 continue
@@ -10768,17 +10717,6 @@ class TriangleViewerManual(
         if self._drag:
             return
         mode, idx, extra = self._hit_test(event.x, event.y)
-        if (
-            self._deformation_state.active
-            and self._deformation_canvas_mode == "move"
-            and idx is not None
-        ):
-            entry = self._last_drawn[idx]
-            element_id = str(entry.get("topoElementId", "") or "").strip()
-            if not element_id:
-                raise ValueError("Triangle projete sans topoElementId")
-            if not self._select_deformation_element(element_id):
-                return "break"
         deformation_world = (
             self._deformation_effective_world()
             if self._deformation_state.active
@@ -11437,469 +11375,108 @@ class TriangleViewerManual(
         # après pan -> invalider cache pick (coords écran changent)
         self._invalidate_pick_cache()
 
-    # ---------- Export PDF de l'affichage (A4) ----------
-    class _PdfCanvasAdapter:
-        """Adaptateur minimal Tk Canvas -> ReportLab.
+    # ---------- Impression / export PDF indépendant ----------
+    def _build_print_snapshot(self) -> AssembleurPrintSnapshot:
+        """Capture le contenu métier imprimable sans dépendre du canvas Tk."""
+        scen = self._get_active_scenario()
+        if scen is None:
+            raise ValueError("Aucun scénario actif à imprimer.")
+        world = scen.topoWorld
+        triangles = []
+        element_ids = (
+            tuple(scen.orderedElementIds)
+            if scen.source_type == "auto"
+            else tuple(getManualProjectionElementIds(world))
+        )
+        for element_id in element_ids:
+            element = world.elements[element_id]
+            points = getCoreTriangleWorldPoints(world, element_id)
+            labels = tuple(str(value) for value in element.vertex_labels)
+            if len(labels) != 3:
+                raise ValueError(f"Labels de sommet invalides pour {element_id!r}.")
+            if scen.hypothesis is None:
+                raise ValueError("ScenarioHypothesis absente pour l'impression.")
+            rank = scen.hypothesis.get_rank_for_triangle_ref(element.source_triangle_id)
+            _rotation, _translation, mirrored = world.getElementPose(element_id)
+            triangles.append(
+                AssembleurPrintTriangle(
+                    element_id=str(element_id),
+                    o=tuple(float(value) for value in points["O"]),
+                    b=tuple(float(value) for value in points["B"]),
+                    l=tuple(float(value) for value in points["L"]),
+                    labels=labels,
+                    display_label="T" + str(rank) + ("S" if mirrored else ""),
+                )
+            )
+        beacons = []
+        for beacon in self.catalogue.iter_beacons():
+            if beacon.archived:
+                continue
+            city = self.catalogue.get_city(beacon.city_id)
+            beacons.append(
+                AssembleurPrintBeacon(
+                    beacon_id=beacon.beacon_id,
+                    position=self._beacon_world_resolver.get_world(beacon.beacon_id),
+                    name=city.name,
+                )
+            )
+        map_snapshot = None
+        if self._bg is not None and self._bg_base_pil is not None:
+            map_snapshot = AssembleurPrintMap(
+                image=self._bg_base_pil,
+                x0=float(self._bg["x0"]), y0=float(self._bg["y0"]),
+                width=float(self._bg["w"]), height=float(self._bg["h"]),
+            )
+        contour_only = bool(self.show_only_group_contours.get())
+        boundaries = []
+        if contour_only:
+            for group_id in world.getLiveGroupIds():
+                for segment in world.getBoundarySegments(group_id):
+                    points = getCoreTriangleWorldPoints(world, segment.elementId)
+                    keys = {"N0": "O", "N1": "B", "N2": "L"}
+                    from_key = keys[segment.fromNodeId.rsplit(":", 1)[-1]]
+                    to_key = keys[segment.toNodeId.rsplit(":", 1)[-1]]
+                    p0, p1 = points[from_key], points[to_key]
+                    q0 = p0 + (p1 - p0) * float(segment.t0)
+                    q1 = p0 + (p1 - p0) * float(segment.t1)
+                    boundaries.append((tuple(float(value) for value in q0), tuple(float(value) for value in q1)))
+        return AssembleurPrintSnapshot(
+            scenario_name=str(scen.name or "Assemblage"),
+            map_snapshot=map_snapshot,
+            triangles=tuple(triangles), beacons=tuple(beacons),
+            contour_only=contour_only, boundary_segments=tuple(boundaries),
+        )
 
-        Les coordonnées reçues sont en "pixels" avec origine en haut-gauche (comme Tk).
-        Elles sont mappées dans une zone A4 en points (ReportLab, origine bas-gauche).
-        """
-
-        def __init__(self, rl_canvas, page_w_pt: float, page_h_pt: float,
-                     margin_left_pt: float, margin_bottom_pt: float,
-                     scale_pt_per_px: float, virtual_h_px: float):
-            self._c = rl_canvas
-            self._pw = float(page_w_pt)
-            self._ph = float(page_h_pt)
-            self._ml = float(margin_left_pt)
-            self._mb = float(margin_bottom_pt)
-            self._s = float(scale_pt_per_px)
-            self._vh = float(virtual_h_px)
-            self._id = 1
-
-        def _next_id(self):
-            i = self._id
-            self._id += 1
-            return i
-
-        def _xy(self, x, y):
-            # Tk: (0,0) en haut-gauche ; RL: (0,0) en bas-gauche
-            xp = self._ml + float(x) * self._s
-            yp = self._mb + (self._vh - float(y)) * self._s
-            return xp, yp
-
-        def _dash(self, dash):
-            if not dash:
-                return None
-            seq = [max(0.0, float(v) * self._s) for v in dash]
-            return seq if seq else None
-
-        def _set_stroke(self, color, width=1, dash=None):
-            from reportlab.lib import colors
-            from PIL import ImageColor
-            if color is None or color == "":
-                color = "#000000"
-            if isinstance(color, str) and color.startswith("#"):
-                col = colors.HexColor(color)
-            else:
-                r, g, b = ImageColor.getrgb(str(color))
-                col = colors.Color(r/255.0, g/255.0, b/255.0)
-
-            self._c.setStrokeColor(col)
-            self._c.setLineWidth(max(0.1, float(width) * self._s))
-            d = self._dash(dash)
-            if d:
-                self._c.setDash(d)
-            else:
-                self._c.setDash()
-
-        def _set_fill(self, color):
-            from reportlab.lib import colors
-            from PIL import ImageColor
-            if color is None or color == "":
-                self._c.setFillColor(colors.transparent)
-                return
-            if isinstance(color, str) and color.startswith("#"):
-                col = colors.HexColor(color)
-            else:
-                r, g, b = ImageColor.getrgb(str(color))
-                col = colors.Color(r/255.0, g/255.0, b/255.0)
-
-            self._c.setFillColor(col)
-
-        # --- API Tk (subset) ---
-        def delete(self, *args, **kwargs): return
-        def tag_lower(self, *args, **kwargs): return
-        def tag_raise(self, *args, **kwargs): return
-        # alias Tk : Canvas.lift(...) fait la même chose que tag_raise(...)
-        def coords(self, *args, **kwargs): return
-        def itemconfig(self, *args, **kwargs): return
-
-        def create_line(self, x1, y1, x2, y2, **kw):
-            fill = kw.get("fill", "#000000")
-            width = kw.get("width", 1)
-            dash = kw.get("dash", None)
-            self._set_stroke(fill, width=width, dash=dash)
-            a = self._xy(x1, y1)
-            b = self._xy(x2, y2)
-            self._c.line(a[0], a[1], b[0], b[1])
-            return self._next_id()
-
-        def create_polygon(self, coords, **kw):
-            fill = kw.get("fill", None)
-            outline = kw.get("outline", None)
-            width = kw.get("width", 1)
-
-            pts = list(coords or [])
-            if len(pts) < 6:
-                return self._next_id()
-
-            path = self._c.beginPath()
-            x0, y0 = self._xy(pts[0], pts[1])
-            path.moveTo(x0, y0)
-            for i in range(2, len(pts), 2):
-                xi, yi = self._xy(pts[i], pts[i+1])
-                path.lineTo(xi, yi)
-            path.close()
-
-            do_fill = bool(fill) and str(fill) not in ("", "none")
-            do_stroke = bool(outline) and str(outline) not in ("", "none")
-            if do_fill:
-                self._set_fill(fill)
-            if do_stroke:
-                self._set_stroke(outline, width=width)
-            self._c.drawPath(path, fill=int(do_fill), stroke=int(do_stroke))
-            return self._next_id()
-
-        def create_rectangle(self, x1, y1, x2, y2, **kw):
-            outline = kw.get("outline", None)
-            fill = kw.get("fill", None)
-            width = kw.get("width", 1)
-            do_fill = bool(fill) and str(fill) not in ("", "none")
-            do_stroke = bool(outline) and str(outline) not in ("", "none")
-            if do_fill:
-                self._set_fill(fill)
-            if do_stroke:
-                self._set_stroke(outline, width=width, dash=kw.get("dash"))
-            xa, ya = self._xy(min(x1, x2), max(y1, y2))
-            xb, yb = self._xy(max(x1, x2), min(y1, y2))
-            self._c.rect(xa, yb, xb - xa, ya - yb, stroke=int(do_stroke), fill=int(do_fill))
-            return self._next_id()
-
-        def create_oval(self, x1, y1, x2, y2, **kw):
-            outline = kw.get("outline", None)
-            fill = kw.get("fill", None)
-            width = kw.get("width", 1)
-            do_fill = bool(fill) and str(fill) not in ("", "none")
-            do_stroke = bool(outline) and str(outline) not in ("", "none")
-            if do_fill:
-                self._set_fill(fill)
-            if do_stroke:
-                self._set_stroke(outline, width=width, dash=kw.get("dash"))
-            xa, ya = self._xy(min(x1, x2), max(y1, y2))
-            xb, yb = self._xy(max(x1, x2), min(y1, y2))
-            self._c.ellipse(xa, yb, xb, ya, stroke=int(do_stroke), fill=int(do_fill))
-            return self._next_id()
-
-        def create_arc(self, x1, y1, x2, y2, **kw):
-            outline = kw.get("outline", "#000000")
-            width = kw.get("width", 1)
-            start = float(kw.get("start", 0.0))
-            extent = float(kw.get("extent", 0.0))
-            style = str(kw.get("style", "arc"))
-            if style != "arc":
-                return self._next_id()
-
-            self._set_stroke(outline, width=width, dash=kw.get("dash"))
-            xa, ya = self._xy(min(x1, x2), max(y1, y2))
-            xb, yb = self._xy(max(x1, x2), min(y1, y2))
-            self._c.arc(xa, yb, xb, ya, startAng=start, extent=extent)
-            return self._next_id()
-
-        def create_text(self, x, y, **kw):
-            txt = str(kw.get("text", ""))
-            fill = kw.get("fill", "#000000")
-            anchor = str(kw.get("anchor", "center"))
-            font = kw.get("font", ("Arial", 10))
-
-            face = "Helvetica"
-            size = 10
-            style = ""
-
-            if isinstance(font, tuple) and len(font) >= 2:
-                size = int(font[1])
-                if any(str(x).lower() == "bold" for x in font[2:]):
-                    style = "-Bold"
-            elif isinstance(font, str):
-                parts = font.split()
-                for p in parts:
-                    if p.isdigit():
-                        size = int(p)
-                if any(p.lower() == "bold" for p in parts):
-                    style = "-Bold"
-
-            face = face + style
-
-            self._set_fill(fill)
-            self._c.setFont(face, max(4, float(size)))
-
-            xp, yp = self._xy(x, y)
-            yp_adj = yp - 0.35 * float(size)
-
-            if anchor in ("center", "c"):
-                self._c.drawCentredString(xp, yp_adj, txt)
-            elif anchor in ("w", "west"):
-                self._c.drawString(xp, yp_adj, txt)
-            elif anchor in ("e", "east"):
-                w = self._c.stringWidth(txt, face, max(4, float(size)))
-                self._c.drawString(xp - w, yp_adj, txt)
-            elif anchor in ("nw", "nwest"):
-                self._c.drawString(xp, yp_adj + 0.35 * float(size), txt)
-            else:
-                self._c.drawCentredString(xp, yp_adj, txt)
-
-            return self._next_id()
+    def _print_fallback_viewport(self) -> AssembleurPrintViewport:
+        canvas_width = max(1, int(self.canvas.winfo_width() or 1))
+        canvas_height = max(1, int(self.canvas.winfo_height() or 1))
+        x0, y1 = self._screen_to_world(0, 0)
+        x1, y0 = self._screen_to_world(canvas_width, canvas_height)
+        return AssembleurPrintViewport(
+            min(float(x0), float(x1)), min(float(y0), float(y1)),
+            max(1e-6, abs(float(x1) - float(x0))),
+            max(1e-6, abs(float(y1) - float(y0))),
+        )
 
     def _export_view_pdf_dialog(self):
-        """Boîte de dialogue pour exporter l'affichage courant en PDF A4."""
-        from tkinter import filedialog
-        scen_name = ""
-
-        if self.scenarios and 0 <= int(self.active_scenario_index) < len(self.scenarios):
-            scen_name = str(getattr(self.scenarios[self.active_scenario_index], "name", "") or "")
-
-        def _safe(s: str) -> str:
-            s = str(s or "").strip()
-            s = re.sub(r"[^A-Za-z0-9._ -]+", "_", s)
-            s = re.sub(r"\s+", " ", s).strip()
-            return s
-
-        base = "affichage"
-        if scen_name:
-            base += "_" + _safe(scen_name)[:40]
-        base = base.strip("_ ") + ".pdf"
-
-        path = filedialog.asksaveasfilename(
-            title="Exporter en PDF",
-            defaultextension=".pdf",
-            filetypes=[("PDF", "*.pdf")],
-            initialfile=base,
+        """Ouvre le workflow d'impression, sans modifier la vue principale."""
+        snapshot = self._build_print_snapshot()
+        title = snapshot.scenario_name.strip() or "Assemblage"
+        settings = AssembleurPrintSettings(
+            title=title,
+            selected_layers=tuple(
+                layer for layer, visible in (
+                    ("map", bool(self.show_map_layer.get())),
+                    ("assembly", bool(self.show_triangles_layer.get())),
+                    ("beacons", bool(self.show_balises_layer.get())),
+                ) if visible
+            ),
+            map_opacity=int(self.map_opacity.get()),
         )
-        if not path:
-            return
-        try:
-            self._export_view_pdf(path)
-            self.status.config(text=f"PDF généré : {path}")
-            messagebox.showinfo("Export PDF", f"Export terminé avec succès.\n\nFichier :\n{path}")
-        except Exception as e:
-            messagebox.showerror("Export PDF", f"Impossible de générer le PDF :\n{e}")
+        viewport = fit_initial_viewport(snapshot, settings, self._print_fallback_viewport())
+        AssembleurMapPrintDialog(self, snapshot, viewport, settings)
 
-    def _export_view_pdf(self, path: str):
-        """Exporte l'affichage courant (carte/triangles/compas selon visibilité) en PDF A4."""
-        from reportlab.pdfgen import canvas as rl_canvas
-        from reportlab.lib.pagesizes import A4, landscape
-        from reportlab.lib.units import mm
-        from reportlab.lib.utils import ImageReader
-        from reportlab.lib import colors
-        import copy
 
-        cw = int(self.canvas.winfo_width() or 0)
-        ch = int(self.canvas.winfo_height() or 0)
-        if cw <= 2 or ch <= 2:
-            self.update_idletasks()
-            cw = int(self.canvas.winfo_width() or 0)
-            ch = int(self.canvas.winfo_height() or 0)
-        if cw <= 2 or ch <= 2:
-            cw, ch = 800, 600
-
-        xA, yTop = self._screen_to_world(0, 0)
-        xB, yBot = self._screen_to_world(cw, ch)
-        vx0 = min(xA, xB)
-        vx1 = max(xA, xB)
-        vy0 = min(yBot, yTop)
-        vy1 = max(yBot, yTop)
-        w0 = max(1e-9, vx1 - vx0)
-        h0 = max(1e-9, vy1 - vy0)
-        cx0 = 0.5 * (vx0 + vx1)
-        cy0 = 0.5 * (vy0 + vy1)
-
-        margin_lr = 10 * mm
-        margin_bottom = 10 * mm
-        margin_top = 10 * mm
-        title_space = 12 * mm
-
-        def _expand_bbox_to_aspect(w: float, h: float, target_aspect: float):
-            cur = w / h
-            if cur > target_aspect:
-                return (w, w / target_aspect)
-            return (h * target_aspect, h)
-
-        def _choose_layout():
-            candidates = []
-            for is_land in (False, True):
-                pw, ph = (landscape(A4) if is_land else A4)
-                dw = pw - 2 * margin_lr
-                dh = ph - margin_bottom - (margin_top + title_space)
-                aspect = dw / max(1e-9, dh)
-                w2, h2 = _expand_bbox_to_aspect(w0, h0, aspect)
-                factor = (w2 * h2) / max(1e-12, (w0 * h0))
-                candidates.append((factor, is_land, pw, ph, dw, dh, aspect, w2, h2))
-            candidates.sort(key=lambda t: t[0])
-            return candidates[0]
-
-        _, is_land, page_w, page_h, draw_w, draw_h, target_aspect, w2, h2 = _choose_layout()
-
-        vx0e = cx0 - 0.5 * w2
-        vx1e = cx0 + 0.5 * w2
-        vy0e = cy0 - 0.5 * h2
-        vy1e = cy0 + 0.5 * h2
-
-        Z = float(self.zoom)
-        virt_w_px = w2 * Z
-        virt_h_px = h2 * Z
-        if virt_w_px <= 1 or virt_h_px <= 1:
-            virt_w_px, virt_h_px = float(cw), float(ch)
-
-        s = min(draw_w / max(1e-9, virt_w_px), draw_h / max(1e-9, virt_h_px))
-
-        c = rl_canvas.Canvas(path, pagesize=(page_w, page_h))
-        c.setFillColor(colors.white)
-        c.rect(0, 0, page_w, page_h, stroke=0, fill=1)
-
-        scen_name = ""
-        if self.scenarios and 0 <= int(self.active_scenario_index) < len(self.scenarios):
-            scen_name = str(getattr(self.scenarios[self.active_scenario_index], "name", "") or "")
-        title_y = page_h - margin_top - 10
-        c.setFillColor(colors.black)
-        c.setFont("Helvetica-Bold", 12)
-        c.drawString(margin_lr, title_y, f"Scénario : {scen_name or '—'}")
-        c.setFont("Helvetica", 10)
-        c.drawString(margin_lr, title_y - 14, "Triangles : Catalogue")
-
-        origin_x_pt = margin_lr
-        origin_y_pt = margin_bottom
-
-        # --- Carte raster (si affichée) ---
-        show_map = (self.show_map_layer is None) or bool(self.show_map_layer.get())
-        op = int(float(self.map_opacity.get())) if hasattr(self, "map_opacity") else 100
-        op = max(0, min(100, int(op)))
-        if show_map and op > 0 and self._bg and self._bg_base_pil is not None and Image is not None:
-            bx0 = float(self._bg.get("x0", 0.0))
-            by0 = float(self._bg.get("y0", 0.0))
-            bw = float(self._bg.get("w", 0.0))
-            bh = float(self._bg.get("h", 0.0))
-            bx1 = bx0 + bw
-            by1 = by0 + bh
-
-            ix0 = max(vx0e, bx0)
-            ix1 = min(vx1e, bx1)
-            iy0 = max(vy0e, by0)
-            iy1 = min(vy1e, by1)
-            if ix0 < ix1 and iy0 < iy1 and bw > 1e-9 and bh > 1e-9:
-                base = self._bg_base_pil
-                baseW, baseH = base.size
-
-                left = int((ix0 - bx0) / bw * baseW)
-                right = int((ix1 - bx0) / bw * baseW)
-                upper = int((by1 - iy1) / bh * baseH)
-                lower = int((by1 - iy0) / bh * baseH)
-
-                left = max(0, min(baseW - 1, left))
-                right = max(left + 1, min(baseW, right))
-                upper = max(0, min(baseH - 1, upper))
-                lower = max(upper + 1, min(baseH, lower))
-
-                crop = base.crop((left, upper, right, lower))
-                if crop.mode != "RGBA":
-                    crop = crop.convert("RGBA")
-
-                if op < 100:
-                    r, g, b, a = crop.split()
-                    a = a.point(lambda p: int(p * op / 100))
-                    crop.putalpha(a)
-
-                white = Image.new("RGBA", crop.size, (255, 255, 255, 255))
-                white.paste(crop, (0, 0), crop)
-                rgb = white.convert("RGB")
-
-                x_px = (ix0 - vx0e) * Z
-                y_px_top = (vy1e - iy1) * Z
-                w_px = (ix1 - ix0) * Z
-                h_px = (iy1 - iy0) * Z
-
-                x_pt = origin_x_pt + x_px * s
-                y_pt = origin_y_pt + (virt_h_px - (y_px_top + h_px)) * s
-                w_pt = w_px * s
-                h_pt = h_px * s
-
-                c.drawImage(ImageReader(rgb), x_pt, y_pt, width=w_pt, height=h_pt, mask=None)
-
-        adapter = self._PdfCanvasAdapter(
-            c,
-            page_w_pt=page_w,
-            page_h_pt=page_h,
-            margin_left_pt=origin_x_pt,
-            margin_bottom_pt=origin_y_pt,
-            scale_pt_per_px=s,
-            virtual_h_px=virt_h_px,
-        )
-
-        old_canvas = self.canvas
-        old_offset = np.array(self.offset, dtype=float).copy()
-        old_zoom = float(self.zoom)
-        old_nearest = self._nearest_line_id
-        old_clock = {
-            "_clock_cx": self._clock_cx,
-            "_clock_cy": self._clock_cy,
-            "_clock_R": self._clock_R,
-            "_clock_anchor_world": copy.deepcopy(self._clock_anchor_world),
-        }
-
-        try:
-            self.canvas = adapter
-            self.zoom = old_zoom
-            self.offset = np.array([(-vx0e * Z), (vy1e * Z)], dtype=float)
-            self._nearest_line_id = None
-
-            self._update_current_scenario_differences()
-
-            showContoursMode = bool(
-                self.show_only_group_contours is not None
-                and self.show_only_group_contours.get()
-            )
-            onlyContours = False
-            v = self.only_group_contours
-            if v is not None and hasattr(v, "get"):
-                onlyContours = bool(v.get())
-            else:
-                onlyContours = bool(self._only_group_contours)
-            if showContoursMode:
-                onlyContours = True
-
-            if self.show_triangles_layer is None or self.show_triangles_layer.get():
-                for i, t in enumerate(self._last_drawn or []):
-                    labels = self._get_core_vertex_labels(t)
-                    P = t.get("pts")
-                    if not P:
-                        continue
-                    fill = "#ffd6d6" if i in self._comparison_diff_indices else None
-                    self._draw_triangle_screen(
-                        P,
-                        labels=[f"O:{labels[0]}", f"B:{labels[1]}", f"L:{labels[2]}"],
-                        tri_label=self._build_triangle_display_label(t),
-                        fill=fill,
-                        diff_outline=bool(fill),
-                        drawEdges=(not onlyContours),
-                    )
-
-            if showContoursMode:
-                self._draw_group_outlines()
-            else:
-                if self._sel and self._sel.get("mode") == "vertex":
-                    if self._edge_highlights:
-                        self._redraw_edge_highlights()
-                    idx = self._sel.get("idx")
-                    vkey = self._sel.get("vkey")
-                    if idx is not None and vkey and 0 <= int(idx) < len(self._last_drawn):
-                        P = self._last_drawn[int(idx)]["pts"]
-                        v_world = np.array(P[vkey], dtype=float)
-                        self._update_nearest_line(v_world, exclude_idx=int(idx))
-
-            if self.show_balises_layer is None or self.show_balises_layer.get():
-                self._draw_balises_layer()
-
-            self._draw_clock_overlay()
-
-        finally:
-            self.canvas = old_canvas
-            self.offset = old_offset
-            self.zoom = old_zoom
-            self._nearest_line_id = old_nearest
-            for k, v in old_clock.items():
-                setattr(self, k, v)
-
-        c.showPage()
-        c.save()
 
 # ---------- Entrée ----------
 

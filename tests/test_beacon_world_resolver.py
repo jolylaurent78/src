@@ -3,7 +3,7 @@ import pytest
 from src.assembleur_beacon_runtime import BeaconWorldResolver
 from src.assembleur_catalogue import Catalogue
 from src.assembleur_core import ScenarioAssemblage, TopologyElement, TopologyWorld
-from src.assembleur_tk import TriangleViewerManual
+from src.assembleur_tk import TriangleViewerManual, get_anchor_beacon_candidates, get_geometric_reference_beacon_candidates
 
 
 def _catalogue_with_beacon() -> tuple[Catalogue, str]:
@@ -101,3 +101,19 @@ def test_viewer_detects_a_beacon_referenced_by_a_runtime_anchor():
 
     assert viewer._is_beacon_referenced_by_anchor(beacon_id)
     assert not viewer._is_beacon_referenced_by_anchor("BEA-9999")
+
+
+def test_anchor_candidates_exclude_non_anchor_beacons_but_geometric_references_keep_them():
+    catalogue = Catalogue()
+    city_a = catalogue.add_city("A", 47.0, 2.0)
+    city_b = catalogue.add_city("B", 46.0, 3.0)
+    city_c = catalogue.add_city("C", 45.0, 4.0)
+    anchor = catalogue.add_beacon(city_a.city_id, usable_as_anchor=True)
+    reference_only = catalogue.add_beacon(city_b.city_id, usable_as_anchor=False)
+    archived = catalogue.add_beacon(city_c.city_id, usable_as_anchor=True)
+    catalogue.update_beacon(archived.beacon_id, archived=True)
+
+    assert tuple(beacon.beacon_id for beacon in get_anchor_beacon_candidates(catalogue)) == (anchor.beacon_id,)
+    assert {beacon.beacon_id for beacon in get_geometric_reference_beacon_candidates(catalogue)} == {
+        anchor.beacon_id, reference_only.beacon_id,
+    }

@@ -37,6 +37,11 @@ def _catalogue_v2(provider=None) -> dict:
     catalogue.set_template_rank(template.template_id, 1, triangle.triangle_id)
     data = catalogue_to_dict(catalogue)
     data["version"] = 2
+    data.pop("beaconGroupColors")
+    data["beacons"] = [
+        {key: beacon_data[key] for key in ("beaconId", "cityId", "archived")}
+        for beacon_data in data["beacons"]
+    ]
     data["idCounters"].pop("book")
     data["idCounters"].pop("map")
     data.pop("defaultBookId")

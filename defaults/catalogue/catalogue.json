@@ -1,9 +1,9 @@
 {
-  "version": 8,
+  "version": 10,
   "idCounters": {
-    "city": 112,
-    "beacon": 4,
-    "triangle": 64,
+    "city": 120,
+    "beacon": 11,
+    "triangle": 67,
     "template": 2,
     "map": 2,
     "book": 2
@@ -12,6 +12,10 @@
   "defaultMapId": "MAP-SYS-000001",
   "defaultBookId": "BOOK-SYS-000001",
   "catalogueReferenceMapId": "MAP-SYS-000002",
+  "beaconGroupColors": {
+    "Charade": "#8080FF",
+    "Frontière": "#004080"
+  },
   "cities": [
     {
       "cityId": "CITY-SYS-000001",
@@ -789,27 +793,162 @@
       "latitude": 47.448055555555555,
       "longitude": -2.5083333333333333,
       "archived": false
+    },
+    {
+      "cityId": "CITY-SYS-000113",
+      "name": "Le Mans",
+      "latitude": 48.00416666666667,
+      "longitude": 0.19666666666666666,
+      "archived": false
+    },
+    {
+      "cityId": "CITY-SYS-000114",
+      "name": "Montmirail",
+      "latitude": 48.10277777777778,
+      "longitude": 0.7905555555555556,
+      "archived": false
+    },
+    {
+      "cityId": "CITY-SYS-000115",
+      "name": "Taennchel",
+      "latitude": 48.234722222222224,
+      "longitude": 7.2588888888888885,
+      "archived": false
+    },
+    {
+      "cityId": "CITY-SYS-000116",
+      "name": "Col du Bonhomme",
+      "latitude": 48.165,
+      "longitude": 7.079444444444444,
+      "archived": false
+    },
+    {
+      "cityId": "CITY-SYS-000117",
+      "name": "Col de la Schlucht",
+      "latitude": 48.06361111111111,
+      "longitude": 7.022777777777778,
+      "archived": false
+    },
+    {
+      "cityId": "CITY-SYS-000118",
+      "name": "Grand Ventron",
+      "latitude": 47.95944444444445,
+      "longitude": 6.9255555555555555,
+      "archived": false
+    },
+    {
+      "cityId": "CITY-SYS-000119",
+      "name": "Lac d'Alfeld",
+      "latitude": 47.816944444444445,
+      "longitude": 6.873333333333334,
+      "archived": false
+    },
+    {
+      "cityId": "CITY-SYS-000120",
+      "name": "Fort de Giromagny",
+      "latitude": 47.73083333333334,
+      "longitude": 6.813055555555556,
+      "archived": false
     }
   ],
   "beacons": [
     {
       "beaconId": "BEA-SYS-000001",
       "cityId": "CITY-SYS-000094",
+      "group": "Ressource",
+      "order": null,
+      "usableAsAnchor": false,
+      "note": "",
       "archived": false
     },
     {
       "beaconId": "BEA-SYS-000002",
       "cityId": "CITY-SYS-000055",
+      "group": "Ressource",
+      "order": null,
+      "usableAsAnchor": false,
+      "note": "Reliquat sur la frontière franco-allemande",
       "archived": false
     },
     {
       "beaconId": "BEA-SYS-000003",
       "cityId": "CITY-SYS-000095",
+      "group": "Frontière",
+      "order": null,
+      "usableAsAnchor": true,
+      "note": "",
       "archived": false
     },
     {
       "beaconId": "BEA-SYS-000004",
       "cityId": "CITY-SYS-000067",
+      "group": "Frontière",
+      "order": null,
+      "usableAsAnchor": true,
+      "note": "",
+      "archived": false
+    },
+    {
+      "beaconId": "BEA-SYS-000005",
+      "cityId": "CITY-SYS-000115",
+      "group": "Charade",
+      "order": 1,
+      "usableAsAnchor": false,
+      "note": "Enigme 580 : Le sens du contresens",
+      "archived": false
+    },
+    {
+      "beaconId": "BEA-SYS-000006",
+      "cityId": "CITY-SYS-000116",
+      "group": "Charade",
+      "order": 2,
+      "usableAsAnchor": false,
+      "note": "Enigme 780 : Premier pas",
+      "archived": false
+    },
+    {
+      "beaconId": "BEA-SYS-000007",
+      "cityId": "CITY-SYS-000117",
+      "group": "Charade",
+      "order": 3,
+      "usableAsAnchor": false,
+      "note": "Enigme 470 : Ce n'est le bon chemin...",
+      "archived": false
+    },
+    {
+      "beaconId": "BEA-SYS-000008",
+      "cityId": "CITY-SYS-000118",
+      "group": "Charade",
+      "order": 4,
+      "usableAsAnchor": false,
+      "note": "Enigme 500 : Ut Quant Laxis",
+      "archived": false
+    },
+    {
+      "beaconId": "BEA-SYS-000009",
+      "cityId": "CITY-SYS-000119",
+      "group": "Charade",
+      "order": 5,
+      "usableAsAnchor": false,
+      "note": "Enigme 420 : Du ciel vient la lumière",
+      "archived": false
+    },
+    {
+      "beaconId": "BEA-SYS-000010",
+      "cityId": "CITY-SYS-000106",
+      "group": "Charade",
+      "order": 6,
+      "usableAsAnchor": false,
+      "note": "Enigme 560 : Ad Augusta per Angusta",
+      "archived": false
+    },
+    {
+      "beaconId": "BEA-SYS-000011",
+      "cityId": "CITY-SYS-000120",
+      "group": "Charade",
+      "order": 7,
+      "usableAsAnchor": false,
+      "note": "Enigme 650 : Quand tout est révélé",
       "archived": false
     }
   ],
@@ -1325,6 +1464,30 @@
       "baseCityId": "CITY-SYS-000031",
       "lightCityId": "CITY-SYS-000046",
       "archived": false
+    },
+    {
+      "triangleId": "TRI-SYS-000065",
+      "note": "LA",
+      "openingCityId": "CITY-SYS-000018",
+      "baseCityId": "CITY-SYS-000031",
+      "lightCityId": "CITY-SYS-000090",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-SYS-000066",
+      "note": "ZONE",
+      "openingCityId": "CITY-SYS-000018",
+      "baseCityId": "CITY-SYS-000040",
+      "lightCityId": "CITY-SYS-000113",
+      "archived": false
+    },
+    {
+      "triangleId": "TRI-SYS-000067",
+      "note": "ZONE",
+      "openingCityId": "CITY-SYS-000018",
+      "baseCityId": "CITY-SYS-000041",
+      "lightCityId": "CITY-SYS-000114",
+      "archived": false
     }
   ],
   "templates": [
@@ -1379,8 +1542,8 @@
         "TRI-SYS-000003",
         "TRI-SYS-000004",
         "TRI-SYS-000005",
-        "TRI-SYS-000006",
-        "TRI-SYS-000007",
+        "TRI-SYS-000066",
+        "TRI-SYS-000067",
         "TRI-SYS-000008",
         "TRI-SYS-000009",
         "TRI-SYS-000010",
@@ -1405,7 +1568,7 @@
         "TRI-SYS-000030",
         "TRI-SYS-000063",
         "TRI-SYS-000031",
-        "TRI-SYS-000064"
+        "TRI-SYS-000065"
       ]
     }
   ],

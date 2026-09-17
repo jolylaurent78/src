@@ -158,6 +158,38 @@ class ScenarioReference:
         city.name = self._require_name(name, "de ville locale")
         return city
 
+    def get_triangles_referencing_city(self, city_ref_id: str) -> list[ScenarioTriangle]:
+        """Retourne les triangles locaux qui referencent une ville locale."""
+        city_id = str(city_ref_id).strip()
+        if city_id not in self.cities:
+            raise KeyError(f"Ville locale inconnue : {city_id}")
+        return [
+            triangle for triangle in self.triangles.values()
+            if city_id in (
+                triangle.opening_city_ref_id,
+                triangle.base_city_ref_id,
+                triangle.light_city_ref_id,
+            )
+        ]
+
+    def remove_triangle(self, triangle_ref_id: str) -> None:
+        """Supprime un triangle local sans modifier une hypothese."""
+        triangle_id = str(triangle_ref_id).strip()
+        if triangle_id not in self.triangles:
+            raise KeyError(f"Triangle local inconnu : {triangle_id}")
+        del self.triangles[triangle_id]
+
+    def remove_city(self, city_ref_id: str) -> None:
+        """Supprime une ville locale seulement si aucun STRI ne la reference."""
+        city_id = str(city_ref_id).strip()
+        if city_id not in self.cities:
+            raise KeyError(f"Ville locale inconnue : {city_id}")
+        if self.get_triangles_referencing_city(city_id):
+            raise ValueError(
+                f"Ville locale encore referencee par un triangle : {city_id}"
+            )
+        del self.cities[city_id]
+
     def add_triangle(self, triangle: ScenarioTriangle) -> ScenarioTriangle:
         if not isinstance(triangle, ScenarioTriangle):
             raise TypeError("ScenarioReference.add_triangle attend un ScenarioTriangle")

@@ -80,12 +80,12 @@ def test_validate_rejects_empty_or_invalid_global_override():
         catalogue.validate()
 
 
-def test_v8_serialization_is_global_and_strict():
+def test_v10_serialization_is_global_and_strict():
     catalogue, base = _catalogue()
     catalogue.set_geometric_layer_display_override("ombre", width=2)
     catalogue.set_geometric_layer_display_override("lumiere", color_bgr=(36, 28, 237), width=3)
     data = catalogue_to_dict(catalogue)
-    assert data["version"] == 8
+    assert data["version"] == 10
     assert list(data["geometricLayerDisplayOverrides"]) == ["lumiere", "ombre"]
     assert data["geometricLayers"][base] == {"asset": f"geometric-layers/{base}.traces.json"}
     assert catalogue_from_dict(data).get_geometric_layer_display_override("ombre") == GeometricLayerModuleDisplayOverride(None, 2)
@@ -108,6 +108,7 @@ def test_v7_to_v8_discards_every_per_layer_override_and_v6_loads_through_both_mi
     catalogue, base = _catalogue()
     v8 = catalogue_to_dict(catalogue)
     v7 = dict(v8)
+    v7.pop("beaconGroupColors")
     v7["version"] = 7
     v7.pop("geometricLayerDisplayOverrides")
     v7["geometricLayers"] = {base: {"asset": f"geometric-layers/{base}.traces.json", "displayOverrides": {"old": {"width": 2}}}}
@@ -126,7 +127,7 @@ def test_v7_to_v8_discards_every_per_layer_override_and_v6_loads_through_both_mi
     source = tmp_path / "v6.json"
     source.write_text(json.dumps(v6), encoding="utf-8")
     loaded = load_catalogue(source)
-    assert loaded.version == 8
+    assert loaded.version == 10
     assert loaded.get_geometric_layer_display_overrides() == {}
 
 

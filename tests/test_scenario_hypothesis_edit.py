@@ -7,7 +7,10 @@ from src.assembleur_hypothesis_window import ScenarioHypothesisDialog
 from src.assembleur_scenario import (
     HypothesisImpact,
     ScenarioHypothesis,
+    _active_reference_changed_triangle_ids,
     analyze_hypothesis_change,
+    apply_hypothesis_change_to_manual_scenario,
+    materialize_triangle,
 )
 from src.assembleur_tk import TriangleViewerManual
 
@@ -187,3 +190,125 @@ def test_hypothesis_dialog_drop_updates_only_its_valid_draft_preview():
     assert message is None
     assert preview[0] == replay_id
     assert dialog._draft.triangle_ids_by_rank == original.triangle_ids_by_rank
+
+
+def _manual_scenario_with_active_and_orphan_reference():
+    catalogue, hypothesis, _replay_id, _detach = _catalogue_and_hypothesis()
+    reference = ScenarioReference()
+    source = catalogue.get_triangle(hypothesis.triangle_ids_by_rank[0])
+    active_city = reference.create_city("Active", 48.0, 2.0)
+    orphan_city = reference.create_city("Orpheline", 49.0, 3.0)
+    active_triangle = reference.create_triangle(
+        "Active", source.opening_city_id, source.base_city_id, active_city.city_ref_id,
+        catalogue_source_triangle_id=source.triangle_id,
+    )
+    orphan_triangle = reference.create_triangle(
+        "Orphelin", source.opening_city_id, source.base_city_id, orphan_city.city_ref_id,
+        catalogue_source_triangle_id=source.triangle_id,
+    )
+    hypothesis = hypothesis.clone()
+    hypothesis.triangle_ids_by_rank[0] = active_triangle.triangle_ref_id
+    hypothesis.validate(GeometryReferenceResolver(catalogue, reference))
+    scenario = ScenarioAssemblage("Manuel", source_type="manual", hypothesis=hypothesis)
+    scenario.reference = reference
+    resolver = GeometryReferenceResolver(catalogue, reference)
+    scenario.topoWorld.add_element_as_new_group(
+        materialize_triangle(resolver, active_triangle.triangle_ref_id)
+    )
+    scenario.topoWorld.add_element_as_new_group(
+        materialize_triangle(resolver, hypothesis.triangle_ids_by_rank[1])
+    )
+    return catalogue, scenario, active_city, active_triangle, orphan_city, orphan_triangle
+
+
+def test_orphan_reference_removal_keeps_the_same_core_world(monkeypatch):
+    catalogue, scenario, _active_city, _active_triangle, orphan_city, orphan_triangle = (
+        _manual_scenario_with_active_and_orphan_reference()
+    )
+    candidate_reference = scenario.reference.clone()
+    candidate_reference.remove_triangle(orphan_triangle.triangle_ref_id)
+    candidate_reference.remove_city(orphan_city.city_ref_id)
+    old_world = scenario.topoWorld
+    monkeypatch.setattr(
+        old_world, "clonePhysicalState",
+        lambda: pytest.fail("An orphan-only reference change must not clone Core"),
+    )
+
+    result = apply_hypothesis_change_to_manual_scenario(
+        catalogue, scenario, scenario.hypothesis.clone(), candidate_reference
+    )
+
+    assert result.plan.rank_changes == ()
+    assert orphan_city.city_ref_id not in scenario.reference.cities
+    assert orphan_triangle.triangle_ref_id not in scenario.reference.triangles
+    assert scenario.topoWorld is old_world
+
+
+def test_active_city_rename_rematerializes_only_affected_active_elements(monkeypatch):
+    catalogue, scenario, active_city, active_triangle, _orphan_city, _orphan_triangle = (
+        _manual_scenario_with_active_and_orphan_reference()
+    )
+    candidate_reference = scenario.reference.clone()
+    candidate_reference.rename_city(active_city.city_ref_id, "Active renommee")
+    affected = _active_reference_changed_triangle_ids(
+        catalogue,
+        scenario.hypothesis.triangle_ids_by_rank,
+        scenario.reference,
+        candidate_reference,
+    )
+    replaced = []
+    original_replace = type(scenario.topoWorld).replace_element_materialized_definition
+
+    def track_replace(world, element_id, definition):
+        replaced.append((element_id, definition.source_triangle_id))
+        return original_replace(world, element_id, definition)
+
+    monkeypatch.setattr(
+        type(scenario.topoWorld), "replace_element_materialized_definition", track_replace
+    )
+
+    apply_hypothesis_change_to_manual_scenario(
+        catalogue, scenario, scenario.hypothesis.clone(), candidate_reference
+    )
+
+    assert affected == {active_triangle.triangle_ref_id}
+    assert [source_triangle_id for _element_id, source_triangle_id in replaced] == [
+        active_triangle.triangle_ref_id
+    ]
+
+
+def test_reference_change_helper_ignores_orphan_city_rename():
+    catalogue, scenario, _active_city, _active_triangle, orphan_city, _orphan_triangle = (
+        _manual_scenario_with_active_and_orphan_reference()
+    )
+    candidate_reference = scenario.reference.clone()
+    candidate_reference.rename_city(orphan_city.city_ref_id, "Orpheline renommee")
+
+    assert _active_reference_changed_triangle_ids(
+        catalogue,
+        scenario.hypothesis.triangle_ids_by_rank,
+        scenario.reference,
+        candidate_reference,
+    ) == set()
+
+
+def test_reference_change_helper_marks_all_active_triangles_sharing_a_city():
+    catalogue = Catalogue()
+    reference = ScenarioReference()
+    shared = reference.create_city("Partagee", 45.0, 2.0)
+    cities = [reference.create_city(f"Ville {index}", 46.0 + index, 2.0) for index in range(4)]
+    first = reference.create_triangle(
+        "Premier", shared.city_ref_id, cities[0].city_ref_id, cities[1].city_ref_id
+    )
+    second = reference.create_triangle(
+        "Second", cities[2].city_ref_id, shared.city_ref_id, cities[3].city_ref_id
+    )
+    candidate_reference = reference.clone()
+    candidate_reference.rename_city(shared.city_ref_id, "Partagee renommee")
+
+    assert _active_reference_changed_triangle_ids(
+        catalogue,
+        [first.triangle_ref_id, second.triangle_ref_id],
+        reference,
+        candidate_reference,
+    ) == {first.triangle_ref_id, second.triangle_ref_id}

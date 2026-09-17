@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+import re
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Mapping
 
@@ -36,6 +37,10 @@ class CatalogueCity:
 class CatalogueBeacon:
     beacon_id: str
     city_id: str
+    group: str = ""
+    order: int | None = None
+    usable_as_anchor: bool = True
+    note: str = ""
     archived: bool = False
 
 
@@ -127,7 +132,7 @@ class TemplateValidationStatus:
 class Catalogue:
     """Agrégat racine du catalogue persistant futur."""
 
-    version = 8
+    version = 10
     _MIN_EDGE_LENGTH_M = 1e-6
     _MIN_DOUBLE_AREA_M2 = 1e-6
 
@@ -151,6 +156,7 @@ class Catalogue:
         self.books: dict[str, CatalogueBook] = {}
         self.geometric_layers: dict[str, CatalogueGeometricLayer] = {}
         self.geometric_layer_display_overrides: dict[str, GeometricLayerModuleDisplayOverride] = {}
+        self.beacon_group_colors: dict[str, str] = {}
         self.default_template_id: str | None = None
         self.default_map_id: str | None = None
         self.default_book_id: str | None = None
@@ -168,7 +174,15 @@ class Catalogue:
             for city_id, city in self.cities.items()
         }
         cloned.beacons = {
-            beacon_id: CatalogueBeacon(beacon.beacon_id, beacon.city_id, beacon.archived)
+            beacon_id: CatalogueBeacon(
+                beacon.beacon_id,
+                beacon.city_id,
+                beacon.group,
+                beacon.order,
+                beacon.usable_as_anchor,
+                beacon.note,
+                beacon.archived,
+            )
             for beacon_id, beacon in self.beacons.items()
         }
         cloned.triangles = {
@@ -221,6 +235,7 @@ class Catalogue:
             for base_city_id, layer in self.geometric_layers.items()
         }
         cloned.geometric_layer_display_overrides = dict(self.geometric_layer_display_overrides)
+        cloned.beacon_group_colors = dict(self.beacon_group_colors)
         cloned.default_template_id = self.default_template_id
         cloned.default_map_id = self.default_map_id
         cloned.default_book_id = self.default_book_id
@@ -430,25 +445,117 @@ class Catalogue:
         ):
             raise ValueError(f"La ville {city_id} possède déjà une balise.")
 
-    def add_beacon(self, city_id: str) -> CatalogueBeacon:
+    @staticmethod
+    def _validate_beacon_group(value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError("Le groupe de balise doit être une chaîne.")
+        return value.strip()
+
+    @classmethod
+    def _validate_beacon_group_color_key(cls, value: object) -> str:
+        group = cls._validate_beacon_group(value)
+        if not group:
+            raise ValueError("Un groupe de couleur de balise ne peut pas être vide.")
+        return group
+
+    @staticmethod
+    def _validate_beacon_group_color(value: object) -> str:
+        if not isinstance(value, str) or re.fullmatch(r"#[0-9A-Fa-f]{6}", value) is None:
+            raise ValueError("La couleur de groupe de balises doit être au format #RRGGBB.")
+        return value.upper()
+
+    def get_beacon_group_color(self, group: str) -> str | None:
+        normalized_group = self._validate_beacon_group(group)
+        return self.beacon_group_colors.get(normalized_group) if normalized_group else None
+
+    def set_beacon_group_color(self, group: str, color: str | None) -> None:
+        key = self._validate_beacon_group_color_key(group)
+        if color is None:
+            self.beacon_group_colors.pop(key, None)
+            return
+        self.beacon_group_colors[key] = self._validate_beacon_group_color(color)
+
+    @staticmethod
+    def _validate_beacon_order(value: object) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError("L'ordre de balise doit être un entier strictement positif ou None.")
+        return value
+
+    @staticmethod
+    def _validate_beacon_usable_as_anchor(value: object) -> bool:
+        if not isinstance(value, bool):
+            raise ValueError("usable_as_anchor doit être un booléen.")
+        return value
+
+    @staticmethod
+    def _validate_beacon_note(value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError("La note de balise doit être une chaîne.")
+        return value.strip()
+
+    def add_beacon(
+        self,
+        city_id: str,
+        *,
+        group: str = "",
+        order: int | None = None,
+        usable_as_anchor: bool = True,
+        note: str = "",
+    ) -> CatalogueBeacon:
         final_city_id = self._validate_beacon_city_id(city_id, "Nouvelle balise")
+        final_group = self._validate_beacon_group(group)
+        final_order = self._validate_beacon_order(order)
+        final_usable_as_anchor = self._validate_beacon_usable_as_anchor(usable_as_anchor)
+        final_note = self._validate_beacon_note(note)
         self._ensure_beacon_city_is_unique(final_city_id)
         beacon_id = self.id_provider.new_beacon_id(self)
-        beacon = CatalogueBeacon(beacon_id, final_city_id)
+        beacon = CatalogueBeacon(
+            beacon_id,
+            final_city_id,
+            final_group,
+            final_order,
+            final_usable_as_anchor,
+            final_note,
+        )
         self.beacons[beacon.beacon_id] = beacon
         return beacon
 
-    def update_beacon(self, beacon_id: str, *, city_id: str | None = None,
-                      archived: bool | None = None) -> CatalogueBeacon:
+    _UNSET = object()
+
+    def update_beacon(
+        self,
+        beacon_id: str,
+        *,
+        city_id: str | None = None,
+        group: str | object = _UNSET,
+        order: int | None | object = _UNSET,
+        usable_as_anchor: bool | object = _UNSET,
+        note: str | object = _UNSET,
+        archived: bool | None = None,
+    ) -> CatalogueBeacon:
         beacon = self.get_beacon(beacon_id)
         final_city_id = (
             self._validate_beacon_city_id(city_id, beacon_id)
             if city_id is not None else beacon.city_id
         )
+        final_group = beacon.group if group is self._UNSET else self._validate_beacon_group(group)
+        final_order = beacon.order if order is self._UNSET else self._validate_beacon_order(order)
+        final_usable_as_anchor = (
+            beacon.usable_as_anchor
+            if usable_as_anchor is self._UNSET
+            else self._validate_beacon_usable_as_anchor(usable_as_anchor)
+        )
+        final_note = beacon.note if note is self._UNSET else self._validate_beacon_note(note)
         self._ensure_beacon_city_is_unique(final_city_id, beacon_id)
         if archived is not None:
             self._validate_archived(archived, f"Balise {beacon_id}")
         beacon.city_id = final_city_id
+        beacon.group = final_group
+        beacon.order = final_order
+        beacon.usable_as_anchor = final_usable_as_anchor
+        beacon.note = final_note
         if archived is not None:
             beacon.archived = archived
         return beacon
@@ -1060,7 +1167,18 @@ class Catalogue:
             if city_id in beacon_city_ids:
                 raise ValueError(f"Plusieurs balises référencent la ville {city_id}.")
             beacon_city_ids.add(city_id)
+            self._validate_beacon_group(beacon.group)
+            self._validate_beacon_order(beacon.order)
+            self._validate_beacon_usable_as_anchor(beacon.usable_as_anchor)
+            self._validate_beacon_note(beacon.note)
             self._validate_archived(beacon.archived, f"Balise {beacon.beacon_id}")
+        for group, color in self.beacon_group_colors.items():
+            normalized_group = self._validate_beacon_group_color_key(group)
+            if normalized_group != group:
+                raise ValueError("Les clés de couleur de groupe de balises doivent être normalisées.")
+            normalized_color = self._validate_beacon_group_color(color)
+            if normalized_color != color:
+                raise ValueError("Les couleurs de groupe de balises doivent être normalisées en majuscules.")
         triplets: set[tuple[str, str, str]] = set()
         for triangle in self.triangles.values():
             self._validate_note(triangle.note)

@@ -176,7 +176,7 @@ def parse_catalogue_v2(data: object, *, id_provider=None) -> Catalogue:
         beacon = CatalogueBeacon(
             _require_str(item["beaconId"], f"beacons[{index}].beaconId"),
             _require_str(item["cityId"], f"beacons[{index}].cityId"),
-            _require_bool(item["archived"], f"beacons[{index}].archived"),
+            archived=_require_bool(item["archived"], f"beacons[{index}].archived"),
         )
         if beacon.beacon_id in catalogue.beacons:
             raise ValueError(f"Catalogue V2 invalide : identifiant balise dupliqué : {beacon.beacon_id}.")
@@ -302,6 +302,10 @@ def migrate_catalogue_data_v2_to_v3(
     migrated.pop("defaultBookId", None)
     migrated.pop("books", None)
     migrated["idCounters"].pop("book", None)
+    migrated["beacons"] = [
+        {key: beacon[key] for key in ("beaconId", "cityId", "archived")}
+        for beacon in migrated["beacons"]
+    ]
     for catalogue_map in migrated["maps"]:
         catalogue_map["calibrationPointsFile"] = initial_map.calibration_points_file
         catalogue_map.pop("description", None)

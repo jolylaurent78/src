@@ -105,6 +105,7 @@ def test_geometric_layers_round_trip_uses_camel_case_and_migrates_v5(tmp_path) -
     assert catalogue_to_dict(load_catalogue(path)) == serialized
 
     v5 = dict(serialized)
+    v5.pop("beaconGroupColors")
     v5["version"] = 5
     v5.pop("geometricLayers")
     v5.pop("geometricLayerDisplayOverrides")

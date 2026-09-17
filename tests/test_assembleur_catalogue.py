@@ -42,7 +42,9 @@ def test_beacons_have_stable_ids_and_reference_one_catalogue_city_each():
     second = catalogue.add_beacon(second_city.city_id)
 
     assert first == CatalogueBeacon(first.beacon_id, first_city.city_id)
-    assert tuple(CatalogueBeacon.__dataclass_fields__) == ("beacon_id", "city_id", "archived")
+    assert tuple(CatalogueBeacon.__dataclass_fields__) == (
+        "beacon_id", "city_id", "group", "order", "usable_as_anchor", "note", "archived",
+    )
     assert second == CatalogueBeacon(second.beacon_id, second_city.city_id)
     assert catalogue.get_beacon(first.beacon_id) is first
     assert {beacon.beacon_id for beacon in catalogue.iter_beacons()} == {first.beacon_id, second.beacon_id}
@@ -89,6 +91,51 @@ def test_beacon_clone_is_independent_and_validate_rejects_corrupted_references()
     catalogue.beacons[invalid_id] = CatalogueBeacon(invalid_id, "CITY-SYS-999999")
     with pytest.raises(ValueError, match="introuvable"):
         catalogue.validate()
+
+
+def test_beacon_metadata_is_validated_normalized_and_order_can_be_cleared():
+    catalogue = Catalogue()
+    city = catalogue.add_city("Ville A", 47.0, 2.0)
+    beacon = catalogue.add_beacon(
+        city.city_id, group="  Ligne  ", order=4, usable_as_anchor=False, note="  Point utile  ",
+    )
+
+    assert (beacon.group, beacon.order, beacon.usable_as_anchor, beacon.note) == ("Ligne", 4, False, "Point utile")
+    catalogue.update_beacon(beacon.beacon_id, order=None)
+    assert beacon.order is None
+    for invalid in (True, 0, -1, 1.0, "1"):
+        with pytest.raises(ValueError, match="ordre"):
+            catalogue.update_beacon(beacon.beacon_id, order=invalid)
+    for invalid in (0, 1, "true", None):
+        with pytest.raises(ValueError, match="usable_as_anchor"):
+            catalogue.update_beacon(beacon.beacon_id, usable_as_anchor=invalid)
+
+
+def test_beacon_clone_keeps_all_metadata_without_mutating_the_original():
+    catalogue = Catalogue()
+    city = catalogue.add_city("Ville A", 47.0, 2.0)
+    beacon = catalogue.add_beacon(city.city_id, group="Ligne", order=2, usable_as_anchor=False, note="Note")
+    clone = catalogue.clone()
+
+    assert clone.get_beacon(beacon.beacon_id) == beacon
+    clone.update_beacon(beacon.beacon_id, group="Autre", order=None, usable_as_anchor=True, note="Modifiée")
+    assert (beacon.group, beacon.order, beacon.usable_as_anchor, beacon.note) == ("Ligne", 2, False, "Note")
+
+
+def test_beacon_group_colors_are_normalized_cloned_and_may_be_orphaned():
+    catalogue = Catalogue()
+    catalogue.set_beacon_group_color("  Ligne  ", "#a1b2c3")
+    assert catalogue.beacon_group_colors == {"Ligne": "#A1B2C3"}
+    assert catalogue.get_beacon_group_color("Ligne") == "#A1B2C3"
+    catalogue.validate()
+    clone = catalogue.clone()
+    clone.set_beacon_group_color("Ligne", "#ff0000")
+    assert catalogue.get_beacon_group_color("Ligne") == "#A1B2C3"
+    clone.set_beacon_group_color("Ligne", None)
+    assert clone.get_beacon_group_color("Ligne") is None
+    for invalid in ("", "FF0000", "#FFF", "#12345678", "red", "#GG0000"):
+        with pytest.raises(ValueError):
+            catalogue.set_beacon_group_color("Ligne", invalid)
 
 
 def test_cities_validate_names_coordinates_and_invalidate_only_changed_coordinate_cache():

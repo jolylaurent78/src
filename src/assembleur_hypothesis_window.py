@@ -97,9 +97,11 @@ class ScenarioHypothesisDialog(tk.Toplevel):
             self._cities_tab,
             scenario_reference=self._reference_draft,
             catalogue=self.catalogue,
+            active_triangle_ref_ids=lambda: self._draft.triangle_ids_by_rank,
             on_reference_changed=self._refresh_ranks,
         )
         self.cities_view.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        self._notebook.bind("<<NotebookTabChanged>>", self._on_notebook_tab_changed)
 
         triangles_root = self._triangles_tab
         triangles_root.rowconfigure(2, weight=1)
@@ -286,6 +288,12 @@ class ScenarioHypothesisDialog(tk.Toplevel):
             row.set_triangles(odd.ref_id, odd_light, even.ref_id, even_light, base)
         if self._selected_slot is not None:
             self._selected_slot.set_selected(True)
+        if hasattr(self, "cities_view"):
+            self.cities_view.refresh_usage_state()
+
+    def _on_notebook_tab_changed(self, _event=None) -> None:
+        if self._notebook.select() == str(self._cities_tab):
+            self.cities_view.refresh_usage_state()
 
     def _draft_resolver(self) -> GeometryReferenceResolver:
         reference = getattr(self, "_reference_draft", None)
@@ -421,9 +429,6 @@ class ScenarioHypothesisDialog(tk.Toplevel):
         self._set_cursor("")
 
     def _apply(self) -> None:
-        if hasattr(self, "cities_view"):
-            if not self.cities_view._on_name_committed():
-                return
         try:
             resolver = self._draft_resolver()
             self._draft.validate(resolver)

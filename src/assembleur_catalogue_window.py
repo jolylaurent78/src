@@ -14,7 +14,7 @@ from tkinter import font as tkfont
 from tkinter import colorchooser, filedialog, messagebox, simpledialog, ttk
 from tksheet import Sheet
 from src.DictionnaireEnigmes import parse_book_file
-from src.assembleur_catalogue import Catalogue, CatalogueBook, CatalogueCity, CatalogueTriangle as ModelCatalogueTriangle, HypothesisTemplate
+from src.assembleur_catalogue import Catalogue, CatalogueBeacon, CatalogueBook, CatalogueCity, CatalogueTriangle as ModelCatalogueTriangle, HypothesisTemplate
 from src.assembleur_catalogue_book_asset_controller import CatalogueBookAssetController
 from src.assembleur_catalogue_geometric_layer_assets import (
     CatalogueGeometricLayerAssetController,
@@ -69,6 +69,16 @@ class TriangleEditorResult:
 
 
 @dataclass(frozen=True)
+class BeaconEditorResult:
+    city_id: str
+    group: str
+    order: int | None
+    usable_as_anchor: bool
+    note: str
+    group_color: str | None = None
+
+
+@dataclass(frozen=True)
 class TriangleCsvImportResult:
     """Synthèse métier d'un import incrémental de triangles."""
 
@@ -113,6 +123,14 @@ def _normalize_search_text(value: str) -> str:
         for char in unicodedata.normalize("NFD", value)
         if unicodedata.category(char) != "Mn"
     ).casefold()
+
+
+def get_beacon_group_suggestions(catalogue: Catalogue) -> tuple[str, ...]:
+    """Liste déterministe des groupes déjà utilisés, archivage inclus."""
+    return tuple(sorted(
+        {beacon.group.strip() for beacon in catalogue.iter_beacons() if beacon.group.strip()},
+        key=lambda group: (group.casefold(), group),
+    ))
 
 
 def _bgr_to_rgb_hex(color_bgr: tuple[int, int, int]) -> str:
@@ -421,6 +439,143 @@ class TriangleEditorDialog(tk.Toplevel):
         self.destroy()
 
 
+class BeaconEditorDialog(tk.Toplevel):
+    """Éditeur local d'une balise et de ses métadonnées V9."""
+
+    def __init__(
+        self,
+        parent,
+        cities: list[CatalogueCity],
+        group_suggestions: tuple[str, ...],
+        beacon: CatalogueBeacon | None = None,
+        group_colors: dict[str, str] | None = None,
+    ):
+        super().__init__(parent)
+        self.title("Ajouter une balise" if beacon is None else "Modifier une balise")
+        self.transient(parent)
+        self.resizable(False, False)
+        self.result: BeaconEditorResult | None = None
+        self._cities = list(cities)
+        self._city_by_id = {city.city_id: city for city in self._cities}
+        self._city_id = beacon.city_id if beacon is not None else None
+        self._city_var = tk.StringVar(value=self._city_name(self._city_id))
+        self._group_var = tk.StringVar(value=beacon.group if beacon is not None else "")
+        self._group_colors = dict(group_colors or {})
+        self._pending_group_colors: dict[str, str | None] = {}
+        self._order_var = tk.StringVar(value=str(beacon.order) if beacon is not None and beacon.order is not None else "")
+        self._usable_as_anchor_var = tk.BooleanVar(value=beacon.usable_as_anchor if beacon is not None else True)
+
+        root = ttk.Frame(self, padding=12)
+        root.grid(row=0, column=0, sticky="nsew")
+        root.columnconfigure(1, weight=1)
+        ttk.Label(root, text="Ville").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        ttk.Entry(root, textvariable=self._city_var, state="readonly", width=36).grid(row=0, column=1, sticky="ew", pady=(0, 6))
+        ttk.Button(root, text="...", width=3, command=self._choose_city).grid(row=0, column=2, padx=(6, 0), pady=(0, 6))
+        ttk.Label(root, text="Groupe").grid(row=1, column=0, sticky="w", pady=(0, 6))
+        self._group_combo = ttk.Combobox(
+            root,
+            textvariable=self._group_var,
+            values=group_suggestions,
+            state="normal",
+            width=34,
+        )
+        self._group_combo.grid(row=1, column=1, sticky="ew", pady=(0, 6))
+        self._color_button = tk.Button(root, text="■", width=2, command=self._choose_group_color)
+        self._color_button.grid(row=1, column=2, padx=(6, 0), pady=(0, 6))
+        self._default_color_button = ttk.Button(root, text="Par défaut", command=self._clear_group_color)
+        self._default_color_button.grid(row=1, column=3, padx=(6, 0), pady=(0, 6))
+        ttk.Label(root, text="Ordre").grid(row=2, column=0, sticky="w", pady=(0, 6))
+        ttk.Spinbox(root, from_=1, to=999999, increment=1, textvariable=self._order_var, width=10).grid(
+            row=2, column=1, columnspan=2, sticky="w", pady=(0, 6)
+        )
+        ttk.Checkbutton(root, text="Peut servir d'ancrage", variable=self._usable_as_anchor_var).grid(
+            row=3, column=0, columnspan=3, sticky="w", pady=(0, 6)
+        )
+        ttk.Label(root, text="Note").grid(row=4, column=0, sticky="nw", pady=(0, 6))
+        self._note_text = tk.Text(root, width=38, height=4, wrap="word")
+        self._note_text.grid(row=4, column=1, columnspan=2, sticky="ew", pady=(0, 6))
+        if beacon is not None:
+            self._note_text.insert("1.0", beacon.note)
+        buttons = ttk.Frame(root)
+        buttons.grid(row=5, column=1, columnspan=3, sticky="e", pady=(6, 0))
+        self._group_var.trace_add("write", lambda *_: self._refresh_group_color_controls())
+        self._refresh_group_color_controls()
+        ttk.Button(buttons, text="OK", command=self._accept).pack(side=tk.LEFT)
+        ttk.Button(buttons, text="Annuler", command=self.destroy).pack(side=tk.LEFT, padx=(6, 0))
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self.grab_set()
+        self._group_combo.focus_set()
+
+    def show(self) -> BeaconEditorResult | None:
+        self.wait_window()
+        return self.result
+
+    def _city_name(self, city_id: str | None) -> str:
+        return self._city_by_id[city_id].name if city_id is not None else ""
+
+    def _choose_city(self) -> None:
+        selectable = [city for city in self._cities if not city.archived or city.city_id == self._city_id]
+        city_id = CitySelectionDialog(self, selectable, self._city_id).show()
+        if city_id is not None:
+            self._city_id = city_id
+            self._city_var.set(self._city_name(city_id))
+
+    def _current_group_color(self) -> str | None:
+        group = self._group_var.get().strip()
+        if not group:
+            return None
+        return self._pending_group_colors.get(group, self._group_colors.get(group))
+
+    def _refresh_group_color_controls(self) -> None:
+        group = self._group_var.get().strip()
+        color = self._current_group_color()
+        state = tk.NORMAL if group else tk.DISABLED
+        self._color_button.configure(state=state, bg=color or self.cget("bg"))
+        self._default_color_button.configure(state=state)
+
+    def _choose_group_color(self) -> None:
+        group = self._group_var.get().strip()
+        if not group:
+            return
+        _rgb, color = colorchooser.askcolor(color=self._current_group_color(), parent=self)
+        if color is not None:
+            self._pending_group_colors[group] = color.upper()
+            self._refresh_group_color_controls()
+
+    def _clear_group_color(self) -> None:
+        group = self._group_var.get().strip()
+        if group:
+            self._pending_group_colors[group] = None
+            self._refresh_group_color_controls()
+
+    def _accept(self) -> None:
+        if self._city_id is None:
+            messagebox.showerror("Balise", "La ville est obligatoire.", parent=self)
+            return
+        raw_order = self._order_var.get().strip()
+        if not raw_order:
+            order = None
+        else:
+            try:
+                order = int(raw_order)
+            except ValueError:
+                messagebox.showerror("Balise", "L'ordre doit être un entier strictement positif.", parent=self)
+                return
+            if order < 1:
+                messagebox.showerror("Balise", "L'ordre doit être un entier strictement positif.", parent=self)
+                return
+        group = self._group_var.get().strip()
+        self.result = BeaconEditorResult(
+            self._city_id,
+            group,
+            order,
+            self._usable_as_anchor_var.get(),
+            self._note_text.get("1.0", "end-1c").strip(),
+            self._current_group_color(),
+        )
+        self.destroy()
+
+
 class TemplateRankSlot(tk.Frame):
     """Cible autonome d'un rang, prête à recevoir ultérieurement un glisser-déposer."""
 
@@ -632,6 +787,9 @@ class CatalogueWindow(tk.Toplevel):
         self._beacon_search_var = tk.StringVar()
         self._show_archived_beacons_var = tk.BooleanVar(value=False)
         self._beacon_archived_var = tk.BooleanVar(value=False)
+        self._beacon_group_display_var = tk.StringVar()
+        self._beacon_order_display_var = tk.StringVar()
+        self._beacon_anchor_display_var = tk.StringVar()
         self._name_var = tk.StringVar()
         self._archived_var = tk.BooleanVar(value=False)
         self._triangle_date_filter_var = tk.StringVar(value="Tous")
@@ -672,6 +830,7 @@ class CatalogueWindow(tk.Toplevel):
         images_dir = ApplicationPaths.from_runtime().images_dir
         self._icon_clipboard = tk.PhotoImage(file=images_dir / "clipboard.png")
         self._icon_map_pin_plus = tk.PhotoImage(file=images_dir / "map-pin-plus.png")
+        self._icon_props = tk.PhotoImage(file=images_dir / "props.png")
         self._icon_hexagon_plus = tk.PhotoImage(file=images_dir / "hexagon-plus.png")
         self._icon_archive = tk.PhotoImage(file=images_dir / "archive.png")
         self._icon_archive_off = tk.PhotoImage(file=images_dir / "archive-off.png")
@@ -859,6 +1018,11 @@ class CatalogueWindow(tk.Toplevel):
         self._beacon_add_button = ttk.Button(actions, image=self._icon_map_pin_plus, command=self._add_beacon)
         self._beacon_add_button.pack(side=tk.LEFT)
         self._attach_tooltip(self._beacon_add_button, "Ajouter une balise")
+        self._beacon_edit_button = ttk.Button(
+            actions, image=self._icon_props, command=self._edit_selected_beacon, state=tk.DISABLED,
+        )
+        self._beacon_edit_button.pack(side=tk.LEFT, padx=(4, 0))
+        self._attach_tooltip(self._beacon_edit_button, "Modifier la balise")
         self._beacon_archive_button = ttk.Button(
             actions, image=self._icon_archive, command=self._archive_selected_beacon, state=tk.DISABLED,
         )
@@ -878,22 +1042,36 @@ class CatalogueWindow(tk.Toplevel):
         self._beacon_listbox.configure(yscrollcommand=scrollbar.set)
         self._beacon_listbox.bind("<<ListboxSelect>>", self._on_beacon_selected)
 
-        detail.rowconfigure(3, weight=1)
+        detail.rowconfigure(4, weight=1)
         detail.columnconfigure(1, weight=1)
-        ttk.Label(detail, text="Ville").grid(row=0, column=0, sticky="w", pady=(0, 6))
-        self._beacon_city_label = ttk.Label(detail, text="")
-        self._beacon_city_label.grid(row=0, column=1, sticky="w", pady=(0, 6))
-        ttk.Label(detail, text="Coordonnées").grid(row=1, column=0, sticky="w", pady=(0, 6))
+        ttk.Label(detail, text="Coordonnées").grid(row=0, column=0, sticky="w", pady=(0, 6))
         coordinates = ttk.Frame(detail)
-        coordinates.grid(row=1, column=1, sticky="w", pady=(0, 6))
+        coordinates.grid(row=0, column=1, sticky="w", pady=(0, 6))
         self._beacon_latitude_editor = DmsCoordinateEditor(coordinates, coordinate_type="latitude")
         self._beacon_latitude_editor.grid(row=0, column=0, sticky="w")
         self._beacon_longitude_editor = DmsCoordinateEditor(coordinates, coordinate_type="longitude")
         self._beacon_longitude_editor.grid(row=0, column=1, sticky="w", padx=(12, 0))
         self._set_dms_editor_readonly(self._beacon_latitude_editor)
         self._set_dms_editor_readonly(self._beacon_longitude_editor)
+        metadata = ttk.Frame(detail)
+        metadata.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        ttk.Label(metadata, text="Groupe").grid(row=0, column=0, sticky="w")
+        ttk.Entry(metadata, textvariable=self._beacon_group_display_var, state="readonly", width=18).grid(
+            row=0, column=1, sticky="w", padx=(6, 12)
+        )
+        ttk.Label(metadata, text="Ordre").grid(row=0, column=2, sticky="w")
+        ttk.Entry(metadata, textvariable=self._beacon_order_display_var, state="readonly", width=7).grid(
+            row=0, column=3, sticky="w", padx=(6, 12)
+        )
+        ttk.Label(metadata, text="Ancrage").grid(row=0, column=4, sticky="w")
+        ttk.Entry(metadata, textvariable=self._beacon_anchor_display_var, state="readonly", width=7).grid(
+            row=0, column=5, sticky="w", padx=(6, 0)
+        )
+        ttk.Label(detail, text="Note").grid(row=2, column=0, sticky="nw", pady=(0, 6))
+        self._beacon_note_display = tk.Text(detail, width=42, height=3, wrap="word", state=tk.DISABLED)
+        self._beacon_note_display.grid(row=2, column=1, sticky="ew", pady=(0, 6))
         ttk.Checkbutton(detail, text="Balise archivée", variable=self._beacon_archived_var, state=tk.DISABLED).grid(
-            row=2, column=0, columnspan=2, sticky="w", pady=(2, 6)
+            row=3, column=0, columnspan=2, sticky="w", pady=(2, 6)
         )
         self._beacon_map_view = GeoMapView(
             detail,
@@ -902,13 +1080,20 @@ class CatalogueWindow(tk.Toplevel):
             minimum_fit_zoom=2.25,
             maximum_zoom=1.0,
         )
-        self._beacon_map_view.grid(row=3, column=0, columnspan=2, sticky="nsew")
+        self._beacon_map_view.grid(row=4, column=0, columnspan=2, sticky="nsew")
 
     @staticmethod
     def _set_dms_editor_readonly(editor: DmsCoordinateEditor) -> None:
         editor._hemisphere.configure(state=tk.DISABLED)
         for spinbox in (editor._degrees, editor._minutes, editor._seconds):
             spinbox.configure(state=tk.DISABLED)
+
+    @staticmethod
+    def _set_readonly_text(widget: tk.Text, value: str) -> None:
+        widget.configure(state=tk.NORMAL)
+        widget.delete("1.0", tk.END)
+        widget.insert("1.0", value)
+        widget.configure(state=tk.DISABLED)
 
     def _load_map(self):
         try:
@@ -3562,7 +3747,8 @@ class CatalogueWindow(tk.Toplevel):
         selected_id, visible = self._selected_beacon_id, self._visible_beacons()
         self._beacon_listbox.delete(0, tk.END)
         for beacon in visible:
-            self._beacon_listbox.insert(tk.END, self.catalogue.get_city(beacon.city_id).name)
+            city_name = self.catalogue.get_city(beacon.city_id).name
+            self._beacon_listbox.insert(tk.END, city_name)
         if any(beacon.beacon_id == selected_id for beacon in visible):
             index = next(index for index, beacon in enumerate(visible) if beacon.beacon_id == selected_id)
             self._beacon_listbox.selection_set(index)
@@ -3578,6 +3764,7 @@ class CatalogueWindow(tk.Toplevel):
                 self.catalogue.get_city(beacon.city_id).latitude,
                 self.catalogue.get_city(beacon.city_id).longitude,
                 self.catalogue.get_city(beacon.city_id).name,
+                fill_color=self.catalogue.get_beacon_group_color(beacon.group) if beacon.group else None,
             )
             for beacon in visible
         )
@@ -3609,14 +3796,20 @@ class CatalogueWindow(tk.Toplevel):
     def _load_selected_beacon(self):
         beacon = self.catalogue.get_beacon(self._selected_beacon_id) if self._selected_beacon_id else None
         city = self.catalogue.get_city(beacon.city_id) if beacon is not None else None
-        self._beacon_city_label.configure(text=city.name if city else "")
         self._beacon_latitude_editor.set_decimal(city.latitude if city else 0.0)
         self._beacon_longitude_editor.set_decimal(city.longitude if city else 0.0)
+        self._beacon_group_display_var.set(beacon.group if beacon is not None else "")
+        self._beacon_order_display_var.set(str(beacon.order) if beacon is not None and beacon.order is not None else "")
+        self._beacon_anchor_display_var.set(
+            "Oui" if beacon is not None and beacon.usable_as_anchor else "Non" if beacon is not None else ""
+        )
+        self._set_readonly_text(self._beacon_note_display, beacon.note if beacon is not None else "")
         self._beacon_archived_var.set(beacon.archived if beacon else False)
 
     def _update_beacon_action_buttons(self):
         beacon = self.catalogue.get_beacon(self._selected_beacon_id) if self._selected_beacon_id else None
         state = tk.NORMAL if beacon is not None else tk.DISABLED
+        self._beacon_edit_button.configure(state=state)
         self._beacon_delete_button.configure(state=state)
         self._beacon_archive_button.configure(
             state=state,
@@ -3628,23 +3821,74 @@ class CatalogueWindow(tk.Toplevel):
         )
 
     def _add_beacon(self):
-        cities = self._available_beacon_cities()
-        if not cities:
+        if not self._available_beacon_cities():
             messagebox.showinfo(
                 "Ajouter une balise",
                 "Aucune ville disponible pour créer une nouvelle balise.",
                 parent=self,
             )
             return
-        city_id = CitySelectionDialog(self, cities).show()
-        if city_id is None:
+        result = BeaconEditorDialog(
+            self,
+            self._available_beacon_cities(),
+            get_beacon_group_suggestions(self.catalogue),
+            group_colors=self.catalogue.beacon_group_colors,
+        ).show()
+        if result is None:
             return
         try:
-            beacon = self.catalogue.add_beacon(city_id)
+            beacon = self.catalogue.add_beacon(
+                result.city_id,
+                group=result.group,
+                order=result.order,
+                usable_as_anchor=result.usable_as_anchor,
+                note=result.note,
+            )
+            if result.group:
+                self.catalogue.set_beacon_group_color(result.group, result.group_color)
         except ValueError as exc:
             messagebox.showerror("Ajouter une balise", str(exc), parent=self)
             return
         self._selected_beacon_id = beacon.beacon_id
+        self._refresh_beacon_list()
+        self._load_selected_beacon()
+        self._refresh_city_list()
+        self._load_selected_city()
+        self._mark_dirty()
+
+    def _edit_selected_beacon(self):
+        beacon = self.catalogue.get_beacon(self._selected_beacon_id) if self._selected_beacon_id else None
+        if beacon is None:
+            return
+        selectable_cities = [
+            city for city in self.catalogue.iter_cities()
+            if city.city_id == beacon.city_id or (not city.archived and city.city_id not in {
+                other.city_id for other in self.catalogue.iter_beacons() if other.beacon_id != beacon.beacon_id
+            })
+        ]
+        result = BeaconEditorDialog(
+            self,
+            selectable_cities,
+            get_beacon_group_suggestions(self.catalogue),
+            beacon,
+            self.catalogue.beacon_group_colors,
+        ).show()
+        if result is None:
+            return
+        try:
+            self.catalogue.update_beacon(
+                beacon.beacon_id,
+                city_id=result.city_id,
+                group=result.group,
+                order=result.order,
+                usable_as_anchor=result.usable_as_anchor,
+                note=result.note,
+            )
+            if result.group:
+                self.catalogue.set_beacon_group_color(result.group, result.group_color)
+        except ValueError as exc:
+            messagebox.showerror("Modifier la balise", str(exc), parent=self)
+            return
         self._refresh_beacon_list()
         self._load_selected_beacon()
         self._refresh_city_list()

@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from src.assembleur_core import ScenarioAssemblage, TopologyElement, TopologyNodeType
+from src.assembleur_deformation_ui import DeformationUiState
 from src.assembleur_edgechoice import ManualAttachmentIntent, previewManualAttachment
 from src.assembleur_tk import TriangleViewerManual
 from src.canvas_objects_collection import CanvasObjectsCollection
@@ -421,6 +422,94 @@ def test_center_move_initializes_a_core_only_selection_state():
     viewer._on_canvas_left_move(SimpleNamespace(x=3.0, y=2.0))
 
     assert tuple(viewer._last_drawn[0]["pts"]["O"]) == (2.0, -1.0)
+
+
+def test_deformation_hand_keeps_current_occurrence_while_starting_clicked_core_move():
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer._last_drawn = [
+        {
+            "topoElementId": "T4",
+            "pts": {"O": (0.0, 0.0), "B": (3.0, 0.0), "L": (0.0, 4.0)},
+        },
+        {
+            "topoElementId": "T5",
+            "pts": {"O": (10.0, 0.0), "B": (13.0, 0.0), "L": (10.0, 4.0)},
+        },
+    ]
+    viewer.canvas_objects = CanvasObjectsCollection(viewer._last_drawn)
+    viewer._last_drawn = viewer.canvas_objects.entries
+    scenario = ScenarioAssemblage(name="deformation-hand")
+    world = scenario.topoWorld
+    world.add_element_as_new_group(TopologyElement(
+        element_id="T4", name="Triangle 4", vertex_labels=["O", "B", "L"],
+        vertex_types=[TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE],
+        edge_lengths_km=[3.0, 5.0, 4.0],
+    ))
+    clicked_group_id = world.add_element_as_new_group(TopologyElement(
+        element_id="T5", name="Triangle 5", vertex_labels=["O", "B", "L"],
+        vertex_types=[TopologyNodeType.OUVERTURE, TopologyNodeType.BASE, TopologyNodeType.LUMIERE],
+        edge_lengths_km=[3.0, 5.0, 4.0],
+    ))
+    viewer.scenarios = [scenario]
+    viewer.active_scenario_index = 0
+    state = DeformationUiState(active=True)
+    state.select("T4", world)
+    state.selected_occurrence = ("T4", "L")
+    working_point = state.ensure_working_point(("T4", "L"), (42.0, 24.0))
+    state.modified_occurrences.append(("T4", "L"))
+    viewer._deformation_state = state
+    viewer._deformation_canvas_mode = "move"
+    viewer._select_deformation_element = lambda _element_id: pytest.fail(
+        "Hand must not select a DEFORM element"
+    )
+    viewer.status = _StatusStub()
+    viewer.offset = (0.0, 0.0)
+    viewer.zoom = 1.0
+    viewer._sel = None
+    viewer._drag = None
+    viewer._clock_arc_active = viewer._clock_trace_active = False
+    viewer._clock_measure_active = viewer._clock_setref_active = False
+    viewer._bg = None
+    viewer.bg_resize_mode = SimpleNamespace(get=lambda: False)
+    viewer._ensure_pick_cache = lambda: None
+    viewer._screen_to_world = lambda x, y: (x, -y)
+    viewer._is_in_clock = lambda _x, _y: False
+    viewer._hide_tooltip = lambda: None
+    viewer._reset_assist = lambda: None
+    viewer._hit_test = lambda _x, _y: ("center", 1, None)
+    viewer._is_active_auto_scenario = lambda: False
+
+    viewer._on_canvas_left_down(SimpleNamespace(x=11.0, y=1.0))
+
+    assert state.element_id == "T4"
+    assert state.selected_occurrence == ("T4", "L")
+    assert state.working_point_for_occurrence(("T4", "L")) is working_point
+    assert working_point.lambert_xy == (42.0, 24.0)
+    assert state.modified_occurrences == [("T4", "L")]
+    assert viewer._sel["mode"] == "move_group"
+    assert viewer._sel["core_group_id"] == clicked_group_id
+
+
+def test_deformation_select_routes_click_to_deformation_element_selection():
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    state = DeformationUiState(active=True, element_id="T4")
+    viewer._deformation_state = state
+    viewer._last_drawn = [{"topoElementId": "T5"}]
+    viewer._ensure_pick_cache = lambda: None
+    viewer._hit_test = lambda _x, _y: ("center", 0, None)
+    selected = []
+
+    def select_deformation_element(element_id):
+        selected.append(element_id)
+        state.select(element_id, object())
+        return True
+
+    viewer._select_deformation_element = select_deformation_element
+
+    viewer._handle_deformation_left_down(SimpleNamespace(x=0, y=0))
+
+    assert selected == ["T5"]
+    assert state.element_id == "T5"
 
 
 def test_rotate_and_flip_prepare_members_from_core_group():

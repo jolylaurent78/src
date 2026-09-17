@@ -5,7 +5,7 @@ from openpyxl import Workbook
 
 from src.assembleur_catalogue import Catalogue
 from src.assembleur_catalogue_identity import SystemCatalogueIdProvider
-from src.assembleur_catalogue_window import CatalogueWindow, CitySelectionDialog
+from src.assembleur_catalogue_window import BeaconEditorResult, CatalogueWindow, CitySelectionDialog, get_beacon_group_suggestions
 
 
 class _Value:
@@ -97,7 +97,7 @@ def test_beacon_xlsx_duplicate_rolls_back_without_mutating_the_catalogue(tmp_pat
     assert window.catalogue.beacons == {}
 
 
-def test_add_beacon_reuses_city_selection_dialog_with_only_available_cities(monkeypatch):
+def test_add_beacon_uses_editor_with_only_available_cities(monkeypatch):
     catalogue = Catalogue()
     orleans = catalogue.add_city("Orléans", 47.9, 1.9)
     paris = catalogue.add_city("Paris", 48.8, 2.3)
@@ -107,14 +107,15 @@ def test_add_beacon_reuses_city_selection_dialog_with_only_available_cities(monk
     catalogue.update_city(bordeaux.city_id, archived=True)
     captured = {}
 
-    class _Selector:
-        def __init__(self, _parent, cities):
+    class _Editor:
+        def __init__(self, _parent, cities, group_suggestions, **_kwargs):
             captured["cities"] = cities
+            captured["group_suggestions"] = group_suggestions
 
         def show(self):
-            return orleans.city_id
+            return BeaconEditorResult(orleans.city_id, "Ligne", 1, False, "Point 1")
 
-    monkeypatch.setattr("src.assembleur_catalogue_window.CitySelectionDialog", _Selector)
+    monkeypatch.setattr("src.assembleur_catalogue_window.BeaconEditorDialog", _Editor)
     window = _window_logic(catalogue)
     window._selected_beacon_id = None
     window._available_beacon_cities = lambda: CatalogueWindow._available_beacon_cities(window)
@@ -127,8 +128,21 @@ def test_add_beacon_reuses_city_selection_dialog_with_only_available_cities(monk
     CatalogueWindow._add_beacon(window)
 
     assert [city.name for city in captured["cities"]] == ["Orléans", "Saint-Malo"]
-    assert catalogue.get_beacon(window._selected_beacon_id).city_id == orleans.city_id
+    beacon = catalogue.get_beacon(window._selected_beacon_id)
+    assert (beacon.city_id, beacon.group, beacon.order, beacon.usable_as_anchor, beacon.note) == (
+        orleans.city_id, "Ligne", 1, False, "Point 1",
+    )
     assert window.dirty is True
+
+
+def test_beacon_group_suggestions_are_exact_deduplicated_and_casefold_sorted():
+    catalogue = _catalogue_with_cities()
+    first, second, third = catalogue.iter_cities()
+    catalogue.add_beacon(first.city_id, group=" Ligne ")
+    catalogue.add_beacon(second.city_id, group="Assemblage")
+    catalogue.add_beacon(third.city_id, group="ligne")
+
+    assert get_beacon_group_suggestions(catalogue) == ("Assemblage", "Ligne", "ligne")
 
 
 def test_city_selection_search_is_accent_insensitive_and_sorted():
