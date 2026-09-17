@@ -8,6 +8,7 @@ from src.assembleur_core import ScenarioAssemblage
 from src.assembleur_paths import ApplicationPaths
 from src.assembleur_scenario_map import ScenarioMapPosition, ScenarioMapState
 from src.assembleur_tk_scenario_map import TriangleViewerScenarioMapMixin
+from src.assembleur_background_map_layer import BackgroundMapLayer
 
 
 class _Variable:
@@ -30,10 +31,11 @@ class _Viewer(TriangleViewerScenarioMapMixin):
         self.show_map_layer = _Variable(True)
         self.map_opacity = _Variable(100)
         self._last_drawn = []
-        self._bg = None
-        self._bg_base_pil = None
-        self._bg_photo = None
-        self._bg_resizing = None
+        self.background_map_layer = BackgroundMapLayer(
+            lambda point: point,
+            lambda x, y: (x, y),
+            self._on_background_map_geometry_changed,
+        )
 
     def _redraw_from(self, _entries):
         pass
@@ -62,11 +64,17 @@ def test_adapter_projects_resolved_map_and_uses_its_transform(tmp_path) -> None:
 
     viewer._apply_map_state(state, redraw=False)
 
-    assert viewer._bg["x0"] == 30
-    assert viewer._bg["w"] == 600
-    assert viewer._bg_base_pil.mode == "RGBA"
+    assert viewer.background_map_layer.world_rect.x0 == 30
+    assert viewer.background_map_layer.world_rect.w == 600
+    assert viewer.background_map_layer.base_image.mode == "RGBA"
     assert viewer.show_map_layer.get() is False
     # L'opacité est une préférence UI globale : appliquer l'état de cette
     # carte ne peut pas la restaurer depuis le scénario.
     assert viewer.map_opacity.get() == 20
     assert viewer._catalogue_lambert_to_world(0, 0) == (30, 340)
+
+    viewer.background_map_layer.start_move(0, 0)
+    assert viewer.background_map_layer.update_move(5, 7) is True
+
+    assert scenario.map_state.position_override == ScenarioMapPosition(35, 47)
+    assert viewer._catalogue_lambert_to_world(0, 0) == (35, 347)

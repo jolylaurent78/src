@@ -10,13 +10,14 @@ from src.assembleur_catalogue_map_assets import CatalogueMapAssetResolver
 from src.assembleur_map_transform import MapTransform, scale_factor_for_world_rect
 from src.assembleur_scenario_map import ScenarioMapPosition, ScenarioMapState
 from src.assembleur_scenario_map_runtime import ScenarioMapResolver
+from src.assembleur_background_map_layer import BackgroundMapWorldRect
 
 
 class TriangleViewerScenarioMapMixin:
     """Fait de ``ScenarioMapState`` la source métier de la carte Tk.
 
-    ``_bg`` reste une projection de rendu transitoire, nécessaire au renderer
-    raster historique. Aucun calcul Lambertâ†’monde ne lit cette projection.
+    Le rendu raster est détenu par ``background_map_layer``. Aucun calcul
+    Lambert→monde ne lit cette projection runtime.
     """
 
     def _new_default_map_state(self) -> ScenarioMapState:
@@ -51,24 +52,15 @@ class TriangleViewerScenarioMapMixin:
         resolved = self._scenario_map_resolver().resolve(state)
         self._resolved_scenario_map = resolved
         if resolved is None:
-            self._bg = None
-            self._bg_base_pil = None
-            self._bg_photo = None
-            self._bg_resizing = None
+            self.background_map_layer.clear()
         else:
             assets = self._resolved_scenario_map_assets.resolve(resolved.catalogue_map)
             rect = resolved.world_rect
-            self._bg = {
-                "path": str(Path(assets.image_path)),
-                "x0": rect.x0,
-                "y0": rect.y0,
-                "w": rect.w,
-                "h": rect.h,
-                "aspect": rect.w / rect.h,
-            }
-            self._bg_base_pil = resolved.calibrated_map.image.convert("RGBA")
-            self._bg_photo = None
-            self._bg_resizing = None
+            self.background_map_layer.set_map(
+                resolved.calibrated_map.image.convert("RGBA"),
+                BackgroundMapWorldRect(rect.x0, rect.y0, rect.w, rect.h),
+                str(Path(assets.image_path)),
+            )
 
         self.show_map_layer.set(state.visible)
         if redraw:
@@ -82,21 +74,16 @@ class TriangleViewerScenarioMapMixin:
             raise RuntimeError("Aucune carte calibrée active pour résoudre les balises Catalogue.")
         return resolved.transform.lambert_to_world(lambert_x_m, lambert_y_m)
 
-    def _bg_compute_scale_factor(self) -> float | None:
+    def _background_map_scale_factor(self) -> float | None:
         resolved = getattr(self, "_resolved_scenario_map", None)
         return None if resolved is None else resolved.scale_factor
 
-    def _bg_update_move(self, sx: int, sy: int):
-        super()._bg_update_move(sx, sy)
-        self._sync_active_map_state_from_rendered_rect()
-
-    def _bg_update_resize(self, sx: int, sy: int):
-        super()._bg_update_resize(sx, sy)
+    def _on_background_map_geometry_changed(self) -> None:
         self._sync_active_map_state_from_rendered_rect()
 
     def _sync_active_map_state_from_rendered_rect(self) -> None:
-        bg = getattr(self, "_bg", None)
-        if not isinstance(bg, dict):
+        rect = self.background_map_layer.world_rect
+        if rect is None:
             return
         scenarios = getattr(self, "scenarios", ())
         index = getattr(self, "active_scenario_index", -1)
@@ -108,7 +95,7 @@ class TriangleViewerScenarioMapMixin:
             return
         catalogue_map = self.catalogue.get_map(state.map_ref_id)
         default = catalogue_map.default_world_rect
-        rect = WorldRect(float(bg["x0"]), float(bg["y0"]), float(bg["w"]), float(bg["h"]))
+        rect = WorldRect(rect.x0, rect.y0, rect.w, rect.h)
         scale = scale_factor_for_world_rect(rect, default, catalogue_map.default_scale_factor)
         same_position = abs(rect.x0 - default.x0) < 1e-9 and abs(rect.y0 - default.y0) < 1e-9
         same_size = abs(rect.w - default.w) < 1e-9 and abs(rect.h - default.h) < 1e-9

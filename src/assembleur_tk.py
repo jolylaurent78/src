@@ -8,16 +8,12 @@ from math import atan2, pi
 import numpy as np
 import re
 import copy
-import threading
-from dataclasses import dataclass
 from typing import Optional, List, Dict, Tuple
 
 from tkinter import filedialog, messagebox, simpledialog, colorchooser
 import tkinter as tk
 from tkinter import ttk
 import tkinter.font as tkfont
-
-from PIL import Image
 
 # === Modules externalisés (découpage maintenable) ===
 from src.assembleur_core import (
@@ -29,30 +25,22 @@ from src.assembleur_core import (
 from src.assembleur_sim import (
     MoteurSimulationAssemblage,
     ALGOS,
-    InitialTriangleOrientation,
 )
 
 from src.assembleur_decryptor import (
-    DecryptorConfig,
     DecryptorBase,
     ClockDicoDecryptor,
     DECRYPTORS,
 )
-from src.assembleur_decryptor_engine import DecryptorEngine
-from src.DictionnaireEnigmes import DictionnaireEnigmes, Pattern, ListePatterns, DicoScope
-from src.assembleur_engine_runtime import (
-    EngineControl,
-    EventQueue,
-    RunControlConfig,
-)
+
+from src.DictionnaireEnigmes import DictionnaireEnigmes
 
 import src.assembleur_io as _assembleur_io
 
 # --- Tk split: mixins (découpage assembleur_tk.py) ---
 from src.assembleur_tk_mixin_dictionary import TriangleViewerDictionaryMixin
-from src.assembleur_tk_mixin_frontier import TriangleViewerFrontierGraphMixin
 from src.assembleur_tk_scenario_map import TriangleViewerScenarioMapMixin
-from src.assembleur_tk_mixin_bg import TriangleViewerBackgroundMapMixin
+from src.assembleur_background_map_layer import BackgroundMapLayer, format_scale
 from src.assembleur_tk_mixin_clockarc import TriangleViewerClockArcMixin
 from src.assembleur_edgechoice import (
     buildManualAttachmentIntentFromBest,
@@ -113,6 +101,9 @@ from src.assembleur_map_print import (
 )
 from src.assembleur_map_print_dialog import AssembleurMapPrintDialog
 from src.assembleur_chemins_export_dialog import CheminsExportDialog
+from src.assembleur_chemin_edit_dialog import CheminEditDialog
+from src.assembleur_decryptage_window import DecryptageEngineWindow
+from src.assembleur_simulation_dialog import AutoOrientationReference, DialogSimulationAssembler
 
 
 def get_anchor_beacon_candidates(catalogue: Catalogue):
@@ -127,9 +118,8 @@ def get_geometric_reference_beacon_candidates(catalogue: Catalogue):
     """Balises actives disponibles comme repères géométriques."""
     return tuple(beacon for beacon in catalogue.iter_beacons() if not beacon.archived)
 
+
 DEFORMATION_DRAG_REFRESH_MS = 40
-
-
 EPS_WORLD = 1e-6
 _LOGGER_NAME = "src.assembleur_tk" if __name__ == "__main__" else __name__
 LOGGER = logging.getLogger(_LOGGER_NAME)
@@ -167,240 +157,12 @@ def createDecryptor(decryptorId: str) -> DecryptorBase:
     return cls()
 
 
-@dataclass(frozen=True)
-class AutoOrientationReference:
-    """Référence Core proposée par le viewer au dialogue de simulation."""
-    beacon_id: str
-    element_id: str
-    tri_rank: int
-    theta_rad: float
-
-
-class DialogSimulationAssembler(tk.Toplevel):
-    """Boîte de dialogue 'Simulation > Assembler…'"""
-
-    def __init__(
-        self,
-        parent,
-        algo_items: List[Tuple[str, str]],
-        n_max: int,
-        default_algo_id: str,
-        default_n: int,
-        default_order: str = "forward",
-        beacon_items: List[Tuple[str, str]] | None = None,
-        orientation_reference_by_beacon: Dict[str, "AutoOrientationReference | None"] | None = None,
-        default_beacon_id: str = "",
-        default_first_edge: str = "OL",
-    ):
-        super().__init__(parent)
-        self._beacon_items = list(beacon_items or ())
-        if not self._beacon_items:
-            raise ValueError("Simulation: une balise d'ancrage est obligatoire")
-        self._beacon_id_by_display = {
-            display_label: beacon_id
-            for beacon_id, display_label in self._beacon_items
-        }
-        if len(self._beacon_id_by_display) != len(self._beacon_items):
-            raise ValueError("Simulation: libellés de balises dupliqués")
-        self._orientation_reference_by_beacon = dict(orientation_reference_by_beacon or {})
-        self.title("Assembler (simulation)")
-        self.resizable(False, False)
-        self.transient(parent)
-        self.grab_set()
-
-        self.result = None  # (algo_id, n, order, beacon_id, InitialTriangleOrientation)
-
-        # Imports locaux (évite d'imposer ttk partout)
-        from tkinter import ttk
-
-        frm = ttk.Frame(self, padding=10)
-        frm.grid(row=0, column=0, sticky="nsew")
-
-        ttk.Label(frm, text="Algorithme :").grid(row=0, column=0, sticky="w")
-        self.algo_var = tk.StringVar(value=default_algo_id or (algo_items[0][0] if algo_items else ""))
-        self.algo_combo = ttk.Combobox(
-            frm,
-            textvariable=self.algo_var,
-            state="readonly",
-            values=[f"{aid} - {label}" for aid, label in algo_items],
-            width=48
-        )
-        self._algo_items = list(algo_items)
-        sel_index = 0
-        for i, (aid, _lbl) in enumerate(self._algo_items):
-            if aid == self.algo_var.get():
-                sel_index = i
-                break
-        if algo_items:
-            self.algo_combo.current(sel_index)
-        self.algo_combo.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
-
-        ttk.Label(frm, text="Nombre de triangles (n premiers) :").grid(row=2, column=0, sticky="w")
-        vcmd = (self.register(self._validate_even), "%P")
-        self.var_nb_triangles = tk.IntVar(value=int(default_n))
-        self.spin_nb_triangles = ttk.Spinbox(
-            frm,
-            from_=2,                 # minimum pair
-            to=max(2, int(n_max)),
-            increment=2,             # flèches +2 / -2
-            textvariable=self.var_nb_triangles,
-            width=6,
-            validate="key",          # empêche les impairs au clavier
-            validatecommand=vcmd
-        )
-        self.spin_nb_triangles.grid(row=2, column=1, sticky="e")
-
-        # --- Ordre d'assemblage ---
-        d_order = str(default_order or "forward").strip().lower()
-        if d_order not in ("forward", "reverse"):
-            d_order = "forward"
-        self.order_var = tk.StringVar(value=d_order)  # "forward" | "reverse"
-        ttk.Label(frm, text="Ordre d’assemblage :").grid(row=3, column=0, sticky="w", pady=(8, 0))
-        order_frm = ttk.Frame(frm)
-        order_frm.grid(row=3, column=1, sticky="e", pady=(8, 0))
-        ttk.Radiobutton(order_frm, text="Normal", value="forward", variable=self.order_var).grid(row=0, column=0, padx=(0, 10))
-        ttk.Radiobutton(order_frm, text="Inverse", value="reverse", variable=self.order_var).grid(row=0, column=1)
-
-        # --- Balise d'ancrage ---
-        beacon_labels = [display_label for _beacon_id, display_label in self._beacon_items]
-        beacon_index = next(
-            (
-                index for index, (beacon_id, _label) in enumerate(self._beacon_items)
-                if beacon_id == default_beacon_id
-            ),
-            0,
-        )
-        self.beacon_var = tk.StringVar(value=beacon_labels[beacon_index])
-        ttk.Label(frm, text="Balise d’ancrage :").grid(
-            row=4, column=0, sticky="w", pady=(8, 0)
-        )
-        self.beacon_combo = ttk.Combobox(
-            frm,
-            textvariable=self.beacon_var,
-            state="readonly",
-            values=beacon_labels,
-            width=32,
-        )
-        self.beacon_combo.current(beacon_index)
-        self.beacon_combo.grid(row=4, column=1, sticky="e", pady=(8, 0))
-
-        # --- Orientation initiale ---
-        d_edge = str(default_first_edge or "OL").upper().strip()
-        if d_edge not in ("OL", "BL"):
-            d_edge = "OL"
-        self.first_edge_var = tk.StringVar(value=d_edge)  # "OL" | "BL" | référence
-        ttk.Label(frm, text="Orientation initiale :").grid(row=5, column=0, sticky="w", pady=(8, 0))
-        self.first_edge_combo = ttk.Combobox(
-            frm,
-            textvariable=self.first_edge_var,
-            state="readonly",
-            values=[],
-            width=12
-        )
-        self.first_edge_combo.grid(row=5, column=1, sticky="e", pady=(8, 0))
-        self.beacon_combo.bind("<<ComboboxSelected>>", self._on_beacon_changed)
-        self._rebuild_initial_orientation_choices(prefer_reference=True)
-
-        btns = ttk.Frame(frm)
-        btns.grid(row=6, column=0, columnspan=2, sticky="e", pady=(10, 0))
-        ttk.Button(btns, text="Annuler", command=self._on_cancel).grid(row=0, column=0, padx=(0, 8))
-        ttk.Button(btns, text="OK", command=self._on_ok).grid(row=0, column=1)
-
-        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
-
-        self.spin_nb_triangles.focus_set()
-        self.spin_nb_triangles.selection_range(0, tk.END)
-
-    def _validate_even(self, value):
-        if value == "":
-            return True
-        try:
-            return int(value) % 2 == 0
-        except ValueError:
-            return False
-
-    def _on_cancel(self):
-        self.result = None
-        self.destroy()
-
-    def _selected_beacon_id(self) -> str:
-        beacon_id = self._beacon_id_by_display.get(self.beacon_var.get())
-        if beacon_id is None:
-            raise RuntimeError("Simulation: balise sélectionnée introuvable")
-        return beacon_id
-
-    def _rebuild_initial_orientation_choices(self, prefer_reference: bool) -> None:
-        previous = self.first_edge_var.get()
-        reference = self._orientation_reference_by_beacon.get(self._selected_beacon_id())
-        values = ["BL = 0°", "OL = 0°"]
-        reference_label = None
-        if reference is not None:
-            reference_label = f"Comme T{reference.tri_rank}"
-            values.insert(0, reference_label)
-        self.first_edge_combo.configure(values=values)
-        if previous.startswith("Comme T"):
-            selected = reference_label or "OL = 0°"
-        elif prefer_reference and reference_label is not None:
-            selected = reference_label
-        elif "BL" in previous:
-            selected = "BL = 0°"
-        else:
-            selected = "OL = 0°"
-        self.first_edge_var.set(selected)
-
-    def _on_beacon_changed(self, _event=None) -> None:
-        self._rebuild_initial_orientation_choices(prefer_reference=False)
-
-    def _on_ok(self):
-        raw = str(self.algo_combo.get() or "")
-        algo_id = raw.split(" - ", 1)[0].strip() if " - " in raw else raw.strip()
-        n = int(self.var_nb_triangles.get())
-
-        if n <= 0:
-            messagebox.showerror("Assembler", "Nombre de triangles invalide.")
-            return
-
-        if n % 2 == 1:
-            n2 = n - 1
-            if n2 < 2:
-                messagebox.showerror("Assembler", "n doit être pair (minimum 2).")
-                return
-            # n doit être pair : on ajuste silencieusement (pas de popup)
-            LOGGER.info("[SIM] n impair -> utilisation de n=%s", n2)
-            n = n2
-            self.var_nb_triangles.set(n)
-
-        order = str(self.order_var.get() or "forward")
-        beacon_id = self._beacon_id_by_display.get(self.beacon_var.get())
-        if beacon_id is None:
-            messagebox.showerror("Assembler", "Sélectionne une balise d'ancrage.")
-            return
-        reference = self._orientation_reference_by_beacon.get(beacon_id)
-        first_raw = str(self.first_edge_var.get() or "OL")
-        if first_raw.startswith("Comme T"):
-            if reference is None:
-                raise RuntimeError("Simulation: référence d'orientation absente")
-            initial_orientation = InitialTriangleOrientation.reference(
-                reference.element_id, reference.tri_rank, reference.theta_rad
-            )
-        else:
-            initial_orientation = InitialTriangleOrientation.edge_north(
-                "BL" if "BL" in first_raw else "OL"
-            )
-
-        self.result = (algo_id, int(n), order, beacon_id, initial_orientation)
-
-        self.destroy()
-
-
 # ---------- Application (MANUEL — sans algorithmes) ----------
 
 
 class TriangleViewerManual(
     TriangleViewerDictionaryMixin,
-    TriangleViewerFrontierGraphMixin,
     TriangleViewerScenarioMapMixin,
-    TriangleViewerBackgroundMapMixin,
     TriangleViewerClockArcMixin,
     tk.Tk,
 ):
@@ -421,6 +183,11 @@ class TriangleViewerManual(
         instance._deformation_drag_pending_point = None
         instance._deformation_status_text = ""
         instance._deformation_geometric_layer_source_triangle_id = None
+        instance.background_map_layer = BackgroundMapLayer(
+            instance._world_to_screen,
+            instance._screen_to_world,
+            instance._on_background_map_geometry_changed,
+        )
         return instance
 
     def __init__(self):
@@ -541,11 +308,6 @@ class TriangleViewerManual(
 
         # --- Fond SVG (coordonnées monde) ---
         self.bg_resize_mode = tk.BooleanVar(value=False)
-        self._bg = None  # dict: {path,x0,y0,w,h,aspect}
-        self._bg_base_pil = None  # PIL.Image RGBA (base, normalisée)
-        self._bg_photo = None     # ImageTk.PhotoImage (vue écran)
-        self._bg_resizing = None  # dict état drag poignée
-        self._bg_moving = None    # dict état drag déplacement (mode resize)
 
         self._ctrl_down = False
 
@@ -4059,7 +3821,6 @@ class TriangleViewerManual(
             iid = tree.insert("", tk.END, values=tuple(values))
             self._cheminsTripletByIid[iid] = t
 
-
     def onExporterCheminsExcel(self) -> None:
         scen = self._get_active_scenario()
         if scen is None:
@@ -4093,233 +3854,49 @@ class TriangleViewerManual(
             on_success=lambda path: self.status.config(text=f"Chemins exportés : {path}"),
         )
 
-
     def onEditerChemin(self) -> None:
-        """Édition V6 du chemin: orientationUser + selectionMask (ordre snapshot)."""
+        """Prépare l'édition puis applique son résultat au Core."""
         scen = self._get_active_scenario()
         if scen is None:
             return
         world = scen.topoWorld
-        tc = world.topologyChemins
-        if not tc.isDefined:
+        chemins = world.topologyChemins
+        if not chemins.isDefined:
             return
-
-        snapshotNodes = [str(n) for n in list(tc.borderSnapshotNodes)]
-        currentMask = [bool(v) for v in list(tc.selectionMask)]
-        n = len(snapshotNodes)
-        if n != len(currentMask):
+        snapshot_nodes = tuple(str(node) for node in chemins.borderSnapshotNodes)
+        selection_mask = tuple(bool(value) for value in chemins.selectionMask)
+        if len(snapshot_nodes) != len(selection_mask):
             raise RuntimeError("Édition du chemin impossible : mask/snapshot incohérents.")
-
-        groupId = tc.groupId
-        boundaryOrientation = str(world.getBoundaryOrientation(groupId)).strip().lower()
-        if boundaryOrientation not in ("cw", "ccw"):
-            raise RuntimeError(f"Édition du chemin impossible : boundaryOrientation invalide ({boundaryOrientation}).")
-
-        currentOrientation = str(tc.orientationUser).strip().lower()
-        if currentOrientation not in ("cw", "ccw"):
-            raise RuntimeError(f"Édition du chemin impossible : orientationUser invalide ({currentOrientation}).")
-
-        dlg = tk.Toplevel(self)
-        dlg.title("Éditer le chemin")
-        dlg.transient(self)
-        dlg.grab_set()
-        dlg.resizable(True, True)
-        dlg.minsize(320, 420)
-
-        root = tk.Frame(dlg, padx=10, pady=10)
-        root.pack(fill=tk.BOTH, expand=True)
-
-        # Ligne unique: "Sens" + 2 radios
-        orientationVar = tk.StringVar(value=currentOrientation)
-
-        orientRow = tk.Frame(root)
-        orientRow.pack(anchor="w", fill=tk.X, pady=(0, 8))
-
-        tk.Label(orientRow, text="Sens").pack(side=tk.LEFT, padx=(0, 10))
-        tk.Radiobutton(
-            orientRow, text="Sens horaire",
-            value="cw", variable=orientationVar
-        ).pack(side=tk.LEFT, padx=(0, 10))
-        tk.Radiobutton(
-            orientRow, text="Sens inverse",
-            value="ccw", variable=orientationVar
-        ).pack(side=tk.LEFT)
-
-        # --- Mesures (UI) ---
-        tk.Label(root, text="Mesures (A, O, B):").pack(anchor="w")
-        mesuresRow = tk.Frame(root)
-        mesuresRow.pack(fill=tk.X, pady=(2, 8))
-
-        mesuresSpecs = TopologyCheminTriplet.getMesuresSpecs()
-        allowedMesures = [str(s.get("key")) for s in mesuresSpecs]
-        selectedMesures = self.getAppConfigValue("cheminsMeasures", ["angle"]) or ["angle"]
-        if isinstance(selectedMesures, str):
-            selectedMesures = [selectedMesures]
-        selectedMesures = [k for k in list(selectedMesures) if k in allowedMesures]
-        if not selectedMesures:
-            selectedMesures = ["angle"]
-
-        mesureVars: dict[str, tk.BooleanVar] = {}
-
-        def _onMesuresChanged() -> None:
-            selected = [k for k, v in mesureVars.items() if bool(v.get())]
-            if not selected:
-                selected = ["angle"]  # fallback obligatoire
-            self.setAppConfigValue("cheminsMeasures", selected)
-            self.refreshCheminTreeView()
-
-        for spec in mesuresSpecs:
-            k = str(spec.get("key"))
-            lab = str(spec.get("label"))
-            var = tk.BooleanVar(value=(k in selectedMesures))
-            mesureVars[k] = var
-            tk.Checkbutton(
-                mesuresRow,
-                text=lab,
-                variable=var,
-                command=_onMesuresChanged,
-            ).pack(side=tk.LEFT, padx=(0, 10))
-
-        tk.Label(root, text="Liste des nœuds").pack(anchor="w", pady=(0, 2))
-
-        listFrame = tk.Frame(root, bd=1, relief=tk.GROOVE)
-        listFrame.pack(fill=tk.BOTH, expand=True)
-
-        # --- Scrollable frame (Canvas + Scrollbar) ---
-        scrollCanvas = tk.Canvas(listFrame, highlightthickness=0, bd=0)
-        vScroll = tk.Scrollbar(listFrame, orient="vertical", command=scrollCanvas.yview)
-        scrollCanvas.configure(yscrollcommand=vScroll.set)
-
-        vScroll.pack(side=tk.RIGHT, fill=tk.Y)
-        scrollCanvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        # Inner frame qui contient les checkbuttons
-        nodesFrame = tk.Frame(scrollCanvas)
-        nodesWindowId = scrollCanvas.create_window((0, 0), window=nodesFrame, anchor="nw")
-
-        def _syncScrollRegion(_evt=None):
-            scrollCanvas.configure(scrollregion=scrollCanvas.bbox("all"))
-
-        def _syncInnerWidth(_evt=None):
-            # Force la largeur de nodesFrame à suivre le canvas (évite une zone étroite)
-            scrollCanvas.itemconfigure(nodesWindowId, width=scrollCanvas.winfo_width())
-
-        nodesFrame.bind("<Configure>", _syncScrollRegion)
-        scrollCanvas.bind("<Configure>", _syncInnerWidth)
-
-        # Molette (Windows / Linux)
-        def _onMouseWheel(evt):
-            # Windows: evt.delta = +/-120 ; Linux Button-4/5 géré plus bas
-            if hasattr(evt, "delta") and evt.delta:
-                scrollCanvas.yview_scroll(int(-1 * (evt.delta / 120)), "units")
-
-        def _onMouseWheelLinuxUp(_evt):   # Button-4
-            scrollCanvas.yview_scroll(-1, "units")
-
-        def _onMouseWheelLinuxDown(_evt):  # Button-5
-            scrollCanvas.yview_scroll(1, "units")
-
-        # Bind uniquement quand la souris est au-dessus de la zone scroll
-        def _bindWheel(_evt=None):
-            dlg.bind_all("<MouseWheel>", _onMouseWheel)
-            dlg.bind_all("<Button-4>", _onMouseWheelLinuxUp)
-            dlg.bind_all("<Button-5>", _onMouseWheelLinuxDown)
-
-        def _unbindWheel(_evt=None):
-            dlg.unbind_all("<MouseWheel>")
-            dlg.unbind_all("<Button-4>")
-            dlg.unbind_all("<Button-5>")
-
-        scrollCanvas.bind("<Enter>", _bindWheel)
-        scrollCanvas.bind("<Leave>", _unbindWheel)
-
-        viewVars: list[tk.BooleanVar] = []
-        viewInverted = (str(orientationVar.get() or "cw").strip().lower() != boundaryOrientation)
-
-        def _snapshotIndexFromView(viewIndex: int, count: int, inverted: bool) -> int:
-            if not inverted:
-                return int(viewIndex)
-            if int(viewIndex) == 0:
-                return 0
-            return int(count - viewIndex)
-
-        def _syncMaskFromCurrentView(inverted: bool) -> None:
-            if len(viewVars) != n:
-                return
-            for viewIndex, var in enumerate(viewVars):
-                snapshotIndex = _snapshotIndexFromView(viewIndex, n, inverted)
-                currentMask[snapshotIndex] = bool(var.get())
-
-        def _rebuildView() -> None:
-            nonlocal viewInverted
-            _syncMaskFromCurrentView(viewInverted)
-            for w in nodesFrame.winfo_children():
-                w.destroy()
-            viewVars.clear()
-
-            inverted = str(orientationVar.get() or "cw").strip().lower() != boundaryOrientation
-            viewInverted = inverted
-            for viewIndex in range(n):
-                snapshotIndex = _snapshotIndexFromView(viewIndex, n, inverted)
-                conceptNodeId = snapshotNodes[snapshotIndex]
-                rawLabel = world.getConceptNodeLabel(conceptNodeId)
-                displayLabel = str(rawLabel).strip() if rawLabel is not None else ""
-                if not displayLabel:
-                    displayLabel = "(sans label)"
-                var = tk.BooleanVar(value=bool(currentMask[snapshotIndex]))
-                viewVars.append(var)
-                tk.Checkbutton(
-                    nodesFrame,
-                    text=displayLabel,
-                    variable=var,
-                    anchor="w",
-                    justify="left",
-                ).pack(anchor="w")
-
-        _rebuildView()
-        orientationVar.trace_add("write", lambda *_: _rebuildView())
-
-        actions = tk.Frame(root)
-        actions.pack(fill=tk.X, pady=(8, 0))
-
-        def _onOk() -> None:
-            newOrientationUser = str(orientationVar.get() or "cw").strip().lower()
-            if newOrientationUser not in ("cw", "ccw"):
-                raise RuntimeError(f"Édition du chemin impossible : orientationUser invalide ({newOrientationUser}).")
-
-            newSelectionMaskSnapshotOrder = [False] * n
-            inverted = newOrientationUser != boundaryOrientation
-            for viewIndex, var in enumerate(viewVars):
-                snapshotIndex = _snapshotIndexFromView(viewIndex, n, inverted)
-                newSelectionMaskSnapshotOrder[snapshotIndex] = bool(var.get())
-
-            if sum(1 for v in newSelectionMaskSnapshotOrder if v) < 3:
-                messagebox.showerror("Éditer le chemin", "Au moins 3 nœuds doivent rester sélectionnés.", parent=dlg)
-                return
-
-            selected = [k for k, v in mesureVars.items() if bool(v.get())]
-            if not selected:
-                selected = ["angle"]
-            self.setAppConfigValue("cheminsMeasures", selected)
-
-            world.topologyChemins.appliquerEdition(
-                newOrientationUser,
-                newSelectionMaskSnapshotOrder,
-                self._getCheminsBeaconRefId(),
-            )
-            dlg.destroy()
-            self.refreshCheminTreeView()
-
-        def _onCancel() -> None:
-            dlg.destroy()
-
-        tk.Button(actions, text="Annuler", command=_onCancel).pack(side=tk.RIGHT)
-        tk.Button(actions, text="OK", command=_onOk).pack(side=tk.RIGHT, padx=(0, 6))
-
-        dlg.protocol("WM_DELETE_WINDOW", _onCancel)
-        dlg.wait_visibility()
-        dlg.focus_set()
-        dlg.wait_window()
+        boundary_orientation = str(world.getBoundaryOrientation(chemins.groupId)).strip().lower()
+        if boundary_orientation not in ("cw", "ccw"):
+            raise RuntimeError(f"Édition du chemin impossible : boundaryOrientation invalide ({boundary_orientation}).")
+        current_orientation = str(chemins.orientationUser).strip().lower()
+        if current_orientation not in ("cw", "ccw"):
+            raise RuntimeError(f"Édition du chemin impossible : orientationUser invalide ({current_orientation}).")
+        allowed_measures = [str(spec.get("key")) for spec in TopologyCheminTriplet.getMesuresSpecs()]
+        selected_measures = self.getAppConfigValue("cheminsMeasures", ["angle"]) or ["angle"]
+        if isinstance(selected_measures, str):
+            selected_measures = [selected_measures]
+        selected_measures = [key for key in selected_measures if key in allowed_measures] or ["angle"]
+        result = CheminEditDialog(
+            self,
+            snapshot_nodes=snapshot_nodes,
+            selection_mask=selection_mask,
+            boundary_orientation=boundary_orientation,
+            current_orientation=current_orientation,
+            measures_specs=TopologyCheminTriplet.getMesuresSpecs(),
+            selected_measures=selected_measures,
+            node_label_provider=world.getConceptNodeLabel,
+        ).show()
+        if result is None:
+            return
+        self.setAppConfigValue("cheminsMeasures", list(result.selected_measures))
+        world.topologyChemins.appliquerEdition(
+            result.orientation_user,
+            result.selection_mask,
+            self._getCheminsBeaconRefId(),
+        )
+        self.refreshCheminTreeView()
 
     def onRecalculerChemin(self) -> None:
         """Demande au Core de recalculer le chemin courant puis rafraîchit l'UI."""
@@ -4327,6 +3904,7 @@ class TriangleViewerManual(
         self._recalculerCheminFromSelection(beacon_id)
 
     def onDecryptageEngine(self) -> None:
+        """Ouvre ou réactive le déchiffreur, avec ses dépendances explicites."""
         win = getattr(self, "_decryptage_engine_win", None)
         if win is not None:
             try:
@@ -4338,770 +3916,25 @@ class TriangleViewerManual(
             except tk.TclError:
                 pass
 
-        win = tk.Toplevel(self)
-        self._decryptage_engine_win = win
-        win.title("Décrypteur de chemins")
-        win.transient(self)
-        win.minsize(820, 520)
+        def _clear_closed_window(closed_window) -> None:
+            if self._decryptage_engine_win is closed_window:
+                self._decryptage_engine_win = None
 
-        def _on_close():
-            try:
-                win.destroy()
-            finally:
-                if getattr(self, "_decryptage_engine_win", None) is win:
-                    self._decryptage_engine_win = None
-
-        win.protocol("WM_DELETE_WINDOW", _on_close)
-
-        root = ttk.Frame(win, padding=10)
-        root.grid(row=0, column=0, sticky="nsew")
-        win.grid_rowconfigure(0, weight=1)
-        win.grid_columnconfigure(0, weight=1)
-        root.grid_rowconfigure(0, weight=0)
-
-        # --- Zone supérieure : 3 blocs ---
-        top_zone = ttk.Frame(root)
-        top_zone.grid(row=0, column=0, sticky="nsew")
-
-        top_zone.grid_columnconfigure(0, weight=0)
-        top_zone.grid_columnconfigure(1, weight=0)
-        top_zone.grid_columnconfigure(2, weight=1)
-        top_zone.grid_rowconfigure(0, weight=0)
-
-        decrypt_frame = ttk.LabelFrame(top_zone, text="Décrypteur")
-        decrypt_frame.grid(row=0, column=0, sticky="nsw", padx=(0, 8), pady=(0, 8))
-
-        mid_col = ttk.Frame(top_zone)
-        mid_col.grid(row=0, column=1, sticky="nsw", padx=(0, 8), pady=(0, 8))
-
-        patterns_frame = ttk.LabelFrame(top_zone, text="Patterns de mots à trouver")
-        patterns_frame.grid(row=0, column=2, sticky="nsew", pady=(0, 8))
-
-        # --- Bloc Décrypteur ---
-        decrypt_items = [f"{d.id} — {d.label}" for d in DECRYPTORS.values()]
-        id_to_item = {d.id: f"{d.id} — {d.label}" for d in DECRYPTORS.values()}
-        item_to_id = {v: k for k, v in id_to_item.items()}
-
-        default_decrypt_id = "clock_dico_v1"
-        if default_decrypt_id not in id_to_item:
-            if getattr(self.decryptor, "id", None) in id_to_item:
-                default_decrypt_id = str(self.decryptor.id)
-            else:
-                default_decrypt_id = next(iter(id_to_item.keys()), "")
-        default_decrypt = id_to_item.get(default_decrypt_id, decrypt_items[0] if decrypt_items else "")
-
-        win.var_decryptor = tk.StringVar(value=default_decrypt)
-        win.var_angle180 = tk.BooleanVar(value=True)
-        win.var_az_a = tk.BooleanVar(value=False)
-        win.var_az_b = tk.BooleanVar(value=False)
-        win.var_tolerance = tk.IntVar(value=4)
-
-        decrypt_combo = ttk.Combobox(
-            decrypt_frame,
-            values=decrypt_items,
-            state="readonly",
-            textvariable=win.var_decryptor,
-            width=32,
+        self._decryptage_engine_win = DecryptageEngineWindow(
+            self,
+            get_config=self.getAppConfigValue,
+            set_config=self.setAppConfigValue,
+            scenario_provider=self._get_active_scenario,
+            dico_provider=lambda: self.dico,
+            decryptor_provider=lambda: self.decryptor,
+            icon_loader=self._load_icon,
+            icons={
+                "new": self.icon_scen_new,
+                "props": self.icon_scen_props,
+                "delete": self.icon_scen_del,
+            },
+            on_close=_clear_closed_window,
         )
-        decrypt_combo.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
-
-        ttk.Checkbutton(
-            decrypt_frame,
-            text="Angle 180°",
-            variable=win.var_angle180,
-        ).grid(row=1, column=0, sticky="w")
-        ttk.Checkbutton(
-            decrypt_frame,
-            text="Azimut A",
-            variable=win.var_az_a,
-        ).grid(row=2, column=0, sticky="w")
-        ttk.Checkbutton(
-            decrypt_frame,
-            text="Azimut B",
-            variable=win.var_az_b,
-        ).grid(row=3, column=0, sticky="w")
-
-        tol_row = ttk.Frame(decrypt_frame)
-        tol_row.grid(row=4, column=0, sticky="w", pady=(6, 0))
-        ttk.Label(tol_row, text="Tolérance :").pack(side=tk.LEFT)
-        ttk.Spinbox(
-            tol_row,
-            from_=0,
-            to=6,
-            increment=1,
-            textvariable=win.var_tolerance,
-            width=4,
-        ).pack(side=tk.LEFT, padx=(6, 2))
-        ttk.Label(tol_row, text="°").pack(side=tk.LEFT)
-
-        # --- Colonne 1 : Mode / Scope / Solution ---
-        mid_col.grid_rowconfigure(0, weight=0)
-        mid_col.grid_rowconfigure(1, weight=0)
-        mid_col.grid_rowconfigure(2, weight=0)
-        mid_col.grid_columnconfigure(0, weight=0)
-
-        mode_frame = ttk.LabelFrame(mid_col, text="Mode de recherche")
-        mode_frame.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-
-        win.var_mode = tk.StringVar(value="Absolu")
-        ttk.Radiobutton(
-            mode_frame,
-            text="Absolu",
-            value="Absolu",
-            variable=win.var_mode,
-        ).pack(anchor="w")
-        ttk.Radiobutton(
-            mode_frame,
-            text="Relatif",
-            value="Relatif",
-            variable=win.var_mode,
-        ).pack(anchor="w")
-
-        scope_frame = ttk.LabelFrame(mid_col, text="Scope Dictionnaire")
-        scope_frame.grid(row=1, column=0, sticky="ew", pady=(0, 6))
-
-        win.var_scope = tk.StringVar(value="Strict")
-        ttk.Combobox(
-            scope_frame,
-            values=["Strict", "Mirroring", "Extended"],
-            state="readonly",
-            textvariable=win.var_scope,
-            width=16,
-        ).pack(fill="x")
-
-        solution_frame = ttk.LabelFrame(mid_col, text="Solution")
-        solution_frame.grid(row=2, column=0, sticky="ew", pady=(0, 6))
-
-        win.var_max_solutions = tk.IntVar(value=50)
-        sol_row = ttk.Frame(solution_frame)
-        sol_row.pack(fill="x")
-        ttk.Label(sol_row, text="Stopper si plus de :").pack(side=tk.LEFT)
-        ttk.Spinbox(
-            sol_row,
-            from_=1,
-            to=9999,
-            increment=1,
-            textvariable=win.var_max_solutions,
-            width=6,
-        ).pack(side=tk.LEFT, padx=(6, 0))
-
-        win._patterns = []
-
-        def _extract_decryptor_id(item_text: str) -> str:
-            if item_text in item_to_id:
-                return item_to_id[item_text]
-            s = str(item_text or "")
-            if " — " in s:
-                return s.split(" — ", 1)[0].strip()
-            return s.strip()
-
-        def loadDecryptGuiConfig() -> None:
-            cfg_id = self.getAppConfigValue("decryptGuiDecryptorId", default_decrypt_id)
-            cfg_id = str(cfg_id or default_decrypt_id).strip()
-            win.var_decryptor.set(id_to_item.get(cfg_id, default_decrypt))
-
-            cfg_mode = str(self.getAppConfigValue("decryptGuiMode", "ABS") or "ABS").strip().upper()
-            win.var_mode.set("Relatif" if cfg_mode.startswith("REL") else "Absolu")
-
-            scope = str(self.getAppConfigValue("decryptGuiScopeDico", "Strict") or "Strict").strip()
-            if scope not in ("Strict", "Mirroring", "Extended"):
-                scope = "Strict"
-            win.var_scope.set(scope)
-
-            win.var_angle180.set(bool(self.getAppConfigValue("decryptGuiUseAngle180", True)))
-            win.var_az_a.set(bool(self.getAppConfigValue("decryptGuiUseAzimutA", False)))
-            win.var_az_b.set(bool(self.getAppConfigValue("decryptGuiUseAzimutB", False)))
-
-            try:
-                win.var_tolerance.set(int(self.getAppConfigValue("decryptGuiToleranceDeg", 4)))
-            except Exception:
-                win.var_tolerance.set(4)
-
-            try:
-                win.var_max_solutions.set(int(self.getAppConfigValue("decryptGuiStopIfMoreThan", 50)))
-            except Exception:
-                win.var_max_solutions.set(50)
-
-            raw_patterns = self.getAppConfigValue("decryptPatterns", [])
-            patterns = []
-            if isinstance(raw_patterns, list):
-                for item in raw_patterns:
-                    if not isinstance(item, dict):
-                        continue
-                    text = str(item.get("text", "")).strip()
-                    if not text:
-                        continue
-                    active = bool(item.get("active", True))
-                    patterns.append({"text": text, "active": active})
-            win._patterns = patterns
-
-        def persistDecryptPatterns() -> None:
-            serialized = [
-                {"text": pat.get("text", ""), "active": bool(pat.get("active", False))}
-                for pat in (win._patterns or [])
-            ]
-            self.setAppConfigValue("decryptPatterns", serialized)
-
-        def persistDecryptGuiConfig() -> None:
-            decrypt_id = _extract_decryptor_id(win.var_decryptor.get())
-            mode_ui = str(win.var_mode.get() or "Absolu").strip().lower()
-            mode_cfg = "REL" if mode_ui.startswith("rel") else "ABS"
-            scope = str(win.var_scope.get() or "Strict").strip()
-            if scope not in ("Strict", "Mirroring", "Extended"):
-                scope = "Strict"
-
-            self.setAppConfigValue("decryptGuiDecryptorId", decrypt_id)
-            self.setAppConfigValue("decryptGuiMode", mode_cfg)
-            self.setAppConfigValue("decryptGuiScopeDico", scope)
-            self.setAppConfigValue("decryptGuiUseAngle180", bool(win.var_angle180.get()))
-            self.setAppConfigValue("decryptGuiUseAzimutA", bool(win.var_az_a.get()))
-            self.setAppConfigValue("decryptGuiUseAzimutB", bool(win.var_az_b.get()))
-            self.setAppConfigValue("decryptGuiToleranceDeg", int(win.var_tolerance.get()))
-            self.setAppConfigValue("decryptGuiStopIfMoreThan", int(win.var_max_solutions.get()))
-
-        loadDecryptGuiConfig()
-
-        # --- Bloc Patterns ---
-        patterns_toolbar = ttk.Frame(patterns_frame)
-        patterns_toolbar.pack(anchor="w", pady=(0, 4))
-
-        def _make_pattern_btn(icon, text, cmd):
-            if icon is not None:
-                return tk.Button(patterns_toolbar, image=icon, command=cmd, relief=tk.FLAT)
-            return tk.Button(patterns_toolbar, text=text, command=cmd, width=2, relief=tk.FLAT)
-
-        patterns_list_frame = tk.Frame(patterns_frame, relief=tk.SUNKEN, borderwidth=1)
-        patterns_list_frame.pack(fill=tk.BOTH, expand=True)
-
-        win._pattern_vars = []  # list[tk.BooleanVar]
-        win._pattern_row_frames = []  # list[ttk.Frame]
-        win._pattern_selected_index = None  # int | None
-
-        # Canvas + frame intérieur = vraie liste de Checkbutton scrollable
-        patterns_canvas = tk.Canvas(
-            patterns_list_frame,
-            bg="white",
-            height=105,                 # moitié de 240
-            highlightthickness=1,
-        )
-        patterns_scroll = ttk.Scrollbar(patterns_list_frame, orient="vertical", command=patterns_canvas.yview)
-        patterns_canvas.configure(yscrollcommand=patterns_scroll.set)
-
-        patterns_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        patterns_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        patterns_inner = ttk.Frame(patterns_canvas)
-        patterns_inner_id = patterns_canvas.create_window((0, 0), window=patterns_inner, anchor="nw")
-
-        def _on_patterns_inner_configure(_evt=None):
-            patterns_canvas.configure(scrollregion=patterns_canvas.bbox("all"))
-
-        def _on_patterns_canvas_configure(evt):
-            # force largeur du frame intérieur = largeur visible du canvas
-            patterns_canvas.itemconfigure(patterns_inner_id, width=evt.width)
-
-        patterns_inner.bind("<Configure>", _on_patterns_inner_configure)
-        patterns_canvas.bind("<Configure>", _on_patterns_canvas_configure)
-
-        def _set_selected_pattern_index(idx: int | None) -> None:
-            win._pattern_selected_index = idx
-
-            # surlignage simple (tk.Frame): on joue sur bg
-            for i, row in enumerate(win._pattern_row_frames):
-                is_sel = (idx is not None and i == idx)
-                bg = "#eaeaea" if is_sel else "white"   # ajuste si tu veux
-
-                row.configure(bg=bg)
-                # applique aussi aux enfants (checkbox + label)
-                for child in row.winfo_children():
-                    child.configure(bg=bg)
-
-            _update_pattern_buttons()
-
-        def _update_pattern_buttons(_evt=None):
-            has_sel = win._pattern_selected_index is not None
-            btn_pat_edit.configure(state=(tk.NORMAL if has_sel else tk.DISABLED))
-            btn_pat_delete.configure(state=(tk.NORMAL if has_sel else tk.DISABLED))
-
-        def _get_selected_pattern_index() -> int | None:
-            return win._pattern_selected_index
-
-        def _on_toggle_pattern(idx: int) -> None:
-            if not (0 <= idx < len(win._patterns)):
-                return
-            val = bool(win._pattern_vars[idx].get())
-            win._patterns[idx]["active"] = val
-            persistDecryptPatterns()
-
-        def _on_row_click(idx: int) -> None:
-            _set_selected_pattern_index(idx)
-
-        def _on_row_double_click(idx: int) -> None:
-            _set_selected_pattern_index(idx)
-            _open_pattern_editor(idx)
-
-        def _refresh_patterns_list():
-            # clear rows
-            for row in win._pattern_row_frames:
-                row.destroy()
-            win._pattern_vars = []
-            win._pattern_row_frames = []
-
-            for idx, item in enumerate(win._patterns):
-                row = tk.Frame(patterns_inner, bg="white")
-                row.pack(fill="x", pady=1)
-                win._pattern_row_frames.append(row)
-
-                var = tk.BooleanVar(value=bool(item.get("active")))
-                win._pattern_vars.append(var)
-
-                chk = tk.Checkbutton(
-                    row,
-                    variable=var,
-                    command=lambda i=idx: (_set_selected_pattern_index(i), _on_toggle_pattern(i)),
-                    bg="white",
-                )
-                chk.pack(side=tk.LEFT, padx=(2, 6))
-
-                lbl = tk.Label(row, text=str(item.get("text", "") or ""), anchor="w", bg="white")
-                lbl.pack(side=tk.LEFT, fill="x", expand=True)
-
-                # clic / double-clic sur la ligne (label ou frame)
-                row.bind("<Button-1>", lambda e, i=idx: _on_row_click(i))
-                lbl.bind("<Button-1>", lambda e, i=idx: _on_row_click(i))
-                row.bind("<Double-1>", lambda e, i=idx: _on_row_double_click(i))
-                lbl.bind("<Double-1>", lambda e, i=idx: _on_row_double_click(i))
-                chk.bind("<Button-1>", lambda e, i=idx: _on_row_click(i))
-                chk.bind("<Double-1>", lambda e, i=idx: _on_row_double_click(i))
-
-            patterns_inner.update_idletasks()
-            patterns_canvas.configure(scrollregion=patterns_canvas.bbox("all"))
-
-            # si sélection invalide, reset
-            if win._pattern_selected_index is not None:
-                if not (0 <= win._pattern_selected_index < len(win._patterns)):
-                    win._pattern_selected_index = None
-            _set_selected_pattern_index(win._pattern_selected_index)
-
-        def _insert_token_at_cursor(entry: tk.Entry, token: str) -> None:
-            pos = entry.index(tk.INSERT)
-            text = entry.get()
-            before = text[:pos]
-            after = text[pos:]
-            ins = token
-            if before and not before.endswith(" "):
-                ins = " " + ins
-            if after and not after.startswith(" "):
-                ins = ins + " "
-            entry.insert(pos, ins)
-            entry.focus_set()
-
-        def _open_pattern_editor(edit_index: int | None = None) -> None:
-            dico = getattr(self, "dico", None)
-            if dico is None:
-                messagebox.showerror("Pattern", "Dictionnaire indisponible.", parent=win)
-                return
-
-            is_edit = edit_index is not None
-            dlg = tk.Toplevel(win)
-            dlg.title("Éditer un pattern" if is_edit else "Ajouter un pattern")
-            dlg.transient(win)
-            dlg.resizable(False, False)
-
-            # position près du clic
-            x = int(win.winfo_pointerx()) + 10
-            y = int(win.winfo_pointery()) + 10
-
-            # taille FIXE (et on la ré-appliquera après layout)
-            W, H = 500, 120
-            dlg.geometry(f"{W}x{H}+{x}+{y}")
-            dlg.minsize(W, H)
-            dlg.maxsize(W, H)
-            dlg.grab_set()
-
-            # IMPORTANT : permettre au contenu de remplir la toplevel
-            dlg.grid_rowconfigure(0, weight=1)
-            dlg.grid_columnconfigure(0, weight=1)
-
-            dlg.icon_chevrons_down = self._load_icon("chevrons-down16.png")
-            dlg.icon_check_gray = self._load_icon("check16_gray.png")
-            dlg.icon_check_green = self._load_icon("check16_green.png")
-            dlg.icon_check_red = self._load_icon("check16_red.png")
-
-            frm = ttk.Frame(dlg, padding=10)
-            frm.grid(row=0, column=0, sticky="nsew")
-            frm.grid_columnconfigure(1, weight=1)
-
-            categories = list(dico.getCategories() or [])
-            values = categories + ["Joker"]
-            cat_var = tk.StringVar(value=(values[0] if values else "Joker"))
-
-            ttk.Label(frm, text="Catégorie :").grid(row=0, column=0, sticky="w", padx=(0, 6))
-            cat_combo = ttk.Combobox(
-                frm,
-                values=values,
-                state="readonly",
-                textvariable=cat_var,
-                width=18,
-            )
-            cat_combo.grid(row=0, column=1, sticky="ew")
-
-            def _on_insert_cat():
-                cat = str(cat_var.get() or "").strip()
-                token = "[*]" if cat == "Joker" else f"[{cat}]"
-                _insert_token_at_cursor(pattern_entry, token)
-                _schedule_autocheck()
-
-            btn_insert = tk.Button(
-                frm,
-                image=dlg.icon_chevrons_down,
-                text="v" if dlg.icon_chevrons_down is None else "",
-                command=_on_insert_cat,
-                relief=tk.FLAT,
-                padx=0,
-                pady=0,
-            )
-            btn_insert.grid(row=0, column=2, sticky="w", padx=(4, 0), pady=0)
-
-            ttk.Label(frm, text="Pattern :").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=(8, 0))
-            pattern_var = tk.StringVar()
-            pattern_entry = ttk.Entry(frm, textvariable=pattern_var)
-            pattern_entry.grid(row=1, column=1, sticky="ew", pady=(8, 0))
-
-            if is_edit:
-                pattern_var.set(str(win._patterns[edit_index].get("text", "") or ""))
-
-            def _set_check_state(state: str) -> None:
-                icon = None
-                label = ""
-                if state == "gray":
-                    icon = dlg.icon_check_gray
-                    label = "OK"
-                elif state == "green":
-                    icon = dlg.icon_check_green
-                    label = "OK"
-                elif state == "red":
-                    icon = dlg.icon_check_red
-                    label = "ERR"
-                if icon is not None:
-                    btn_check.configure(image=icon, text="")
-                else:
-                    btn_check.configure(text=label)
-
-            def _check_pattern(show_error: bool) -> tuple[bool, str]:
-                syntax_raw = str(pattern_var.get() or "").strip()
-                if not syntax_raw:
-                    _set_check_state("gray")
-                    if show_error:
-                        messagebox.showerror("Pattern", "Pattern vide", parent=dlg)
-                    return False, ""
-                p = Pattern(dico)
-                ok, msg = p.setSyntax(syntax_raw, allow_short=False)
-                if not ok:
-                    _set_check_state("red")
-                    if show_error:
-                        messagebox.showerror("Pattern", msg, parent=dlg)
-                    return False, ""
-                syntax_norm = p.getSyntax()
-                _set_check_state("green")
-                return True, syntax_norm
-
-            _autocheck_after_id = None
-
-            def _run_autocheck():
-                nonlocal _autocheck_after_id
-                _autocheck_after_id = None
-                _check_pattern(show_error=False)
-
-            def _schedule_autocheck(*_args):
-                nonlocal _autocheck_after_id
-                if _autocheck_after_id is not None:
-                    try:
-                        dlg.after_cancel(_autocheck_after_id)
-                    except Exception:
-                        pass
-                _autocheck_after_id = dlg.after(250, _run_autocheck)
-
-            btn_check = tk.Button(
-                frm,
-                image=dlg.icon_check_gray,
-                text="OK" if dlg.icon_check_gray is None else "",
-                command=lambda: _check_pattern(show_error=False),
-                relief=tk.FLAT,
-                padx=0,
-                pady=0,
-            )
-            btn_check.grid(row=1, column=2, sticky="w", padx=(4, 0), pady=(8, 0))
-            _set_check_state("gray")
-            pattern_var.trace_add("write", _schedule_autocheck)
-            _schedule_autocheck()
-
-            actions = ttk.Frame(frm)
-            actions.grid(row=2, column=0, columnspan=3, sticky="e", pady=(12, 0))
-
-            def _on_close_pattern():
-                dlg.destroy()
-
-            def _on_validate_pattern():
-                ok, syntax_norm = _check_pattern(show_error=True)
-                if not ok:
-                    return
-                if is_edit:
-                    if 0 <= edit_index < len(win._patterns):
-                        win._patterns[edit_index]["text"] = syntax_norm
-                else:
-                    win._patterns.append({"text": syntax_norm, "active": True})
-                persistDecryptPatterns()
-                _refresh_patterns_list()
-                if win._patterns:
-                    sel_idx = edit_index if is_edit else (len(win._patterns) - 1)
-                    if sel_idx is not None and 0 <= sel_idx < len(win._patterns):
-                        _set_selected_pattern_index(sel_idx)
-                _update_pattern_buttons()
-                dlg.destroy()
-
-            ttk.Button(actions, text="Fermer", command=_on_close_pattern).pack(side=tk.RIGHT)
-            ttk.Button(actions, text="Valider", command=_on_validate_pattern).pack(side=tk.RIGHT, padx=(0, 6))
-
-            dlg.wait_visibility()
-            pattern_entry.focus_set()
-
-        def _delete_selected_pattern():
-            idx = _get_selected_pattern_index()
-            if idx is None:
-                return
-            if idx < 0 or idx >= len(win._patterns):
-                return
-            del win._patterns[idx]
-            # selection: reste sur l'index courant (ou précédent si fin)
-            if win._patterns:
-                win._pattern_selected_index = min(idx, len(win._patterns) - 1)
-            else:
-                win._pattern_selected_index = None
-            persistDecryptPatterns()
-            _refresh_patterns_list()
-
-        btn_pat_add = _make_pattern_btn(self.icon_scen_new, "+", lambda: _open_pattern_editor(None))
-        btn_pat_add.pack(side=tk.LEFT, padx=1)
-        btn_pat_edit = _make_pattern_btn(self.icon_scen_props, "E", lambda: _open_pattern_editor(_get_selected_pattern_index()))
-        btn_pat_edit.pack(side=tk.LEFT, padx=1)
-        btn_pat_delete = _make_pattern_btn(self.icon_scen_del, "X", _delete_selected_pattern)
-        btn_pat_delete.pack(side=tk.LEFT, padx=1)
-
-        _refresh_patterns_list()
-        _update_pattern_buttons()
-
-        # --- Zone : Progression + Status + Start/Stop (une seule ligne) ---
-        progress_frame = ttk.Frame(root)
-        progress_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
-
-        # colonnes : [Progression label][bar][Status label][status][Start/Stop]
-        progress_frame.grid_columnconfigure(1, weight=1)
-
-        ttk.Label(progress_frame, text="Progression:").grid(row=0, column=0, sticky="w", padx=(0, 8))
-
-        win._progressVar = tk.DoubleVar(value=0.0)
-        win._progressBar = ttk.Progressbar(progress_frame, variable=win._progressVar, maximum=1.0)
-        win._progressBar.grid(row=0, column=1, sticky="ew")
-
-        ttk.Label(progress_frame, text="Status:").grid(row=0, column=2, sticky="e", padx=(16, 6))
-
-        win._engineStatusVar = tk.StringVar(value="IDLE")
-        ttk.Label(progress_frame, textvariable=win._engineStatusVar, width=10).grid(row=0, column=3, sticky="w")
-
-        win._btnStartStop = ttk.Button(progress_frame, text="Start")  # wiring ensuite
-        win._btnStartStop.grid(row=0, column=4, sticky="e", padx=(16, 0))
-
-        # --- Zone inférieure : Solutions ---
-        solutions_frame = ttk.LabelFrame(root, text="Solutions")
-        solutions_frame.grid(row=2, column=0, sticky="nsew")
-
-        root.grid_rowconfigure(2, weight=1)
-        root.grid_columnconfigure(0, weight=1)
-
-        solutions_list_frame = ttk.Frame(solutions_frame)
-        solutions_list_frame.pack(fill=tk.BOTH, expand=True)
-
-        solutions_list = tk.Listbox(solutions_list_frame, height=10, selectmode="browse")
-        solutions_scroll = ttk.Scrollbar(
-            solutions_list_frame, orient="vertical", command=solutions_list.yview
-        )
-        solutions_list.configure(yscrollcommand=solutions_scroll.set)
-        solutions_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        solutions_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        win._solutions = []
-
-        def _format_solution_item(sol):
-            # Affichage: MOT(r,c) MOT(r,c) ... - 2.27°
-            parts = []
-            for (word, (r, c)) in zip(sol.words, sol.coordsAbs):
-                parts.append(f"{word}({r},{c})")
-
-            phrase = " ".join(parts)
-            score_txt = f"{sol.scoreMax:.2f}°"
-
-            return f"{phrase} - {score_txt}"
-
-        def _refresh_solutions_list():
-            solutions_list.delete(0, tk.END)
-            for sol in win._solutions:
-                solutions_list.insert(tk.END, _format_solution_item(sol))
-
-        _refresh_solutions_list()
-
-        # --- Actions ---
-        actions = ttk.Frame(root)
-        actions.grid(row=3, column=0, sticky="e", pady=(8, 0))
-
-        def _on_start_decryptage():
-            persistDecryptGuiConfig()
-            persistDecryptPatterns()
-
-            scen = self._get_active_scenario()
-            world = scen.topoWorld
-            tc = world.topologyChemins
-            dico = self.dico
-
-            patterns_actifs = []
-            for p in list(win._patterns or []):
-                if not isinstance(p, dict):
-                    continue
-                if not bool(p.get("active", False)):
-                    continue
-                text = str(p.get("text", "")).strip()
-                if not text:
-                    continue
-                patterns_actifs.append(text)
-
-            if not patterns_actifs:
-                messagebox.showerror("Décryptage", "Aucun pattern actif.", parent=win)
-                return
-
-            use_angle180 = bool(win.var_angle180.get())
-            use_az_a = bool(win.var_az_a.get())
-            use_az_b = bool(win.var_az_b.get())
-            if not (use_angle180 or use_az_a or use_az_b):
-                messagebox.showerror("Décryptage", "Aucune mesure active.", parent=win)
-                return
-
-            scope_ui = str(win.var_scope.get() or "Strict").strip().lower()
-            if scope_ui.startswith("mirror"):
-                scope = DicoScope.MIRRORING
-            elif scope_ui.startswith("ext"):
-                scope = DicoScope.EXTENDED
-            else:
-                scope = DicoScope.STRICT
-
-            mode_ui = str(win.var_mode.get() or "Absolu").strip().lower()
-            mode_abs = not mode_ui.startswith("rel")
-
-            # Si le décrypteur courant est celui utilisé, on garde l'instance avec son paamétage
-            decryptor_id = _extract_decryptor_id(win.var_decryptor.get())
-            if self.decryptor.id != decryptor_id :
-                decryptor = createDecryptor(decryptor_id)
-            else:
-                decryptor = self.decryptor
-
-            tol = float(win.var_tolerance.get())
-            liste_patterns = ListePatterns(dico, patterns_actifs)
-
-            decryptor_cfg = DecryptorConfig(
-                decryptor=decryptor,
-                useAzA=use_az_a,
-                useAzB=use_az_b,
-                useAngle180=use_angle180,
-                toleranceDeg=tol,
-            )
-
-            # Le controleur e la file d'attente pour communiquer avec l'engine
-            engineControl = EngineControl()
-            eventQueue = EventQueue()
-
-            runControlConfig = RunControlConfig(
-                maxSolutions=int(win.var_max_solutions.get()),
-                minBatchCells=500,
-                maxBatchCells=200_000,
-                targetBatchSec=0.05,
-                progressMinIntervalSec=0.2,
-            )
-
-            engine = DecryptorEngine(tc, dico, runControlConfig, engineControl, eventQueue)
-
-            # stocker sur la fenêtre (prochaine étape : thread + poll queue)
-            win._engine = engine
-            win._engineControl = engineControl
-            win._eventQueue = eventQueue
-
-            win._solutions = []
-            _refresh_solutions_list()
-
-            if mode_abs:
-                engine.runAbs(scope, liste_patterns, decryptor_cfg, patternMode="last")
-            else:
-                engine.runRel(scope, liste_patterns, decryptor_cfg, patternMode="last")
-
-        # état simple du bouton Start/Stop
-        win._runActive = False
-
-        def _set_run_state(active: bool):
-            win._runActive = bool(active)
-            win._btnStartStop.config(text=("Stop" if win._runActive else "Start"))
-            win._engineStatusVar.set("running" if win._runActive else "IDLE")
-
-        def _start_worker():
-            _on_start_decryptage()
-            # quand le worker se termine normalement
-            win.after(0, lambda: _set_run_state(False))
-
-        def _on_startstop_clicked():
-            if not win._runActive:
-                _set_run_state(True)
-
-                t = threading.Thread(target=_start_worker, daemon=True)
-                win._workerThread = t
-                t.start()
-
-                _poll_event_queue()   # démarre le polling UI
-            else:
-                # Stop demandé par l'utilisateur
-                win._engineControl.requestStop()
-                win._engineStatusVar.set("stopping")
-
-        def _poll_event_queue():
-            q = getattr(win, "_eventQueue", None)
-            if q is not None:
-                while True:
-                    evt = q.getNowait()
-                    if evt is None:
-                        break
-
-                    etype = evt.type
-                    payload = evt.payload
-
-                    if etype == "STATUS":
-                        win._engineStatusVar.set(str(payload))
-                    elif etype == "PROGRESS":
-                        win._progressVar.set(float(payload))
-                    elif etype == "STOPPED":
-                        win._engineStatusVar.set("stopped")
-                        _set_run_state(False)
-                    elif etype == "DONE":
-                        win._engineStatusVar.set("done")
-                        _set_run_state(False)
-                    elif etype == "SOLUTION":
-                        sol = payload
-                        if sol is not None:
-                            win._solutions.append(sol)
-                            solutions_list.insert(tk.END, _format_solution_item(sol))
-                            # optionnel : auto-scroll en bas
-                            solutions_list.see(tk.END)
-
-            # replanifie le poll
-            win.after(100, _poll_event_queue)
-
-        win._btnStartStop.config(command=_on_startstop_clicked)
-        ttk.Button(actions, text="Fermer", command=_on_close).pack(side=tk.RIGHT)
 
     def _chemins_edit_selected(self):
         """Compat: redirige vers l'éditeur V6."""
@@ -5833,6 +4666,7 @@ class TriangleViewerManual(
         # Canvas d’affichage des triangles
         self.canvas = tk.Canvas(self.rightPane, bg="white")
         self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.background_map_layer.attach_canvas(self.canvas)
 
         # Redessiner l'overlay si la taille du canvas change
         self.canvas.bind("<Configure>", self._on_canvas_configure)
@@ -5996,12 +4830,18 @@ class TriangleViewerManual(
         """
         # Si on sort du mode : purge tout état de drag du fond + sauver la config.
         if not bool(self.bg_resize_mode.get()):
-            self._bg_resizing = None
-            self._bg_moving = None
+            self.background_map_layer.cancel_interaction()
             self.canvas.configure(cursor="")
-            self._bg_update_scale_status()
+            self._update_background_map_scale_status()
 
         self._redraw_from(self._last_drawn)
+
+    def _update_background_map_scale_status(self) -> None:
+        if not bool(self.bg_resize_mode.get()) or not self.background_map_layer.has_map:
+            return
+        self.status.config(
+            text=f"Échelle carte : {format_scale(self._background_map_scale_factor())}"
+        )
 
     def _toggle_layers(self):
         """Redessine le canvas suite à un changement de visibilité d'un layer."""
@@ -6846,7 +5686,7 @@ class TriangleViewerManual(
         self.canvas.delete("all")
         # Fond carte (si layer visible)
         if self.show_map_layer is None or self.show_map_layer.get():
-            self._bg_draw_world_layer()
+            self.background_map_layer.draw(opacity=int(self.map_opacity.get()))
 
         # l'ID de la ligne n'est plus valide après delete("all")
         self._nearest_line_id = None
@@ -6929,7 +5769,7 @@ class TriangleViewerManual(
             self._draw_balises_layer()
 
         # Poignées de redimensionnement fond (overlay UI)
-        self._bg_draw_resize_handles()
+        self.background_map_layer.draw_resize_handles(bool(self.bg_resize_mode.get()))
         # Redessiner l'horloge (overlay indépendant)
         self._draw_clock_overlay()
         # Après tout redraw, le cache de pick n'est plus valide
@@ -10654,14 +9494,14 @@ class TriangleViewerManual(
                 return "break"  # on court-circuite la logique des triangles
 
         # Fond SVG : si mode resize et clic sur poignée -> on capture et on court-circuite le reste
-        if self.bg_resize_mode.get() and self._bg:
-            h = self._bg_hit_test_handle(event.x, event.y)
+        if self.bg_resize_mode.get() and self.background_map_layer.has_map:
+            h = self.background_map_layer.hit_test_handle(event.x, event.y)
             if h:
-                self._bg_start_resize(h, event.x, event.y)
+                self.background_map_layer.start_resize(h, event.x, event.y)
                 self.canvas.configure(cursor="sizing")
                 return "break"
             # sinon, en mode redimensionnement : clic maintenu = déplacement du fond
-            self._bg_start_move(event.x, event.y)
+            self.background_map_layer.start_move(event.x, event.y)
             self.canvas.configure(cursor="fleur")
 
             return "break"
@@ -10888,14 +9728,15 @@ class TriangleViewerManual(
             return "break"
 
         # Mode déplacement fond d'écran (mode resize actif, clic maintenu hors poignée)
-        if self._bg_moving:
-            self._bg_update_move(event.x, event.y)
+        if self.background_map_layer.is_moving:
+            self.background_map_layer.update_move(event.x, event.y)
             self._redraw_from(self._last_drawn)
             return "break"
 
         # Mode resize fond d'écran
-        if self._bg_resizing:
-            self._bg_update_resize(event.x, event.y)
+        if self.background_map_layer.is_resizing:
+            self.background_map_layer.update_resize(event.x, event.y)
+            self._update_background_map_scale_status()
             self._redraw_from(self._last_drawn)
             return "break"
 
@@ -11123,15 +9964,15 @@ class TriangleViewerManual(
             self._update_compass_ctx_menu_and_dico_state()
             return "break"
 
-        if self._bg_resizing:
-            self._bg_resizing = None
+        if self.background_map_layer.is_resizing:
+            self.background_map_layer.finish_resize()
             self.canvas.configure(cursor="")
-            self._bg_update_scale_status()
+            self._update_background_map_scale_status()
             self._redraw_from(self._last_drawn)
             return "break"
 
-        if self._bg_moving:
-            self._bg_moving = None
+        if self.background_map_layer.is_moving:
+            self.background_map_layer.finish_move()
             self.canvas.configure(cursor="")
             self._redraw_from(self._last_drawn)
             return "break"
@@ -11421,11 +10262,12 @@ class TriangleViewerManual(
                 )
             )
         map_snapshot = None
-        if self._bg is not None and self._bg_base_pil is not None:
+        map_rect = self.background_map_layer.world_rect
+        if map_rect is not None and self.background_map_layer.base_image is not None:
             map_snapshot = AssembleurPrintMap(
-                image=self._bg_base_pil,
-                x0=float(self._bg["x0"]), y0=float(self._bg["y0"]),
-                width=float(self._bg["w"]), height=float(self._bg["h"]),
+                image=self.background_map_layer.base_image,
+                x0=map_rect.x0, y0=map_rect.y0,
+                width=map_rect.w, height=map_rect.h,
             )
         contour_only = bool(self.show_only_group_contours.get())
         boundaries = []
@@ -11477,10 +10319,7 @@ class TriangleViewerManual(
         AssembleurMapPrintDialog(self, snapshot, viewport, settings)
 
 
-
 # ---------- Entrée ----------
-
-
 if __name__ == "__main__":
     load_project_dotenv()
     application_context = ApplicationContext.from_environment()
