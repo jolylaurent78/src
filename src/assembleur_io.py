@@ -449,11 +449,11 @@ def saveScenarioXml(viewer, path: str):
 
     # clock
     ET.SubElement(root, "clock", {
-        "x": f"{float(viewer._clock_cx) if viewer._clock_cx is not None else 0.0:.6g}",
-        "y": f"{float(viewer._clock_cy) if viewer._clock_cy is not None else 0.0:.6g}",
-        "hour": f"{int(viewer._clock_state.get('hour', 0))}",
-        "minute": f"{int(viewer._clock_state.get('minute', 0))}",
-        "label": str(viewer._clock_state.get("label", "")),
+        "x": f"{float(viewer.compass_state.cx) if viewer.compass_state.cx is not None else 0.0:.6g}",
+        "y": f"{float(viewer.compass_state.cy) if viewer.compass_state.cy is not None else 0.0:.6g}",
+        "hour": f"{int(viewer.compass_state.clock.get('hour', 0))}",
+        "minute": f"{int(viewer.compass_state.clock.get('minute', 0))}",
+        "label": str(viewer.compass_state.clock.get("label", "")),
     })
 
     # clockRef (persist only when complete)
@@ -726,9 +726,9 @@ def _publish_loaded_scenario_xml(viewer, scenario, loaded: _LoadedScenarioXml, *
         viewer.zoom, viewer.offset = loaded.view_state
     if loaded.map_state is not None and hasattr(viewer, "_apply_scenario_map_state"):
         viewer._apply_scenario_map_state(loaded.map_state)
-    viewer._clock_cx = float(loaded.clock_state["x"])
-    viewer._clock_cy = float(loaded.clock_state["y"])
-    viewer._clock_state.update({
+    viewer.compass_state.cx = float(loaded.clock_state["x"])
+    viewer.compass_state.cy = float(loaded.clock_state["y"])
+    viewer.compass_state.clock.update({
         "hour": int(loaded.clock_state["hour"]),
         "minute": int(loaded.clock_state["minute"]),
         "label": str(loaded.clock_state["label"]),

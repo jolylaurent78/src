@@ -1,3 +1,5 @@
+from src.assembleur_compass_state import CompassState
+
 from types import SimpleNamespace
 
 import numpy as np
@@ -41,6 +43,7 @@ def _viewer_with_group():
         {"topoElementId": "T03", "pts": {"O": (-97, -97)}},
     ]
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     viewer.canvas_objects = CanvasObjectsCollection(entries)
     viewer._last_drawn = viewer.canvas_objects.entries
     viewer.scenarios = [SimpleNamespace(topoWorld=world, source_type="manual")]
@@ -136,7 +139,7 @@ def test_free_move_release_does_not_trigger_reverse_sync():
     }
     viewer._edge_choice = None
     viewer._ctrl_down = False
-    viewer._clock_dragging = False
+    viewer.compass_state.dragging = False
     viewer._bg_resizing = None
     viewer._bg_moving = None
     viewer._pan_anchor = None

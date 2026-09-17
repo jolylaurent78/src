@@ -42,8 +42,14 @@ from src.assembleur_dictionary_panel import (
     DictionaryPanel,
 )
 from src.assembleur_scenario_map_controller import ScenarioMapController
+from src.assembleur_compass_controller import CompassController
+from src.assembleur_compass_state import (
+    CompassState,
+    azimuth_world_deg,
+    clock_angle_diff_deg,
+    clock_theoretical_ref_azimuth_deg,
+)
 from src.assembleur_background_map_layer import BackgroundMapLayer, format_scale
-from src.assembleur_tk_mixin_clockarc import TriangleViewerClockArcMixin
 from src.assembleur_edgechoice import (
     buildManualAttachmentIntentFromBest,
     commitManualAttachment,
@@ -163,10 +169,7 @@ def createDecryptor(decryptorId: str) -> DecryptorBase:
 # ---------- Application (MANUEL — sans algorithmes) ----------
 
 
-class TriangleViewerManual(
-    TriangleViewerClockArcMixin,
-    tk.Tk,
-):
+class TriangleViewerManual(tk.Tk):
     """
     Version épurée pour travail manuel :
       - Chargement Excel
@@ -281,8 +284,6 @@ class TriangleViewerManual(
         self.show_dico_panel = tk.BooleanVar(value=True)
         # État d'affichage du compas horaire (overlay horloge)
         self.show_clock_overlay = tk.BooleanVar(value=True)
-        self._clock_anchor_world = None
-        self._clock_anchor_binding = None
         # Mode "contours uniquement" : n'afficher que le contour de chaque groupe (pas les arêtes internes)
         self.show_only_group_contours = tk.BooleanVar(value=False)
 
@@ -410,63 +411,41 @@ class TriangleViewerManual(
 
         # --- Horloge (overlay fixe) : état par défaut ---
         # hour peut être un float (si l'aiguille des heures avance avec les minutes)
-        self._clock_state = {"hour": 5.0, "minute": 9, "label": "Trouver — (5h, 9')"}
+        self.compass_state = CompassState(
+            ref_azimuth_deg=float(self.getAppConfigValue("uiClockRefAzimuth", 0.0) or 0.0),
+        )
+        self.compass_controller = CompassController(
+            self.compass_state,
+            self._world_to_screen,
+            self._screen_to_world,
+            self._get_active_scenario,
+            lambda: self._last_drawn,
+            lambda: self.decryptor,
+            lambda: bool(self.show_clock_overlay.get()),
+            lambda: self.dictionary_panel.filter_active,
+            lambda: bool(self._ctrl_down),
+            lambda text: self.status.config(text=text),
+            lambda element_id: self.canvas_objects.get_index_by_topology_id(element_id),
+            self._simulation_cancel_dictionary_filter,
+            self._ctx_filter_dictionary_by_clock_arc,
+            lambda: self._guidesCurrentColorHex,
+            lambda: self._redraw_from(self._last_drawn),
+            self._update_compass_ctx_menu_and_dico_state,
+            lambda value: self.setAppConfigValue("uiClockRefAzimuth", value),
+            lambda: bool(self._clock_auto_ref_sync_enabled),
+            lambda: (
+                beacon_id if (beacon_id := self._getCheminsBeaconRefId()) in self.catalogue.beacons else None
+            ),
+            self._beacon_world_resolver.get_world,
+            lambda: [
+                {"beaconId": beacon.beacon_id, "label": self.catalogue.get_city(beacon.city_id).name}
+                for beacon in self.catalogue.iter_beacons() if not beacon.archived
+            ],
+            self._clock_refresh_active_preview_under_pointer,
+        )
 
-        # --- Décryptage : stratégie active (extensible) ---
-        # Par défaut: mapping "horloge <-> dico" v1
+        # Par défaut: mapping "horloge <-> dico" v1.
         self.decryptor: DecryptorBase = ClockDicoDecryptor()
-
-        # Position & état de drag de l'horloge (coords CANVAS)
-        self._clock_cx = None
-        self._clock_cy = None
-        self._clock_R = 69    # rayon px (mis à jour dans le draw)
-        # Rayon "souhaité" du compas (modifiable via boutons < > dans les layers)
-        self._clock_radius = 69
-        # Azimut de référence (0° = Nord, sens horaire). Sert de base pour l'axe 0 du compas.
-        self._clock_ref_azimuth_deg = float(self.getAppConfigValue("uiClockRefAzimuth", 0.0) or 0.0)
-        self._clock_auto_ref_sync_in_progress = False
-
-        # Mode interactif : définition de l'azimut de référence
-        self._clock_setref_active = False
-        self._clock_setref_line_id = None
-        self._clock_setref_text_id = None
-        self._clock_setref_last = None
-
-        # Mode interactif : mesure d'un azimut (relatif à l'azimut de référence)
-        self._clock_measure_active = False
-        self._clock_measure_line_id = None
-        self._clock_measure_text_id = None
-        self._clock_measure_last = None  # tuple(sx, sy, az_abs, az_rel)
-
-        # Mode interactif : tracer un azimut (persistant via ref absolue + deltaAz)
-        self._clock_trace_active: bool = False
-        self._clock_trace_preview_az_abs: float | None = None
-        self._clock_trace_preview_nodeId: str | None = None
-        self._clock_trace_preview_topoGroupId: str | None = None
-        self._clock_trace_preview_deltaAz: float | None = None
-        self._clock_trace_line_id: int | None = None
-        self._clock_trace_text_id: int | None = None
-
-        # Mode interactif : mesure d'un arc d'angle (entre 2 points sur le compas)
-        self._clock_arc_active = False
-        self._clock_arc_step = 0        # 0: attente P1, 1: attente P2
-        self._clock_arc_p1 = None       # (sx, sy, az_abs)
-        self._clock_arc_p2 = None       # (sx, sy, az_abs)
-        self._clock_arc_line1_id = None
-        self._clock_arc_line2_id = None
-        self._clock_arc_arc_id = None
-        self._clock_arc_text_id = None
-
-        # Dernière mesure validée (persistée tant que le compas reste sur le même ancrage)
-        # {"az1": float, "az2": float, "angle": float}
-        self._clock_arc_last = None
-        self._clock_arc_last_angle_deg = None
-
-        self._clock_dragging = False
-        self._clock_drag_dx = 0
-        self._clock_drag_dy = 0
-        # "Snap" compas sur sommet le plus proche pendant le drag (CTRL au relâché = pas de snap)
-        self._clock_snap_target = None
 
         self._build_ui()
         # Centraliser / garantir les bindings (création initiale)
@@ -3667,8 +3646,8 @@ class TriangleViewerManual(
         sx, sy = self._world_to_screen(wO)
 
         # on positionne la clock sur le noeud
-        self._clock_anchor_world = np.array(wO, dtype=float)
-        self._clock_cx, self._clock_cy = float(sx), float(sy)
+        self.compass_state.anchor_world = np.array(wO, dtype=float)
+        self.compass_state.cx, self.compass_state.cy = float(sx), float(sy)
         self._clock_bind_anchor_to_node(
             node_id=nodeCenterId,
             topo_group_id=groupId,
@@ -4660,6 +4639,7 @@ class TriangleViewerManual(
         self.canvas = tk.Canvas(self.rightPane, bg="white")
         self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.background_map_layer.attach_canvas(self.canvas)
+        self.compass_controller.attach_canvas(self.canvas)
 
         # Redessiner l'overlay si la taille du canvas change
         self.canvas.bind("<Configure>", self._on_canvas_configure)
@@ -4807,7 +4787,7 @@ class TriangleViewerManual(
         return self.decryptor.clockStateFromDicoCell(row=row, col=col, word=word, mode=mode)
 
     def _apply_clock_state_from_dictionary(self, state) -> None:
-        self._clock_state.update({"hour": float(state.hour), "minute": state.minute, "label": state.label})
+        self.compass_state.clock.update({"hour": float(state.hour), "minute": state.minute, "label": state.label})
         self._redraw_overlay_only()
 
     def _toggle_only_group_contours(self):
@@ -4818,12 +4798,8 @@ class TriangleViewerManual(
 
     def _clock_change_radius(self, delta: int):
         """Modifie le rayon du compas (min=50) et redessine l'overlay."""
-        r = int(self._clock_radius)
-        r = max(50, r + int(delta))
-        self._clock_radius = int(r)
-        # Redessiner uniquement l'overlay (ne touche pas aux triangles)
+        self.compass_controller.change_radius(delta)
         self._redraw_overlay_only()
-
     def _toggle_auto_fit_scenario_select(self):
         """Active/désactive le Fit automatique lors de la sélection d'un scénario."""
         self.setAppConfigValue("uiAutoFitScenario", bool(self.auto_fit_scenario_select.get()))
@@ -5154,9 +5130,9 @@ class TriangleViewerManual(
         cyScreen = canvasH / 2.0
         cxWorld, cyWorld = self._screen_to_world(cxScreen, cyScreen)
         self._clock_clear_anchor_binding()
-        self._clock_anchor_world = np.array([cxWorld, cyWorld], dtype=float)
-        self._clock_cx = float(cxScreen)
-        self._clock_cy = float(cyScreen)
+        self.compass_state.anchor_world = np.array([cxWorld, cyWorld], dtype=float)
+        self.compass_state.cx = float(cxScreen)
+        self.compass_state.cy = float(cyScreen)
 
         self._draw_clock_overlay()
         self._redraw_overlay_only()
@@ -5214,15 +5190,8 @@ class TriangleViewerManual(
     def load_scenario_xml(self, path: str):
         return _assembleur_io.loadScenarioXml(self, path)
 
-    def _is_in_clock(self, x, y, pad=10):
-        """Vrai si (x,y) (coords canvas) est à l'intérieur du disque de l'horloge (+marge)."""
-        if self._clock_cx is None or self._clock_cy is None:
-            return False
-        dx = x - self._clock_cx
-        dy = y - self._clock_cy
-        return (dx*dx + dy*dy) <= (self._clock_R + pad) ** 2
-
-    # ---------- Tooltip helpers ----------
+    def _is_in_clock(self, x: float, y: float, pad: float = 10) -> bool:
+        return self.compass_controller.contains_point(x, y, pad=pad)
     def _ui_attach_tooltip(self, widget, text: str):
         if widget is None:
             return None
@@ -5447,220 +5416,13 @@ class TriangleViewerManual(
     # ---------- Overlay Horloge (indépendant du zoom/pan) ----------
     def _redraw_overlay_only(self):
         """Efface/redessine uniquement l'overlay (horloge)."""
-        if not self.canvas:
-            return
-
-        self.canvas.delete("clock_overlay")
-        self._draw_clock_overlay()
-
+        self.compass_controller.redraw()
     def _draw_clock_overlay(self):
-        """
-        Dessine une horloge en haut-gauche du canvas, à taille FIXE (px),
-        indépendante du zoom/pan (coordonnées canvas).
-        Utilise self._clock_state = {'hour':h, 'minute':m, 'label':str}.
-        """
-        if not self.canvas:
-            return
-        # Nettoyer l'ancien overlay
-        self.canvas.delete("clock_overlay")
-
-        # Si le compas est masqué via le menu, ne rien dessiner
-        if hasattr(self, "show_clock_overlay") and not self.show_clock_overlay.get():
-            return
-        # Paramètres d'aspect
-        margin = 12              # marge par rapport aux bords du canvas (px)
-        # rayon (px) — modifiable via UI (min=50)
-        R = max(50, int(self._clock_radius))
-        self._clock_refresh_anchor_world_from_binding()
-        # Si un ancrage monde existe (et qu'on ne drag pas), le centre du compas suit pan/zoom
-        if self._clock_anchor_world is not None and not self._clock_dragging:
-            sx, sy = self._world_to_screen(self._clock_anchor_world)
-            self._clock_cx, self._clock_cy = float(sx), float(sy)
-        # Si on a déjà une position écran mais pas d'ancrage monde, on l'initialise
-        if self._clock_anchor_world is None and self._clock_cx is not None and self._clock_cy is not None and not self._clock_dragging:
-            wx, wy = self._screen_to_world(self._clock_cx, self._clock_cy)
-            self._clock_anchor_world = np.array([wx, wy], dtype=float)
-
-        # Si première fois, placer en haut-gauche ; sinon garder la position utilisateur
-        if self._clock_cx is None or self._clock_cy is None:
-            cx = margin + R
-            cy = margin + R
-            self._clock_cx, self._clock_cy = cx, cy
-        else:
-            cx, cy = float(self._clock_cx), float(self._clock_cy)
-        self._clock_R = R
-
-        # Axe 0 de référence (azimut)
-        ref_az = float(self._clock_ref_azimuth_deg) % 360.0
-
-        # Couleurs
-        col_circle = "#b0b0b0"   # gris cercle
-        col_ticks = "#707070"
-        col_hour = "#0b3d91"   # bleue (petite aiguille)
-        col_min = "#000000"   # noire  (grande aiguille)
-
-        # Données
-        # NOTE: l'algo de décryptage peut fournir une heure "float" (si l'aiguille avance avec les minutes)
-        #       ou une heure "int" (si elle reste sur l'heure pile). On respecte donc cette valeur telle quelle.
-        # Bases dynamiques (60/100 et 12/10) pilotées par le decryptor
-        hBase = int(getattr(self.decryptor, "getHoursBase", lambda: getattr(self.decryptor, "hoursBase", 12))())
-        mBase = int(getattr(self.decryptor, "getMinutesBase", lambda: getattr(self.decryptor, "minutesBase", 60))())
-        hBase = max(1, int(hBase))
-        mBase = max(1, int(mBase))
-        show_hour_hand = bool(getattr(self.decryptor, "shouldShowHourHand", lambda: True)())
-        show_minute_hand = bool(getattr(self.decryptor, "shouldShowMinuteHand", lambda: True)())
-        show_hour_labels = bool(getattr(self.decryptor, "shouldShowHourLabels", lambda: True)())
-        show_hour_ticks = bool(getattr(self.decryptor, "shouldShowHourTicks", lambda: True)())
-
-        hFloat = float(self._clock_state.get("hour", 5.0)) % float(hBase)
-        m = int(self._clock_state.get("minute", 9)) % int(mBase)
-        label = str(self._clock_state.get("label", ""))
-
-        # Cercle
-        self.canvas.create_oval(cx-R, cy-R, cx+R, cy+R,
-                                outline=col_circle, width=2, tags="clock_overlay")
-
-        # Dessiner l'axe de référence (0°) selon l'azimut de référence
-        th = math.radians(ref_az)
-        x_ref = cx + (R * 0.92) * math.sin(th)
-        y_ref = cy - (R * 0.92) * math.cos(th)
-        self.canvas.create_line(cx, cy, x_ref, y_ref, width=2, fill="#404040", tags=("clock_overlay",))
-
-        # Graduations minutes : un trait toutes les minutes
-        deg_per_min = 360.0 / float(mBase)
-        for k in range(int(mBase)):
-            ang = math.radians(ref_az + k * deg_per_min)  # 360/mBase + ref az
-            if k % 5 == 0:
-                inner = R - 10
-                w = 1
-            else:
-                inner = R - 6
-                w = 1
-            outer = R
-            x1 = cx + inner * math.sin(ang)
-            y1 = cy - inner * math.cos(ang)
-            x2 = cx + outer * math.sin(ang)
-            y2 = cy - outer * math.cos(ang)
-            self.canvas.create_line(x1, y1, x2, y2, width=w, fill=col_ticks, tags="clock_overlay")
-
-        # Graduations heures (hBase traits)
-        if show_hour_ticks:
-            deg_per_hour = 360.0 / float(hBase)
-            for hmark in range(int(hBase)):
-                ang = math.radians(ref_az + hmark * deg_per_hour)  # 360/hBase + ref az
-                # longueur du trait
-                # Repères plus longs : quarts si possible
-                if (hBase % 4 == 0 and hmark % int(hBase // 4) == 0) or (hBase == 12 and hmark % 3 == 0):
-                    inner = R - 14
-                    w = 2
-                else:
-                    inner = R - 8
-                    w = 1
-                outer = R
-                x1 = cx + inner * math.sin(ang)
-                y1 = cy - inner * math.cos(ang)
-                x2 = cx + outer * math.sin(ang)
-                y2 = cy - outer * math.cos(ang)
-                self.canvas.create_line(x1, y1, x2, y2, width=w, fill=col_ticks, tags="clock_overlay")
-
-        # Repères (alignés sur l'axe de référence)
-        font_marks = ("Arial", 11, "bold")
-
-        def _pos(angle_deg, rad):
-            a = math.radians(angle_deg)
-            return (cx + rad * math.sin(a), cy - rad * math.cos(a))
-
-        r_text = R - 18
-        x12, y12 = _pos(ref_az + 0.0,   r_text)
-        x3, y3 = _pos(ref_az + 90.0,  r_text)
-        x6, y6 = _pos(ref_az + 180.0, r_text)
-        x9, y9 = _pos(ref_az + 270.0, r_text)
-
-        def _fmt_mark(v):
-            fv = float(v)
-            if abs(fv - round(fv)) < 1e-9:
-                return str(int(round(fv)))
-            # 1 décimale max
-            return f"{fv:.1f}".rstrip("0").rstrip(".")
-
-        if show_hour_labels:
-            # Haut = hBase (12 ou 10)
-            self.canvas.create_text(x12, y12, text=_fmt_mark(hBase), font=font_marks,
-                                    fill=col_ticks, tags="clock_overlay")
-            # Droite / bas / gauche : quarts (peuvent être décimaux si hBase=10)
-            self.canvas.create_text(x3,  y3,  text=_fmt_mark(hBase / 4.0),  font=font_marks,
-                                    fill=col_ticks, tags="clock_overlay")
-            self.canvas.create_text(x6,  y6,  text=_fmt_mark(hBase / 2.0),  font=font_marks,
-                                    fill=col_ticks, tags="clock_overlay")
-            self.canvas.create_text(x9,  y9,  text=_fmt_mark(3.0 * hBase / 4.0),  font=font_marks,
-                                    fill=col_ticks, tags="clock_overlay")
-
-        # Aiguilles
-        # Convention : angle 0° = 12h, sens horaire ; conversion vers coords canvas:
-        #   x = cx + R * sin(theta), y = cy - R * cos(theta)
-        def _end_point(angle_deg, length):
-            import math
-            a = math.radians(angle_deg)
-            return (cx + length * math.sin(a), cy - length * math.cos(a))
-        ang_hour_0 = None
-        ang_min_0 = None
-        ang_hour = None
-        ang_min = None
-        delta_needles_deg = None
-        if show_hour_hand or show_minute_hand:
-            # Angles via decryptor (cohérence complète avec les bases minutes/heures)
-            ang_hour_0, ang_min_0 = self.decryptor.anglesFromClock(hour=float(hFloat), minute=int(m))
-            ang_min = ref_az + float(ang_min_0)
-            # IMPORTANT: l'avance avec les minutes (ou non) est déjà encodée dans hFloat par le decryptor.
-            ang_hour = ref_az + float(ang_hour_0)
-
-            if show_hour_hand and show_minute_hand:
-                # Écart entre aiguilles (0..180) — même définition que l'angle d'arc (plus petit angle)
-                # On repasse en [0..360) avant calcul.
-                delta_needles_deg = self._clock_arc_compute_angle_deg(float(ang_hour) % 360.0, float(ang_min) % 360.0)
-
-            # Longueurs des aiguilles
-            L_min = R * 0.86
-            L_hour = R * 0.58
-            if show_hour_hand:
-                x2h, y2h = _end_point(ang_hour, L_hour)
-                self.canvas.create_line(cx, cy, x2h, y2h, width=3, fill=col_hour, tags="clock_overlay")
-            if show_minute_hand:
-                x2m, y2m = _end_point(ang_min, L_min)
-                self.canvas.create_line(cx, cy, x2m, y2m, width=2, fill=col_min, tags="clock_overlay")
-            # axe central
-            self.canvas.create_oval(cx-3, cy-3, cx+3, cy+3, fill=col_min, outline=col_min, tags="clock_overlay")
-        # Libellé sous l'horloge
-        if label:
-            label_disp = str(label)
-            if delta_needles_deg is not None:
-                label_disp = f"{label_disp} — Δ={float(delta_needles_deg):0.0f}°"
-            # Si le filtrage dico est actif, afficher aussi l'azimut théorique du 12h (référence)
-            # pour aligner les aiguilles sur les 2 droites mesurées (az1/az2).
-            if self.dictionary_panel.filter_active and (delta_needles_deg is not None):
-                last = self._clock_arc_last
-                if isinstance(last, dict) and ("az1" in last) and ("az2" in last):
-                    ref_theo = self._clock_compute_theoretical_ref_azimuth_deg(
-                        az1=float(last["az1"]),
-                        az2=float(last["az2"]),
-                        ang_hour_0=float(ang_hour_0),
-                        ang_min_0=float(ang_min_0),
-                    )
-                    label_disp = f"{label_disp} — Ref={ref_theo:0.1f}°"
-            self.canvas.create_text(cx, cy + R + 20, text=label_disp,
-                                    font=("Arial", 11, "bold"), fill="#000000",
-                                    anchor="n", tags="clock_overlay")
-        # Dernière mesure d'arc (persistée) : affichage tant que le compas reste au même ancrage
-        self._clock_arc_draw_last(cx, cy, R)
-
-    # ---------- Horloge : snap sur sommet le plus proche ----------
-
+        """Délègue le rendu du socle du compas au contrôleur dédié."""
+        self.compass_controller.draw_overlay()
     def _clock_clear_snap_target(self):
-        """Efface le marqueur visuel du sommet 'target' pendant le drag du compas."""
-        self._clock_snap_target = None
-        if self.canvas:
-            self.canvas.delete("clock_snap_target")
-
+        """Efface le marqueur visuel du sommet ciblé pendant le drag."""
+        self.compass_controller.clear_snap_target()
     def _world_to_screen(self, p):
         x = self.offset[0] + float(p[0]) * self.zoom
         y = self.offset[1] - float(p[1]) * self.zoom
@@ -5839,45 +5601,7 @@ class TriangleViewerManual(
                 )
 
     def _clock_clip_ray_to_viewport(self, sx0: float, sy0: float, azDeg: float) -> tuple[float, float] | None:
-        """Clippe la demi-droite écran P(t)=P0+t*d, t>=0, au viewport courant."""
-        cw = int(self.canvas.winfo_width() or 0)
-        ch = int(self.canvas.winfo_height() or 0)
-        if cw <= 0 or ch <= 0:
-            return None
-
-        rad = math.radians(float(azDeg) % 360.0)
-        dx = math.sin(rad)
-        dy = -math.cos(rad)
-        eps = 1e-12
-        hits: list[tuple[float, float, float]] = []
-
-        if abs(dx) > eps:
-            t = (0.0 - float(sx0)) / dx
-            y = float(sy0) + t * dy
-            if t >= 0.0 and 0.0 <= y <= float(ch):
-                hits.append((float(t), 0.0, float(y)))
-
-            t = (float(cw) - float(sx0)) / dx
-            y = float(sy0) + t * dy
-            if t >= 0.0 and 0.0 <= y <= float(ch):
-                hits.append((float(t), float(cw), float(y)))
-
-        if abs(dy) > eps:
-            t = (0.0 - float(sy0)) / dy
-            x = float(sx0) + t * dx
-            if t >= 0.0 and 0.0 <= x <= float(cw):
-                hits.append((float(t), float(x), 0.0))
-
-            t = (float(ch) - float(sy0)) / dy
-            x = float(sx0) + t * dx
-            if t >= 0.0 and 0.0 <= x <= float(cw):
-                hits.append((float(t), float(x), float(ch)))
-
-        if not hits:
-            return None
-        _t, sx1, sy1 = max(hits, key=lambda it: it[0])
-        return (float(sx1), float(sy1))
-
+        return self.compass_controller.clip_ray_to_viewport(sx0, sy0, azDeg)
     def _draw_clock_azimuth_traits_layer(self):
         self.canvas.delete("clock_azimuth_traits")
         if not self._layerGuidesVisible:
@@ -5903,7 +5627,7 @@ class TriangleViewerManual(
                 nodeWorld = np.array(world.getConceptNodeWorldXY(nodeId, topoGroupId), dtype=float)
             except Exception:
                 continue
-            azTraitAbs = (float(self._clock_ref_azimuth_deg) + deltaAz) % 360.0
+            azTraitAbs = (float(self.compass_state.ref_azimuth_deg) + deltaAz) % 360.0
 
             sx0, sy0 = self._world_to_screen(nodeWorld)
             end = self._clock_clip_ray_to_viewport(float(sx0), float(sy0), float(azTraitAbs))
@@ -6051,23 +5775,23 @@ class TriangleViewerManual(
         if self.canvas is None:
             return
         sx, sy = self._clock_get_pointer_canvas_xy()
-        if self._clock_trace_active:
+        if self.compass_state.trace.active:
             self._clock_trace_update_preview(int(sx), int(sy))
-        elif self._clock_measure_active:
+        elif self.compass_state.measure.active:
             self._clock_measure_update_preview(int(sx), int(sy))
-        elif self._clock_arc_active:
+        elif self.compass_state.arc.active:
             self._clock_arc_update_preview(int(sx), int(sy))
-        elif self._clock_setref_active:
+        elif self.compass_state.set_ref.active:
             self._clock_setref_update_preview(int(sx), int(sy))
 
     def _on_ctrl_down(self, event=None):
         # Pendant les modes interactifs du compas, CTRL sert uniquement à désactiver le snap.
         # On évite donc d'activer le mode "déconnexion" des triangles (curseur + aides).
         if (
-            self._clock_measure_active
-            or self._clock_arc_active
-            or self._clock_setref_active
-            or self._clock_trace_active
+            self.compass_state.measure.active
+            or self.compass_state.arc.active
+            or self.compass_state.set_ref.active
+            or self.compass_state.trace.active
         ):
             self._ctrl_down = True
             self._clock_refresh_active_preview_under_pointer()
@@ -6116,10 +5840,10 @@ class TriangleViewerManual(
         if self._ctrl_down:
             self._ctrl_down = False
             if (
-                self._clock_measure_active
-                or self._clock_arc_active
-                or self._clock_setref_active
-                or self._clock_trace_active
+                self.compass_state.measure.active
+                or self.compass_state.arc.active
+                or self.compass_state.set_ref.active
+                or self.compass_state.trace.active
             ):
                 self._clock_refresh_active_preview_under_pointer()
                 return
@@ -6383,22 +6107,22 @@ class TriangleViewerManual(
             return None
 
     def _on_canvas_motion_update_drag(self, event):
-        if self._clock_trace_active:
+        if self.compass_state.trace.active:
             self._clock_trace_update_preview(int(event.x), int(event.y))
             return "break"
 
         # Mode compas : mesure d'un azimut (relatif à la référence)
-        if self._clock_measure_active:
+        if self.compass_state.measure.active:
             self._clock_measure_update_preview(int(event.x), int(event.y))
             return "break"
 
         # Mode compas : mesure d'arc d'angle
-        if self._clock_arc_active:
+        if self.compass_state.arc.active:
             self._clock_arc_update_preview(int(event.x), int(event.y))
             return "break"
 
         # Mode compas : définition de l'azimut de référence
-        if self._clock_setref_active:
+        if self.compass_state.set_ref.active:
             self._clock_setref_update_preview(int(event.x), int(event.y))
             return "break"
 
@@ -7104,23 +6828,36 @@ class TriangleViewerManual(
     def _on_escape_key(self, event):
         """Annuler un drag&drop (liste) ou un déplacement/selection de triangle (avec rollback)."""
         # Annule les modes compas (arc / mesure azimut / définition azimut ref)
-        if self._clock_trace_active:
+        if self.compass_state.trace.active:
             self._clock_trace_cancel()
             return
 
-        if self._clock_arc_active:
+        if self.compass_state.arc.active:
             self._clock_arc_cancel()
             return
 
         # Annule le mode de mesure d'azimut du compas
-        if self._clock_measure_active:
+        if self.compass_state.measure.active:
             self._clock_measure_cancel()
             return
 
         # Annule le mode de définition d'azimut du compas
-        if self._clock_setref_active:
+        if self.compass_state.set_ref.active:
             self._clock_setref_cancel()
             return
+
+        if self.compass_state.dragging:
+            wx, wy = self._screen_to_world(self.compass_state.cx, self.compass_state.cy)
+            self._clock_clear_anchor_binding()
+            self.compass_state.anchor_world = np.array([wx, wy], dtype=float)
+            self.compass_state.dragging = False
+            self.canvas.configure(cursor="")
+            self._clock_clear_snap_target()
+            self._clock_arc_clear_last()
+            self._redraw_overlay_only()
+            self._update_compass_ctx_menu_and_dico_state()
+            self.status.config(text="D\u00e9placement du compas interrompu (ESC).")
+            return "break"
 
         if self._drag:
             self._cancel_drag()
@@ -7793,75 +7530,14 @@ class TriangleViewerManual(
 
     def _is_point_in_clock(self, sx: float, sy: float) -> bool:
         """True si (sx,sy) est dans le disque du compas (coords canvas)."""
-        if not self.show_clock_overlay or not self.show_clock_overlay.get():
-            return False
-        cx = float(self._clock_cx)
-        cy = float(self._clock_cy)
-        R = float(self._clock_R)
-        if cx is None or cy is None:
-            return False
-        dx = float(sx) - cx
-        dy = float(sy) - cy
-        return (dx*dx + dy*dy) <= (R + 6.0) * (R + 6.0)
-
-    # ---- Compas : définition interactive de l'azimut de référence -----------------
-
+        return bool(self.show_clock_overlay and self.show_clock_overlay.get()) and self.compass_controller.contains_point(sx, sy, pad=6)
     def _ctx_define_clock_ref_azimuth(self):
-        """Entrée de menu : active le mode 'définir azimut de référence' du compas."""
-        # Repartir d'un état propre
-        self._clock_trace_cancel(silent=True)
-        self._clock_setref_cancel(silent=True)
-
-        if not self.canvas:
-            return
-        if not self.show_clock_overlay or not self.show_clock_overlay.get():
-            self.status.config(text="Compas masqué : affiche-le pour définir l'azimut de référence.")
-            return
-
-        # Initialiser le mode
-        self._clock_setref_active = True
-        self._clock_setref_last = None
-        self._clock_clear_setref_snap_target()
-        self.canvas.focus_set()
-        sx, sy = self._clock_get_initial_cursor_xy()
-        self._clock_setref_update_preview(sx, sy)
-
-        self.status.config(
-            text="Définir azimut de référence : déplacer la souris, clic gauche pour valider, CTRL = azimut libre, ESC pour annuler."
-        )
-
+        """Entrée de menu du mode de définition d'azimut de référence."""
+        self.compass_controller.start_set_ref(*self._clock_get_initial_cursor_xy())
     def _ctx_trace_clock_azimuth(self):
-        """Entrée de menu : active le mode 'tracer un azimut' (persistant)."""
+        """Entrée de menu du mode de tracé d'azimut."""
         self._clock_arc_cancel(silent=True)
-        self._clock_setref_cancel(silent=True)
-        self._clock_measure_cancel(silent=True)
-
-        if not self.canvas:
-            return
-        if not self.show_clock_overlay or not self.show_clock_overlay.get():
-            self.status.config(text="Compas masqué : affiche-le pour tracer un azimut.")
-            return
-        if self._clock_get_anchor_node_hit() is None:
-            self.status.config(text="Accroche le compas à un nœud pour tracer un azimut.")
-            return
-
-        self._clock_trace_active = True
-        self._clock_trace_preview_az_abs = None
-        self._clock_trace_preview_nodeId = None
-        self._clock_trace_preview_topoGroupId = None
-        self._clock_trace_preview_deltaAz = None
-        self._clock_trace_line_id = None
-        self._clock_trace_text_id = None
-        self.canvas.delete("clock_trace_preview")
-        self.canvas.focus_set()
-
-        self.status.config(
-            text="Tracer un azimut : déplacer la souris, clic gauche pour valider, ESC pour annuler."
-        )
-
-        sx, sy = self._clock_get_initial_cursor_xy()
-        self._clock_trace_update_preview(int(sx), int(sy))
-
+        self.compass_controller.start_trace(*self._clock_get_initial_cursor_xy())
     def _ctx_clear_clock_azimuth_traits(self):
         scen = self._get_active_scenario()
         if scen is None:
@@ -7885,159 +7561,23 @@ class TriangleViewerManual(
         self.status.config(text="Guides effacés pour ce nœud.")
 
     def _clock_trace_update_preview(self, sx: int, sy: int):
-        if not self._clock_trace_active:
-            return
-        if not self.show_clock_overlay or not self.show_clock_overlay.get():
-            self._clock_trace_cancel(silent=True)
-            self.status.config(text="Compas masqué : affiche-le pour tracer un azimut.")
-            return
-
-        scen = self._get_active_scenario()
-        if scen is None:
-            self._clock_trace_cancel(silent=True)
-            return
-        world = scen.topoWorld
-        hit = self._clock_get_anchor_node_hit()
-        if hit is None:
-            self.status.config(text="Accroche le compas à un nœud pour tracer un azimut.")
-            self._clock_trace_cancel(silent=True)
-            return
-
-        nodeId = hit["nodeId"]
-        topoGroupId = hit["groupId"]
-        nodeWorld = np.array(world.getConceptNodeWorldXY(nodeId, topoGroupId), dtype=float)
-
-        azTraitAbsPreview = float(self._clock_compute_azimuth_deg(int(sx), int(sy)))
-        deltaAz = (azTraitAbsPreview - float(self._clock_ref_azimuth_deg) + 360.0) % 360.0
-
-        self._clock_trace_preview_az_abs = float(azTraitAbsPreview)
-        self._clock_trace_preview_nodeId = nodeId
-        self._clock_trace_preview_topoGroupId = topoGroupId
-        self._clock_trace_preview_deltaAz = float(deltaAz)
-
-        self.canvas.delete("clock_trace_preview")
-        self._clock_trace_line_id = None
-        self._clock_trace_text_id = None
-        sx0, sy0 = self._world_to_screen(nodeWorld)
-        clipped = self._clock_clip_ray_to_viewport(float(sx0), float(sy0), float(azTraitAbsPreview))
-        if clipped is not None:
-            sx1, sy1 = clipped
-            self._clock_trace_line_id = self.canvas.create_line(
-                float(sx0), float(sy0), float(sx1), float(sy1),
-                dash=(4, 3),
-                fill="#202020",
-                width=2,
-                tags=("clock_trace_preview",),
-            )
-
-        label = self._clock_delta_display_text(float(deltaAz))
-        _line_id_unused, self._clock_trace_text_id, _out = self._clock_update_azimuth_preview(
-            int(sx), int(sy),
-            line_id=None,
-            text_id=None,
-            preview_tag="clock_trace_preview",
-            relative_to_ref=False,
-            enable_snap=False,
-            draw_line=False,
-            label_text=label,
-            text_fill="#202020",
-        )
-
+        self.compass_controller.update_trace(sx, sy)
     def _clock_trace_confirm(self):
-        if not self._clock_trace_active:
-            return
-        nodeId = self._clock_trace_preview_nodeId
-        topoGroupId = self._clock_trace_preview_topoGroupId
-        deltaAz = self._clock_trace_preview_deltaAz
-        if nodeId is None or topoGroupId is None or deltaAz is None:
-            self._clock_trace_cancel(silent=True)
-            return
-
-        scen = self._get_active_scenario()
-        if scen is None:
-            self._clock_trace_cancel(silent=True)
-            return
-
-        delta = float(deltaAz) % 360.0
-        scen.clockAzimuthTraits.append(
-            {
-                "nodeId": nodeId,
-                "topoGroupId": topoGroupId,
-                "deltaAzDeg": float(delta),
-                "colorHex": str(self._guidesCurrentColorHex),
-            }
-        )
-        self._clock_trace_cancel(silent=True)
-        self._update_compass_ctx_menu_and_dico_state()
-        self._redraw_from(self._last_drawn)
-        self.status.config(text=f"Trait azimut ajouté (Δ={delta:0.0f}°).")
-
+        self.compass_controller.confirm_trace()
     def _clock_trace_cancel(self, silent: bool = False):
-        self._clock_trace_active = False
-        if self.canvas is not None:
-            self.canvas.delete("clock_trace_preview")
-        self._clock_trace_line_id = None
-        self._clock_trace_text_id = None
-        self._clock_trace_preview_az_abs = None
-        self._clock_trace_preview_nodeId = None
-        self._clock_trace_preview_topoGroupId = None
-        self._clock_trace_preview_deltaAz = None
-        if not silent:
-            self.status.config(text="Traçage d'azimut annulé.")
-
-    # ---- Compas : mesure interactive d'un azimut (relatif à l'azimut de référence) ---------
+        self.compass_controller.cancel_trace(silent=silent)
     def _ctx_measure_clock_azimuth(self):
-        """Entrée de menu : active le mode 'mesurer un azimut' (relatif à l'azimut de référence)."""
-        # Repartir d'un état propre
-        self._clock_trace_cancel(silent=True)
-        self._clock_measure_cancel(silent=True)
-        self._clock_setref_cancel(silent=True)
-
-        if not self.canvas:
-            return
-        if not self.show_clock_overlay or not self.show_clock_overlay.get():
-            self.status.config(text="Compas masqué : affiche-le pour mesurer un azimut.")
-            return
-
-        self._clock_measure_active = True
-        self._clock_measure_last = None
-        self.canvas.focus_set()
-        sx, sy = self._clock_get_initial_cursor_xy()
-        self._clock_measure_update_preview(sx, sy)
-
-        self.status.config(text="Mesurer un azimut : clic gauche pour valider, ESC pour annuler. (Snap noeuds, CTRL = désactiver snap)")
-
-    # ---- Compas : mesure interactive d'un arc d'angle (entre 2 points) -------------------
-
+        """Entrée de menu du mode de mesure d'azimut."""
+        self.compass_controller.start_measure(*self._clock_get_initial_cursor_xy())
     def _ctx_measure_clock_arc_angle(self):
-        """Entrée de menu : active le mode 'mesurer un arc d'angle' (entre 2 points)."""
-        # Repartir d'un état propre
-        self._clock_trace_cancel(silent=True)
-        self._clock_arc_cancel(silent=True)
-        self._clock_measure_cancel(silent=True)
-        self._clock_setref_cancel(silent=True)
-
-        if not hasattr(self, "canvas") or self.canvas is None:
-            return
-        if not self.show_clock_overlay or not self.show_clock_overlay.get():
-            self.status.config(text="Compas masqué : affiche-le pour mesurer un arc d'angle.")
-            return
-
-        self._clock_arc_active = True
-        self._clock_arc_step = 0
-        self._clock_arc_p1 = None
-        self._clock_arc_p2 = None
-        self._clock_clear_snap_target()
-        self.canvas.focus_set()
-
-        self.status.config(text="Mesurer un arc d'angle : clic gauche P1 puis P2, ESC pour annuler. (Snap noeuds, CTRL = désactiver snap)")
-
+        """Entrée de menu du mode de mesure d'arc."""
+        self.compass_controller.start_arc()
     def _ctx_filter_dictionary_by_clock_arc(self):
         """Filtre visuellement le dictionnaire selon l'angle mesuré."""
         if not self.dictionary_panel.is_loaded:
             messagebox.showinfo("Filtrer le dictionnaire", "Le dictionnaire n'est pas affiché.")
             return
-        ref = self._clock_arc_last_angle_deg
+        ref = self.compass_state.arc.last_angle_deg
         if ref is None:
             messagebox.showinfo("Filtrer le dictionnaire", "Aucun arc n'a été mesuré.\n\nMesure d'abord un arc d'angle sur le compas.")
             return
@@ -8143,117 +7683,50 @@ class TriangleViewerManual(
         self._update_compass_ctx_menu_traits_state()
 
     def _azimuth_world_deg(self, a, b) -> float:
-        """Azimut absolu en degrés (0°=Nord, 90°=Est) entre 2 points monde."""
-        import math
-        ax, ay = float(a[0]), float(a[1])
-        bx, by = float(b[0]), float(b[1])
-        dx, dy = (bx - ax), (by - ay)
-        # dx vers Est, dy vers Nord (monde Lambert-like). Convertir en azimut.
-        ang = math.degrees(math.atan2(dx, dy)) % 360.0
-        return float(ang)
-
+        return azimuth_world_deg(a, b)
     def _clock_delta_display_deg(self, deltaAzDeg: float) -> float:
-        d = float(deltaAzDeg) % 360.0
-        if d <= 180.0:
-            return float(d)
-        return float(360.0 - d)
-
+        return self.compass_controller.delta_display_deg(deltaAzDeg)
     def _clock_delta_display_text(self, deltaAzDeg: float) -> str:
-        return f"{self._clock_delta_display_deg(deltaAzDeg):0.1f}°".replace(".", ",")
-
+        return self.compass_controller.delta_display_text(deltaAzDeg)
     def _clock_point_on_circle(self, az_deg: float, radius: float):
         """Point écran (sx,sy) à un azimut donné autour du centre du compas."""
-        cx = float(self._clock_cx)
-        cy = float(self._clock_cy)
-        a = math.radians(float(az_deg) % 360.0)
-        sx = cx + float(radius) * math.sin(a)
-        sy = cy - float(radius) * math.cos(a)
-        return (sx, sy)
-
+        return self.compass_controller.point_on_circle(az_deg, radius)
     def _clock_apply_optional_snap(self, sx: int, sy: int, *, enable_snap: bool) -> Tuple[int, int]:
-        """Applique le snap sur noeud si activé (et si CTRL n'est pas pressé)."""
-        sx2, sy2 = int(sx), int(sy)
-        if not enable_snap:
-            return sx2, sy2
-        if self._ctrl_down:
-            self._clock_clear_snap_target()
-            return sx2, sy2
+        return self.compass_controller.apply_optional_snap(sx, sy, enable_snap=enable_snap)
 
-        self._clock_update_snap_target(float(sx2), float(sy2))
-        tgt = self._clock_snap_target
-        if isinstance(tgt, dict) and tgt.get("world") is not None:
-            sxx, syy = self._world_to_screen(tgt["world"])
-            return (int(sxx), int(syy))
-        return sx2, sy2
+    def _clock_update_snap_target(self, sx: float, sy: float):
+        self.compass_controller.update_snap_target(sx, sy)
 
+    def _clock_arc_auto_from_snap_target(self, snap_target: dict, drag: bool, prevNodeDsu=None, nextNodeDsu=None):
+        return self.compass_controller.auto_arc_from_snap_target(snap_target, drag, prevNodeDsu, nextNodeDsu)
+
+    def _clock_arc_is_available(self) -> bool:
+        return self.compass_controller.arc_is_available()
+
+    def _clock_arc_handle_click(self, sx: int, sy: int):
+        self.compass_controller.handle_arc_click(sx, sy)
+
+    def _clock_arc_update_preview(self, sx: int, sy: int):
+        self.compass_controller.update_arc_preview(sx, sy)
+
+    def _clock_arc_cancel(self, silent: bool = False):
+        self.compass_controller.cancel_arc(silent=silent)
+
+    def _clock_arc_clear_last(self):
+        self.compass_controller.clear_arc_last()
     def _clock_measure_update_preview(self, sx: int, sy: int):
-        if not self._clock_measure_active:
-            return
-        self._clock_measure_line_id, self._clock_measure_text_id, out = self._clock_update_azimuth_preview(
-            int(sx), int(sy),
-            line_id=self._clock_measure_line_id,
-            text_id=self._clock_measure_text_id,
-            preview_tag="clock_measure_preview",
-            relative_to_ref=True,
-            enable_snap=True,
-        )
-        if out:
-            sx2, sy2, az_abs, az_rel = out
-            self._clock_measure_last = (int(sx2), int(sy2), float(az_abs), float(az_rel))
-
+        self.compass_controller.update_measure(sx, sy)
     def _clock_measure_confirm(self):
-        if not self._clock_measure_active:
-            return
-        last = self._clock_measure_last
-        if not last:
-            self._clock_measure_cancel(silent=True)
-            return
-        (_, _, az_abs, az_rel) = last
-        self._clock_measure_cancel(silent=True)
-        self.status.config(
-            text=f"Azimut mesuré : {az_rel:0.0f}° (ref={float(self._clock_ref_azimuth_deg) % 360.0:0.0f}°, abs={az_abs:0.0f}°)"
-            )
-
+        self.compass_controller.confirm_measure()
     def _clock_measure_cancel(self, silent: bool = False):
-        if not self._clock_measure_active:
-            return
-        self._clock_measure_active = False
-
-        if self._clock_measure_line_id is not None:
-            self.canvas.delete(self._clock_measure_line_id)
-
-        if self._clock_measure_text_id is not None:
-            self.canvas.delete(self._clock_measure_text_id)
-
-        self._clock_measure_line_id = None
-        self._clock_measure_text_id = None
-        self._clock_measure_last = None
-        self._clock_clear_snap_target()
-
-        if not silent:
-            self.status.config(text="Mesure d'azimut annulée.")
-
+        self.compass_controller.cancel_measure(silent=silent)
     def _clock_compute_azimuth_deg(self, sx: float, sy: float) -> float:
-        """Azimut (degrés) depuis le centre du compas vers (sx,sy). 0°=Nord, sens horaire."""
-        cx = float(self._clock_cx)
-        cy = float(self._clock_cy)
-        vx = float(sx) - cx
-        vy = float(sy) - cy
-        # Tk: y vers le bas -> Nord = -y
-        ang = math.degrees(math.atan2(vx, -vy))  # 0=N, 90=E, 180=S, 270=O
-        ang = ang % 360.0
-        return ang
-
+        """Azimut (degrés) depuis le centre du compas vers (sx,sy)."""
+        return self.compass_controller.compute_azimuth_deg(sx, sy)
     def _clock_angle_diff_deg(self, a: float, b: float) -> float:
-        """Différence angulaire minimale |a-b| sur un cercle (en degrés), résultat dans [0..180]."""
-        da = (float(a) - float(b)) % 360.0
-        if da > 180.0:
-            da = 360.0 - da
-        return abs(da)
-
+        return clock_angle_diff_deg(a, b)
     def _clock_clear_anchor_binding(self):
-        self._clock_anchor_binding = None
-
+        self.compass_controller.clear_anchor_binding()
     def _clock_bind_anchor_to_node(
         self,
         *,
@@ -8263,274 +7736,31 @@ class TriangleViewerManual(
         vkey: str | None = None,
         world_pos=None,
     ):
-        binding = {
-            "nodeId": node_id,
-            "topoGroupId": topo_group_id,
-            "idx": (None if idx is None else int(idx)),
-            "vkey": (None if vkey is None else str(vkey)),
-        }
-        scen = self._get_active_scenario()
-        if scen is not None and (binding["idx"] is None or binding["vkey"] is None):
-            try:
-                ref = scen.topoWorld.getElementVertexFromAnyNodeId(node_id, groupId=topo_group_id)
-            except Exception:
-                ref = None
-            if isinstance(ref, dict):
-                if binding["idx"] is None:
-                    resolved_idx = self.canvas_objects.get_index_by_topology_id(ref.get("elementId"))
-                    if resolved_idx is not None:
-                        binding["idx"] = int(resolved_idx)
-                if binding["vkey"] is None and ref.get("vkey") is not None:
-                    binding["vkey"] = str(ref.get("vkey"))
-                if world_pos is None and ref.get("wbest") is not None:
-                    world_pos = ref.get("wbest")
-        self._clock_anchor_binding = binding
-        if world_pos is not None:
-            self._clock_anchor_world = np.array(world_pos, dtype=float)
-
+        self.compass_controller.bind_anchor_to_node(
+            node_id=node_id, topo_group_id=topo_group_id, idx=idx, vkey=vkey, world_pos=world_pos,
+        )
     def _clock_bind_anchor_from_snap_target(self, snap_target: dict | None):
-        if not isinstance(snap_target, dict):
-            self._clock_clear_anchor_binding()
-            return
-        node_id = snap_target.get("nodeId")
-        topo_group_id = snap_target.get("topoGroupId")
-        if not node_id or not topo_group_id:
-            self._clock_clear_anchor_binding()
-            return
-        self._clock_bind_anchor_to_node(
-            node_id=node_id,
-            topo_group_id=topo_group_id,
-            idx=snap_target.get("idx"),
-            vkey=snap_target.get("vkey"),
-            world_pos=snap_target.get("world"),
-        )
-
+        self.compass_controller.bind_anchor_from_snap_target(snap_target)
     def _clock_refresh_anchor_world_from_binding(self):
-        binding = self._clock_anchor_binding
-        if not isinstance(binding, dict):
-            return
-        idx = binding.get("idx")
-        vkey = binding.get("vkey")
-        if isinstance(idx, int) and vkey in ("O", "B", "L") and 0 <= idx < len(self._last_drawn):
-            pts = self._last_drawn[idx].get("pts") or {}
-            if vkey in pts:
-                self._clock_anchor_world = np.array(pts[vkey], dtype=float)
-                return
-        scen = self._get_active_scenario()
-        if scen is None:
-            return
-        node_id = binding.get("nodeId")
-        topo_group_id = binding.get("topoGroupId")
-        if not node_id or not topo_group_id:
-            return
-        try:
-            self._clock_anchor_world = np.array(
-                scen.topoWorld.getConceptNodeWorldXY(node_id, topo_group_id),
-                dtype=float,
-            )
-        except Exception:
-            return
-
-    def _clock_get_selected_balise_world(self) -> tuple[float, float] | None:
-        beacon_id = self._getCheminsBeaconRefId()
-        if not beacon_id:
-            return None
-        if beacon_id not in self.catalogue.beacons:
-            return None
-        wx, wy = self._beacon_world_resolver.get_world(beacon_id)
-        return (float(wx), float(wy))
-
+        self.compass_controller.refresh_anchor_world_from_binding()
     def _clock_compute_ref_azimuth_from_balise(self) -> float | None:
-        center_world = self._clock_get_center_world()
-        if center_world is None:
-            return None
-        balise_world = self._clock_get_selected_balise_world()
-        if balise_world is None:
-            return None
-        return float(self._azimuth_world_deg(tuple(center_world), balise_world))
-
+        return self.compass_controller.compute_ref_azimuth_from_selected_beacon()
     def _clock_apply_auto_ref_sync(self):
-        if getattr(self, "_clock_auto_ref_sync_in_progress", False):
-            return
-        if not bool(getattr(self, "_clock_auto_ref_sync_enabled", False)):
-            return
-        if not self.canvas:
-            return
-        if not self.show_clock_overlay or not self.show_clock_overlay.get():
-            return
-
-        az = self._clock_compute_ref_azimuth_from_balise()
-        if az is None:
-            return
-
-        self._clock_auto_ref_sync_in_progress = True
-        try:
-            self._clock_ref_azimuth_deg = float(az) % 360.0
-            self._redraw_overlay_only()
-            self._clock_refresh_active_preview_under_pointer()
-        finally:
-            self._clock_auto_ref_sync_in_progress = False
-
+        self.compass_controller.apply_auto_ref_sync()
     def _clock_get_center_world(self) -> Optional[np.ndarray]:
-        if self._clock_dragging and self._clock_cx is not None and self._clock_cy is not None:
-            wx, wy = self._screen_to_world(self._clock_cx, self._clock_cy)
-            return np.array([wx, wy], dtype=float)
-        self._clock_refresh_anchor_world_from_binding()
-        if self._clock_anchor_world is not None:
-            return np.array(self._clock_anchor_world, dtype=float)
-        if self._clock_cx is None or self._clock_cy is None:
-            return None
-        wx, wy = self._screen_to_world(self._clock_cx, self._clock_cy)
-        return np.array([wx, wy], dtype=float)
-
+        return self.compass_controller.get_center_world()
     def _clock_get_anchor_node_hit(self) -> dict | None:
-        scen = self._get_active_scenario()
-        if scen is None:
-            return None
-        binding = self._clock_anchor_binding
-        if isinstance(binding, dict) and binding.get("nodeId") and binding.get("topoGroupId"):
-            return {
-                "nodeId": str(binding["nodeId"]),
-                "groupId": str(binding["topoGroupId"]),
-            }
-        center_world = self._clock_get_center_world()
-        if center_world is None:
-            return None
-        hit = scen.topoWorld.findNearestBoundaryNode(None, center_world)
-        if hit is None:
-            return None
-        node_world = np.array(
-            scen.topoWorld.getConceptNodeWorldXY(str(hit["nodeId"]), str(hit["groupId"])),
-            dtype=float,
-        )
-        if float(np.linalg.norm(node_world - center_world)) > EPS_WORLD:
-            return None
-        return hit
-
+        return self.compass_controller.get_anchor_node_hit()
     def _clock_collect_setref_candidates(self) -> list[dict]:
-        scen = self._get_active_scenario()
-        center_world = self._clock_get_center_world()
-        if scen is None or center_world is None:
-            return []
-
-        world = scen.topoWorld
-        out: list[dict] = []
-        seen: set[tuple[str, str, str]] = set()
-        anchor_hit = self._clock_get_anchor_node_hit()
-
-        if anchor_hit is not None:
-            anchor_node_id = str(anchor_hit["nodeId"])
-            anchor_group_id = str(anchor_hit["groupId"])
-            for neighbor_id in world.getConceptNeighborNodes(anchor_node_id, anchor_group_id):
-                neighbor_world = np.array(
-                    world.getConceptNodeWorldXY(str(neighbor_id), anchor_group_id),
-                    dtype=float,
-                )
-                if float(np.linalg.norm(neighbor_world - center_world)) <= EPS_WORLD:
-                    continue
-                key = ("node", anchor_group_id, str(neighbor_id))
-                if key in seen:
-                    continue
-                seen.add(key)
-                out.append(
-                    {
-                        "type": "node",
-                        "id": str(neighbor_id),
-                        "nodeId": str(neighbor_id),
-                        "topoGroupId": anchor_group_id,
-                        "world": neighbor_world,
-                        "azAbsDeg": float(self._azimuth_world_deg(center_world, neighbor_world)),
-                        "label": str(world.getNodeLabel(str(neighbor_id))),
-                    }
-                )
-
-        for beacon in self.catalogue.iter_beacons():
-            if beacon.archived:
-                continue
-            balise_world = np.array(self._beacon_world_resolver.get_world(beacon.beacon_id), dtype=float)
-            if float(np.linalg.norm(balise_world - center_world)) <= EPS_WORLD:
-                continue
-            key = ("balise", "", beacon.beacon_id)
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(
-                {
-                    "type": "balise",
-                    "id": beacon.beacon_id,
-                    "beaconId": beacon.beacon_id,
-                    "world": balise_world,
-                    "azAbsDeg": float(self._azimuth_world_deg(center_world, balise_world)),
-                    "label": self.catalogue.get_city(beacon.city_id).name,
-                }
-            )
-
-        return out
-
+        return self.compass_controller.collect_set_ref_candidates()
     def _clock_pick_setref_snap_candidate(self, azMouseAbs: float, candidates: list[dict]) -> dict | None:
-        best_candidate = None
-        best_diff = None
-        for candidate in candidates:
-            if "azAbsDeg" not in candidate:
-                continue
-            diff = self._clock_angle_diff_deg(float(candidate["azAbsDeg"]), float(azMouseAbs))
-            if best_diff is None or diff < best_diff:
-                best_diff = float(diff)
-                best_candidate = candidate
-        return best_candidate
-
+        return self.compass_controller.pick_set_ref_snap_candidate(azMouseAbs, candidates)
     def _clock_clear_setref_snap_target(self):
-        if self.canvas is not None:
-            self.canvas.delete("clock_setref_snap_target")
-
+        self.compass_controller.clear_set_ref_snap_target()
     def _clock_draw_setref_snap_target(self, snap_target: dict | None):
-        self._clock_clear_setref_snap_target()
-        if self.canvas is None or not isinstance(snap_target, dict):
-            return
-        world_pos = snap_target.get("world")
-        if world_pos is None:
-            return
-        px, py = self._world_to_screen(world_pos)
-        radius = 10 if snap_target.get("type") == "node" else 8
-        self.canvas.create_oval(
-            px - radius,
-            py - radius,
-            px + radius,
-            py + radius,
-            outline="#FF0000",
-            width=3,
-            fill="",
-            tags=("clock_overlay", "clock_setref_snap_target"),
-        )
-        self.canvas.tag_raise("clock_setref_snap_target")
-
+        self.compass_controller.draw_set_ref_snap_target(snap_target)
     def _clock_build_setref_preview(self, sx: int, sy: int) -> dict | None:
-        if self._clock_cx is None or self._clock_cy is None:
-            return None
-
-        mouse_az_abs = float(self._clock_compute_azimuth_deg(int(sx), int(sy)))
-        preview_az_abs = float(mouse_az_abs)
-        preview_sx = int(sx)
-        preview_sy = int(sy)
-        snap_target = None
-
-        if not self._ctrl_down:
-            candidates = self._clock_collect_setref_candidates()
-            snap_target = self._clock_pick_setref_snap_candidate(mouse_az_abs, candidates)
-            if isinstance(snap_target, dict) and snap_target.get("world") is not None:
-                preview_az_abs = float(snap_target["azAbsDeg"]) % 360.0
-                sxx, syy = self._world_to_screen(snap_target["world"])
-                preview_sx = int(sxx)
-                preview_sy = int(syy)
-
-        return {
-            "mouseAzAbs": float(mouse_az_abs) % 360.0,
-            "previewAzAbs": float(preview_az_abs) % 360.0,
-            "previewSx": int(preview_sx),
-            "previewSy": int(preview_sy),
-            "snapTarget": snap_target,
-        }
-
+        return self.compass_controller.build_set_ref_preview(sx, sy)
     def _clock_compute_theoretical_ref_azimuth_deg(
         self,
         *,
@@ -8539,30 +7769,9 @@ class TriangleViewerManual(
         ang_hour_0: float,
         ang_min_0: float,
     ) -> float:
-        """Calcule l'azimut absolu (0=N) du '12h' qui ferait coïncider les aiguilles
-        (heure/minute) avec les 2 droites mesurées (az1/az2).
-
-        On teste les 2 correspondances possibles (heure->az1, minute->az2) et (heure->az2, minute->az1)
-        et on retient celle qui minimise l'erreur résiduelle.
-        """
-        a1 = float(az1) % 360.0
-        a2 = float(az2) % 360.0
-        h0 = float(ang_hour_0) % 360.0
-        m0 = float(ang_min_0) % 360.0
-
-        # Hypothèse 1 : heure->a1, minute->a2
-        ref1 = (a1 - h0) % 360.0
-        pred_m1 = (ref1 + m0) % 360.0
-        err1 = self._clock_angle_diff_deg(pred_m1, a2)
-
-        # Hypothèse 2 : heure->a2, minute->a1
-        ref2 = (a2 - h0) % 360.0
-        pred_m2 = (ref2 + m0) % 360.0
-        err2 = self._clock_angle_diff_deg(pred_m2, a1)
-
-        return float(ref1 if err1 <= err2 else ref2)
-
-    # ---------- Compas : helpers communs (éviter duplication setref/measure) ----------
+        return clock_theoretical_ref_azimuth_deg(
+            az1=az1, az2=az2, ang_hour_0=ang_hour_0, ang_min_0=ang_min_0,
+        )
     def _clock_get_initial_cursor_xy(self) -> Tuple[int, int]:
         """Point de départ pour les modes compas: clic droit si dispo, sinon position souris."""
         if self._ctx_last_rclick:
@@ -8574,179 +7783,24 @@ class TriangleViewerManual(
         return sx, sy
 
     def _clock_clamp_preview_text_xy(self, sx: int, sy: int) -> tuple[int, int]:
-        """Calcule une position de texte clampée dans le viewport canvas."""
-        cw = int(self.canvas.winfo_width() or 0)
-        ch = int(self.canvas.winfo_height() or 0)
-        tx = int(sx) + 14
-        ty = int(sy) + 10
-        pad = 6
-        est_w = 60
-        est_h = 20
-        if cw > 0:
-            if tx + est_w > cw - pad:
-                tx = int(sx) - est_w - 14
-            tx = max(pad, min(tx, cw - est_w - pad))
-        if ch > 0:
-            if ty + est_h > ch - pad:
-                ty = int(sy) - est_h - 10
-            ty = max(pad, min(ty, ch - est_h - pad))
-        return (int(tx), int(ty))
-
+        return self.compass_controller.clamp_preview_text_xy(sx, sy)
     def _clock_update_azimuth_preview(
-        self,
-        sx: int,
-        sy: int,
-        *,
-        line_id: Optional[int],
-        text_id: Optional[int],
-        preview_tag: str,
-        relative_to_ref: bool,
-        enable_snap: bool,
-        draw_line: bool = True,
-        label_text: str | None = None,
-        line_fill: str = "#202020",
-        line_dash: tuple[int, int] | None = (4, 3),
-        text_fill: str = "#202020",
-    ) -> Tuple[Optional[int], Optional[int], Optional[Tuple[int, int, float, float]]]:
-        """Rendu commun (ligne centre->point + texte azimut clampé).
-
-        Retourne (new_line_id, new_text_id, (sx2, sy2, az_abs, az_val)).
-
-        Notes:
-        - Cette fonction NE vérifie PAS si un mode est actif : le caller doit le faire.
-        - `preview_tag` est un tag spécifique (en plus de 'clock_overlay') pour identifier le preview.
-        """
-        # Canvas / centre compas doivent exister
-        if self.canvas is None:
-            return (line_id, text_id, None)
-        if self._clock_cx is None or self._clock_cy is None:
-            return (line_id, text_id, None)
-
-        cx = float(self._clock_cx)
-        cy = float(self._clock_cy)
-
-        sx2, sy2 = int(sx), int(sy)
-
-        # Snap optionnel (CTRL => pas de snap)
-        if enable_snap:
-            if self._ctrl_down:
-                self._clock_clear_snap_target()
-            else:
-                self._clock_update_snap_target(float(sx), float(sy))
-                tgt = self._clock_snap_target
-                if isinstance(tgt, dict) and tgt.get("world") is not None:
-                    sxx, syy = self._world_to_screen(tgt["world"])
-                    sx2, sy2 = int(sxx), int(syy)
-
-        # Ligne centre -> point
-        if draw_line:
-            if line_id is None:
-                if line_dash is None:
-                    line_id = self.canvas.create_line(
-                        cx, cy, sx2, sy2, width=2,
-                        fill=line_fill, tags=("clock_overlay", preview_tag)
-                    )
-                else:
-                    line_id = self.canvas.create_line(
-                        cx, cy, sx2, sy2, width=2, dash=line_dash,
-                        fill=line_fill, tags=("clock_overlay", preview_tag)
-                    )
-            else:
-                self.canvas.coords(line_id, cx, cy, sx2, sy2)
-                self.canvas.itemconfig(
-                    line_id,
-                    fill=line_fill,
-                    width=2,
-                    dash=(() if line_dash is None else line_dash),
-                )
-        elif line_id is not None:
-            self.canvas.delete(line_id)
-            line_id = None
-
-        # Calcul azimut
-        az_abs = float(self._clock_compute_azimuth_deg(sx2, sy2))
-        if relative_to_ref:
-            ref_az = float(self._clock_ref_azimuth_deg) % 360.0
-            az_val = (az_abs - ref_az) % 360.0
-        else:
-            az_val = az_abs
-        label = str(label_text) if label_text is not None else f"{az_val:0.0f}°"
-        tx, ty = self._clock_clamp_preview_text_xy(sx2, sy2)
-
-        if text_id is None:
-            text_id = self.canvas.create_text(
-                tx, ty, text=label, anchor="nw",
-                fill=text_fill, font=("Arial", 12, "bold"),
-                tags=("clock_overlay", preview_tag)
-            )
-        else:
-            self.canvas.itemconfig(text_id, text=label, fill=text_fill)
-            self.canvas.coords(text_id, tx, ty)
-
-        return (line_id, text_id, (sx2, sy2, az_abs, float(az_val)))
-
-    def _clock_setref_update_preview(self, sx: int, sy: int):
-        if not self._clock_setref_active:
-            return
-        preview = self._clock_build_setref_preview(int(sx), int(sy))
-        if preview is None:
-            return
-        self._clock_draw_setref_snap_target(preview.get("snapTarget"))
-        self._clock_setref_line_id, self._clock_setref_text_id, out = self._clock_update_azimuth_preview(
-            int(preview["previewSx"]), int(preview["previewSy"]),
-            line_id=self._clock_setref_line_id,
-            text_id=self._clock_setref_text_id,
-            preview_tag="clock_ref_preview",
-            relative_to_ref=False,
-            enable_snap=False,
-            label_text=f"{float(preview['previewAzAbs']):0.0f}°",
+        self, sx: int, sy: int, *, line_id: Optional[int], text_id: Optional[int],
+        preview_tag: str, relative_to_ref: bool, enable_snap: bool, draw_line: bool = True,
+        label_text: str | None = None, line_fill: str = "#202020",
+        line_dash: tuple[int, int] | None = (4, 3), text_fill: str = "#202020",
+    ):
+        return self.compass_controller.update_azimuth_preview(
+            sx, sy, line_id=line_id, text_id=text_id, preview_tag=preview_tag,
+            relative_to_ref=relative_to_ref, enable_snap=enable_snap, draw_line=draw_line,
+            label_text=label_text, line_fill=line_fill, line_dash=line_dash, text_fill=text_fill,
         )
-        if out:
-            self._clock_setref_last = dict(preview)
-
+    def _clock_setref_update_preview(self, sx: int, sy: int):
+        self.compass_controller.update_set_ref(sx, sy)
     def _clock_setref_confirm(self, sx: int, sy: int):
-        if not self._clock_setref_active:
-            return
-        preview = self._clock_build_setref_preview(int(sx), int(sy))
-        if preview is None:
-            self._clock_setref_cancel(silent=True)
-            return
-
-        az = float(preview["mouseAzAbs"] if self._ctrl_down else preview["previewAzAbs"]) % 360.0
-        self._clock_ref_azimuth_deg = float(az)
-        self.setAppConfigValue("uiClockRefAzimuth", float(self._clock_ref_azimuth_deg))
-
-        scen = self._get_active_scenario()
-        if scen is not None:
-            scen.clockRefEdgeId = None
-            scen.clockRefNodeId = None
-            scen.clockRefTopoGroupId = None
-
-        self._clock_setref_cancel(silent=True)
-        self.status.config(text=f"Azimut de référence défini : {az:0.0f}°")
-
-        self._update_compass_ctx_menu_and_dico_state()
-        self._redraw_overlay_only()
-
+        self.compass_controller.confirm_set_ref(sx, sy)
     def _clock_setref_cancel(self, silent: bool = False):
-        if not self._clock_setref_active:
-            return
-        self._clock_setref_active = False
-
-        if self._clock_setref_line_id is not None:
-            self.canvas.delete(self._clock_setref_line_id)
-
-        if self._clock_setref_text_id is not None:
-            self.canvas.delete(self._clock_setref_text_id)
-
-        self._clock_setref_line_id = None
-        self._clock_setref_text_id = None
-        self._clock_setref_last = None
-        self._clock_clear_setref_snap_target()
-        # On laisse l'overlay se redessiner via les flux habituels
-        if not silent:
-            self.status.config(text="Définition d'azimut annulée.")
-
+        self.compass_controller.cancel_set_ref(silent=silent)
     def _ctx_delete_group(self):
         if self._deformation_state.active:
             self.status.config(text="Suppression indisponible en mode deformation.")
@@ -9471,21 +8525,21 @@ class TriangleViewerManual(
 
     def _on_canvas_left_down(self, event):
         # Mode compas : arc d'angle (clic pour P1/P2)
-        if self._clock_arc_active:
+        if self.compass_state.arc.active:
             self._clock_arc_handle_click(int(event.x), int(event.y))
             return "break"
 
-        if self._clock_trace_active:
+        if self.compass_state.trace.active:
             self._clock_trace_confirm()
             return "break"
 
         # Mode compas : clic pour valider une mesure d'azimut
-        if self._clock_measure_active:
+        if self.compass_state.measure.active:
             self._clock_measure_confirm()
             return "break"
 
         # Mode compas : clic pour valider l'azimut de référence
-        if self._clock_setref_active:
+        if self.compass_state.set_ref.active:
             self._clock_setref_confirm(int(event.x), int(event.y))
             return "break"
 
@@ -9503,9 +8557,9 @@ class TriangleViewerManual(
         if self._is_in_clock(event.x, event.y):
             # ne pas intercepter si un drag de triangle est en cours
             if not self._drag:
-                self._clock_dragging = True
-                self._clock_drag_dx = event.x - (self._clock_cx or event.x)
-                self._clock_drag_dy = event.y - (self._clock_cy or event.y)
+                self.compass_state.dragging = True
+                self.compass_state.drag_dx = event.x - (self.compass_state.cx or event.x)
+                self.compass_state.drag_dy = event.y - (self.compass_state.cy or event.y)
                 # Mode "snap compas" : dès le mouse-down, viser le sommet le plus proche
                 self._clock_update_snap_target(event.x, event.y)
                 self.canvas.configure(cursor="fleur")
@@ -9737,11 +8791,11 @@ class TriangleViewerManual(
 
     def _on_canvas_left_move(self, event):
         # Horloge : drag en cours -> on déplace le centre et on redessine l’overlay
-        if self._clock_dragging:
-            self._clock_cx = event.x - self._clock_drag_dx
-            self._clock_cy = event.y - self._clock_drag_dy
+        if self.compass_state.dragging:
+            self.compass_state.cx = event.x - self.compass_state.drag_dx
+            self.compass_state.cy = event.y - self.compass_state.drag_dy
             # Cible snap (sommet le plus proche du CENTRE du compas)
-            self._clock_update_snap_target(self._clock_cx, self._clock_cy)
+            self._clock_update_snap_target(self.compass_state.cx, self.compass_state.cy)
             self._redraw_overlay_only()
             return "break"
 
@@ -9943,32 +8997,32 @@ class TriangleViewerManual(
 
     def _on_canvas_left_up(self, event):
         # Horloge : fin de drag
-        if self._clock_dragging:
+        if self.compass_state.dragging:
             # On capture la cible de snap *avant* de la nettoyer pour pouvoir déclencher
             # une éventuelle mesure d'arc automatique.
-            snap_tgt = self._clock_snap_target
+            snap_tgt = self.compass_state.snap_target
 
             # Si CTRL au relâché : on sort du mode sans "snap" (le compas reste où il est)
             if self._ctrl_down:
-                wx, wy = self._screen_to_world(self._clock_cx, self._clock_cy)
+                wx, wy = self._screen_to_world(self.compass_state.cx, self.compass_state.cy)
                 self._clock_clear_anchor_binding()
-                self._clock_anchor_world = np.array([wx, wy], dtype=float)
+                self.compass_state.anchor_world = np.array([wx, wy], dtype=float)
 
             else:
                 # cible snap calculée pendant le drag (capturée au début via snap_tgt)
                 tgt = snap_tgt
                 if isinstance(tgt, dict) and tgt.get("world") is not None:
                     self._clock_bind_anchor_from_snap_target(tgt)
-                    self._clock_anchor_world = np.array(tgt["world"], dtype=float)
+                    self.compass_state.anchor_world = np.array(tgt["world"], dtype=float)
                     sx, sy = self._world_to_screen(tgt["world"])
-                    self._clock_cx, self._clock_cy = float(sx), float(sy)
+                    self.compass_state.cx, self.compass_state.cy = float(sx), float(sy)
                 else:
                     # pas de target : ancrer la position courante en monde
-                    wx, wy = self._screen_to_world(self._clock_cx, self._clock_cy)
+                    wx, wy = self._screen_to_world(self.compass_state.cx, self.compass_state.cy)
                     self._clock_clear_anchor_binding()
-                    self._clock_anchor_world = np.array([wx, wy], dtype=float)
+                    self.compass_state.anchor_world = np.array([wx, wy], dtype=float)
 
-            self._clock_dragging = False
+            self.compass_state.dragging = False
             self.canvas.configure(cursor="")
             self._clock_clear_snap_target()
             # Spéc : si on déplace le compas et qu'il s'accroche à un noeud,

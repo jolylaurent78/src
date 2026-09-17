@@ -1,3 +1,5 @@
+from src.assembleur_compass_state import CompassState
+
 from types import SimpleNamespace
 
 import numpy as np
@@ -17,6 +19,7 @@ class _StatusStub:
 
 def _make_viewer_with_one_core_group():
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     viewer._last_drawn = [{
         "pts": {"O": (0.0, 0.0), "B": (3.0, 0.0), "L": (0.0, 4.0)},
         "topoElementId": "T01",
@@ -42,6 +45,7 @@ def _make_viewer_with_one_core_group():
 
 def _make_ctrl_move_group_viewer(*, include_second_member=True):
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     first = {
         "topoElementId": "T01",
         "pts": {"O": [0.0, 0.0], "B": [3.0, 0.0], "L": [0.0, 4.0]},
@@ -92,10 +96,10 @@ def _make_ctrl_move_group_viewer(*, include_second_member=True):
         [0.0, 0.0], [3.0, 0.0], [10.0, 0.0], [10.0, 3.0],
     ))
     viewer._ctrl_down = False
-    viewer._clock_measure_active = False
-    viewer._clock_arc_active = False
-    viewer._clock_setref_active = False
-    viewer._clock_trace_active = False
+    viewer.compass_state.measure.active = False
+    viewer.compass_state.arc.active = False
+    viewer.compass_state.set_ref.active = False
+    viewer.compass_state.trace.active = False
     viewer._hide_tooltip = lambda: None
 
     class _Canvas:
@@ -140,6 +144,7 @@ def _make_attachment_preview_viewer():
             },
         })
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     viewer.canvas_objects = CanvasObjectsCollection(entries)
     viewer._last_drawn = viewer.canvas_objects.entries
     viewer.scenarios = [scenario]
@@ -162,10 +167,10 @@ def test_attachment_v2_preview_projects_temporary_rotation_without_mutating_core
     }
     viewer._sel["anchor"] = {"type": "vertex", "tid": 0, "vkey": "O"}
     viewer._ctrl_down = False
-    viewer._clock_measure_active = False
-    viewer._clock_arc_active = False
-    viewer._clock_setref_active = False
-    viewer._clock_trace_active = False
+    viewer.compass_state.measure.active = False
+    viewer.compass_state.arc.active = False
+    viewer.compass_state.set_ref.active = False
+    viewer.compass_state.trace.active = False
     viewer._hide_tooltip = lambda: None
     viewer.canvas = SimpleNamespace(configure=lambda **_kwargs: None)
     viewer._update_group_drag_snap_assist = lambda *_args: (
@@ -315,6 +320,7 @@ def test_chemin_context_resolves_core_group_without_ui_groups():
             return "CANON:" + node_id
 
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     world = _World()
     viewer.scenarios = [SimpleNamespace(topoWorld=world)]
     viewer.active_scenario_index = 0
@@ -333,6 +339,7 @@ def test_triangle_core_group_id_uses_only_public_element_lookup():
             return "G-CORE"
 
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     viewer._last_drawn = [{"topoElementId": "T01"}]
     viewer.scenarios = [SimpleNamespace(topoWorld=_World())]
     viewer.active_scenario_index = 0
@@ -347,6 +354,7 @@ def test_projected_core_members_use_public_element_ids_api_only():
             return ["T01", "T02"]
 
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     viewer._last_drawn = [
         {"topoElementId": "T01"},
         {"topoElementId": "T02"},
@@ -390,10 +398,10 @@ def test_center_move_initializes_a_core_only_selection_state():
     viewer.zoom = 1.0
     viewer._sel = None
     viewer._drag = None
-    viewer._clock_arc_active = False
-    viewer._clock_trace_active = False
-    viewer._clock_measure_active = False
-    viewer._clock_setref_active = False
+    viewer.compass_state.arc.active = False
+    viewer.compass_state.trace.active = False
+    viewer.compass_state.measure.active = False
+    viewer.compass_state.set_ref.active = False
     viewer._bg = None
     viewer.bg_resize_mode = SimpleNamespace(get=lambda: False)
     viewer._ensure_pick_cache = lambda: None
@@ -414,7 +422,7 @@ def test_center_move_initializes_a_core_only_selection_state():
     assert "gid" not in viewer._sel
     assert "ui_group_id" not in viewer._sel
 
-    viewer._clock_dragging = False
+    viewer.compass_state.dragging = False
     viewer._bg_moving = False
     viewer._bg_resizing = False
     viewer._redraw_from = lambda _entries: None
@@ -426,6 +434,7 @@ def test_center_move_initializes_a_core_only_selection_state():
 
 def test_deformation_hand_keeps_current_occurrence_while_starting_clicked_core_move():
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     viewer._last_drawn = [
         {
             "topoElementId": "T4",
@@ -467,8 +476,8 @@ def test_deformation_hand_keeps_current_occurrence_while_starting_clicked_core_m
     viewer.zoom = 1.0
     viewer._sel = None
     viewer._drag = None
-    viewer._clock_arc_active = viewer._clock_trace_active = False
-    viewer._clock_measure_active = viewer._clock_setref_active = False
+    viewer.compass_state.arc.active = viewer.compass_state.trace.active = False
+    viewer.compass_state.measure.active = viewer.compass_state.set_ref.active = False
     viewer._bg = None
     viewer.bg_resize_mode = SimpleNamespace(get=lambda: False)
     viewer._ensure_pick_cache = lambda: None
@@ -492,6 +501,7 @@ def test_deformation_hand_keeps_current_occurrence_while_starting_clicked_core_m
 
 def test_deformation_select_routes_click_to_deformation_element_selection():
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     state = DeformationUiState(active=True, element_id="T4")
     viewer._deformation_state = state
     viewer._last_drawn = [{"topoElementId": "T5"}]
@@ -537,6 +547,7 @@ def test_rotate_and_flip_prepare_members_from_core_group():
 def test_nearest_line_forwards_the_core_group_id_to_snapping():
     """MIG-GROUP-019: le pipeline de snap ne reçoit plus de gid UI."""
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     calls = []
     viewer._find_nearest_vertex = lambda *args, **kwargs: calls.append((args, kwargs)) or None
     viewer._clear_nearest_line = lambda: None

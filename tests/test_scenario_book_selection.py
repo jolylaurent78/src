@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.assembleur_compass_state import CompassState
+
 import pytest
 
 from src.assembleur_catalogue import Catalogue
@@ -20,6 +22,7 @@ def _catalogue_with_books() -> tuple[Catalogue, str, str, str]:
 
 def _viewer(catalogue: Catalogue, scenario: ScenarioAssemblage):
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     viewer.catalogue = catalogue
     viewer.scenarios = [scenario]
     viewer.active_scenario_index = 0
@@ -82,6 +85,7 @@ def test_unchanged_book_does_not_rebuild_the_dictionary() -> None:
 
 def test_reload_dictionary_passes_only_the_resolved_book_path_and_reset_flag() -> None:
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     calls = []
     viewer.dictionary_panel = type(
         "Panel", (), {"load_book": lambda _self, path, *, reset_reference: calls.append((path, reset_reference))}
@@ -95,13 +99,14 @@ def test_reload_dictionary_passes_only_the_resolved_book_path_and_reset_flag() -
 
 def test_clock_arc_filter_delegates_to_dictionary_panel() -> None:
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     applied = []
     viewer.dictionary_panel = type(
         "Panel",
         (),
         {"is_loaded": True, "apply_angle_filter": lambda _self, angle: applied.append(angle)},
     )()
-    viewer._clock_arc_last_angle_deg = 42.0
+    viewer.compass_state.arc.last_angle_deg = 42.0
     viewer._update_compass_ctx_menu_and_dico_state = lambda: None
     viewer.status = type("Status", (), {"config": lambda _self, **_kwargs: None})()
 
@@ -112,6 +117,7 @@ def test_clock_arc_filter_delegates_to_dictionary_panel() -> None:
 
 def test_dictionary_exclusion_callback_persists_the_global_preference() -> None:
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     writes = []
     saves = []
     viewer.setAppConfigValue = lambda key, value: writes.append((key, value))

@@ -1,3 +1,5 @@
+from src.assembleur_compass_state import CompassState
+
 """Contrat XML v5 : le snapshot Core est l'unique persistence geometrique."""
 
 import json
@@ -81,11 +83,12 @@ class _Viewer:
         self._last_drawn = self.canvas_objects.entries
         scenario.last_drawn = self._last_drawn
         self._bg = None
-        self._clock_cx, self._clock_cy = 0.0, 0.0
-        self._clock_state = {"hour": 0, "minute": 0, "label": ""}
+        self.compass_state = CompassState()
+        self.compass_state.cx, self.compass_state.cy = 0.0, 0.0
+        self.compass_state.clock = {"hour": 0, "minute": 0, "label": ""}
         self.listbox, self.canvas = _Listbox(), _Canvas()
         self.zoom, self.offset = 1.0, np.zeros(2)
-        self._clock_ref_azimuth_deg = 0.0
+        self.compass_state.ref_azimuth_deg = 0.0
         self._beacon_world_resolver = beacon_resolver
 
     def _get_active_scenario(self): return self.scenarios[self.active_scenario_index]

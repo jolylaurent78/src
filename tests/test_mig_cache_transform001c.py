@@ -1,3 +1,5 @@
+from src.assembleur_compass_state import CompassState
+
 from types import SimpleNamespace
 
 import numpy as np
@@ -26,6 +28,7 @@ def _viewer_with_group():
     world.setElementPose("T01", np.eye(2), np.array((2.0, 0.0)), mirrored=True)
     world.setElementPose("T02", np.eye(2), np.array((0.0, 3.0)), mirrored=False)
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     viewer.canvas_objects = CanvasObjectsCollection([
         {"topoElementId": "T01", "pts": {}},
         {"topoElementId": "T02", "pts": {}},
@@ -50,10 +53,10 @@ def _prepare_manual_rotate(viewer, world, group_id):
         "auto_geom": False,
     }
     viewer._drag = None
-    viewer._clock_trace_active = False
-    viewer._clock_measure_active = False
-    viewer._clock_arc_active = False
-    viewer._clock_setref_active = False
+    viewer.compass_state.trace.active = False
+    viewer.compass_state.measure.active = False
+    viewer.compass_state.arc.active = False
+    viewer.compass_state.set_ref.active = False
     viewer._ensure_pick_cache = lambda: None
     viewer._redraw_from = lambda _entries: None
     viewer._screen_to_world = lambda x, y: (float(x), -float(y))
@@ -88,8 +91,8 @@ def test_manual_rotate_commit_recomputes_click_angle_once_and_projects_core():
     calls = []
     original_rotate = world.rotate_group
     world.rotate_group = lambda *args: (calls.append(args), original_rotate(*args))[1]
-    viewer._clock_arc_active = viewer._clock_trace_active = False
-    viewer._clock_measure_active = viewer._clock_setref_active = False
+    viewer.compass_state.arc.active = viewer.compass_state.trace.active = False
+    viewer.compass_state.measure.active = viewer.compass_state.set_ref.active = False
     viewer._is_in_clock = lambda *_args: False
     viewer._hide_tooltip = viewer._reset_assist = lambda: None
     viewer._redraw_from = lambda _entries: None
@@ -122,13 +125,13 @@ def test_manual_rotate_escape_discards_preview_without_core_write():
     viewer, world, group_id, first, second = _viewer_with_group()
     _prepare_manual_rotate(viewer, world, group_id)
     viewer._on_canvas_motion_update_drag(SimpleNamespace(x=0.0, y=-1.0))
-    viewer._clock_trace_active = viewer._clock_arc_active = False
-    viewer._clock_measure_active = viewer._clock_setref_active = False
+    viewer.compass_state.trace.active = viewer.compass_state.arc.active = False
+    viewer.compass_state.measure.active = viewer.compass_state.set_ref.active = False
     viewer._drag = None
-    viewer._clock_trace_active = False
-    viewer._clock_measure_active = False
-    viewer._clock_arc_active = False
-    viewer._clock_setref_active = False
+    viewer.compass_state.trace.active = False
+    viewer.compass_state.measure.active = False
+    viewer.compass_state.arc.active = False
+    viewer.compass_state.set_ref.active = False
     viewer.status = SimpleNamespace(config=lambda **_kwargs: None)
     viewer._clear_nearest_line = viewer._clear_edge_highlights = lambda: None
     world.rotate_group = lambda *_args: (_ for _ in ()).throw(
@@ -143,11 +146,12 @@ def test_manual_rotate_escape_discards_preview_without_core_write():
 
 def test_automatic_rotate_motion_is_preview_only():
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     viewer._drag = None
-    viewer._clock_trace_active = False
-    viewer._clock_measure_active = False
-    viewer._clock_arc_active = False
-    viewer._clock_setref_active = False
+    viewer.compass_state.trace.active = False
+    viewer.compass_state.measure.active = False
+    viewer.compass_state.arc.active = False
+    viewer.compass_state.set_ref.active = False
     viewer._ensure_pick_cache = lambda: None
     viewer.offset = np.array((0.0, 0.0))
     viewer.zoom = 1.0

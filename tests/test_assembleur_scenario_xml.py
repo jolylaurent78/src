@@ -1,3 +1,5 @@
+from src.assembleur_compass_state import CompassState
+
 """Persistance XML v5 de l'hypothÃ¨se propriÃ©taire d'un scÃ©nario."""
 
 import json
@@ -77,13 +79,14 @@ class _Viewer:
         self._last_drawn = self.canvas_objects.entries
         scenario.last_drawn = self._last_drawn
         self._bg = None
-        self._clock_cx = self._clock_cy = 0.0
-        self._clock_state = {"hour": 0, "minute": 0, "label": ""}
+        self.compass_state = CompassState()
+        self.compass_state.cx = self.compass_state.cy = 0.0
+        self.compass_state.clock = {"hour": 0, "minute": 0, "label": ""}
         self.listbox = _Listbox()
         self.canvas = _Canvas()
         self.zoom = 1.0
         self.offset = np.zeros(2)
-        self._clock_ref_azimuth_deg = 0.0
+        self.compass_state.ref_azimuth_deg = 0.0
 
     def _get_active_scenario(self):
         return self.scenarios[self.active_scenario_index]
@@ -522,12 +525,12 @@ def test_v6_cross_reference_errors_do_not_mutate_the_active_scenario(tmp_path):
     target = _Viewer(catalogue, hypothesis)
     before_world = target._get_active_scenario().topoWorld
     before_reference = target._get_active_scenario().reference
-    before_clock = dict(target._clock_state)
+    before_clock = dict(target.compass_state.clock)
     with pytest.raises(ValueError, match="vertex_business_ids|SCITY"):
         loadScenarioXml(target, str(invalid_path))
     assert target._get_active_scenario().topoWorld is before_world
     assert target._get_active_scenario().reference is before_reference
-    assert target._clock_state == before_clock
+    assert target.compass_state.clock == before_clock
 
 
 def test_v5_legacy_business_ids_migrate_to_runtime_and_save_as_strict_v6(tmp_path):

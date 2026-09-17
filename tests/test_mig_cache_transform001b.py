@@ -1,3 +1,5 @@
+from src.assembleur_compass_state import CompassState
+
 from types import SimpleNamespace
 
 import numpy as np
@@ -38,6 +40,7 @@ def _viewer_with_group():
         {"topoElementId": "T03", "pts": {"O": (-97, -97)}},
     ]
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     viewer.canvas_objects = CanvasObjectsCollection(entries)
     viewer._last_drawn = viewer.canvas_objects.entries
     viewer.scenarios = [SimpleNamespace(topoWorld=world, source_type="manual")]
@@ -75,7 +78,7 @@ def _prepare_manual_move(viewer, world, group_id, start=(0.0, 0.0)):
     viewer._reset_assist = lambda: None
     viewer._bg_resizing = None
     viewer._bg_moving = None
-    viewer._clock_dragging = False
+    viewer.compass_state.dragging = False
     viewer._pan_anchor = None
     viewer.auto_rotation_state = None
 
@@ -151,10 +154,10 @@ def test_escape_restores_core_projection_without_committing_preview():
     _prepare_manual_move(viewer, world, group_id)
     viewer.status = SimpleNamespace(config=lambda **_kwargs: None)
     viewer._hide_tooltip = lambda: None
-    viewer._clock_trace_active = False
-    viewer._clock_arc_active = False
-    viewer._clock_measure_active = False
-    viewer._clock_setref_active = False
+    viewer.compass_state.trace.active = False
+    viewer.compass_state.arc.active = False
+    viewer.compass_state.measure.active = False
+    viewer.compass_state.set_ref.active = False
     discard_calls = []
     discard = viewer._discard_manual_move_preview
     viewer._discard_manual_move_preview = lambda: (discard_calls.append(True), discard())[1]
@@ -222,10 +225,10 @@ def test_ctrl_up_restores_the_current_free_move_preview():
     intent = object()
     viewer._attachment_intent = intent
     viewer._attachment_preview = SimpleNamespace(accepted=True)
-    viewer._clock_measure_active = False
-    viewer._clock_arc_active = False
-    viewer._clock_setref_active = False
-    viewer._clock_trace_active = False
+    viewer.compass_state.measure.active = False
+    viewer.compass_state.arc.active = False
+    viewer.compass_state.set_ref.active = False
+    viewer.compass_state.trace.active = False
     viewer.canvas = SimpleNamespace(configure=lambda **_kwargs: None)
     reset_calls = []
     viewer._reset_assist = lambda: reset_calls.append(True)

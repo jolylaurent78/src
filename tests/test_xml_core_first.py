@@ -1,3 +1,5 @@
+from src.assembleur_compass_state import CompassState
+
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -65,14 +67,15 @@ class _Viewer:
         self.canvas_objects = CanvasObjectsCollection(entries)
         self._last_drawn = self.canvas_objects.entries
         self._bg = None
-        self._clock_cx = 0.0
-        self._clock_cy = 0.0
-        self._clock_state = {"hour": 0, "minute": 0, "label": ""}
+        self.compass_state = CompassState()
+        self.compass_state.cx = 0.0
+        self.compass_state.cy = 0.0
+        self.compass_state.clock = {"hour": 0, "minute": 0, "label": ""}
         self.listbox = _Listbox()
         self.canvas = _Canvas()
         self.zoom = 1.0
         self.offset = np.array([0.0, 0.0])
-        self._clock_ref_azimuth_deg = 0.0
+        self.compass_state.ref_azimuth_deg = 0.0
 
     def _get_active_scenario(self):
         return self.scenarios[self.active_scenario_index]
@@ -217,6 +220,7 @@ def test_xml_mirrored_round_trip_uses_core_without_cache_duplication(tmp_path):
 def test_f11_geo_orient_dump_contains_core_and_projection_diagnostics(tmp_path):
     world = _world_with_t28()
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     entry = _entry()
     viewer._last_drawn = [entry]
 
@@ -236,6 +240,7 @@ def test_f11_geo_orient_dump_contains_core_and_projection_diagnostics(tmp_path):
 
 def test_f12_toggles_geo_orient_debug_and_logs_state(monkeypatch):
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     viewer.debug_geo_orient = False
     messages = []
     monkeypatch.setattr(

@@ -44,6 +44,12 @@ class ScenarioMapController:
         self._catalogue = catalogue
         self._assets = CatalogueMapAssetResolver(self._paths)
         self._resolver = ScenarioMapResolver(catalogue, self._assets)
+        scenario = self._active_scenario_provider()
+        if scenario is not None and isinstance(scenario.map_state, ScenarioMapState):
+            self.apply_state(scenario.map_state)
+        else:
+            self._resolved_map = None
+            self._background_map_layer.clear()
 
     def new_default_state(self) -> ScenarioMapState:
         return ScenarioMapState(map_ref_id=self._catalogue.default_map_id)

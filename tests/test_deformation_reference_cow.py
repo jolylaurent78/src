@@ -1,3 +1,5 @@
+from src.assembleur_compass_state import CompassState
+
 """REF-001B: commits DEFORM copy-on-write sans mutation Catalogue."""
 
 from types import SimpleNamespace
@@ -60,6 +62,7 @@ def _working_points(*items):
 def _viewer_with_dirty_cow_preview():
     catalogue, scenario, _triangle, element_id = _scenario_with_catalogue_triangle()
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     viewer.catalogue = catalogue
     viewer._get_active_scenario = lambda: scenario
     viewer.status = type("Status", (), {"config": lambda self, **_kwargs: None})()
@@ -115,7 +118,7 @@ def _assert_published_snapshot(scenario, snapshot):
 
 
 def _prepare_deformation_release(viewer):
-    viewer._clock_dragging = False
+    viewer.compass_state.dragging = False
     viewer._bg_resizing = None
     viewer._bg_moving = None
     viewer._pan_anchor = None
@@ -195,6 +198,7 @@ def test_dirty_deformation_main_move_is_candidate_only_and_close_discards_it():
 def test_canvas_display_context_uses_the_preview_world_and_hypothesis():
     catalogue, scenario, triangle, element_id = _scenario_with_catalogue_triangle()
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     viewer.catalogue = catalogue
     viewer._get_active_scenario = lambda: scenario
     preview = _preview(
@@ -246,10 +250,10 @@ def test_canvas_display_context_uses_the_preview_world_and_hypothesis():
             return 0
 
     tooltip_texts = []
-    viewer._clock_trace_active = False
-    viewer._clock_measure_active = False
-    viewer._clock_arc_active = False
-    viewer._clock_setref_active = False
+    viewer.compass_state.trace.active = False
+    viewer.compass_state.measure.active = False
+    viewer.compass_state.arc.active = False
+    viewer.compass_state.set_ref.active = False
     viewer._ensure_pick_cache = lambda: None
     viewer._drag = None
     viewer._sel = None
@@ -313,6 +317,7 @@ def test_first_deformation_creates_one_local_triangle_and_city_without_mutating_
 def test_preview_uses_the_temporary_cow_reference_before_validation():
     catalogue, scenario, _triangle, element_id = _scenario_with_catalogue_triangle()
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     viewer.catalogue = catalogue
     viewer._get_active_scenario = lambda: scenario
     viewer.status = type("Status", (), {"config": lambda self, **_kwargs: None})()
@@ -465,6 +470,7 @@ def test_deleting_one_working_point_rebuilds_from_the_rebase_world():
     scenario.topoWorld.add_element_as_new_group(second)
     second_id = second.element_id
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     viewer.catalogue = catalogue
     viewer._get_active_scenario = lambda: scenario
     viewer.status = type("Status", (), {"config": lambda self, **_kwargs: None})()
@@ -526,6 +532,7 @@ def test_deleting_one_working_point_rebuilds_from_the_rebase_world():
 def test_temporary_city_rename_stays_in_working_reference_until_validation(monkeypatch):
     catalogue, scenario, triangle, element_id = _scenario_with_catalogue_triangle()
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     viewer.catalogue = catalogue
     viewer._get_active_scenario = lambda: scenario
     viewer.status = type("Status", (), {"config": lambda self, **_kwargs: None})()
@@ -568,6 +575,7 @@ def test_temporary_city_rename_stays_in_working_reference_until_validation(monke
 def test_temporary_city_rename_is_published_by_deformation_validation():
     catalogue, scenario, triangle, element_id = _scenario_with_catalogue_triangle()
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     viewer.catalogue = catalogue
     viewer._get_active_scenario = lambda: scenario
     viewer.status = type("Status", (), {"config": lambda self, **_kwargs: None})()
@@ -622,6 +630,7 @@ def test_temporary_shared_city_rename_rematerializes_every_preview_occurrence():
     scenario.topoWorld.add_element_as_new_group(second)
     second_id = second.element_id
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     viewer.catalogue = catalogue
     viewer._get_active_scenario = lambda: scenario
     viewer.status = type("Status", (), {"config": lambda self, **_kwargs: None})()
@@ -674,6 +683,7 @@ def test_successive_deformations_reuse_the_same_local_triangle_and_city():
     local_triangle = next(iter(scenario.reference.triangles.values()))
     local_city_id = local_triangle.light_city_ref_id
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     viewer.catalogue = catalogue
     viewer._get_active_scenario = lambda: scenario
     viewer._commit_deformation_city_rename(local_city_id, "Point 560")
@@ -753,6 +763,7 @@ def test_renaming_a_shared_scenario_city_updates_all_materialized_elements():
     )
     shared_city_id = next(iter(scenario.reference.cities))
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     viewer.catalogue = catalogue
     viewer._get_active_scenario = lambda: scenario
 
@@ -781,6 +792,7 @@ def test_invalid_scenario_city_rename_is_atomic():
     before_reference = scenario.reference.clone()
     before_world = scenario.topoWorld._exportPhysicalSnapshot()
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     viewer.catalogue = catalogue
     viewer._get_active_scenario = lambda: scenario
 
@@ -794,6 +806,7 @@ def test_invalid_scenario_city_rename_is_atomic():
 def test_rename_callback_ignores_catalogue_cities_and_cancelled_dialogs(monkeypatch):
     catalogue, scenario, triangle, element_id = _scenario_with_catalogue_triangle()
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     viewer.catalogue = catalogue
     viewer._get_active_scenario = lambda: scenario
     viewer.status = type("Status", (), {"config": lambda self, **_kwargs: None})()
@@ -836,6 +849,7 @@ def test_rename_callback_ignores_catalogue_cities_and_cancelled_dialogs(monkeypa
 def test_rename_callback_commits_immediately_without_dirty_state(monkeypatch):
     catalogue, scenario, _triangle, element_id = _scenario_with_catalogue_triangle()
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    viewer.compass_state = CompassState()
     viewer.catalogue = catalogue
     viewer._get_active_scenario = lambda: scenario
     viewer.status = type("Status", (), {"config": lambda self, **_kwargs: None})()

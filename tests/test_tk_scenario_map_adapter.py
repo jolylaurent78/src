@@ -139,3 +139,37 @@ def test_controller_set_catalogue_rebuilds_runtime_resolvers(tmp_path) -> None:
     assert controller._resolver is not previous_resolver
     assert controller._assets is not previous_assets
     assert controller.new_default_state() == ScenarioMapState(replacement.default_map_id)
+
+
+def test_controller_set_catalogue_reloads_the_active_map_from_new_calibration(tmp_path) -> None:
+    controller, layer, scenario, catalogue, map_id = _controller(tmp_path)
+    scenario.map_state = ScenarioMapState(map_id)
+    controller.apply_state(scenario.map_state)
+    assert controller.lambert_to_world(0, 0) == (10, 220)
+
+    replacement = catalogue.clone()
+    replacement.update_map(
+        map_id,
+        name="Carte B",
+        image_file="map-b.jpg",
+        calibration_file="map-b.json",
+        default_world_rect=WorldRect(100, 200, 800, 400),
+        default_scale_factor=16,
+    )
+    Image.new("RGB", (200, 100), "red").save(
+        controller._paths.default_catalogue_maps_dir / "map-b.jpg"
+    )
+    (controller._paths.default_catalogue_maps_dir / "map-b.json").write_text(
+        json.dumps(
+            {"projection": "EPSG:2154", "A": [[0.01, 0], [0, 0.01]], "offset": [5, 7]}
+        ),
+        encoding="utf-8",
+    )
+
+    controller.set_catalogue(replacement)
+
+    assert controller.resolved_map.catalogue_map.name == "Carte B"
+    assert controller.resolved_map.world_rect == WorldRect(100, 200, 800, 400)
+    assert layer.world_rect.x0 == 100
+    assert layer.base_image.getpixel((0, 0)) == pytest.approx((255, 0, 0, 255), abs=1)
+    assert controller.lambert_to_world(0, 0) == (120, 572)

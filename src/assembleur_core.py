@@ -112,7 +112,7 @@ class ScenarioAssemblage:
         self.created_at: _dt.datetime = _dt.datetime.now()
 
         # --- Compas : compat XML legacy + guides persistants ---
-        # Runtime: la seule référence active est viewer._clock_ref_azimuth_deg.
+        # Runtime: la seule référence active est viewer.compass_state.ref_azimuth_deg.
         self.clockRefEdgeId: str | None = None
         self.clockRefNodeId: str | None = None
         self.clockRefTopoGroupId: str | None = None
