@@ -60,23 +60,14 @@ def test_book_change_rebuilds_only_the_active_dictionary() -> None:
     scenario = ScenarioAssemblage("Scénario")
     scenario.book_ref_id = first
     viewer = _viewer(catalogue, scenario)
-    viewer.dicoPanel = object()
-    viewer._dico_origin_cell = (4, 5)
-    viewer._dico_ref_mode = "origin"
-    initialized = []
-    rebuilt = []
-    viewer._getDicoTagExclure = lambda: "exclure"
-    viewer._init_dictionary = lambda **kwargs: initialized.append(kwargs)
-    viewer._build_dico_grid = lambda: rebuilt.append(True)
+    reloads = []
+    viewer._reload_dictionary_for_active_scenario = lambda **kwargs: reloads.append(kwargs)
 
     changed = TriangleViewerManual._apply_scenario_book_selection(viewer, scenario, second)
 
     assert changed is True
     assert scenario.book_ref_id == second
-    assert viewer._dico_origin_cell is None
-    assert viewer._dico_ref_mode is None
-    assert initialized == [{"tagExclure": "exclure"}]
-    assert rebuilt == [True]
+    assert reloads == [{"reset_reference": True}]
 
 
 def test_unchanged_book_does_not_rebuild_the_dictionary() -> None:
@@ -84,9 +75,52 @@ def test_unchanged_book_does_not_rebuild_the_dictionary() -> None:
     scenario = ScenarioAssemblage("Scénario")
     scenario.book_ref_id = first
     viewer = _viewer(catalogue, scenario)
-    viewer._getDicoTagExclure = lambda: (_ for _ in ()).throw(AssertionError("Refresh inattendu"))
+    viewer._reload_dictionary_for_active_scenario = lambda **_kwargs: (_ for _ in ()).throw(AssertionError("Refresh inattendu"))
 
     assert TriangleViewerManual._apply_scenario_book_selection(viewer, scenario, first) is False
+
+
+def test_reload_dictionary_passes_only_the_resolved_book_path_and_reset_flag() -> None:
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    calls = []
+    viewer.dictionary_panel = type(
+        "Panel", (), {"load_book": lambda _self, path, *, reset_reference: calls.append((path, reset_reference))}
+    )()
+    viewer._resolve_active_scenario_book_path = lambda: "book.txt"
+
+    TriangleViewerManual._reload_dictionary_for_active_scenario(viewer, reset_reference=True)
+
+    assert calls == [("book.txt", True)]
+
+
+def test_clock_arc_filter_delegates_to_dictionary_panel() -> None:
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    applied = []
+    viewer.dictionary_panel = type(
+        "Panel",
+        (),
+        {"is_loaded": True, "apply_angle_filter": lambda _self, angle: applied.append(angle)},
+    )()
+    viewer._clock_arc_last_angle_deg = 42.0
+    viewer._update_compass_ctx_menu_and_dico_state = lambda: None
+    viewer.status = type("Status", (), {"config": lambda _self, **_kwargs: None})()
+
+    TriangleViewerManual._ctx_filter_dictionary_by_clock_arc(viewer)
+
+    assert applied == [42.0]
+
+
+def test_dictionary_exclusion_callback_persists_the_global_preference() -> None:
+    viewer = TriangleViewerManual.__new__(TriangleViewerManual)
+    writes = []
+    saves = []
+    viewer.setAppConfigValue = lambda key, value: writes.append((key, value))
+    viewer.saveAppConfig = lambda: saves.append(True)
+
+    TriangleViewerManual._on_dictionary_exclusion_changed(viewer, True)
+
+    assert writes == [("dicoExclureMotsCodes", True)]
+    assert saves == [True]
 
 
 def test_archived_book_asset_remains_resolvable_for_an_existing_scenario(tmp_path) -> None:

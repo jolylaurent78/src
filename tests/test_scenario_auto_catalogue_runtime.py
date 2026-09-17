@@ -218,7 +218,7 @@ def test_auto_snapshot_manual_clones_its_hypothesis_independently():
         active_scenario_index=0,
         _get_active_scenario=lambda: auto,
         _capture_view_state=lambda: {"zoom": 1.0},
-        _capture_map_state=lambda: {"path": "map"},
+        scenario_map_controller=SimpleNamespace(capture_active_state=lambda: {"path": "map"}),
         catalogue=catalogue,
         listbox=Listbox(),
         _update_triangle_listbox_colors=lambda: None,

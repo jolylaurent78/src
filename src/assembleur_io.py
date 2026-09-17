@@ -724,8 +724,8 @@ def _publish_loaded_scenario_xml(viewer, scenario, loaded: _LoadedScenarioXml, *
 
     if loaded.view_state is not None:
         viewer.zoom, viewer.offset = loaded.view_state
-    if loaded.map_state is not None and hasattr(viewer, "_apply_map_state"):
-        viewer._apply_map_state(loaded.map_state, persist=False)
+    if loaded.map_state is not None and hasattr(viewer, "_apply_scenario_map_state"):
+        viewer._apply_scenario_map_state(loaded.map_state)
     viewer._clock_cx = float(loaded.clock_state["x"])
     viewer._clock_cy = float(loaded.clock_state["y"])
     viewer._clock_state.update({

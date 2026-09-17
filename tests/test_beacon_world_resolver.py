@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from src.assembleur_beacon_runtime import BeaconWorldResolver
@@ -70,6 +72,7 @@ def test_catalogue_publication_repositions_existing_anchored_groups():
     scenario.topoWorld = world
     viewer = TriangleViewerManual.__new__(TriangleViewerManual)
     viewer.catalogue = first
+    viewer.scenario_map_controller = SimpleNamespace(set_catalogue=lambda _catalogue: None)
     viewer._beacon_world_resolver = resolver
     viewer.scenarios = [scenario]
     viewer.active_scenario_index = 0

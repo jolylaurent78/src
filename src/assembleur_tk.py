@@ -33,13 +33,15 @@ from src.assembleur_decryptor import (
     DECRYPTORS,
 )
 
-from src.DictionnaireEnigmes import DictionnaireEnigmes
 
 import src.assembleur_io as _assembleur_io
 
 # --- Tk split: mixins (découpage assembleur_tk.py) ---
-from src.assembleur_tk_mixin_dictionary import TriangleViewerDictionaryMixin
-from src.assembleur_tk_scenario_map import TriangleViewerScenarioMapMixin
+from src.assembleur_dictionary_panel import (
+    CFG_KEY_DICO_EXCLURE_MOTS_CODES,
+    DictionaryPanel,
+)
+from src.assembleur_scenario_map_controller import ScenarioMapController
 from src.assembleur_background_map_layer import BackgroundMapLayer, format_scale
 from src.assembleur_tk_mixin_clockarc import TriangleViewerClockArcMixin
 from src.assembleur_edgechoice import (
@@ -80,6 +82,7 @@ from src.assembleur_deformation_window import (
 from src.assembleur_tooltip import attach_tooltip
 from src.assembleur_catalogue_map_assets import CatalogueMapAssetResolver, load_calibrated_catalogue_map
 from src.assembleur_catalogue_geometric_layer_assets import CatalogueGeometricLayerAssetResolver
+from src.assembleur_catalogue_book_assets import CatalogueBookAssetResolver
 from src.assembleur_geometric_layer_io import load_geometric_layer_document
 from src.assembleur_scenario_map import ScenarioMapState
 from src.assembleur_scenario import (
@@ -161,8 +164,6 @@ def createDecryptor(decryptorId: str) -> DecryptorBase:
 
 
 class TriangleViewerManual(
-    TriangleViewerDictionaryMixin,
-    TriangleViewerScenarioMapMixin,
     TriangleViewerClockArcMixin,
     tk.Tk,
 ):
@@ -274,7 +275,6 @@ class TriangleViewerManual(
         self.stroke_px = 2
 
         # Le dico à créer
-        self.dicoSheet = None
         # Hauteur fixe du panneau "Dico" (en pixels) sous le canvas
         self.dico_panel_height = 290
         # État d'affichage du panneau dictionnaire (toggle via menu Visualisation)
@@ -349,8 +349,14 @@ class TriangleViewerManual(
             self.catalogue_path,
             self.application_context.catalogue_id_provider,
         )
+        self.scenario_map_controller = ScenarioMapController(
+            self.catalogue,
+            self.paths,
+            self.background_map_layer,
+            self._get_active_scenario,
+        )
         self._beacon_world_resolver = BeaconWorldResolver(
-            self.catalogue, self._catalogue_lambert_to_world,
+            self.catalogue, self.scenario_map_controller.lambert_to_world,
         )
         # === UI : persistance des toggles de visualisation (dico + compas) ===
         # Doit être fait AVANT _build_ui() pour que le checkbutton + le pack initial
@@ -396,11 +402,11 @@ class TriangleViewerManual(
         )
         manual.last_drawn = self._last_drawn
         manual.view_state = self._capture_view_state()
-        manual.map_state = self._new_default_map_state()
+        manual.map_state = self.scenario_map_controller.new_default_state()
         manual.book_ref_id = self.catalogue.default_book_id
         self.scenarios.append(manual)
         self._attach_beacon_resolver_to_world(manual.topoWorld)
-        self._apply_map_state(manual.map_state, persist=False, redraw=False)
+        self._apply_scenario_map_state(manual.map_state, redraw=False)
 
         # --- Horloge (overlay fixe) : état par défaut ---
         # hour peut être un float (si l'aiguille des heures avance avec les minutes)
@@ -456,11 +462,6 @@ class TriangleViewerManual(
         self._clock_arc_last = None
         self._clock_arc_last_angle_deg = None
 
-        # --- Dictionnaire : filtrage visuel par angle ---
-        self._dico_filter_active: bool = False
-        self._dico_filter_ref_angle_deg: Optional[float] = None
-        self._dico_filter_tolerance_deg: float = 2.5
-
         self._clock_dragging = False
         self._clock_drag_dx = 0
         self._clock_drag_dy = 0
@@ -476,10 +477,7 @@ class TriangleViewerManual(
         self.bind("<Escape>", self._on_escape_key)
 
         # === Dictionnaire : livre Catalogue du scénario actif ===
-        self.dico: DictionnaireEnigmes | None = None
-        self._initDicoExcludeMotsCodesFromConfig()
-        self._init_dictionary(tagExclure=self._getDicoTagExclure())
-        self._build_dico_grid()
+        self._reload_dictionary_for_active_scenario(reset_reference=True)
 
     # ======================================================================
     #  Topologie (bridge minimal Tk -> Core)
@@ -1201,7 +1199,7 @@ class TriangleViewerManual(
         algo = algo_cls(engine)
 
         # Snapshot de la carte auto (carte affichée au moment du lancement)
-        self.auto_map_state = self._capture_map_state()
+        self.auto_map_state = self.scenario_map_controller.capture_active_state()
         scenarios = algo.run(triangle_ids)
 
         base_idx = len(self.scenarios)
@@ -2463,6 +2461,7 @@ class TriangleViewerManual(
         """Publie le Catalogue et recale les groupes ancrés via le Core."""
         self._exit_deformation_mode()
         self.catalogue = catalogue
+        self.scenario_map_controller.set_catalogue(catalogue)
         self._deformation_map_cache_id = None
         self._deformation_map_cache = None
         self._beacon_world_resolver.set_catalogue(catalogue)
@@ -3838,7 +3837,7 @@ class TriangleViewerManual(
             (beacon.beacon_id, f"{self.catalogue.get_city(beacon.city_id).name} ({beacon.beacon_id})")
             for beacon in beacons
         ]
-        resolved_map = getattr(self, "_resolved_scenario_map", None)
+        resolved_map = self.scenario_map_controller.resolved_map
         CheminsExportDialog(
             self,
             world=world,
@@ -3925,7 +3924,7 @@ class TriangleViewerManual(
             get_config=self.getAppConfigValue,
             set_config=self.setAppConfigValue,
             scenario_provider=self._get_active_scenario,
-            dico_provider=lambda: self.dico,
+            dico_provider=lambda: self.dictionary_panel.dictionary,
             decryptor_provider=lambda: self.decryptor,
             icon_loader=self._load_icon,
             icons={
@@ -4287,7 +4286,7 @@ class TriangleViewerManual(
                 setattr(new_scen, attr, getattr(scen, attr))
 
         new_scen.view_state = self._capture_view_state()
-        new_scen.map_state = self._capture_map_state()
+        new_scen.map_state = self.scenario_map_controller.capture_active_state()
         new_scen.book_ref_id = scen.book_ref_id
 
         self.scenarios.append(new_scen)
@@ -4324,29 +4323,23 @@ class TriangleViewerManual(
 
         # Carte: en AUTO, on synchronise => état partagé
         if prevIsAuto:
-            self.auto_map_state = self._capture_map_state()
+            self.auto_map_state = self.scenario_map_controller.capture_active_state()
         else:
-            prev.map_state = self._capture_map_state()
+            prev.map_state = self.scenario_map_controller.capture_active_state()
 
         scen = self.scenarios[index]
         self.active_scenario_index = index
         self._attach_beacon_resolver_to_world(scen.topoWorld)
-        self._init_dictionary(tagExclure=self._getDicoTagExclure())
-        self._dico_origin_cell = None
-        self._dico_ref_mode = None
-        if "dicoPanel" in self.__dict__:
-            self._build_dico_grid()
+        self._reload_dictionary_for_active_scenario(reset_reference=True)
 
         # Restaurer carte + vue (sans écraser la config globale)
         scenIsAuto = (getattr(scen, "source_type", "manual") == "auto")
 
         if scenIsAuto:
-            self._apply_map_state(
-                self.auto_map_state, persist=False, redraw=False
-            )
+            self._apply_scenario_map_state(self.auto_map_state, redraw=False)
         else:
-            self._apply_map_state(
-                getattr(scen, "map_state", None), persist=False, redraw=False
+            self._apply_scenario_map_state(
+                getattr(scen, "map_state", None), redraw=False
             )
 
         if scenIsAuto:
@@ -4417,7 +4410,7 @@ class TriangleViewerManual(
         # Scénario vide : nouvelles structures indépendantes
         scen.last_drawn = []
         scen.view_state = self._capture_view_state()
-        scen.map_state = self._new_default_map_state()
+        scen.map_state = self.scenario_map_controller.new_default_state()
         scen.book_ref_id = self.catalogue.default_book_id
 
         self.scenarios.append(scen)
@@ -4453,11 +4446,7 @@ class TriangleViewerManual(
             return False
         scen.book_ref_id = book_id
         if scen is self._get_active_scenario():
-            self._dico_origin_cell = None
-            self._dico_ref_mode = None
-            self._init_dictionary(tagExclure=self._getDicoTagExclure())
-            if "dicoPanel" in self.__dict__:
-                self._build_dico_grid()
+            self._reload_dictionary_for_active_scenario(reset_reference=True)
         return True
 
     def _scenario_edit_properties(self):
@@ -4468,7 +4457,11 @@ class TriangleViewerManual(
         if idx < 0 or idx >= len(self.scenarios):
             return
         scen = self.scenarios[idx]
-        state = scen.map_state if isinstance(scen.map_state, ScenarioMapState) else self._new_default_map_state()
+        state = (
+            scen.map_state
+            if isinstance(scen.map_state, ScenarioMapState)
+            else self.scenario_map_controller.new_default_state()
+        )
         maps = [item for item in self.catalogue.iter_maps() if not item.archived or item.map_id == state.map_ref_id]
         labels = {
             f"{item.name}{' (archivée)' if item.archived else ''}": item.map_id
@@ -4549,7 +4542,7 @@ class TriangleViewerManual(
         if result["map_id"] != state.map_ref_id:
             state = ScenarioMapState(map_ref_id=result["map_id"], visible=state.visible)
             scen.map_state = state
-            self._apply_map_state(state)
+            self._apply_scenario_map_state(state)
         self._apply_scenario_book_selection(scen, result["book_id"])
         self._refresh_scenario_listbox()
         self.status.config(text=f"Nom du scénario mis à jour : {scen.name}")
@@ -4597,7 +4590,7 @@ class TriangleViewerManual(
         # Le duplicat devient actif immédiatement : capturer le contexte
         # runtime courant plutôt que les snapshots potentiellement périmés de src.
         dup.view_state = self._capture_view_state()
-        dup.map_state = self._capture_map_state()
+        dup.map_state = self.scenario_map_controller.capture_active_state()
         dup.book_ref_id = src.book_ref_id
 
         self.scenarios.append(dup)
@@ -4672,16 +4665,23 @@ class TriangleViewerManual(
         self.canvas.bind("<Configure>", self._on_canvas_configure)
 
         # Panel dico (placeholder à hauteur fixe, prêt pour intégrer la grille)
-        self.dicoPanel = tk.Frame(self.rightPane, height=self.dico_panel_height,
-                                  bd=1, relief=tk.SUNKEN, bg="#f3f3f3")
-        # empêcher le panel de rétrécir sur le contenu
-        self.dicoPanel.pack_propagate(False)
-        # Pack initial seulement si le toggle est actif
+        exclude_coded_words = self.getAppConfigValue(CFG_KEY_DICO_EXCLURE_MOTS_CODES, False)
+        if not isinstance(exclude_coded_words, bool):
+            raise ValueError(
+                f"Invalid config type for {CFG_KEY_DICO_EXCLURE_MOTS_CODES}: {type(exclude_coded_words).__name__}"
+            )
+        self.dictionary_panel = DictionaryPanel(
+            self.rightPane,
+            exclude_coded_words=exclude_coded_words,
+            icon_loader=self._load_icon,
+            on_exclude_coded_words_changed=self._on_dictionary_exclusion_changed,
+            clock_state_resolver=self._resolve_clock_state_from_dictionary_cell,
+            on_clock_state_changed=self._apply_clock_state_from_dictionary,
+            on_status=lambda text: self.status.config(text=text),
+            height=self.dico_panel_height,
+        )
         if self.show_dico_panel.get():
-            self.dicoPanel.pack(side=tk.BOTTOM, fill=tk.X)
-            # Placeholder visuel (sera remplacé par _build_dico_grid)
-            tk.Label(self.dicoPanel, text="Dictionnaire — (grille à intégrer)",
-                     bg="#f3f3f3", anchor="w").pack(fill=tk.X, padx=8, pady=4)
+            self.dictionary_panel.pack(side=tk.BOTTOM, fill=tk.X)
 
         # Menu contextuel COMPAS (clic droit sur le compas)
         self._ctx_menu_compass = tk.Menu(self, tearoff=0)
@@ -4782,28 +4782,33 @@ class TriangleViewerManual(
         self._invalidate_pick_cache()
 
     def _toggle_dico_panel(self):
-        """
-        Affiche / cache le panneau dictionnaire (combo + liste + grille)
-        en fonction de self.show_dico_panel (toggle du menu Visualisation).
-        """
-        if not hasattr(self, "dicoPanel"):
-            return
-
-        show = bool(self.show_dico_panel.get())
-        if show:
-            # Si le panneau n'est pas déjà packé, on le repack en bas
-            if not self.dicoPanel.winfo_ismapped():
-                self.dicoPanel.pack(side=tk.BOTTOM, fill=tk.X)
-                # Si la grille n'a jamais été construite, on la (re)construit
-                if not self.dicoSheet:
-                    self._build_dico_grid()
-
+        """Affiche ou masque le panneau dictionnaire."""
+        if bool(self.show_dico_panel.get()):
+            if not self.dictionary_panel.winfo_ismapped():
+                self.dictionary_panel.pack(side=tk.BOTTOM, fill=tk.X)
         else:
-            # Cacher le panneau (sans le détruire, pour pouvoir le réafficher)
-            self.dicoPanel.pack_forget()
+            self.dictionary_panel.pack_forget()
+        self.setAppConfigValue("uiShowDicoPanel", bool(self.show_dico_panel.get()))
 
-        # Persistance : mémoriser l'état (affiché/caché)
-        self.setAppConfigValue("uiShowDicoPanel", bool(show))
+    def _resolve_active_scenario_book_path(self) -> str:
+        scenario = self._get_active_scenario()
+        if scenario.book_ref_id is None:
+            raise ValueError("Le scénario actif ne référence aucun livre Catalogue.")
+        return str(CatalogueBookAssetResolver(self.paths).resolve(self.catalogue.get_book(scenario.book_ref_id)))
+
+    def _reload_dictionary_for_active_scenario(self, *, reset_reference: bool) -> None:
+        self.dictionary_panel.load_book(self._resolve_active_scenario_book_path(), reset_reference=reset_reference)
+
+    def _on_dictionary_exclusion_changed(self, value: bool) -> None:
+        self.setAppConfigValue(CFG_KEY_DICO_EXCLURE_MOTS_CODES, value)
+        self.saveAppConfig()
+
+    def _resolve_clock_state_from_dictionary_cell(self, *, row, col, word, mode):
+        return self.decryptor.clockStateFromDicoCell(row=row, col=col, word=word, mode=mode)
+
+    def _apply_clock_state_from_dictionary(self, state) -> None:
+        self._clock_state.update({"hour": float(state.hour), "minute": state.minute, "label": state.label})
+        self._redraw_overlay_only()
 
     def _toggle_only_group_contours(self):
         """Toggle: afficher uniquement les contours des groupes."""
@@ -4840,12 +4845,23 @@ class TriangleViewerManual(
         if not bool(self.bg_resize_mode.get()) or not self.background_map_layer.has_map:
             return
         self.status.config(
-            text=f"Échelle carte : {format_scale(self._background_map_scale_factor())}"
+            text=f"Échelle carte : {format_scale(self.scenario_map_controller.scale_factor)}"
         )
+
+    def _apply_scenario_map_state(
+        self, state: ScenarioMapState, *, redraw: bool = True
+    ) -> None:
+        self.scenario_map_controller.apply_state(state)
+        self.show_map_layer.set(state.visible)
+        if redraw:
+            self._redraw_from(self._last_drawn)
+
+    def _on_background_map_geometry_changed(self) -> None:
+        self.scenario_map_controller.sync_active_state_from_background()
 
     def _toggle_layers(self):
         """Redessine le canvas suite à un changement de visibilité d'un layer."""
-        self._set_active_map_visibility(bool(self.show_map_layer.get()))
+        self.scenario_map_controller.set_active_visibility(bool(self.show_map_layer.get()))
         self._redraw_from(self._last_drawn)
 
     def _navigate_beacon(self, direction: int) -> None:
@@ -5621,7 +5637,7 @@ class TriangleViewerManual(
                 label_disp = f"{label_disp} — Δ={float(delta_needles_deg):0.0f}°"
             # Si le filtrage dico est actif, afficher aussi l'azimut théorique du 12h (référence)
             # pour aligner les aiguilles sur les 2 droites mesurées (az1/az2).
-            if self._dico_filter_active and (delta_needles_deg is not None):
+            if self.dictionary_panel.filter_active and (delta_needles_deg is not None):
                 last = self._clock_arc_last
                 if isinstance(last, dict) and ("az1" in last) and ("az2" in last):
                     ref_theo = self._clock_compute_theoretical_ref_azimuth_deg(
@@ -8017,19 +8033,22 @@ class TriangleViewerManual(
         self.status.config(text="Mesurer un arc d'angle : clic gauche P1 puis P2, ESC pour annuler. (Snap noeuds, CTRL = désactiver snap)")
 
     def _ctx_filter_dictionary_by_clock_arc(self):
-        """Filtre visuellement le dictionnaire selon l'angle de référence mesuré."""
-        if not self.dicoSheet:
+        """Filtre visuellement le dictionnaire selon l'angle mesuré."""
+        if not self.dictionary_panel.is_loaded:
             messagebox.showinfo("Filtrer le dictionnaire", "Le dictionnaire n'est pas affiché.")
             return
         ref = self._clock_arc_last_angle_deg
         if ref is None:
             messagebox.showinfo("Filtrer le dictionnaire", "Aucun arc n'a été mesuré.\n\nMesure d'abord un arc d'angle sur le compas.")
             return
-        self._dico_filter_active = True
-        self._dico_filter_ref_angle_deg = float(ref)
-        self._dico_apply_filter_styles()
+        self.dictionary_panel.apply_angle_filter(float(ref))
         self._update_compass_ctx_menu_and_dico_state()
-        self.status.config(text=f"Dico filtré (angle ref={float(ref):0.0f}°, tol=±{float(self._dico_filter_tolerance_deg):0.0f}°)")
+        self.status.config(text=f"Dico filtré (angle ref={float(ref):0.0f}°, tol=±2°)")
+
+    def _simulation_cancel_dictionary_filter(self):
+        if self.dictionary_panel.clear_angle_filter():
+            self.status.config(text="Dico: filtrage annule")
+        self._update_compass_ctx_menu_and_dico_state()
 
     def _ctx_compass_find_entry_index(self, label: str) -> int | None:
         menu = self._ctx_menu_compass
@@ -8110,17 +8129,16 @@ class TriangleViewerManual(
         # Activer/désactiver "Annuler le filtrage" selon l'état courant
         idx_cancel = self._ctx_compass_find_entry_index("Annuler le filtrage")
         if menu is not None and idx_cancel is not None:
-            menu.entryconfig(idx_cancel, state=(tk.NORMAL if bool(self._dico_filter_active) else tk.DISABLED))
+            menu.entryconfig(idx_cancel, state=(tk.NORMAL if self.dictionary_panel.filter_active else tk.DISABLED))
 
         # Le dico reste sélectionnable dans tous les cas.
-        self._dico_set_selection_enabled(True)
+        self.dictionary_panel.set_selection_enabled(True)
 
         # Si on perd l'arc alors qu'un filtrage était actif, on annule le filtrage.
         # IMPORTANT: ne pas appeler _simulation_cancel_dictionary_filter() si aucun filtrage n'est actif,
         # sinon recursion infinie (cancel -> update -> cancel -> ...).
-        if (not arc_ok) and (bool(self._dico_filter_active) or (self._dico_filter_ref_angle_deg is not None)):
-            if hasattr(self, "_simulation_cancel_dictionary_filter"):
-                self._simulation_cancel_dictionary_filter()
+        if not arc_ok and self.dictionary_panel.filter_active:
+            self._simulation_cancel_dictionary_filter()
 
         self._update_compass_ctx_menu_traits_state()
 

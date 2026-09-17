@@ -1,81 +1,122 @@
-"""
-TriangleViewerDictionaryMixin
-
-Ce module est généré pour découper assembleur_tk.py.
-"""
+"""Panneau UI autonome du dictionnaire de mots."""
 
 from __future__ import annotations
-import os
+
 import tkinter as tk
 from tkinter import ttk
+from typing import Callable
+
 from tksheet import Sheet
 
 from src.DictionnaireEnigmes import DictionnaireEnigmes, DicoScope, _normalizeWordLocal
-from src.assembleur_catalogue_book_assets import CatalogueBookAssetResolver
+
 
 DICO_TAG_EXCLURE = "exclure"
 CFG_KEY_DICO_EXCLURE_MOTS_CODES = "dicoExclureMotsCodes"
 
 
-class TriangleViewerDictionaryMixin:
-    """Mixin: méthodes extraites de assembleur_tk.py."""
-    pass
+def tk_to_ext_abs(row: int, col: int, nb_mots_max: int) -> tuple[int, int]:
+    col_ext = int(col) - int(nb_mots_max)
+    return (int(row) % 10) + 1, col_ext if col_ext < 0 else col_ext + 1
 
-    def _initDicoExcludeMotsCodesFromConfig(self) -> None:
-        exclude = self.getAppConfigValue(CFG_KEY_DICO_EXCLURE_MOTS_CODES, False)
-        if not isinstance(exclude, bool):
-            raise ValueError(
-                f"Invalid config type for {CFG_KEY_DICO_EXCLURE_MOTS_CODES}: {type(exclude).__name__}"
-            )
-        self._dicoExcludeMotsCodesValue = exclude
-        self._dicoExcludeMotsCodesVar = tk.BooleanVar(value=exclude)
 
-    def _getDicoTagExclure(self) -> str | None:
-        self._dicoExcludeMotsCodesValue = bool(self._dicoExcludeMotsCodesVar.get())
-        return DICO_TAG_EXCLURE if self._dicoExcludeMotsCodesValue else None
+def tk_to_rel(row: int, col: int, *, origin_row: int, origin_col: int, ref_mode: str, nb_lignes: int) -> tuple[int, int]:
+    delta_row = (int(row) - int(origin_row)) % int(nb_lignes)
+    delta_col = int(col) - int(origin_col)
+    return ((-delta_row) % int(nb_lignes), -delta_col) if ref_mode == "target" else (delta_row, delta_col)
+
+
+def exclusion_tag_from_bool(exclude_coded_words: bool) -> str | None:
+    return DICO_TAG_EXCLURE if bool(exclude_coded_words) else None
+
+
+class DictionaryPanel(tk.Frame):
+    """Possède le dictionnaire, ses widgets et son état de présentation."""
+
+    def __init__(self, parent, *, exclude_coded_words: bool, icon_loader: Callable[[str], object], on_exclude_coded_words_changed: Callable[[bool], None], clock_state_resolver: Callable[..., object], on_clock_state_changed: Callable[[object], None], on_status: Callable[[str], None], height: int):
+        super().__init__(parent, height=height, bd=1, relief=tk.SUNKEN, bg="#f3f3f3")
+        self.pack_propagate(False)
+        self._icon_loader = icon_loader
+        self._on_exclude_coded_words_changed = on_exclude_coded_words_changed
+        self._clock_state_resolver = clock_state_resolver
+        self._on_clock_state_changed = on_clock_state_changed
+        self._publish_status = on_status
+        self.dico_panel_height = int(height)
+        self._book_path: str | None = None
+        self.dico: DictionnaireEnigmes | None = None
+        self.dicoSheet = None
+        self._dico_origin_cell = None
+        self._dico_ref_mode = None
+        self._dico_nb_mots_max = 0
+        self._dico_filter_active = False
+        self._dico_filter_ref_angle_deg = None
+        self._dico_filter_tolerance_deg = 2.5
+        self._dico_selection_enabled = True
+        self._dicoExcludeMotsCodesValue = bool(exclude_coded_words)
+        self._dicoExcludeMotsCodesVar = tk.BooleanVar(value=bool(exclude_coded_words))
+
+    @property
+    def dictionary(self) -> DictionnaireEnigmes | None:
+        return self.dico
+
+    @property
+    def is_loaded(self) -> bool:
+        return self.dico is not None
+
+    @property
+    def filter_active(self) -> bool:
+        return bool(self._dico_filter_active)
+
+    @property
+    def exclusion_tag(self) -> str | None:
+        return exclusion_tag_from_bool(self._dicoExcludeMotsCodesVar.get())
+
+    def load_book(self, book_path: str, *, reset_reference: bool = True) -> None:
+        self._book_path = str(book_path)
+        self.dico = DictionnaireEnigmes(self._book_path, tagExclure=self.exclusion_tag)
+        if reset_reference:
+            self._dico_origin_cell = None
+            self._dico_ref_mode = None
+        self._publish_status(f"Dico chargé: {len(self.dico)} lignes depuis {self._book_path}")
+        if self.winfo_exists():
+            self._build_dico_grid()
 
     def _onToggleDicoExcludeMotsCodes(self) -> None:
         value = bool(self._dicoExcludeMotsCodesVar.get())
         self._dicoExcludeMotsCodesValue = value
-        self.setAppConfigValue(CFG_KEY_DICO_EXCLURE_MOTS_CODES, value)
-        self.saveAppConfig()
+        self._on_exclude_coded_words_changed(value)
+        if self._book_path is not None:
+            self.load_book(self._book_path, reset_reference=False)
 
-        tagExclure = self._getDicoTagExclure()
-        self._init_dictionary(tagExclure=tagExclure)
-        self._build_dico_grid()
+    def apply_angle_filter(self, angle_deg: float, tolerance_deg: float = 2.5) -> None:
+        self._dico_filter_active = True
+        self._dico_filter_ref_angle_deg = float(angle_deg)
+        self._dico_filter_tolerance_deg = float(tolerance_deg)
+        self._dico_apply_filter_styles()
 
-    def _resolve_active_scenario_book_path(self) -> str:
-        scenario = self._get_active_scenario()
-        book_ref_id = scenario.book_ref_id
-        if book_ref_id is None:
-            raise ValueError("Le scénario actif ne référence aucun livre Catalogue.")
-        book = self.catalogue.get_book(book_ref_id)
-        return str(CatalogueBookAssetResolver(self.paths).resolve(book))
+    def clear_angle_filter(self) -> bool:
+        was_active = self.filter_active or self._dico_filter_ref_angle_deg is not None
+        self._dico_filter_active = False
+        self._dico_filter_ref_angle_deg = None
+        self._dico_clear_filter_styles()
+        return was_active
 
-    def _init_dictionary(self, *, tagExclure: str | None) -> None:
-        """Construit le dictionnaire depuis le livre du scénario actif."""
-        livre_path = self._resolve_active_scenario_book_path()
-        self.dico = DictionnaireEnigmes(livre_path, tagExclure=tagExclure)
-        nb_lignes = len(self.dico)
-        self.status.config(text=f"Dico chargé: {nb_lignes} lignes depuis {livre_path}")
+    def set_selection_enabled(self, enabled: bool) -> None:
+        self._dico_set_selection_enabled(enabled)
 
-    # ---------- Dictionnaire : affichage dans le panneau bas ----------
     def _build_dico_grid(self):
         """
-        Construit/affiche la grille tksheet du dictionnaire dans self.dicoPanel.
+        Construit/affiche la grille tksheet du dictionnaire dans self.
         N’opère que si self.dico est chargé et tksheet disponible.
         """
 
-        # Le panneau bas doit exister (créé dans _build_canvas)
-        if not hasattr(self, "dicoPanel"):
-            return
         # Nettoyer le contenu existant (placeholder, ancienne grille…)
-        for child in list(self.dicoPanel.children.values()):
+        for child in list(self.children.values()):
             child.destroy()
 
         # Vérifs
         if self.dico is None:
-            tk.Label(self.dicoPanel, text="Dictionnaire non chargé",
+            tk.Label(self, text="Dictionnaire non chargé",
                      bg="#f3f3f3", anchor="w").pack(fill="x", padx=8, pady=6)
             return
 
@@ -100,7 +141,7 @@ class TriangleViewerDictionaryMixin:
             self._dico_ref_mode = "origin" if tuple(self._dico_origin_cell) != tuple(default_origin) else None
 
         # --- Layout du panneau bas : [sidebar recherche] | [grille] ---
-        container = tk.Frame(self.dicoPanel, bg="#f3f3f3")
+        container = tk.Frame(self, bg="#f3f3f3")
         container.pack(fill="both", expand=True)
         # colonne gauche (recherche + occurrences)
         left = tk.Frame(container, width=180, bg="#f3f3f3", bd=1, relief=tk.GROOVE)
@@ -125,8 +166,8 @@ class TriangleViewerDictionaryMixin:
         self._dico_search_entry = tk.Entry(search_row, textvariable=self._dico_search_var)
         self._dico_search_entry.pack(side="left", fill="x", expand=True)
 
-        self._dico_icon_check_green = self._load_icon("check16_green.png")
-        self._dico_icon_check_red = self._load_icon("check16_red.png")
+        self._dico_icon_check_green = self._icon_loader("check16_green.png")
+        self._dico_icon_check_red = self._icon_loader("check16_red.png")
         if self._dico_icon_check_green is None:
             raise FileNotFoundError("Icone introuvable: check16_green.png")
         if self._dico_icon_check_red is None:
@@ -373,7 +414,7 @@ class TriangleViewerDictionaryMixin:
             self._dico_apply_filter_styles()
 
         self._dico_search_refresh()
-        self.status.config(text="Dico affiché dans le panneau bas")
+        self._publish_status("Dico affiché dans le panneau bas")
 
     def _dico_search_schedule_debounce(self, event=None) -> None:
         if self._dico_search_debounce_after_id is not None:
@@ -555,21 +596,20 @@ class TriangleViewerDictionaryMixin:
         """
         TkSheet (row,col) -> (rowAbs 1..10, colExt sans 0) en mode ABS.
         """
-        rowAbs = (row % 10) + 1
-        j = col - nbm          # [-nbm..nbm-1]
-        colExt = j if j < 0 else j + 1  # pas de 0
-        return rowAbs, colExt
+        return tk_to_ext_abs(row, col, nbm)
 
     def _tkToRel(self, row: int, col: int, *, r0: int, c0: int, refMode: str) -> tuple[int, int]:
         """
         TkSheet (row,col) -> (dRow 0..9, dCol signé) en mode DELTA.
         """
-        dr = (row - r0) % 10
-        dc = col - c0
-        if refMode == "target":
-            dr = (-dr) % 10
-            dc = -dc
-        return dr, dc
+        return tk_to_rel(
+            row,
+            col,
+            origin_row=r0,
+            origin_col=c0,
+            ref_mode=refMode,
+            nb_lignes=10,
+        )
 
     def _update_clock_from_cell(self, row: int, col: int):
         """Met à jour l'horloge à partir d'une cellule de la grille Dico.
@@ -597,15 +637,14 @@ class TriangleViewerDictionaryMixin:
             rowVal, colVal = self._tkToExtAbs(row, col, nbm=self._dico_nb_mots_max)
             mode = "abs"
 
-        st = self.decryptor.clockStateFromDicoCell(
+        st = self._clock_state_resolver(
             row=rowVal,
             col=colVal,
             word=word,
             mode=mode,
         )
 
-        self._clock_state.update({"hour": float(st.hour), "minute": st.minute, "label": st.label})
-        self._redraw_overlay_only()
+        self._on_clock_state_changed(st)
 
     # ---------- DICO : filtrage visuel par angle ----------
 
@@ -648,7 +687,7 @@ class TriangleViewerDictionaryMixin:
                 #   clockStateFromDicoCell().
                 #   On n'utilise donc PAS deltaAngleFromDicoCell (qui peut avoir une convention différente)
                 #   mais exactement la même définition que l'overlay du compas.
-                st = self.decryptor.clockStateFromDicoCell(
+                st = self._clock_state_resolver(
                     row=rowVal,
                     col=colVal,
                     word=word,
@@ -709,9 +748,8 @@ class TriangleViewerDictionaryMixin:
         self._dico_filter_active = False
         self._dico_filter_ref_angle_deg = None
         self._dico_clear_filter_styles()
-        self._update_compass_ctx_menu_and_dico_state()
         if was_active:
-            self.status.config(text="Dico: filtrage annule")
+            self._publish_status("Dico: filtrage annule")
 
     # =========================
     #  SIMULATION (AUTO ASSEMBLAGE)

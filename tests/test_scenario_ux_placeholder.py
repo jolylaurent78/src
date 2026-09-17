@@ -101,7 +101,7 @@ def _load_viewer(active_scenario):
     viewer._exit_deformation_mode = lambda: None
     viewer._create_manual_scenario_hypothesis = lambda **_kwargs: object()
     viewer._capture_view_state = lambda: {}
-    viewer._capture_map_state = lambda: {}
+    viewer.scenario_map_controller = SimpleNamespace(capture_active_state=lambda: {})
     viewer._set_active_scenario = lambda index: setattr(viewer, "active_scenario_index", index)
     viewer.load_scenario_xml = lambda _path: None
     viewer._fit_to_view = lambda _entries: None
@@ -208,8 +208,8 @@ def test_new_empty_scenario_keeps_current_map_and_view_context(tmp_path):
     current_view = {"zoom": 2.0, "offset_x": 12.0, "offset_y": 34.0}
     viewer._capture_view_state = lambda: dict(current_view)
     default_map = ScenarioMapState(None)
-    viewer._new_default_map_state = lambda: default_map
-    viewer._apply_map_state = lambda *_args, **_kwargs: None
+    viewer.scenario_map_controller = SimpleNamespace(new_default_state=lambda: default_map)
+    viewer._apply_scenario_map_state = lambda *_args, **_kwargs: None
     viewer.show_map_layer = SimpleNamespace(set=lambda _value: None)
     viewer.map_opacity = SimpleNamespace(
         set=lambda _value: None,
@@ -223,7 +223,7 @@ def test_new_empty_scenario_keeps_current_map_and_view_context(tmp_path):
 
     def activate(index):
         viewer.active_scenario_index = index
-        viewer._apply_map_state(viewer.scenarios[index].map_state, persist=False, redraw=False)
+        viewer._apply_scenario_map_state(viewer.scenarios[index].map_state, redraw=False)
 
     viewer._set_active_scenario = activate
 
@@ -282,8 +282,8 @@ def test_duplicate_keeps_current_map_context_and_reapplies_group_anchor(tmp_path
     current_view = {"zoom": 2.0, "offset_x": 12.0, "offset_y": 34.0}
     current_map = ScenarioMapState(None)
     viewer._capture_view_state = lambda: dict(current_view)
-    viewer._capture_map_state = lambda: current_map
-    viewer._apply_map_state = lambda *_args, **_kwargs: None
+    viewer.scenario_map_controller = SimpleNamespace(capture_active_state=lambda: current_map)
+    viewer._apply_scenario_map_state = lambda *_args, **_kwargs: None
     viewer.show_map_layer = SimpleNamespace(set=lambda _value: None)
     viewer.map_opacity = SimpleNamespace(set=lambda _value: None, get=lambda: 100)
     viewer._exit_deformation_mode = lambda: None
@@ -291,7 +291,7 @@ def test_duplicate_keeps_current_map_context_and_reapplies_group_anchor(tmp_path
 
     def activate(index):
         duplicate = viewer.scenarios[index]
-        viewer._apply_map_state(duplicate.map_state, persist=False, redraw=False)
+        viewer._apply_scenario_map_state(duplicate.map_state, redraw=False)
         TriangleViewerManual._reapply_scenario_group_anchors(viewer, duplicate)
         viewer.active_scenario_index = index
 
@@ -345,7 +345,7 @@ def test_duplicate_clones_local_triangle_and_city_references_independently():
     viewer.active_scenario_index = 0
     viewer.status = _Status()
     viewer._capture_view_state = lambda: {}
-    viewer._capture_map_state = lambda: {}
+    viewer.scenario_map_controller = SimpleNamespace(capture_active_state=lambda: {})
     viewer._refresh_scenario_listbox = lambda: None
     viewer._set_active_scenario = lambda index: setattr(viewer, "active_scenario_index", index)
 
